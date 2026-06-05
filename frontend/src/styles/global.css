@@ -1,0 +1,752 @@
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--font);
+  font-size: 12px;
+  line-height: 1.4;
+  font-feature-settings: "ss01", "cv11";
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* Re-enable text selection where the user is actually editing or expected
+   to be able to copy values. `.cv .ln-txt` is the Code-page viewer body —
+   gutter stays unselectable so line numbers don't get caught in copies. */
+input,
+textarea,
+[contenteditable="true"],
+.cv .ln-txt {
+  user-select: text;
+  -webkit-user-select: text;
+  cursor: text;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: default;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+input,
+textarea,
+select {
+  font: inherit;
+  color: inherit;
+}
+
+hr {
+  border: 0;
+  border-top: 1px solid var(--l1);
+  margin: 0;
+}
+
+/* Utility */
+.m {
+  font-family: var(--mono);
+  font-feature-settings: "zero", "ss02";
+}
+
+.u {
+  font-family: var(--mono);
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink3);
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.col {
+  display: flex;
+  flex-direction: column;
+}
+
+.pane {
+  background: var(--card);
+}
+
+/* Buttons */
+.btn {
+  height: 22px;
+  padding: 0 8px;
+  border: 1px solid var(--l2);
+  background: var(--card);
+  color: var(--ink2);
+  border-radius: 3px;
+  font: 500 11px/1 var(--font);
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  cursor: pointer;
+  user-select: none;
+  transition: background 0.1s, border-color 0.1s, transform 0.06s, color 0.1s, box-shadow 0.1s;
+}
+.btn:hover:not(:disabled) {
+  background: var(--panel);
+  color: var(--ink);
+}
+.btn:active:not(:disabled) {
+  transform: translateY(0.5px);
+}
+.btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.btn.on {
+  background: var(--ink);
+  color: #fff;
+  border-color: var(--ink);
+}
+.btn.accent {
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent);
+}
+.btn.accent:hover:not(:disabled) {
+  background: #2a4a73;
+  border-color: #2a4a73;
+  color: #fff;
+}
+.btn.ghost {
+  border-color: transparent;
+  background: transparent;
+}
+.btn.ghost:hover:not(:disabled) {
+  background: var(--l1);
+}
+.btn.sm {
+  height: 20px;
+  padding: 0 6px;
+  font-size: 10.5px;
+}
+
+/* Chips */
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 18px;
+  padding: 0 6px;
+  border: 1px solid var(--l2);
+  border-radius: 9px;
+  font: 500 10.5px/1 var(--mono);
+  color: var(--ink2);
+  background: var(--card);
+}
+.chip.on {
+  background: var(--accentBg);
+  border-color: #a9bcd3;
+  color: var(--accent);
+}
+.chip.warn {
+  background: var(--warnBg);
+  border-color: #dcc78a;
+  color: var(--warn);
+}
+.chip.err {
+  background: var(--errBg);
+  border-color: #d8a89e;
+  color: var(--err);
+}
+.chip.ok {
+  background: var(--okBg);
+  border-color: #a8c4b1;
+  color: var(--ok);
+}
+.chip.dark {
+  background: #212120;
+  border-color: #3a3935;
+  color: #d4d1c7;
+}
+
+/* Inputs */
+.input {
+  height: 22px;
+  border: 1px solid var(--l2);
+  border-radius: 3px;
+  background: var(--card);
+  font: 400 11px/1 var(--mono);
+  color: var(--ink);
+  padding: 0 7px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: text;
+  transition: border-color 0.1s, box-shadow 0.1s;
+}
+.input:hover {
+  border-color: var(--l3);
+}
+.input:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+.input input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  outline: none;
+  background: transparent;
+  font: inherit;
+  color: inherit;
+  cursor: text;
+}
+.input input::placeholder {
+  color: var(--ink3);
+}
+
+/* Icons */
+.ico {
+  width: 14px;
+  height: 14px;
+  display: inline-block;
+  flex: 0 0 auto;
+}
+
+/* Toolbar tool button */
+.tool {
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  color: var(--ink2);
+  position: relative;
+  cursor: pointer;
+  user-select: none;
+  transition: background 0.1s, color 0.1s;
+}
+.tool:hover {
+  background: var(--l1);
+  color: var(--ink);
+}
+.tool:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.tool.on {
+  background: var(--ink);
+  color: #fff;
+}
+.tool.on:hover {
+  background: var(--ink);
+}
+.tool .kbd {
+  position: absolute;
+  top: 1px;
+  right: 2px;
+  font: 600 8px/1 var(--mono);
+  color: var(--muted);
+  letter-spacing: 0;
+}
+.tool.on .kbd {
+  color: #888;
+}
+.tool.todo,
+.tool:disabled {
+  opacity: 0.38;
+  cursor: not-allowed;
+}
+.tool.todo:hover,
+.tool:disabled:hover {
+  background: transparent;
+  color: var(--ink2);
+}
+
+/* Tabs (top-bar phase tabs) get a pointer cursor */
+.tab,
+.ttab {
+  cursor: pointer;
+  user-select: none;
+}
+.tab:focus-visible,
+.ttab:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+/* Library thumb cards */
+.thumb-card {
+  display: block;
+  width: 100%;
+  background: var(--card);
+  border: 1px solid var(--l2);
+  border-radius: 3px;
+  overflow: hidden;
+  color: inherit;
+  text-decoration: none;
+  cursor: pointer;
+  user-select: none;
+  transition: border-color 0.12s, box-shadow 0.12s, transform 0.12s;
+}
+.thumb-card:hover:not(.disabled) {
+  border-color: var(--accent);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.35);
+}
+.thumb-card:has(.thumb-card-link:active) {
+  transform: translateY(1px);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
+}
+.thumb-card:focus-within {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.thumb-card.disabled {
+  cursor: default;
+  opacity: 0.85;
+}
+/* Full-card clickable overlay. The link is invisible but covers everything
+   below z-index 2 so the kebab menu stays interactive. */
+.thumb-card-link {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  text-decoration: none;
+}
+.thumb-card-link:focus {
+  outline: none;
+}
+
+/* Kebab trigger (small icon-only ghost button) */
+.kebab {
+  width: 22px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 3px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--ink3);
+  cursor: pointer;
+  user-select: none;
+  transition: background 0.1s, color 0.1s, border-color 0.1s;
+}
+.kebab:hover {
+  background: var(--l1);
+  color: var(--ink);
+}
+.kebab[aria-expanded="true"] {
+  background: var(--l1);
+  color: var(--ink);
+  border-color: var(--l2);
+}
+.kebab:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* Popover menu */
+.menu {
+  min-width: 160px;
+  background: var(--card);
+  border: 1px solid var(--l2);
+  border-radius: 4px;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
+  padding: 4px;
+  z-index: 1000;
+}
+.menu-item {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  height: 24px;
+  padding: 0 10px;
+  border-radius: 3px;
+  font: 500 11px/1 var(--font);
+  color: var(--ink2);
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+  user-select: none;
+  border: 0;
+  transition: background 0.08s, color 0.08s;
+}
+.menu-item:hover:not(:disabled) {
+  background: var(--l1);
+  color: var(--ink);
+}
+.menu-item:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.menu-item.danger {
+  color: var(--err);
+}
+.menu-item.danger:hover:not(:disabled) {
+  background: var(--errBg);
+  color: var(--err);
+}
+/* Thin section divider inside a `.menu`. Kept neutral so it reads in both
+   light and dark themes without an explicit override. */
+.menu-sep {
+  height: 1px;
+  background: var(--l1);
+  margin: 4px 2px;
+}
+/* Tiny uppercase header for grouped menu sections (label / context). */
+.menu-section {
+  padding: 6px 10px 2px;
+  font: 600 9px/1 var(--mono);
+  letter-spacing: 0.08em;
+  color: var(--ink3);
+  text-transform: uppercase;
+}
+
+/* Generic popover surface (portaled). */
+.popover {
+  background: var(--card);
+  border: 1px solid var(--l2);
+  border-radius: 4px;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
+  padding: 10px 12px;
+  z-index: 1000;
+  min-width: 200px;
+}
+
+/* Small action button inside a tree row (e.g. settings, sliders). */
+.trow-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--ink3);
+  border-radius: 3px;
+  cursor: pointer;
+  transition: background 0.08s, color 0.08s;
+}
+.trow-action:hover {
+  background: var(--l1);
+  color: var(--ink);
+}
+.trow-action[aria-expanded="true"] {
+  background: var(--l1);
+  color: var(--ink);
+}
+
+input[type="range"] {
+  accent-color: var(--accent);
+  width: 100%;
+}
+
+/* Themed checkbox + label.
+   Usage: <label class="check"><input type="checkbox" />Label text</label>
+   The left margin sits the checkbox clearly apart from whatever precedes it
+   in a toolbar row, so the gap to a previous chip and the gap to a previous
+   checkbox read the same — overlaid on the parent's own flex `gap`. */
+.check {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: 6px;
+  cursor: pointer;
+  font: 400 11px/1.3 var(--font);
+  color: var(--ink2);
+  user-select: none;
+  transition: color 0.1s;
+}
+.check:hover {
+  color: var(--ink);
+}
+.check input[type="checkbox"] {
+  appearance: none;
+  -webkit-appearance: none;
+  flex: none;
+  width: 15px;
+  height: 15px;
+  margin: 0;
+  border: 1px solid var(--l3);
+  border-radius: 3px;
+  background: var(--card);
+  display: grid;
+  place-content: center;
+  cursor: pointer;
+  transition: background 0.1s, border-color 0.1s, box-shadow 0.1s;
+}
+/* Checkmark: a rotated box with two borders, scaled in on :checked. */
+.check input[type="checkbox"]::after {
+  content: "";
+  width: 4px;
+  height: 8px;
+  margin-bottom: 1px;
+  border: solid var(--card);
+  border-width: 0 2px 2px 0;
+  transform: rotate(45deg) scale(0);
+  transition: transform 0.1s ease-out;
+}
+.check:hover input[type="checkbox"] {
+  border-color: var(--accent);
+}
+.check input[type="checkbox"]:checked {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+.check input[type="checkbox"]:checked::after {
+  transform: rotate(45deg) scale(1);
+}
+.check input[type="checkbox"]:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--accent);
+}
+
+/* Tree rows */
+.tree {
+  padding: 2px 0;
+}
+.trow {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 8px 2px 4px;
+  height: 22px;
+  font: 500 11px/1 var(--font);
+  color: var(--ink);
+}
+.trow:hover {
+  background: var(--panel);
+}
+.trow.sel {
+  background: var(--accentBg);
+  color: var(--accent);
+}
+.trow .meta {
+  margin-left: auto;
+  font: 400 10px/1 var(--mono);
+  color: var(--ink3);
+}
+.trow-eye:hover {
+  color: var(--ink) !important;
+}
+.trow.sel .meta {
+  color: var(--accent);
+}
+
+/* Panel header */
+.ph {
+  height: 26px;
+  padding: 0 10px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  border-bottom: 1px solid var(--l1);
+  background: var(--panel);
+  flex: 0 0 auto;
+}
+
+/* Tabs */
+.tab {
+  padding: 0 12px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font: 500 11.5px/1 var(--font);
+  color: var(--ink3);
+  border-bottom: 1.5px solid transparent;
+}
+.tab:hover {
+  color: var(--ink2);
+}
+.tab.on {
+  color: var(--ink);
+  border-color: var(--ink);
+  font-weight: 600;
+}
+.ttab {
+  padding: 0 12px;
+  height: 30px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font: 500 11px/1 var(--font);
+  color: var(--ink3);
+  border-bottom: 1.5px solid transparent;
+}
+.ttab.on {
+  color: var(--ink);
+  border-color: var(--ink);
+  font-weight: 600;
+}
+
+/* Property rows */
+.prop {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 3px 10px;
+  min-height: 24px;
+  border-bottom: 1px solid var(--l1);
+}
+.prop .lbl {
+  width: 78px;
+  font: 500 10px/1 var(--mono);
+  color: var(--ink3);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.prop .val {
+  flex: 1;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--ink);
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+}
+
+@keyframes pulse-h {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+
+/* Dark overrides (canvas-adjacent surfaces) */
+.dark .btn {
+  background: #221f19;
+  border-color: #3a362e;
+  color: var(--ink2);
+}
+.dark .btn:hover {
+  background: #2a2620;
+  color: var(--ink);
+}
+.dark .btn.on {
+  background: #3a3328;
+  color: #f5d68a;
+  border-color: #5a4d34;
+  box-shadow: inset 0 0 0 1px rgba(245, 214, 138, 0.12);
+}
+.dark .btn.on:hover {
+  background: #403828;
+}
+.dark .btn.accent {
+  background: var(--accent);
+  color: #0c1626;
+  border-color: var(--accent);
+}
+.dark .btn.ghost {
+  background: transparent;
+  border-color: transparent;
+  color: var(--ink2);
+}
+.dark .btn.ghost:hover {
+  background: #221f19;
+  color: var(--ink);
+}
+.dark .chip {
+  background: #221f19;
+  border-color: #3a362e;
+  color: var(--ink2);
+}
+.dark .chip.on {
+  background: #1a2436;
+  border-color: #34547e;
+  color: #9ec3ff;
+}
+.dark .chip.ok {
+  background: var(--okBg);
+  border-color: #2f5a3c;
+  color: var(--ok);
+}
+.dark .chip.warn {
+  background: var(--warnBg);
+  border-color: #5a4520;
+  color: var(--warn);
+}
+.dark .chip.err {
+  background: var(--errBg);
+  border-color: #5a2a22;
+  color: var(--err);
+}
+.dark .chip.dark {
+  background: #0a0a08;
+  border-color: #34322c;
+  color: #d4d1c7;
+}
+.dark .tool {
+  color: var(--ink2);
+}
+.dark .tool:hover {
+  background: #221f19;
+  color: var(--ink);
+}
+.dark .tool.on {
+  background: #3a3328;
+  color: #f5d68a;
+  box-shadow: inset 0 0 0 1px rgba(245, 214, 138, 0.18);
+}
+.dark .tool.on:hover {
+  background: #403828;
+}
+.dark .tool .kbd {
+  color: #5a574e;
+}
+.dark .tool.on .kbd {
+  color: #8a7a4e;
+}
+.dark .tool.todo,
+.dark .tool:disabled {
+  opacity: 0.32;
+}
+.dark .tool.todo:hover,
+.dark .tool:disabled:hover {
+  background: transparent;
+  color: var(--ink2);
+}
+.dark .input {
+  color: var(--ink);
+  background: #1a1813;
+  border-color: #2a2823;
+}
+.dark .trow.sel {
+  background: var(--accentBg);
+  color: #9ec3ff;
+}
+.dark .trow.sel .meta {
+  color: #9ec3ff;
+}
+.dark .ph {
+  background: #16140f;
+}

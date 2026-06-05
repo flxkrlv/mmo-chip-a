@@ -1,0 +1,49 @@
+:root {
+  --font: "IBM Plex Sans", system-ui, sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, monospace;
+
+  --bg: #f5f3ee;
+  --card: #ffffff;
+  --panel: #fbfaf7;
+  --l1: #ecebe6;
+  --l2: #dfddd6;
+  --l3: #c4c1b7;
+  --ink: #1c1c1a;
+  --ink2: #4d4b46;
+  --ink3: #8a877f;
+  --muted: #b4b1a7;
+  --accent: #345a8a;
+  --accentBg: #e6edf5;
+  --ok: #3f7a55;
+  --okBg: #e0ece4;
+  --warn: #8a6a2a;
+  --warnBg: #f4ebd2;
+  --err: #a8453a;
+  --errBg: #f1ddd9;
+
+  --canvas-bg: #0c0c08;
+  --canvas-amber: #f5d68a;
+  --canvas-wire: #82d6a6;
+  --canvas-sel: #7fb2ff;
+}
+
+.dark {
+  --bg: #15140f;
+  --card: #1c1b16;
+  --panel: #16140f;
+  --l1: #2a2823;
+  --l2: #34322c;
+  --l3: #4a4740;
+  --ink: #ece8de;
+  --ink2: #b8b3a4;
+  --ink3: #7e7a6e;
+  --muted: #5a574e;
+  --accent: #7fb2ff;
+  --accentBg: #1a2436;
+  --ok: #82d6a6;
+  --okBg: #1a2a20;
+  --warn: #e8b94a;
+  --warnBg: #332a14;
+  --err: #e36854;
+  --errBg: #3a201b;
+}

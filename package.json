@@ -1,0 +1,22 @@
+{
+  "name": "mmo-chip",
+  "private": true,
+  "version": "0.1.0",
+  "workspaces": [
+    "shared",
+    "frontend",
+    "backend"
+  ],
+  "scripts": {
+    "sidecar": "ml/.venv/bin/python ml/sidecar.py",
+    "dev": "concurrently -n be,fe,sc \"npm run dev -w backend\" \"npm run dev -w frontend\" \"npm run sidecar\"",
+    "build": "npm run build -w backend && npm run build -w frontend",
+    "test": "npm run test -w backend && npm run test -w frontend"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2"
+  },
+  "dependencies": {
+    "elkjs": "^0.11.1"
+  }
+}

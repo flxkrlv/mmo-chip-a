@@ -1,0 +1,30 @@
+{
+  "name": "backend",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc -p tsconfig.json",
+    "test": "node --import tsx --test src/app.test.ts src/dieImport/importer.test.ts src/svgImport/svgWireImport.test.ts",
+    "import-svg-wires": "tsx src/svgImport/importSvgWiresCli.ts"
+  },
+  "dependencies": {
+    "shared": "*",
+    "cors": "^2.8.5",
+    "express": "^5.1.0",
+    "multer": "^2.0.1",
+    "sharp": "^0.34.2",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/cors": "^2.8.17",
+    "@types/express": "^5.0.1",
+    "@types/multer": "^2.0.0",
+    "@types/node": "^22.14.0",
+    "@types/ws": "^8.5.13",
+    "supertest": "^7.1.1",
+    "tsx": "^4.19.3",
+    "typescript": "^5.8.3"
+  }
+}

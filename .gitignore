@@ -1,0 +1,8 @@
+node_modules/
+dist/
+coverage/
+.DS_Store
+frontend/dist/
+backend/dist/
+data/tmp/
+data
