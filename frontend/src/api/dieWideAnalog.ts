@@ -2,20 +2,21 @@
  * dieWideAnalog.ts — Die-wide analog device collection and export.
  *
  * Collects all analog devices across every cell type on a die,
- * plus any die-level annotations, and generates a unified SPICE/CDL
- * netlist for the whole chip.
+ * matches terminals to die-level wires, and generates CDL/Spectre.
  *
- * Uses simple marker-based detection (USER draws npn_id/res_id/cap_id…)
+ * Uses simple marker-based detection (npn_id/mos_id/res_id…)
  * No Clipper2, no auto-detection, no LVS.
  */
 
-import type { AnalogDevice, CellType, DieAnnotations, SpiceConfig } from "shared";
+import type {
+  AnalogDevice, AnnotationNet, Cell, CellType,
+  DieAnnotations, SpiceConfig,
+} from "shared";
 import { extractMarkedDevices } from "../lib/extraction/simpleAnalog";
 import { generateSpiceNetlist } from "../lib/export/spice";
 
 /**
  * Collect analog devices from a single cell type's annotation.
- * Simple marker-based detection (npn_id, res_id, cap_id, diode_id layers).
  */
 export function extractAnalogDevicesFromCellType(
   cellType: CellType,
@@ -25,88 +26,118 @@ export function extractAnalogDevicesFromCellType(
 }
 
 /**
+ * Match a terminal position (in die coords) to the closest die-level wire.
+ * Returns a stable net ID derived from the wire name, or null if none found.
+ */
+function matchWireNetId(
+  nets: AnnotationNet[],
+  dieX: number,
+  dieY: number,
+  tolerance: number,
+): number | null {
+  let bestHash: number | null = null;
+  let bestDist = tolerance;
+  for (const net of nets) {
+    for (const node of net.nodes) {
+      const d = Math.hypot(node.x - dieX, node.y - dieY);
+      if (d < bestDist) {
+        bestDist = d;
+        // Stable hash from wire name
+        let h = 0;
+        for (let i = 0; i < net.name.length; i++)
+          h = ((h << 5) - h) + net.name.charCodeAt(i), h |= 0;
+        bestHash = Math.abs(h) % 9000 + 100;
+      }
+    }
+  }
+  return bestHash;
+}
+
+/**
  * Collect ALL analog devices across every cell type on a die.
- * For each cell type, detection runs ONCE; discovered devices are then
- * replicated per INSTANCE of that cell type.
+ * Replicates devices per instance, matches terminals to die-level wires.
  */
 export function collectDieWideAnalogDevices(
   annotations: DieAnnotations,
   umPerPx: number = 1.0,
   _spiceConfig?: SpiceConfig,
 ): AnalogDevice[] {
+  const ann = annotations as DieAnnotations;
   const allDevices: AnalogDevice[] = [];
-  const cellTypeById = new Map(
-    annotations.cellTypes.map((ct: CellType) => [ct.id, ct]),
-  );
+  const nets = ann.nets ?? [];
 
-  interface CellRef { id: string; cellTypeId: string; x: number; y: number; [k: string]: any }
-  const instancesByCt = new Map<string, CellRef[]>();
-  const cells = annotations.cells ?? [];
+  // Group cells by type
+  const cells = ann.cells ?? [];
+  const instancesByCt = new Map<string, Cell[]>();
   for (const cell of cells) {
     const list = instancesByCt.get(cell.cellTypeId) ?? [];
     list.push(cell);
     instancesByCt.set(cell.cellTypeId, list);
   }
-  console.log(`[collectDieWide] ${cells.length} cells, ${instancesByCt.size} types`);
-  for (const [ctId, list] of instancesByCt) {
-    const ct = cellTypeById.get(ctId);
-    console.log(`  type ${ct?.name ?? ctId}: ${list.length} instances`);
-  }
+  console.log(`[dieWide] ${cells.length} cells, ${instancesByCt.size} types`);
 
   const counters: Record<string, number> = {
     mos: 0, bjt_npn: 0, bjt_pnp: 0,
     jfet_n: 0, jfet_p: 0, resistor: 0, capacitor: 0, diode: 0, unknown: 0,
   };
-  const nextPref: Record<string, string> = {
+  const pref: Record<string, string> = {
     bjt_npn: "Q", bjt_pnp: "Q",
     mos: "M", resistor: "R", capacitor: "C", diode: "D",
     jfet_n: "J", jfet_p: "J", unknown: "X",
   };
 
-  for (const ct of annotations.cellTypes) {
-    const instanceCount = (instancesByCt.get(ct.id) ?? []).length;
-    if (instanceCount === 0) continue;
+  for (const ct of ann.cellTypes) {
+    const instanceList = instancesByCt.get(ct.id) ?? [];
+    if (instanceList.length === 0) continue;
 
     let ctDevices: AnalogDevice[];
     try {
       ctDevices = extractMarkedDevices(ct.layers, ct.id, umPerPx);
     } catch (e) {
-      console.warn(`collectDieWideAnalogDevices("${ct.name}") failed:`, e);
+      console.warn(`extractMarkedDevices("${ct.name}") failed:`, e);
       continue;
     }
-
     if (ctDevices.length === 0) continue;
 
-    for (let inst = 0; inst < instanceCount; inst++) {
+    for (let inst = 0; inst < instanceList.length; inst++) {
+      const instCell = instanceList[inst];
       for (const dev of ctDevices) {
-        const prefix = nextPref[dev.kind] ?? "X";
+        const p = pref[dev.kind] ?? "X";
         counters[dev.kind] = (counters[dev.kind] ?? 0) + 1;
-        const instanceName = `${prefix}${counters[dev.kind]}`;
-        // Give each instance UNIQUE net IDs for its terminals
-        const freshNets = new Map<string, number>();
-        let nextFresh = 2000 + allDevices.length * 10;
-        const uniqueTerminals = dev.terminals.map((t) => {
-          if (t.netId >= 0) {
-            // Fresh net per terminal per instance
-            const fresh = nextFresh++;
-            freshNets.set(t.name, fresh);
+        const instName = `${p}${counters[dev.kind]}`;
+
+        // Match each terminal to a die-level wire, or assign unique fresh net
+        const matchedTerms = dev.terminals.map((t, ti) => {
+          if (t.netId < 0) return t;
+          const bbox = dev.bbox;
+          if (!bbox) {
+            const fresh = 2000 + allDevices.length * 10 + ti;
             return { ...t, netId: fresh };
           }
-          return t;
+          // Terminal die position = instance offset + terminal bbox center
+          const cellCX = instCell?.x ?? 0;
+          const cellCY = instCell?.y ?? 0;
+          const termDieX = cellCX + bbox.x + bbox.width * (ti + 0.5) / (dev.terminals.length + 1);
+          const termDieY = cellCY + bbox.y + bbox.height * 0.5;
+
+          const wireNetId = matchWireNetId(nets, termDieX, termDieY, 80);
+          if (wireNetId != null) return { ...t, netId: wireNetId };
+
+          const fresh = 2000 + allDevices.length * 10 + ti;
+          return { ...t, netId: fresh };
         });
-        allDevices.push({ ...dev, instanceName, terminals: uniqueTerminals });
+
+        allDevices.push({ ...dev, instanceName: instName, terminals: matchedTerms });
       }
     }
-    console.log(
-      `  → ${ct.name}: ${ctDevices.length} devices × ${instanceCount} instances = ${ctDevices.length * instanceCount}`,
-    );
+    console.log(`  → ${ct.name}: ${ctDevices.length}dev × ${instanceList.length}inst`);
   }
 
   return allDevices;
 }
 
 /**
- * Full pipeline: collect die-wide analog devices → generate CDL netlist.
+ * Full pipeline: collect → generate CDL netlist.
  */
 export function detectAndExportDieWide(
   annotations: DieAnnotations,
@@ -121,13 +152,9 @@ export function detectAndExportDieWide(
   warnings: string[];
 } {
   const devices = collectDieWideAnalogDevices(
-    annotations,
-    spiceConfig?.umPerPx ?? 1.0,
-    spiceConfig,
+    annotations, spiceConfig?.umPerPx ?? 1.0, spiceConfig,
   );
-
   const result = generateSpiceNetlist(devices, moduleName, spiceConfig ?? {}, dialect);
-
   return {
     devices,
     text: result.text,
