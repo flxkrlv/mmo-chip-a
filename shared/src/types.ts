@@ -48,7 +48,9 @@ export interface AnnotationNetNode {
 
 /** Conductor layer of a wire segment. Absent ⇒ "unknown" (the default).
  *  RE/verilog metadata only — ML trace derivation ignores material. */
-export type WireLayer = "poly" | "metal1" | "metal2";
+export type WireLayer =
+  | "poly"
+  | "metal1" | "metal2" | "metal3" | "metal4" | "metal5" | "metal6";
 
 export interface AnnotationNetEdge {
   id: string;
@@ -82,7 +84,41 @@ export type LayerType =
   | "metal2"
   | "contact"
   | "via1"
-  | "wire_hitbox";
+  | "wire_hitbox"
+  // ── Analog/BiCMOS extension layers ────────
+  | "nwell"
+  | "pwell"
+  | "deep_nwell"
+  | "buried_layer"
+  | "base"
+  | "emitter"
+  | "collector_sinker"
+  | "jfet_gate"
+  | "jfet_channel"
+  | "resistor_body"
+  | "capacitor_bottom"
+  | "capacitor_top"
+  // Extended metal stack
+  | "metal3"
+  | "metal4"
+  | "metal5"
+  | "metal6"
+  // Compound: user-drawn device boundary box
+  | "device_box"
+  // Analog marker layers (simple RE mode)
+  | "npn_id"
+  | "pnp_id"
+  | "res_id"
+  | "cap_id"
+  | "diode_id"
+  // BJT terminal layers
+  | "collector"
+  // MOS marker + terminal layers
+  | "mos_id"
+  | "drain"
+  | "gate"
+  | "source"
+  | "bulk";
 
 /**
  * User-set role tag on a layer shape, scoped to interconnect (metals, polys,
@@ -368,7 +404,12 @@ export interface DieAnnotations {
   ignores?: IgnoreRect[];
   /** Cell-placement guides (RE aid, not ML). Absent ⇒ none. */
   guides?: Guide[];
-}
+  /** Die-level analog/mixed-signal layer annotations (Phase 1).
+   *  Shapes drawn directly on the die image (not inside a cell type) for
+   *  analog device detection. Same LayerType keys as CellType.layers:
+   *  nwell, pwell, base, emitter, resistor_body, etc. */
+  analogLayers?: CellLayers;
+
 
 export interface MLExportRequest {
   approxViaRadiusPx: number;
@@ -565,4 +606,210 @@ export interface ImportJobProgress {
   totalTiles: number;
   processedTiles: number;
   percentage: number;
+}
+
+// ════════════════════════════════════════════════════════════════
+// Analog / Mixed-Signal Extension (Phase 1 — MM0-CHIP fork)
+// ════════════════════════════════════════════════════════════════
+
+// ── Device kind ─────────────────────────────────────────────────
+
+export type DeviceKind =
+  | "mos"
+  | "bjt_npn"
+  | "bjt_pnp"
+  | "jfet_n"
+  | "jfet_p"
+  | "resistor"
+  | "capacitor"
+  | "diode"
+  | "zener"
+  | "schottky"
+  | "inductor"
+  | "unknown";
+
+// ── Device geometry parameters ──────────────────────────────────
+
+export interface DeviceGeometryMOS {
+  /** Physical gate length (poly width crossing diffusion) [μm] */
+  L_um: number;
+  /** Physical gate width (diffusion edge along poly) [μm] */
+  W_um: number;
+  /** Number of parallel gate fingers */
+  fingers: number;
+  /** Multiplier — number of cell repeats */
+  multiplier: number;
+  /** Effective total width = W × fingers × multiplier [μm] */
+  totalW_um: number;
+  /** Transistor type */
+  mosType: "pmos" | "nmos" | "unknown";
+}
+
+export interface DeviceGeometryBJT {
+  /** Emitter area [μm²] */
+  AE_um2: number;
+  /** Emitter perimeter [μm] */
+  PE_um: number;
+  /** Multiplier */
+  multiplier: number;
+  /** Total AE = AE × multiplier [μm²] */
+  totalAE_um2: number;
+  /** Number of emitter stripes */
+  emitterFingers: number;
+  /** Transistor type */
+  bjtType: "npn" | "pnp" | "unknown";
+}
+
+export interface DeviceGeometryJFET {
+  /** Channel width [μm] */
+  W_um: number;
+  /** Channel length [μm] */
+  L_um: number;
+  /** Fingers */
+  fingers: number;
+  /** Multiplier */
+  multiplier: number;
+  /** JFET type */
+  jfetType: "njf" | "pjf" | "unknown";
+}
+
+export interface DeviceGeometryResistor {
+  /** Physical body length [μm] */
+  L_um: number;
+  /** Physical body width [μm] */
+  W_um: number;
+  /** Number of squares = L / W */
+  squares: number;
+  /** User-supplied sheet resistance [Ω/□] */
+  sheetR_ohms?: number;
+  /** Resistance = squares × sheetR [Ω] */
+  resistance_ohms?: number;
+  /** Fingers (parallel segments) */
+  fingers: number;
+  /** Multiplier */
+  multiplier: number;
+  /** Body shape */
+  shape?: "straight" | "meander" | "serpentine" | "unknown";
+}
+
+export interface DeviceGeometryCapacitor {
+  /** Plate overlap area [μm²] */
+  area_um2: number;
+  /** Perimeter of bottom plate [μm] */
+  perimeter_um: number;
+  /** User-supplied capacitance density [fF/μm²] */
+  capDensity_fF?: number;
+  /** Capacitance = area × capDensity [fF] */
+  capacitance_fF?: number;
+  /** Multiplier */
+  multiplier: number;
+  /** Capacitor type */
+  capType?: "mim" | "pip" | "mos" | "metal_metal" | "unknown";
+}
+
+export interface DeviceGeometryDiode {
+  /** Junction area [μm²] */
+  area_um2: number;
+  /** Junction perimeter [μm] */
+  perimeter_um: number;
+  /** Multiplier */
+  multiplier: number;
+  /** Diode type */
+  diodeType?: "pn" | "schottky" | "zener" | "unknown";
+}
+
+export type DeviceGeometry =
+  | DeviceGeometryMOS
+  | DeviceGeometryBJT
+  | DeviceGeometryJFET
+  | DeviceGeometryResistor
+  | DeviceGeometryCapacitor
+  | DeviceGeometryDiode;
+
+// ── Terminal connection ─────────────────────────────────────────
+
+export interface DeviceTerminal {
+  /** Terminal name (e.g. "D", "G", "S", "B" for MOS) */
+  name: string;
+  /** Die-level net id this terminal connects to */
+  netId: number;
+}
+
+// ── Analog device ───────────────────────────────────────────────
+
+export interface AnalogDevice {
+  id: string;
+  /** Type of device */
+  kind: DeviceKind;
+  /** Extracted geometry parameters */
+  geometry: DeviceGeometry;
+  /** Cell-type this device belongs to (empty string = die-level) */
+  cellTypeId: string;
+  /** Instance name for SPICE netlist (e.g. M1, Q12, R34) */
+  instanceName?: string;
+  /** SPICE model name */
+  modelName?: string;
+  /** Terminal connections */
+  terminals: DeviceTerminal[];
+  /** Outline polygon in cell-local coordinates */
+  outline?: { x: number; y: number }[];
+  /** Bounding box */
+  bbox?: AnnotationRect;
+  /** User comment */
+  comment?: string;
+}
+
+// ── SPICE configuration ─────────────────────────────────────────
+
+export interface SpiceConfig {
+  /** Technology name for .MODEL cards */
+  technology?: string;
+  /** Sheet resistance per layer [Ω/□] */
+  sheetR_ohms?: Record<string, number>;
+  /** Capacitance density per layer pair [fF/μm²] */
+  capDensity_fF?: Record<string, number>;
+  /** SPICE model definitions (modelName → .MODEL card) */
+  models?: Record<string, string>;
+  /** Default VDD net name */
+  vdd?: string;
+  /** Default GND net name */
+  gnd?: string;
+  /** Scale factor — μm per pixel */
+  umPerPx?: number;
+}
+
+// ── Export request / response ───────────────────────────────────
+
+export type SpiceDialect = "cdl" | "spectre" | "hspice";
+
+export interface AnalogExportRequest {
+  /** SPICE dialect */
+  dialect: SpiceDialect;
+  /** Generate hierarchical subcircuits */
+  hierarchical: boolean;
+  /** Override SPICE config */
+  spiceConfig?: SpiceConfig;
+}
+
+export interface AnalogExportResponse {
+  /** Path to the generated netlist file */
+  netlistPath: string;
+  /** Number of devices extracted */
+  deviceCount: number;
+  /** Count per device kind */
+  byKind: Record<string, number>;
+  /** Extraction/export warnings */
+  warnings: string[];
+}
+
+// ── Analog device detection job ─────────────────────────────────
+
+export interface AnalogDetectionJob {
+  dieId: string;
+  status: "running" | "completed" | "failed";
+  progress: number; // 0-100
+  deviceCount: number;
+  warnings: string[];
+  startedAt: string | null;
+  finishedAt: string | null;
 }

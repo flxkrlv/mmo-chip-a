@@ -76,3 +76,26 @@ export type {
   VModule,
   VerilogDesign,
 } from "./verilog";
+
+// ── Analog extension (Phase 1) ────────────────────────────────
+export {
+  detectAnalogDevices,
+  detectMOS,
+  detectBJT,
+  detectJFET,
+  detectResistors,
+  detectCapacitors,
+  detectDiodes,
+  computeMOSParams,
+  computeBJTParams,
+  computeResistorParams,
+  computeCapacitorParams,
+  computeDiodeParams,
+  countFingers,
+  computeSquares,
+  shapeArea,
+  shapePerimeter,
+  bodyCenterlineLength,
+  bodyAvgWidth,
+} from "./analogDevices";
+export type { DetectionContext, DeviceMatch } from "./analogDevices";

@@ -24,7 +24,39 @@ export const COLOR_LAYER: Record<LayerType, string> = {
   metal2: "#e060e0",
   contact: "#c0a000",
   via1: "#a030a0",
-  wire_hitbox: "#f3b351"
+  wire_hitbox: "#f3b351",
+  // Analog / BiCMOS layers
+  nwell: "#ff8844",
+  pwell: "#66aaff",
+  deep_nwell: "#dd7744",
+  buried_layer: "#aa66dd",
+  base: "#44ff88",
+  emitter: "#ff6688",
+  collector_sinker: "#88ccff",
+  jfet_gate: "#ff88aa",
+  jfet_channel: "#88ffaa",
+  resistor_body: "#ffaa44",
+  capacitor_bottom: "#44aaff",
+  capacitor_top: "#ff44aa",
+  metal3: "#44ffaa",
+  metal4: "#aa44ff",
+  metal5: "#ffaa44",
+  metal6: "#44aaff",
+  device_box: "#ffffff",
+  // Marker layers
+  npn_id: "#44ff66",
+  pnp_id: "#66ff88",
+  res_id: "#ffaa44",
+  cap_id: "#44ddff",
+  diode_id: "#ff6666",
+  // BJT terminal
+  collector: "#88ccff",
+  // MOS marker + terminals
+  mos_id: "#4488ff",
+  drain: "#ff6666",
+  gate: "#66ff66",
+  source: "#6666ff",
+  bulk: "#ffaa44",
 };
 
 /** Alpha multiplier applied to the layer's fill (stroke is always full
@@ -38,7 +70,39 @@ export const LAYER_FILL_OPACITY: Record<LayerType, number> = {
   metal2: 0.4,
   contact: 0.4,
   via1: 0.4,
-  wire_hitbox: 0.15
+  wire_hitbox: 0.15,
+  // Analog layers: well layers are large, use low opacity
+  nwell: 0.18,
+  pwell: 0.18,
+  deep_nwell: 0.18,
+  buried_layer: 0.25,
+  base: 0.35,
+  emitter: 0.35,
+  collector_sinker: 0.3,
+  jfet_gate: 0.35,
+  jfet_channel: 0.3,
+  resistor_body: 0.35,
+  capacitor_bottom: 0.3,
+  capacitor_top: 0.3,
+  metal3: 0.4,
+  metal4: 0.4,
+  metal5: 0.4,
+  metal6: 0.4,
+  device_box: 0.1,
+  // Marker layers (visible but transparent)
+  npn_id: 0.25,
+  pnp_id: 0.25,
+  res_id: 0.25,
+  cap_id: 0.25,
+  diode_id: 0.25,
+  // BJT terminal
+  collector: 0.3,
+  // MOS
+  mos_id: 0.25,
+  drain: 0.3,
+  gate: 0.3,
+  source: 0.3,
+  bulk: 0.3,
 };
 
 /** Per-label override colour: `shape.label` overrides the layer's base colour
@@ -96,10 +160,14 @@ export const NET_COLOR = NET_COLOR_OPTIONS[0].value;
 /** Per-conductor-layer wire color. "unknown" (absent layer) is intentionally
  *  not here — it falls back to the user-configurable base net color. Chosen
  *  bright/opaque and mutually distinct (orange / teal / violet). */
-export const WIRE_LAYER_COLOR: Record<"poly" | "metal1" | "metal2", string> = {
+export const WIRE_LAYER_COLOR: Record<string, string> = {
   poly: "#fb923c",
   metal1: "#2dd4bf",
-  metal2: "#a78bfa"
+  metal2: "#a78bfa",
+  metal3: "#4ade80",
+  metal4: "#f472b6",
+  metal5: "#fb923c",
+  metal6: "#60a5fa"
 };
 
 // Net wires scale geometrically with zoom (so they thicken as you zoom in,

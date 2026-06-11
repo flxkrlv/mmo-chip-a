@@ -168,9 +168,18 @@ export const useCellREStore = create<CellREState & CellREActions>()((set, get) =
  *  rect & polygon work on the 4 shape layers. Used by toolbar + tools to
  *  keep impossible combinations off the table. */
 export const TOOL_LAYERS: Record<"rect" | "polygon" | "point", LayerType[]> = {
-  rect: ["diffusion", "polysilicon", "metal1", "metal2"],
-  polygon: ["diffusion", "polysilicon", "metal1", "metal2"],
-  point: ["contact", "via1"]
+  rect: ["diffusion", "polysilicon", "metal1", "metal2",
+    "nwell", "pwell", "base", "emitter", "resistor_body",
+    "capacitor_bottom", "capacitor_top", "metal3", "metal4", "metal5", "metal6",
+    // Simple RE marker layers
+    "npn_id", "pnp_id", "mos_id", "res_id", "cap_id", "diode_id",
+    "collector", "drain", "gate", "source", "bulk"],
+  polygon: ["diffusion", "polysilicon", "metal1", "metal2",
+    "nwell", "pwell", "base", "emitter", "resistor_body",
+    "capacitor_bottom", "capacitor_top", "metal3", "metal4", "metal5", "metal6",
+    "npn_id", "pnp_id", "mos_id", "res_id", "cap_id", "diode_id",
+    "collector", "drain", "gate", "source", "bulk"],
+  point: ["contact", "via1", "via2", "via3", "via4"]
 };
 
 /** Short labels that read cleanly on the toolbar chips. */
@@ -181,7 +190,38 @@ export const LAYER_LABEL: Record<LayerType, string> = {
   metal2: "m2",
   contact: "contact",
   via1: "m1↔m2",
-  wire_hitbox: "hitbox"
+  wire_hitbox: "hitbox",
+  // Analog layers
+  nwell: "nwell",
+  pwell: "pwell",
+  deep_nwell: "dnwell",
+  buried_layer: "buried",
+  base: "base",
+  emitter: "emit",
+  collector_sinker: "csink",
+  jfet_gate: "jgate",
+  jfet_channel: "jchan",
+  resistor_body: "rbody",
+  capacitor_bottom: "capB",
+  capacitor_top: "capT",
+  metal3: "m3",
+  metal4: "m4",
+  metal5: "m5",
+  metal6: "m6",
+  device_box: "dbox",
+  // Simple RE marker layers
+  npn_id: "NPN",
+  pnp_id: "PNP",
+  res_id: "RES",
+  cap_id: "CAP",
+  diode_id: "DIO",
+  collector: "COLL",
+  // MOS
+  mos_id: "MOS",
+  drain: "D",
+  gate: "G",
+  source: "S",
+  bulk: "B",
 };
 
 /** Long human-readable names for the layer-visibility list. */
@@ -192,5 +232,36 @@ export const LAYER_LONG: Record<LayerType, string> = {
   metal2: "Metal 2",
   contact: "Contact via",
   via1: "M1 ↔ M2 via",
-  wire_hitbox: "Wire hitbox"
+  wire_hitbox: "Wire hitbox",
+  // Analog layers
+  nwell: "N-Well",
+  pwell: "P-Well",
+  deep_nwell: "Deep N-Well",
+  buried_layer: "Buried Layer",
+  base: "Base",
+  emitter: "Emitter",
+  collector_sinker: "Collector Sinker",
+  jfet_gate: "JFET Gate",
+  jfet_channel: "JFET Channel",
+  resistor_body: "Resistor Body",
+  capacitor_bottom: "Capacitor Bottom",
+  capacitor_top: "Capacitor Top",
+  metal3: "Metal 3",
+  metal4: "Metal 4",
+  metal5: "Metal 5",
+  metal6: "Metal 6",
+  device_box: "Device Box",
+  // Simple RE marker layers
+  npn_id: "NPN Marker",
+  pnp_id: "PNP Marker",
+  res_id: "Resistor Marker",
+  cap_id: "Capacitor Marker",
+  diode_id: "Diode Marker",
+  collector: "Collector",
+  // MOS
+  mos_id: "MOS Marker",
+  drain: "Drain",
+  gate: "Gate",
+  source: "Source",
+  bulk: "Bulk",
 };

@@ -59,6 +59,8 @@ export type AnnotationAction =
   | { kind: "removeIgnore"; ignore: IgnoreRect }
   | { kind: "upsertGuide"; guide: Guide; prevGuide: Guide | null }
   | { kind: "removeGuide"; guide: Guide }
+  // ── Analog layers (Phase 1) — stores the entire CellLayers blob
+  | { kind: "upsertAnalogLayers"; layers: CellLayers; prevLayers: CellLayers | null }
   // One user gesture that touches several nets atomically (cross-net merge,
   // graph-splitting delete). Applied/persisted in order; undone in reverse.
   | { kind: "batch"; actions: AnnotationAction[] };

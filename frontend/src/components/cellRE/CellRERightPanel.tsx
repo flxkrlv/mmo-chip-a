@@ -363,6 +363,15 @@ export function CellRERightPanel({
             <Empty>none detected</Empty>
           )}
         </Section>
+        {inferred && inferred.analogDevices && inferred.analogDevices.length > 0 && (
+          <Section title="Analog Devices" count={inferred.analogDevices.length}>
+            <List>
+              {inferred.analogDevices.map((ad) => (
+                <AnalogDeviceRow key={ad.id} device={ad} />
+              ))}
+            </List>
+          </Section>
+        )}
       </div>
     </aside>
   );
@@ -1478,3 +1487,79 @@ const panelStyle: React.CSSProperties = {
   flexDirection: "column",
   minHeight: 0,
 };
+
+// ── Analog Device Row ────────────────────────────────────────
+
+const DEVICE_COLORS: Record<string, string> = {
+  mos: "#4488ff", bjt_npn: "#22cc66", bjt_pnp: "#ff8844",
+  jfet_n: "#aa44ff", jfet_p: "#aa44ff",
+  resistor: "#ffaa44", capacitor: "#44ddff",
+  diode: "#ff4444", zener: "#ff6666", schottky: "#dd6666",
+  inductor: "#66aaff", unknown: "#888888",
+};
+
+function AnalogDeviceRow({ device }: { device: import("shared").AnalogDevice }) {
+  const color = DEVICE_COLORS[device.kind] ?? "#888";
+  const g = device.geometry as Record<string, unknown>;
+
+  const label = device.instanceName ?? device.id;
+  const subtitle = device.kind;
+
+  // One-line param summary
+  let paramStr = "";
+  switch (device.kind) {
+    case "mos":
+      paramStr = `W=${g.W_um?.toFixed(1)} L=${g.L_um?.toFixed(2)}`;
+      if ((g.fingers as number) > 1) paramStr += ` NF=${g.fingers}`;
+      break;
+    case "bjt_npn": case "bjt_pnp":
+      paramStr = `AE=${(g.AE_um2 as number)?.toFixed(1)}μm²`;
+      break;
+    case "resistor":
+      paramStr = `${(g.squares as number)?.toFixed(0)}sq`;
+      if (g.resistance_ohms != null) paramStr += ` ${g.resistance_ohms}Ω`;
+      break;
+    case "capacitor":
+      paramStr = `${(g.area_um2 as number)?.toFixed(1)}μm²`;
+      if (g.capacitance_fF != null) paramStr += ` ${g.capacitance_fF}fF`;
+      break;
+    case "diode":
+      paramStr = `${(g.area_um2 as number)?.toFixed(1)}μm²`;
+      break;
+  }
+
+  const termStr = device.terminals
+    .filter((t) => t.netId >= 0)
+    .map((t) => `${t.name}:n${t.netId}`)
+    .join(" ");
+
+  return (
+    <div
+      className="trow"
+      style={{ padding: "4px 10px", gap: 6, cursor: "default" }}
+    >
+      <span
+        style={{
+          width: 10, height: 10, borderRadius: "50%",
+          background: color, flex: "0 0 auto",
+        }}
+      />
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ display: "flex", gap: 6, alignItems: "baseline" }}>
+          <span style={{ fontSize: 11.5, fontWeight: 600 }}>{label}</span>
+          <span className="m" style={{ fontSize: 9.5, color: "var(--ink3)" }}>
+            {subtitle}
+          </span>
+        </div>
+        <div style={{ fontSize: 10, color: "var(--ink3)", marginTop: 1 }}>
+          {paramStr}
+        </div>
+        {termStr && (
+          <div style={{ fontSize: 9, color: "var(--ink2)", marginTop: 1 }}>
+            {termStr}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}

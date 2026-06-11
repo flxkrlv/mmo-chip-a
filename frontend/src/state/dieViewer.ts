@@ -55,6 +55,8 @@ interface DieViewerState {
   expandedGroups: string[];
   /** Tool currently selected in the sub-toolbar. */
   activeTool: ToolKind;
+  /** Active analog layer for analogRect/analogPoly tools. */
+  activeAnalogLayer: AnalogLayerId;
   /** Actions the user has applied, newest at the end. */
   undoStack: AnnotationAction[];
   /** Actions that were undone and can be redone, newest at the end. */
@@ -85,6 +87,7 @@ interface DieViewerActions {
   clearSelection: () => void;
   toggleGroup: (id: string) => void;
   setActiveTool: (tool: ToolKind) => void;
+  setActiveAnalogLayer: (layer: AnalogLayerId) => void;
   pushUndo: (action: AnnotationAction) => void;
   popUndo: () => AnnotationAction | undefined;
   pushRedo: (action: AnnotationAction) => void;
@@ -108,6 +111,7 @@ const INITIAL_STATE: DieViewerState = {
   selectedIds: EMPTY_SELECTION,
   expandedGroups: [],
   activeTool: "select",
+  activeAnalogLayer: "nwell",
   undoStack: [],
   redoStack: [],
   undoOverride: null,
@@ -186,6 +190,7 @@ export const useDieViewerStore = create<DieViewerState & DieViewerActions>()((se
   },
   clearRedo: () => set({ redoStack: [] }),
   setUndoOverride: (override) => set({ undoOverride: override }),
+  setActiveAnalogLayer: (layer) => set({ activeAnalogLayer: layer }),
   setWireLayer: (layer) => set({ wireLayer: layer }),
   setGuideAxis: (axis) => set({ guideAxis: axis }),
   setMlConfig: (patch) =>

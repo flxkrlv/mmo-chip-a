@@ -46,6 +46,7 @@ import {
   type DieContextMenuState
 } from "../components/dieViewer/DieContextMenu";
 import { InspectorPanel } from "../components/dieViewer/InspectorPanel";
+import { AnalogDiePanel } from "../components/dieViewer/AnalogDiePanel";
 import { useMLJob, useMLStatus } from "../api/ml";
 import { WireDraftOverlay } from "../components/dieViewer/WireDraftOverlay";
 import { RectDraftOverlay } from "../components/dieViewer/RectDraftOverlay";
@@ -67,6 +68,7 @@ import {
 } from "../components/dieViewer/useMultiWireTool";
 import { MultiWireOverlay } from "../components/dieViewer/MultiWireOverlay";
 import { useGuideTool } from "../components/dieViewer/useGuideTool";
+
 import {
   GuidesOverlay,
   type GuideDragPreview
@@ -1937,6 +1939,21 @@ function DieViewer({ dieId }: { dieId: string }) {
             dieId={dieId}
             mlViasLayer={mlViasLayer}
           />
+          <div style={{ borderTop: "2px solid var(--l2)" }}>
+            <details open>
+              <summary
+                className="u"
+                style={{
+                  padding: "6px 10px", fontSize: 10, cursor: "pointer",
+                  color: "var(--ink3)", letterSpacing: 1,
+                  userSelect: "none",
+                }}
+              >
+                ANALOG DEVICES
+              </summary>
+              <AnalogDiePanel annotations={annotations ?? (undefined as any)} />
+            </details>
+          </div>
         </aside>
       </main>
       <StatusBar

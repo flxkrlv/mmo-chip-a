@@ -1,0 +1,27 @@
+{
+  "name": "Straight poly resistor",
+  "description": "A simple straight poly resistor with 2 contacts on opposite ends",
+  "shapes": [
+    {"id": "body1", "layer": "polysilicon", "polygon": [{"x":0,"y":4},{"x":40,"y":4},{"x":40,"y":8},{"x":0,"y":8}], "netId": -1},
+    {"id": "c1", "layer": "contact", "polygon": [{"x":0,"y":3},{"x":2,"y":3},{"x":2,"y":9},{"x":0,"y":9}], "netId": -1},
+    {"id": "c2", "layer": "contact", "polygon": [{"x":38,"y":3},{"x":40,"y":3},{"x":40,"y":9},{"x":38,"y":9}], "netId": -1}
+  ],
+  "transistors": [],
+  "diffusions": [],
+  "nets": [],
+  "expected_devices": [
+    {
+      "kind": "resistor",
+      "L_um": 40,
+      "W_um": 4,
+      "squares": 10,
+      "fingers": 1,
+      "multiplier": 1,
+      "shape": "straight",
+      "terminal_count": 2
+    }
+  ],
+  "umPerPx": 1,
+  "sheetR": {"polysilicon": 50},
+  "expected_cdl": ".SUBCKT dummy_res\n  R1 A B RES\n.ENDS dummy_res"
+}

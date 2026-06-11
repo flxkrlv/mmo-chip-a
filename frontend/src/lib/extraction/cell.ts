@@ -332,6 +332,9 @@ export interface InferredCellExtraction extends CellExtractionBase {
   /** Recognised standard-cell name (INV, NAND2, …). (TODO.) */
   cellName?: string;
   sequential?: SequentialAnalysis;
+  // ── Analog extension (Phase 1) ──────────────────────────────
+  /** Analog/mixed-signal devices in this cell (BJT, JFET, resistors, etc.) */
+  analogDevices?: import("shared").AnalogDevice[];
 }
 
 /**

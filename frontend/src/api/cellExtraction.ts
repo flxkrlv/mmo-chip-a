@@ -15,10 +15,15 @@
 
 import { useEffect, useMemo, useState } from "react";
 import type { CellType } from "shared";
+import type { LayerShape } from "shared";
 import {
+  detectAnalogDevices,
   extractCell,
   loadClipper,
+  shapeToPolygon,
   type CellExtraction,
+  type ExtractedShape,
+  type InferredCellExtraction,
 } from "../lib/extraction";
 
 interface UseCellExtraction {
@@ -53,7 +58,61 @@ export function useCellExtraction(
   const data = useMemo<CellExtraction | null>(() => {
     if (!cellType || !clipperReady) return null;
     try {
-      return extractCell(cellType);
+      const extraction = extractCell(cellType);
+
+      // ── Analog device detection (Phase 1) ────────────────────
+      // detectAnalogDevices needs ExtractedShape entries for ALL layers,
+      // including analog ones (nwell, base, emitter…) that extractCell
+      // ignores. We supplement inf.shapes with shapes from analog layers.
+      if (extraction.kind === "inferred") {
+        const inf = extraction as InferredCellExtraction;
+        try {
+          // Build ExtractedShape entries for unprocessed analog layers
+          const analogLayerIds: ReadonlyArray<string> = [
+            "nwell", "pwell", "deep_nwell", "buried_layer",
+            "base", "emitter", "collector_sinker",
+            "jfet_gate", "jfet_channel",
+            "resistor_body",
+            "capacitor_bottom", "capacitor_top",
+            "metal3", "metal4", "metal5", "metal6",
+          ];
+          const extraShapes: ExtractedShape[] = [];
+          const layers = cellType.layers;
+          if (layers) {
+            for (const layerId of analogLayerIds) {
+              const shapes: LayerShape[] | undefined = (layers as Record<string, LayerShape[]>)[layerId];
+              if (!shapes) continue;
+              for (const s of shapes) {
+                extraShapes.push({
+                  id: s.id,
+                  layer: layerId as any,
+                  polygon: shapeToPolygon(s),
+                  netId: -1,
+                  label: s.label,
+                  customName: s.customName,
+                });
+              }
+            }
+          }
+
+          const allShapes = [...inf.shapes, ...extraShapes];
+          const analogDevices = detectAnalogDevices(
+            allShapes,
+            inf.transistors,
+            inf.diffusions,
+            inf.nets,
+            cellType.id,
+            1.0,
+            undefined,
+          );
+          return { ...inf, analogDevices } as InferredCellExtraction;
+        } catch (ae) {
+          console.warn("detectAnalogDevices warning:", ae);
+          return extraction;
+        }
+      }
+
+      return extraction;
     } catch (e) {
       // The pipeline shouldn't throw on a well-formed cell — pre-flight
       // validation catches the obvious issues. If we land here, something

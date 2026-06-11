@@ -24,6 +24,21 @@ interface Props {
 
 const SHAPE_LAYERS: LayerType[] = ["diffusion", "polysilicon", "metal1", "metal2"];
 const VIA_LAYERS: LayerType[] = ["contact", "via1"];
+// Analog BiCMOS layers — wells, active layers for BJT/JFET/resistor/capacitor
+const ANALOG_LAYERS: LayerType[] = [
+  "nwell", "pwell", "deep_nwell", "buried_layer",
+  "base", "emitter", "collector_sinker",
+  "jfet_gate", "jfet_channel",
+  "resistor_body",
+  "capacitor_bottom", "capacitor_top"
+];
+
+const MARKER_LAYERS: LayerType[] = [
+  "npn_id", "pnp_id", "mos_id", "res_id", "cap_id", "diode_id",
+  "collector", "drain", "gate", "source", "bulk",
+];
+// Extended metal stack
+const METAL_LAYERS: LayerType[] = ["metal3", "metal4", "metal5", "metal6"];
 // Hitbox is editable too (drawn with the same tools as the shape layers) but
 // it's an extraction artefact, not a real physical layer — keep it on its own
 // row so the visual hierarchy reflects that.
@@ -39,6 +54,9 @@ const DV_OVERLAY_KEYS = ["_dvWires", "_dvVias"] as const;
 const ALL_TOGGLEABLE_LAYER_KEYS: ReadonlyArray<string> = [
   ...SHAPE_LAYERS,
   ...VIA_LAYERS,
+  ...ANALOG_LAYERS,
+  ...MARKER_LAYERS,
+  ...METAL_LAYERS,
   ...HITBOX_LAYERS,
   ...DV_OVERLAY_KEYS,
 ];
@@ -251,6 +269,42 @@ export function CellRELeftPanel({ annotations, onCellContextMenu }: Props) {
           <LayerRow key={layer} layer={layer} />
         ))}
 
+        {ANALOG_LAYERS.length > 0 && (
+          <>
+            <TreeSep />
+            <div className="trow" style={{ paddingLeft: 8, opacity: 0.6, fontSize: 10, letterSpacing: 1, textTransform: "uppercase" }}>
+              <span>Analog / BiCMOS</span>
+            </div>
+            {ANALOG_LAYERS.map((layer) => (
+              <LayerRow key={layer} layer={layer} />
+            ))}
+          </>
+        )}
+
+        {MARKER_LAYERS.length > 0 && (
+          <>
+            <TreeSep />
+            <div className="trow" style={{ paddingLeft: 8, opacity: 0.6, fontSize: 10, letterSpacing: 1, textTransform: "uppercase" }}>
+              <span>Device Markers</span>
+            </div>
+            {MARKER_LAYERS.map((layer) => (
+              <LayerRow key={layer} layer={layer} />
+            ))}
+          </>
+        )}
+
+        {METAL_LAYERS.length > 0 && (
+          <>
+            <TreeSep />
+            <div className="trow" style={{ paddingLeft: 8, opacity: 0.6, fontSize: 10, letterSpacing: 1, textTransform: "uppercase" }}>
+              <span>Extended Metal</span>
+            </div>
+            {METAL_LAYERS.map((layer) => (
+              <LayerRow key={layer} layer={layer} />
+            ))}
+          </>
+        )}
+
         <TreeSep />
         <TreeRow
           icon={Ic.cell}
@@ -265,6 +319,7 @@ export function CellRELeftPanel({ annotations, onCellContextMenu }: Props) {
             <DisabledLayerRow label="Transistors" />
             <DisabledLayerRow label="Nets" />
             <DisabledLayerRow label="Diffusion regions" />
+            <DisabledLayerRow label="Analog Devices" />
           </>
         )}
 

@@ -14,13 +14,48 @@ import type { TileBounds } from "../types";
 
 /** Stable paint order so layer shading composites consistently. */
 export const LAYER_DRAW_ORDER: LayerType[] = [
+  // Substrate / wells (drawn first, lowest)
+  "deep_nwell",
+  "buried_layer",
+  "nwell",
+  "pwell",
+  // Silicon active layers
   "diffusion",
+  "base",
+  "emitter",
+  "collector_sinker",
+  "jfet_gate",
+  "jfet_channel",
+  "resistor_body",
   "polysilicon",
+  // Capacitor plates
+  "capacitor_bottom",
+  "capacitor_top",
+  // Interconnect
   "metal1",
   "metal2",
+  "metal3",
+  "metal4",
+  "metal5",
+  "metal6",
+  // Vias / contacts (topmost)
   "contact",
   "via1",
-  "wire_hitbox"
+  // Auxiliary
+  "wire_hitbox",
+  "device_box",
+  // Analog marker layers (topmost — most visible)
+  "npn_id",
+  "pnp_id",
+  "mos_id",
+  "res_id",
+  "cap_id",
+  "diode_id",
+  "collector",
+  "drain",
+  "gate",
+  "source",
+  "bulk"
 ];
 
 /** Stroke width (CSS px) for shape outlines — kept screen-constant by
