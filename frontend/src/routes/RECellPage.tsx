@@ -606,6 +606,8 @@ function RE({ dieId }: { dieId: string }) {
           activeLayer={activeLayer}
           setActiveLayer={setActiveLayer}
           polyDraftLen={poly.points.length}
+          polylineWidth={useCellREStore(s=>s.polylineWidth)}
+          setPolylineWidth={(w:number)=>useCellREStore.getState().setPolylineWidth(w)}
         />
       </SubBar>
 
