@@ -73,6 +73,33 @@ function segmentIntersectsRect(
 
 // ── Wire-to-terminal matching ────────────────────────────────────
 
+/** Check if any wire segment passes within `tol` px of a point. */
+function matchWireToPoint(
+  nets: AnnotationNet[],
+  px:number, py:number, tol:number,
+  netIdMap: Map<string,number>,
+  nextId: {v:number},
+): number|null {
+  const tol2 = tol*tol;
+  for (const net of nets) {
+    for (const edge of net.edges) {
+      const a = net.nodes.find(n=>n.id===edge.from);
+      const b = net.nodes.find(n=>n.id===edge.to);
+      if (!a||!b) continue;
+      const dx=b.x-a.x, dy=b.y-a.y;
+      const len2=dx*dx+dy*dy;
+      let t = len2===0 ? 0 : ((px-a.x)*dx+(py-a.y)*dy)/len2;
+      t = Math.max(0,Math.min(1,t));
+      const cx=a.x+t*dx, cy=a.y+t*dy;
+      if ((cx-px)*(cx-px)+(cy-py)*(cy-py) <= tol2) {
+        if (!netIdMap.has(net.id)) netIdMap.set(net.id, nextId.v++);
+        return netIdMap.get(net.id)!;
+      }
+    }
+  }
+  return null;
+}
+
 /** Find the die-level wire whose segments intersect a terminal's bounding box. */
 function matchWireToTerminal(
   nets: AnnotationNet[],
@@ -182,28 +209,50 @@ export function collectDieWideAnalogDevices(
           }
         }
 
-        // ── Terminal regions (one rect per shape, not union) ─
-        const termRects: Array<Array<{x:number;y:number;w:number;h:number}>> =
-          dev.terminals.map(()=>[]);
-        for (let ti=0; ti<dev.terminals.length; ti++) {
-          for (const ln of terminalLayersOf(dev.kind, dev.terminals[ti].name)) {
-            const shps = ct.layers?.[ln as keyof typeof ct.layers] as LayerShape[]|undefined;
-            if (!shps) continue;
-            for (const s of shps) {
-              const b = shapeBounds(s); if (!b) continue;
-              termRects[ti].push({x:cx+b.x, y:cy+b.y, w:b.width, h:b.height});
+        // ── Wire matching by contact proximity ──────────
+        // For each terminal, collect unique contact centres (contacts that
+        // belong to only this terminal). Match if any wire segment passes
+        // within 5px of a unique contact.
+        const termContacts: Array<Array<{x:number;y:number}>> = dev.terminals.map(()=>[]);
+        {
+          // Which terminals each contact overlaps
+          const cTis = new Map<string, Set<number>>();
+          const cPos = new Map<string, {x:number;y:number}>();
+          const allContacts = (ct.layers?.contact??[]) as LayerShape[];
+          for (let ti=0; ti<dev.terminals.length; ti++) {
+            for (const ln of terminalLayersOf(dev.kind, dev.terminals[ti].name)) {
+              const shps = ct.layers?.[ln as keyof typeof ct.layers] as LayerShape[]|undefined;
+              if (!shps) continue;
+              for (const ts of shps) {
+                const tb = shapeBounds(ts); if (!tb) continue;
+                for (const cs of allContacts) {
+                  const cb = shapeBounds(cs); if (!cb) continue;
+                  if (rectsOverlap(tb.x,tb.y,tb.x+tb.width,tb.y+tb.height,
+                                    cb.x,cb.y,cb.x+cb.width,cb.y+cb.height)) {
+                    const cc = centerOfShape(cs as any); if (!cc) continue;
+                    if (!cPos.has(cs.id)) cPos.set(cs.id, cc);
+                    const s = cTis.get(cs.id)??new Set(); s.add(ti); cTis.set(cs.id, s);
+                  }
+                }
+              }
             }
+          }
+          for (const [cid, tis] of cTis) {
+            if (tis.size!==1) continue; // shared contact — skip
+            const ti = [...tis][0];
+            const cp = cPos.get(cid); if (!cp) continue;
+            termContacts[ti].push({x:cx+cp.x, y:cy+cp.y});
           }
         }
 
-        // ── Wire matching per-shape intersection ─────────
+        // ── Wire matching by contact proximity (5px) ────
         const matchedTerms = dev.terminals.map((t,ti)=>{
           if (t.netId<0) {
             const fresh = 2000 + allDevices.length*10 + ti;
             return {...t, netId: fresh};
           }
-          for (const tr of termRects[ti]) {
-            const wid = matchWireToTerminal(nets, tr, netIdMap, nextNetId);
+          for (const cp of termContacts[ti]) {
+            const wid = matchWireToPoint(nets, cp.x, cp.y, 10, netIdMap, nextNetId);
             if (wid!=null) return {...t, netId: wid};
           }
           const fresh = 2000 + allDevices.length*10 + ti;
