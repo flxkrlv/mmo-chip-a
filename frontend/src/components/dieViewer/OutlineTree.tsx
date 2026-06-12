@@ -200,7 +200,7 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
                       label={deviceLabels?.get(cell.id) ?? cell.id.slice(0,8)}
                       selected={selectedIds.has(id)}
                       onSelect={() => select([id])}
-                      onDoubleClick={() => { focus([id]); const label = deviceLabels?.get(cell.id); console.log('[tree] dblclick', cell.id.slice(0,6), 'label:', label); if (label && onDeviceSelect) onDeviceSelect(cell.id); }}
+                      onDoubleClick={() => { focus([id]); const label = deviceLabels?.get(cell.id); if (label && onDeviceSelect) onDeviceSelect(cell.id); }}
                     />
                   );
                 })}
