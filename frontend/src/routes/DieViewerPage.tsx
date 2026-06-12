@@ -1985,7 +1985,7 @@ function DieViewer({ dieId }: { dieId: string }) {
           {deviceHighlightVisible && (
             <AnalogDeviceHighlights
               devices={analogDevices}
-              viewport={viewportLive.get()}
+              viewportStore={viewportLive}
               onDeviceClick={(dev) => setSelectedDevice(dev)}
             />
           )}

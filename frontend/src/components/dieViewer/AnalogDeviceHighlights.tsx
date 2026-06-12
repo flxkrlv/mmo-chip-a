@@ -12,8 +12,10 @@
  *   - Click resolves which device was hit and fires onDeviceClick
  */
 
-import { useEffect, useRef, useCallback } from "react";
+import { useEffect, useRef } from "react";
 import type { AnalogDevice } from "shared";
+import type { LiveValue } from "../../lib/liveValue";
+import { useLiveValue } from "../../lib/liveValue";
 import type { Viewport } from "../../renderer/types";
 
 // ── Colour palette per device kind ───────────────────────────────
@@ -47,8 +49,10 @@ const DEVICE_FILL: Record<string, string> = {
 interface Props {
   /** All analog devices to highlight, in die-world coordinates. */
   devices: AnalogDevice[];
-  /** Current viewport (world-to-screen transform). */
-  viewport: Viewport | null;
+  /** Live viewport — the component subscribes internally so it only
+   *  re-renders when the viewport actually changes, not on every parent
+   *  render. */
+  viewportStore: LiveValue<Viewport | null>;
   /** Called when the user clicks on a device. */
   onDeviceClick?: (device: AnalogDevice) => void;
 }
@@ -58,127 +62,135 @@ const MIN_LABEL_AREA = 200;
 
 export function AnalogDeviceHighlights({
   devices,
-  viewport,
+  viewportStore,
   onDeviceClick,
 }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const viewport = useLiveValue(viewportStore);
 
-  const toScreen = useCallback(
-    (wx: number, wy: number) => {
-      if (!viewport) return { x: 0, y: 0 };
-      return {
-        x: (wx - viewport.originX) * viewport.zoom,
-        y: (wy - viewport.originY) * viewport.zoom,
-      };
-    },
-    [viewport]
-  );
+  // Drawing: the viewport is read inside the effect via a ref, so the effect
+  // doesn't need to re-bind on every viewport change — the ResizeObserver +
+  // viewport subscription drives the rAF loop.
+  const viewportRef = useRef(viewport);
+  viewportRef.current = viewport;
 
   // Draw
   useEffect(() => {
     const canvas = canvasRef.current;
-    if (!canvas || !viewport) return;
+    if (!canvas) return;
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
 
-    const dpr = window.devicePixelRatio || 1;
-    const rect = canvas.getBoundingClientRect();
-    const w = Math.max(1, Math.round(rect.width * dpr));
-    const h = Math.max(1, Math.round(rect.height * dpr));
-    if (canvas.width !== w || canvas.height !== h) {
-      canvas.width = w;
-      canvas.height = h;
-    }
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    ctx.clearRect(0, 0, rect.width, rect.height);
+    let raf = 0;
 
-    for (const dev of devices) {
-      const bbox = dev.bbox;
-      if (!bbox) continue;
+    const draw = () => {
+      raf = 0;
+      const vp = viewportRef.current;
+      if (!vp) return;
 
-      const sx = toScreen(bbox.x, bbox.y);
-      const sw = bbox.width * viewport.zoom;
-      const sh = bbox.height * viewport.zoom;
-
-      // Skip off-screen devices
-      if (sx.x + sw < -50 || sx.x > rect.width + 50) continue;
-      if (sx.y + sh < -50 || sx.y > rect.height + 50) continue;
-
-      const color = DEVICE_COLORS[dev.kind] ?? DEVICE_COLORS.unknown;
-      const fill = DEVICE_FILL[dev.kind] ?? DEVICE_FILL.unknown;
-
-      // Bounding box
-      ctx.strokeStyle = color;
-      ctx.lineWidth = 2;
-      ctx.fillStyle = fill;
-      ctx.strokeRect(sx.x, sx.y, sw, sh);
-      ctx.fillRect(sx.x, sx.y, sw, sh);
-
-      // Label
-      const area = sw * sh;
-      if (area >= MIN_LABEL_AREA) {
-        const label = dev.instanceName ?? dev.id;
-
-        // Background label box
-        ctx.font = `600 ${Math.max(10, Math.min(14, sw * 0.18))}px monospace`;
-        const textMetrics = ctx.measureText(label);
-        const labelW = textMetrics.width + 6;
-        const labelH = 18;
-        const labelX = sx.x + 2;
-        const labelY = sx.y + 2;
-
-        ctx.fillStyle = "rgba(0, 0, 0, 0.7)";
-        ctx.fillRect(labelX, labelY, labelW, labelH);
-
-        // Device name text
-        ctx.fillStyle = color;
-        ctx.textBaseline = "middle";
-        ctx.fillText(label, labelX + 3, labelY + labelH / 2);
-
-        // Parameter hint (e.g. W/L for MOS, AE for BJT)
-        const paramStr = paramHint(dev);
-        if (paramStr && sw > 120) {
-          ctx.font = `400 ${Math.max(8, Math.min(11, sw * 0.13))}px monospace`;
-          ctx.fillStyle = "rgba(255, 255, 255, 0.6)";
-          ctx.textBaseline = "top";
-          ctx.fillText(paramStr, labelX + 3, labelY + labelH + 2);
-        }
+      const dpr = window.devicePixelRatio || 1;
+      const rect = canvas.getBoundingClientRect();
+      const w = Math.max(1, Math.round(rect.width * dpr));
+      const h = Math.max(1, Math.round(rect.height * dpr));
+      if (canvas.width !== w || canvas.height !== h) {
+        canvas.width = w;
+        canvas.height = h;
       }
-    }
-  }, [devices, viewport, toScreen]);
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.clearRect(0, 0, rect.width, rect.height);
 
-  // Click hit-test
-  const handleClick = useCallback(
-    (e: React.MouseEvent<HTMLCanvasElement>) => {
-      if (!onDeviceClick || !viewport) return;
-      const rect = canvasRef.current?.getBoundingClientRect();
-      if (!rect) return;
-      const clickX = (e.clientX - rect.left) / viewport.zoom + viewport.originX;
-      const clickY = (e.clientY - rect.top) / viewport.zoom + viewport.originY;
-
-      // Find the smallest-area device containing the click (most specific)
-      let best: AnalogDevice | null = null;
-      let bestArea = Infinity;
       for (const dev of devices) {
-        const b = dev.bbox;
-        if (!b) continue;
-        if (
-          clickX >= b.x &&
-          clickX <= b.x + b.width &&
-          clickY >= b.y &&
-          clickY <= b.y + b.height
-        ) {
-          const area = b.width * b.height;
-          if (area < bestArea) {
-            bestArea = area;
-            best = dev;
+        const bbox = dev.bbox;
+        if (!bbox) continue;
+
+        const sx = (bbox.x - vp.originX) * vp.zoom;
+        const sy = (bbox.y - vp.originY) * vp.zoom;
+        const sw = bbox.width * vp.zoom;
+        const sh = bbox.height * vp.zoom;
+
+        // Skip off-screen
+        if (sx + sw < -50 || sx > rect.width + 50) continue;
+        if (sy + sh < -50 || sy > rect.height + 50) continue;
+
+        const color = DEVICE_COLORS[dev.kind] ?? DEVICE_COLORS.unknown;
+        const fill = DEVICE_FILL[dev.kind] ?? DEVICE_FILL.unknown;
+
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 2;
+        ctx.fillStyle = fill;
+        ctx.strokeRect(sx, sy, sw, sh);
+        ctx.fillRect(sx, sy, sw, sh);
+
+        // Label
+        const area = sw * sh;
+        if (area >= MIN_LABEL_AREA) {
+          const label = dev.instanceName ?? dev.id;
+          ctx.font = `600 ${Math.max(10, Math.min(14, sw * 0.18))}px monospace`;
+          const textMetrics = ctx.measureText(label);
+          const labelW = textMetrics.width + 6;
+          const labelH = 18;
+          const labelBX = sx + 2;
+          const labelBY = sy + 2;
+
+          ctx.fillStyle = "rgba(0, 0, 0, 0.7)";
+          ctx.fillRect(labelBX, labelBY, labelW, labelH);
+          ctx.fillStyle = color;
+          ctx.textBaseline = "middle";
+          ctx.fillText(label, labelBX + 3, labelBY + labelH / 2);
+
+          const paramStr = paramHint(dev);
+          if (paramStr && sw > 120) {
+            ctx.font = `400 ${Math.max(8, Math.min(11, sw * 0.13))}px monospace`;
+            ctx.fillStyle = "rgba(255, 255, 255, 0.6)";
+            ctx.textBaseline = "top";
+            ctx.fillText(paramStr, labelBX + 3, labelBY + labelH + 2);
           }
         }
       }
-      if (best) onDeviceClick(best);
-    },
-    [devices, viewport, onDeviceClick]
-  );
+    };
+
+    const schedule = () => {
+      if (raf === 0) raf = requestAnimationFrame(draw);
+    };
+
+    draw();
+    const ro = new ResizeObserver(schedule);
+    ro.observe(canvas);
+    const unsubVp = viewportStore.subscribe(schedule);
+    return () => {
+      if (raf) cancelAnimationFrame(raf);
+      ro.disconnect();
+      unsubVp();
+    };
+  }, [devices, viewportStore]);
+
+  // Click hit-test
+  // Click hit-test: reads viewport from ref so the handler stays stable.
+  const handleClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    if (!onDeviceClick) return;
+    const vp = viewportRef.current;
+    if (!vp) return;
+    const rect = canvasRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    const clickX = (e.clientX - rect.left) / vp.zoom + vp.originX;
+    const clickY = (e.clientY - rect.top) / vp.zoom + vp.originY;
+
+    let best: AnalogDevice | null = null;
+    let bestArea = Infinity;
+    for (const dev of devices) {
+      const b = dev.bbox;
+      if (!b) continue;
+      if (clickX >= b.x && clickX <= b.x + b.width &&
+          clickY >= b.y && clickY <= b.y + b.height) {
+        const area = b.width * b.height;
+        if (area < bestArea) {
+          bestArea = area;
+          best = dev;
+        }
+      }
+    }
+    if (best) onDeviceClick(best);
+  };
 
   return (
     <canvas
