@@ -137,12 +137,16 @@ export function collectDieWideAnalogDevices(
         const termPositions = dev.terminals.map((t) => {
           const layerName = terminalLayerOf(dev.kind, t.name);
           if (!layerName) return null;
-          const shapes = ct.layers?.[layerName as keyof typeof ct.layers];
+          const shapes = ct.layers?.[layerName as keyof typeof ct.layers] as LayerShape[] | undefined;
           if (!shapes || shapes.length === 0) return null;
-          const s = shapes[0];
-          const c = centerOfShape(s);
-          if (!c) return null;
-          return { x: cellCX + c.x, y: cellCY + c.y };
+          // Average centre of ALL shapes for this terminal (e.g. two base contacts → midpoint)
+          let sx = 0, sy = 0, n = 0;
+          for (const s of shapes) {
+            const c = centerOfShape(s as any);
+            if (c) { sx += c.x; sy += c.y; n++; }
+          }
+          if (n === 0) return null;
+          return { x: cellCX + sx / n, y: cellCY + sy / n };
         });
 
         allDevices.push({ ...dev, instanceName: instName, terminals: matchedTerms, bbox: worldBbox, _termPos: termPositions } as AnalogDevice & { _termPos: Array<{x:number;y:number}|null> });
