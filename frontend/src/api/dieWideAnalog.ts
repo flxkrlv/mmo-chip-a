@@ -37,21 +37,32 @@ function matchWireNetId(
   tolerance: number,
   netIdMap: Map<string, number>,
   nextId: { v: number },
-): number | null {
+): { netId: number; wireId: string } | null {
   let bestNet: AnnotationNet | null = null;
   let bestDist = tolerance;
   for (const net of nets) {
+    // Check nodes
     for (const node of net.nodes) {
       const d = Math.hypot(node.x - dieX, node.y - dieY);
-      if (d < bestDist) {
-        bestDist = d;
-        bestNet = net;
-      }
+      if (d < bestDist) { bestDist = d; bestNet = net; }
+    }
+    // Check edges — closest point on each segment
+    for (const edge of net.edges) {
+      const a = net.nodes.find(n => n.id === edge.from);
+      const b = net.nodes.find(n => n.id === edge.to);
+      if (!a || !b) continue;
+      const dx = b.x - a.x, dy = b.y - a.y;
+      const len2 = dx*dx + dy*dy;
+      let t = len2 === 0 ? 0 : ((dieX - a.x)*dx + (dieY - a.y)*dy) / len2;
+      t = Math.max(0, Math.min(1, t));
+      const cx = a.x + t*dx, cy = a.y + t*dy;
+      const d = Math.hypot(cx - dieX, cy - dieY);
+      if (d < bestDist) { bestDist = d; bestNet = net; }
     }
   }
   if (!bestNet) return null;
   if (!netIdMap.has(bestNet.id)) netIdMap.set(bestNet.id, nextId.v++);
-  return netIdMap.get(bestNet.id)!;
+  return { netId: netIdMap.get(bestNet.id)!, wireId: bestNet.id };
 }
 
 /**
@@ -183,12 +194,22 @@ export function collectDieWideAnalogDevices(
           }
           const tc = termCenters[ti];
           if (tc) {
-            const wireNetId = matchWireNetId(nets, tc.x, tc.y, 80, netIdMap, nextNetId);
-            if (wireNetId != null) {
-              console.log(`[wire] ${instName}.${t.name} @(${Math.round(tc.x)},${Math.round(tc.y)}) -> net ${wireNetId}`);
-              return { ...t, netId: wireNetId };
+            const match = matchWireNetId(nets, tc.x, tc.y, 200, netIdMap, nextNetId);
+            if (match) {
+              console.log(`[wire] ${instName}.${t.name} @(${Math.round(tc.x)},${Math.round(tc.y)}) -> net ${match.netId} wire=${match.wireId.slice(0,8)}`);
+              return { ...t, netId: match.netId };
             }
-            console.log(`[wire] ${instName}.${t.name} @(${Math.round(tc.x)},${Math.round(tc.y)}) -> NO wire. nets=${nets.length} nodes=${nets.reduce((a:number,n:any)=>a+n.nodes.length,0)}`);
+            console.log(`[wire] ${instName}.${t.name} @(${Math.round(tc.x)},${Math.round(tc.y)}) -> NO wire within 200px. nets=${nets.length}`);
+            // Log closest 3 wire nodes
+            const nearby: Array<{dist:number; x:number; y:number; netId:string}> = [];
+            for (const net of nets) {
+              for (const node of net.nodes) {
+                const d = Math.hypot(node.x - tc.x, node.y - tc.y);
+                if (d < 500) nearby.push({dist:d, x:node.x, y:node.y, netId:net.id.slice(0,6)});
+              }
+            }
+            nearby.sort((a,b)=>a.dist-b.dist);
+            for (const n of nearby.slice(0,3)) console.log(`  wire ${n.netId} node@(${Math.round(n.x)},${Math.round(n.y)}) dist=${Math.round(n.dist)}px`);
             // Log closest wire nodes for debugging
             let closestDist = Infinity, closestNode: any = null;
             for (const net of nets) {
