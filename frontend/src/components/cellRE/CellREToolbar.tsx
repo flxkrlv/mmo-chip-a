@@ -128,7 +128,7 @@ export function CellREToolbar({
             onChange={setActiveLayer}
           />
           <span className="m" style={{fontSize:10,color:'var(--ink3)'}}>W:</span>
-              <input type='number' min={1} max={50} value={plWidth} onChange={e=>setPlWidth(+e.target.value)} style={{width:45,background:'var(--bg1)',border:'1px solid var(--border)',color:'var(--ink0)',fontSize:10,padding:'1px 4px',borderRadius:3}} />
+              <input type='number' min={1} max={50} value={plWidth} onChange={e=>{const v=+e.target.value; if(v>=1)setPlWidth(v)}} style={{width:45,background:'var(--bg1)',border:'1px solid var(--border)',color:'var(--ink0)',fontSize:10,padding:'1px 4px',borderRadius:3}} />
               <span className="m" style={{fontSize:10,color:'var(--ink3)'}}>px</span>
         </>
       )}
