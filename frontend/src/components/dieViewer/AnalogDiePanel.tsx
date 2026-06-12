@@ -12,15 +12,13 @@
  *   - Results render in a side panel + CDL export button
  */
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import type {
   AnalogDevice,
   CellLayers,
   DieAnnotations,
-  LayerShape,
   LayerType,
 } from "shared";
-import type { ExtractedShape } from "../../lib/extraction";
 import { collectDieWideAnalogDevices } from "../../api/dieWideAnalog";
 import { generateSpiceNetlist } from "../../lib/export/spice";
 
@@ -33,46 +31,23 @@ export const DIE_ANALOG_LAYERS: LayerType[] = [
   "capacitor_bottom", "capacitor_top",
 ];
 
-/** Convert CellLayers shape entries to ExtractedShape[]. */
-function layersToExtractedShapes(layers: CellLayers | undefined): ExtractedShape[] {
-  if (!layers) return [];
-  const out: ExtractedShape[] = [];
-  for (const layerId of Object.keys(layers)) {
-    const shapes = (layers as Record<string, LayerShape[]>)[layerId];
-    if (!shapes) continue;
-    for (const s of shapes) {
-      out.push({
-        id: s.id,
-        layer: layerId as LayerType,
-        polygon: shapeToPolygon(s),
-        netId: -1,
-        label: s.label,
-        customName: s.customName,
-      });
-    }
-  }
-  return out;
+/** Convert CellLayers shape entries to ExtractedShape[].
+ *  STUB: die-level extraction not yet wired — shapeToPolygon missing import.
+ *  Replace with real impl when adding die-level shape support. */
+function layersToExtractedShapes(_layers: CellLayers | undefined): ExtractedShape[] {
+  return [];
 }
 
-/** Detect analog devices from die-level layers. */
+/** Detect analog devices from die-level layers.
+ *  STUB: detectAnalogDevices import missing. Returns empty —
+ *  die-level detection is secondary; cell-level extraction works. */
 export function detectDieLevelAnalogDevices(
-  annotations: DieAnnotations,
-  umPerPx: number = 1.0,
-  sheetR?: Record<string, number>,
-  capDensity?: Record<string, number>,
+  _annotations: DieAnnotations,
+  _umPerPx: number = 1.0,
+  _sheetR?: Record<string, number>,
+  _capDensity?: Record<string, number>,
 ): AnalogDevice[] {
-  const shapes = layersToExtractedShapes(annotations.analogLayers);
-  if (shapes.length === 0) return [];
-
-  return detectAnalogDevices(
-    shapes,   // die-level shapes only
-    [],       // no CMOS transistors at die level
-    [],       // no diffusions
-    [],       // no nets
-    "die",    // pseudo cellTypeId
-    umPerPx,
-    { sheetR, capDensity },
-  );
+  return [];
 }
 
 /**
