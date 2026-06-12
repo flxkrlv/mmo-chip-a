@@ -191,6 +191,17 @@ export function CellRERightPanel({
   // diffusion rows get a forced P/N submenu. Kept inside the panel
   // because the menu only acts on a single row (no selection
   // semantics) and rendering it here keeps the page lean.
+
+  const reselected = useMemo(() => {
+    if (!cellType?.layers?.resistor_body?.length) return null;
+    const lines = cellType.layers.resistor_body.filter(s=>s.kind==='line');
+    if (!lines.length) return null;
+    let totalL=0, corners=0; let prevAngle: number|null=null; const w=(lines[0] as any).width||4;
+    for(let i=0;i<lines.length;i++){const l=lines[i] as any; const dx=l.x2-l.x1, dy=l.y2-l.y1; totalL+=Math.sqrt(dx*dx+dy*dy); if(i>0){const a=Math.atan2(dy,dx); if(prevAngle!=null&&Math.abs(a-prevAngle)>Math.PI/6)corners++; prevAngle=a;}else{prevAngle=Math.atan2(dy,dx);}}
+    const sq=(totalL-corners*w)/w+0.55*corners;
+    return {totalL:totalL.toFixed(0), width:w, corners, squares:sq.toFixed(1), segs:lines.length};
+  }, [cellType?.layers?.resistor_body]);
+
   const [rowMenu, setRowMenu] = useState<RowContextMenuState | null>(null);
   const openNetMenu = (
     e: React.MouseEvent,
@@ -373,7 +384,9 @@ export function CellRERightPanel({
           </Section>
         )}
       </div>
-    </aside>
+  
+      {reselected && (<div style={{borderTop:'1px solid var(--l1)',padding:'6px 10px',fontSize:10,color:'var(--ink2)'}}><div className='u' style={{fontSize:9,color:'var(--ink3)',marginBottom:3}}>RESISTOR</div><div>segs: {reselected.segs} | L: {reselected.totalL}px | W: {reselected.width}px</div><div>corners: {reselected.corners} | squares: {reselected.squares}</div></div>)}
+  </aside>
   );
 }
 
