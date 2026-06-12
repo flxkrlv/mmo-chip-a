@@ -90,6 +90,11 @@ export function collectDieWideAnalogDevices(
     let ctDevices: AnalogDevice[];
     try {
       ctDevices = extractMarkedDevices(ct.layers, ct.id, umPerPx);
+      if (ctDevices.length > 0) {
+        console.log(`[extract] ${ct.name} (${ct.id.slice(0,6)}): ${ctDevices.map(d=>`${d.kind} terms=[${d.terminals.map(t=>t.name).join(',')}]`).join('; ')}`);
+        const lk = ct.layers ? Object.keys(ct.layers).filter(k => (ct.layers as any)[k]?.length) : [];
+        console.log(`  layers: ${lk.join(', ')}`);
+      }
     } catch (e) {
       console.warn(`extractMarkedDevices("${ct.name}") failed:`, e);
       continue;
@@ -146,6 +151,9 @@ export function collectDieWideAnalogDevices(
         }
 
         allDevices.push({ ...dev, instanceName: instName, terminals: matchedTerms, bbox: worldBbox, _termPoints: termPoints } as AnalogDevice & { _termPoints: typeof termPoints });
+        if (termPoints.length === 0 && inst === 0) {
+          console.log(`[terms] ${instName} (${dev.kind}) ct=${ct.name}: 0 terminal shapes found. layers present:`, Object.keys(ct.layers ?? {}));
+        }
       }
     }
     console.log(`  → ${ct.name}: ${ctDevices.length}dev × ${instanceList.length}inst`);
