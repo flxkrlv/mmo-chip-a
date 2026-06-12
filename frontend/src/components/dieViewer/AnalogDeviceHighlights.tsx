@@ -145,10 +145,10 @@ export function AnalogDeviceHighlights({
             ctx.textBaseline = "top";
             ctx.fillText(paramStr, labelBX + 3, labelBY + labelH + 2);
           }
-
-          // Terminal labels at actual layer positions
-          drawTerminalLabels(ctx, dev, vp);
         }
+
+        // Terminal labels at actual layer positions (independent of bbox area)
+        drawTerminalLabels(ctx, dev, vp);
       }
     };
 
