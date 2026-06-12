@@ -126,11 +126,11 @@ function fmtPerim(geom: DeviceGeometryBJT | DeviceGeometryDiode): string {
   return perim > 0 ? `PJ=${perim.toFixed(3)}E-6` : "";
 }
 function fmtRes(geom: DeviceGeometryResistor): string {
-  if (geom.resistance_ohms != null && geom.resistance_ohms > 0) {
-    return `R=${geom.resistance_ohms.toFixed(1)}`;
-  }
-  // Alternatively emit W/L
-  return `W=${fmtValue(geom.W_um, "u")} L=${fmtValue(geom.L_um, "u")}`;
+  const parts: string[] = [];
+  if (geom.squares > 0) parts.push(`SQUARES=${geom.squares.toFixed(1)}`);
+  if (geom.W_um > 0) parts.push(`W=${geom.W_um.toFixed(1)}u`);
+  if (geom.L_um > 0) parts.push(`L=${geom.L_um.toFixed(1)}u`);
+  return parts.join(" ");
 }
 function fmtCap(geom: DeviceGeometryCapacitor): string {
   if (geom.capacitance_fF != null && geom.capacitance_fF > 0) {
