@@ -146,8 +146,8 @@ export function AnalogDeviceHighlights({
             ctx.fillText(paramStr, labelBX + 3, labelBY + labelH + 2);
           }
 
-          // Terminal labels (C B E / D G S B / PLUS MINUS)
-          drawTerminalLabels(ctx, dev, sx, sy, sw, sh, vp.zoom);
+          // Terminal labels at actual layer positions
+          drawTerminalLabels(ctx, dev, vp);
         }
       }
     };
@@ -257,36 +257,40 @@ function paramHint(dev: AnalogDevice): string {
 
 // ── Terminal label rendering ─────────────────────────────────────
 
-/** Draw terminal labels (C B E / D G S B / PLUS MINUS) along the left
- *  edge of the device bbox. Labels are stacked vertically with the terminal
- *  name in the device kind's colour on a dark background. */
+/** Draw terminal labels (C B E / D G S B / PLUS MINUS) at the actual
+ *  terminal shape positions computed in collectDieWideAnalogDevices.
+ *  Labels are drawn with the terminal name on a dark background at the
+ *  layer centre, so "E" sits right on the emitter shape, etc. */
 function drawTerminalLabels(
   ctx: CanvasRenderingContext2D,
-  dev: AnalogDevice,
-  sx: number, sy: number, sw: number, sh: number,
-  zoom: number
+  dev: AnalogDevice & { _termPos?: Array<{x:number;y:number}|null> },
+  vp: { originX: number; originY: number; zoom: number }
 ): void {
-  if (dev.terminals.length === 0) return;
-  const color = DEVICE_COLORS[dev.kind] ?? DEVICE_COLORS.unknown;
-  const fontSize = Math.max(8, Math.min(11, sh * 0.12 / dev.terminals.length));
-  if (sh < fontSize * dev.terminals.length * 1.5) return; // not enough vertical space
+  const posList = (dev as any)._termPos as Array<{x:number;y:number}|null> | undefined;
+  if (!posList || posList.length === 0) return;
 
+  const color = DEVICE_COLORS[dev.kind] ?? DEVICE_COLORS.unknown;
+  const fontSize = 9;
   ctx.font = `600 ${fontSize}px monospace`;
   ctx.textBaseline = "middle";
-  const spacing = sh / (dev.terminals.length + 1);
 
-  for (let i = 0; i < dev.terminals.length; i++) {
+  for (let i = 0; i < posList.length; i++) {
+    const p = posList[i];
+    if (!p) continue;
     const t = dev.terminals[i];
-    const shortName = t.name.slice(0, 3);
+    if (!t) continue;
+
+    const sx = (p.x - vp.originX) * vp.zoom;
+    const sy = (p.y - vp.originY) * vp.zoom;
+
+    const shortName = t.name.slice(0, 4);
     const tm = ctx.measureText(shortName);
     const tw = tm.width + 4;
     const th = fontSize + 4;
-    const tx = sx + sw + 2;  // right of bbox
-    const ty = sy + spacing * (i + 1);
 
-    ctx.fillStyle = "rgba(0, 0, 0, 0.65)";
-    ctx.fillRect(tx, ty - th / 2, tw, th);
+    ctx.fillStyle = "rgba(0, 0, 0, 0.7)";
+    ctx.fillRect(sx + 4, sy - th / 2, tw, th);
     ctx.fillStyle = color;
-    ctx.fillText(shortName, tx + 2, ty);
+    ctx.fillText(shortName, sx + 6, sy);
   }
 }

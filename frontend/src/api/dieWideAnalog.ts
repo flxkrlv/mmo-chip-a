@@ -10,7 +10,7 @@
 
 import type {
   AnalogDevice, AnnotationNet, Cell, CellType,
-  DieAnnotations, SpiceConfig,
+  DeviceKind, DieAnnotations, LayerShape, SpiceConfig,
 } from "shared";
 import { extractMarkedDevices } from "../lib/extraction/simpleAnalog";
 import { generateSpiceNetlist } from "../lib/export/spice";
@@ -132,7 +132,20 @@ export function collectDieWideAnalogDevices(
           return { ...t, netId: fresh };
         });
 
-        allDevices.push({ ...dev, instanceName: instName, terminals: matchedTerms, bbox: worldBbox });
+        // Compute terminal die-world positions from cell type layers
+        // so the overlay can draw terminal labels (C/B/E) at actual shape centers.
+        const termPositions = dev.terminals.map((t) => {
+          const layerName = terminalLayerOf(dev.kind, t.name);
+          if (!layerName) return null;
+          const shapes = ct.layers?.[layerName as keyof typeof ct.layers];
+          if (!shapes || shapes.length === 0) return null;
+          const s = shapes[0];
+          const c = centerOfShape(s);
+          if (!c) return null;
+          return { x: cellCX + c.x, y: cellCY + c.y };
+        });
+
+        allDevices.push({ ...dev, instanceName: instName, terminals: matchedTerms, bbox: worldBbox, _termPos: termPositions } as AnalogDevice & { _termPos: Array<{x:number;y:number}|null> });
       }
     }
     console.log(`  → ${ct.name}: ${ctDevices.length}dev × ${instanceList.length}inst`);
@@ -167,4 +180,35 @@ export function detectAndExportDieWide(
     totalDevices: result.totalDevices,
     warnings: result.warnings,
   };
+}
+
+// ── Terminal-position helpers ───────────────────────────────────
+
+/** Map device kind + terminal name to the layer type that holds its shape. */
+function terminalLayerOf(kind: DeviceKind, name: string): string | null {
+  switch (kind) {
+    case "bjt_npn": case "bjt_pnp":
+      return { C: "collector", B: "base", E: "emitter" }[name] ?? null;
+    case "mos":
+      return { D: "drain", G: "gate", S: "source", B: "bulk" }[name] ?? null;
+    default:
+      return "contact";
+  }
+}
+
+/** Return the centre of any LayerShape, or null if degenerate. */
+function centerOfShape(s: LayerShape): { x: number; y: number } | null {
+  switch (s.kind) {
+    case "rect": return { x: s.x + s.width / 2, y: s.y + s.height / 2 };
+    case "point": return { x: s.x, y: s.y };
+    case "circle": return { x: s.x, y: s.y };
+    case "polygon": {
+      if (s.points.length === 0) return null;
+      let sx = 0, sy = 0;
+      for (const p of s.points) { sx += p.x; sy += p.y; }
+      return { x: sx / s.points.length, y: sy / s.points.length };
+    }
+    case "line": return { x: (s.x1 + s.x2) / 2, y: (s.y1 + s.y2) / 2 };
+    default: return null;
+  }
 }
