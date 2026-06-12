@@ -182,31 +182,27 @@ export function collectDieWideAnalogDevices(
           }
         }
 
-        // ── Terminal regions for wire intersection ────────
-        const termRects: Array<{x:number;y:number;w:number;h:number}|null> =
-          dev.terminals.map(()=>null);
+        // ── Terminal regions (one rect per shape, not union) ─
+        const termRects: Array<Array<{x:number;y:number;w:number;h:number}>> =
+          dev.terminals.map(()=>[]);
         for (let ti=0; ti<dev.terminals.length; ti++) {
-          let mx=Infinity,my=Infinity,Mx=-Infinity,My=-Infinity;
           for (const ln of terminalLayersOf(dev.kind, dev.terminals[ti].name)) {
             const shps = ct.layers?.[ln as keyof typeof ct.layers] as LayerShape[]|undefined;
             if (!shps) continue;
             for (const s of shps) {
               const b = shapeBounds(s); if (!b) continue;
-              if (b.x<mx)mx=b.x; if(b.x+b.width>Mx)Mx=b.x+b.width;
-              if (b.y<my)my=b.y; if(b.y+b.height>My)My=b.y+b.height;
+              termRects[ti].push({x:cx+b.x, y:cy+b.y, w:b.width, h:b.height});
             }
           }
-          if (mx<Infinity) termRects[ti] = {x:cx+mx, y:cy+my, w:Mx-mx, h:My-my};
         }
 
-        // ── Wire matching via intersection ────────────────
+        // ── Wire matching per-shape intersection ─────────
         const matchedTerms = dev.terminals.map((t,ti)=>{
           if (t.netId<0) {
             const fresh = 2000 + allDevices.length*10 + ti;
             return {...t, netId: fresh};
           }
-          const tr = termRects[ti];
-          if (tr) {
+          for (const tr of termRects[ti]) {
             const wid = matchWireToTerminal(nets, tr, netIdMap, nextNetId);
             if (wid!=null) return {...t, netId: wid};
           }
