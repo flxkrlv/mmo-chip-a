@@ -184,7 +184,8 @@ export function useWireTool(opts: {
     findViaOnSegment,
     snapToViasEnabled,
     autoEndOnViaEnabled,
-    getViaSizeWorld
+    getViaSizeWorld,
+    findNearestTerminal
   };
 
   /** Try the via-snap path: return the snapped point if the pref is on and
