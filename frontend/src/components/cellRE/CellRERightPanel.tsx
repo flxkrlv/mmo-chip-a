@@ -388,7 +388,7 @@ export function CellRERightPanel({
         )}
       </div>
   
-      {reselected && (<div style={{borderTop:'1px solid var(--l1)',padding:'6px 10px',fontSize:10,color:'var(--ink2)'}}><div className='u' style={{fontSize:9,color:'var(--ink3)',marginBottom:3}}>RESISTOR</div><div>segs: {reselected.segs} | L: {reselected.totalL}px | W: {reselected.width}px</div><div>corners: {reselected.corners} | squares: {reselected.squares}</div></div>)}
+      {reselected && (<div style={{borderTop:'1px solid var(--l1)',padding:'6px 10px',fontSize:10,color:'var(--ink2)'}}><div className='u' style={{fontSize:9,color:'var(--ink3)',marginBottom:3}}>RESISTOR</div><div>segs: {reselected.segs} | L: {reselected.totalL}px</div><div style={{display:'flex',alignItems:'center',gap:4,margin:'2px 0'}}><span>W:</span><input key={reselected.width} type='number' min={1} max={50} defaultValue={reselected.width} onBlur={e=>{const n=+e.target.value; if(n>=1&&n<=50&&n!==reselected.width&&onUpdateShape&&cellType){const lines=(cellType.layers?.resistor_body??[]).filter(s=>s.kind==='line'); for(const s of lines){const u={...s,width:n}; onUpdateShape('resistor_body',u as any)}}}} style={{width:45,background:'var(--bg1)',border:'1px solid var(--border)',color:'var(--ink0)',fontSize:10,padding:'1px 4px',borderRadius:3}} /><span>px</span></div><div>corners: {reselected.corners} | squares: {reselected.squares}</div></div>)}
   </aside>
   );
 }
