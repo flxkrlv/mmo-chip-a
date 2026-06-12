@@ -59,6 +59,8 @@ export function CellREToolbar({
   /** Optional hint: # of vertices in the in-progress polygon. Renders a tiny
    *  status line under the layer chips when > 0. */
   polyDraftLen?: number;
+  polylineWidth?: number;
+  setPolylineWidth?: (w: number) => void;
 }) {
   return (
     <>
