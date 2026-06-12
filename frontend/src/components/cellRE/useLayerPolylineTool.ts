@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { CellType, LayerType } from "shared";
+import type { CellType, LayerShape, LayerType } from "shared";
 import type { ActionDispatcher } from "../../api/actions";
 import type { Point } from "../../lib/geometry";
 import { buildUpsertShapeAction } from "../../lib/cellLayers";
@@ -51,16 +51,28 @@ export function useLayerPolylineTool(opts: {
     const pts = pointsRef.current;
     const { cellType, activeLayer, dispatcher, width } = ctxRef.current;
     if (pts.length >= 2 && cellType) {
+      const shapes: LayerShape[] = [];
       for (let i = 0; i < pts.length - 1; i++) {
         const a = pts[i], b = pts[i + 1];
-        const shape = {
+        shapes.push({
           id: crypto.randomUUID(),
           kind: "line" as const,
           x1: a.x, y1: a.y, x2: b.x, y2: b.y,
           width,
-        };
-        void dispatcher.dispatch(buildUpsertShapeAction(cellType, activeLayer, shape));
+        });
       }
+      // Build ONE action with all shapes so each doesn't overwrite the previous
+      const layerList = cellType.layers?.[activeLayer] ?? [];
+      const next: CellType = {
+        ...cellType,
+        layers: { ...cellType.layers, [activeLayer]: [...(layerList as LayerShape[]), ...shapes] },
+      };
+      void dispatcher.dispatch({
+        kind: "upsertCellType",
+        cellTypeId: cellType.id,
+        next,
+        prev: cellType,
+      });
     }
     redoRef.current = [];
     setPoints([]);
