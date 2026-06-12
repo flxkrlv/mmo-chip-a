@@ -116,51 +116,62 @@ export function collectDieWideAnalogDevices(
           ? { ...dev.bbox, x: dev.bbox.x + cellCX, y: dev.bbox.y + cellCY }
           : dev.bbox;
 
-        // Match each terminal to a die-level wire, or assign unique fresh net
-        const matchedTerms = dev.terminals.map((t, ti) => {
-          if (t.netId < 0) return t;
-          const bbox = dev.bbox;
-          if (!bbox) {
-            const fresh = 2000 + allDevices.length * 10 + ti;
-            return { ...t, netId: fresh };
-          }
-          const termDieX = cellCX + bbox.x + bbox.width * (ti + 0.5) / (dev.terminals.length + 1);
-          const termDieY = cellCY + bbox.y + bbox.height * 0.5;
-
-          const wireNetId = matchWireNetId(nets, termDieX, termDieY, 80);
-          if (wireNetId != null) return { ...t, netId: wireNetId };
-
-          const fresh = 2000 + allDevices.length * 10 + ti;
-          return { ...t, netId: fresh };
-        });
-
-        // Compute terminal die-world positions from cell type layers
-        // Terminal labels at CONTACT positions: for each terminal, find all
-        // contact shapes that overlap the terminal's layer shapes, and draw
-        // the label at each contact centre (not the polygon centre).
+        // 1. Compute terminal POSITIONS from actual contact centres first.
+        //    Each terminal gets the average centre of all contacts that overlap
+        //    its terminal-layer shapes. This is the same data used for labels.
         const termPoints: Array<{x:number;y:number;name:string}> = [];
         const allContacts = (ct.layers?.contact ?? []) as LayerShape[];
-        for (const t of dev.terminals) {
+        // Per-terminal contact centres in die-world coords
+        const termCenters: Array<{x:number;y:number}|null> = dev.terminals.map(() => null);
+        for (let ti = 0; ti < dev.terminals.length; ti++) {
+          const t = dev.terminals[ti];
           const layerNames = terminalLayersOf(dev.kind, t.name);
+          let sx = 0, sy = 0, n = 0;
           for (const layerName of layerNames) {
             const termShapes = ct.layers?.[layerName as keyof typeof ct.layers] as LayerShape[] | undefined;
-            if (!termShapes || termShapes.length === 0) continue;
+            if (!termShapes) continue;
             for (const ts of termShapes) {
               const tb = shapeBounds(ts);
               if (!tb) continue;
-              // Find every contact that overlaps this terminal shape
               for (const cs of allContacts) {
                 const cb = shapeBounds(cs);
                 if (!cb) continue;
-                if (rectsOverlap(tb.x, tb.y, tb.x + tb.width, tb.y + tb.height,
-                                  cb.x, cb.y, cb.x + cb.width, cb.y + cb.height)) {
+                if (rectsOverlap(tb.x, tb.y, tb.x+tb.width, tb.y+tb.height,
+                                  cb.x, cb.y, cb.x+cb.width, cb.y+cb.height)) {
                   const cc = centerOfShape(cs as any);
-                  if (cc) termPoints.push({ x: cellCX + cc.x, y: cellCY + cc.y, name: t.name });
+                  if (cc) {
+                    termPoints.push({ x: cellCX + cc.x, y: cellCY + cc.y, name: t.name });
+                    sx += cc.x; sy += cc.y; n++;
+                  }
                 }
               }
             }
           }
+          if (n > 0) termCenters[ti] = { x: cellCX + sx/n, y: cellCY + sy/n };
         }
+
+        // 2. Match each terminal to a die-level wire using ACTUAL contact
+        //    positions, not bbox interpolation. Fall back to bbox centre if
+        //    no contacts found for a terminal.
+        const matchedTerms = dev.terminals.map((t, ti) => {
+          if (t.netId < 0) return t;
+          const tc = termCenters[ti];
+          let mx: number, my: number;
+          if (tc) {
+            mx = tc.x; my = tc.y;
+          } else if (dev.bbox) {
+            // Fallback: bbox interpolation
+            mx = cellCX + dev.bbox.x + dev.bbox.width * (ti + 0.5) / (dev.terminals.length + 1);
+            my = cellCY + dev.bbox.y + dev.bbox.height * 0.5;
+          } else {
+            const fresh = 2000 + allDevices.length * 10 + ti;
+            return { ...t, netId: fresh };
+          }
+          const wireNetId = matchWireNetId(nets, mx, my, 80);
+          if (wireNetId != null) return { ...t, netId: wireNetId };
+          const fresh = 2000 + allDevices.length * 10 + ti;
+          return { ...t, netId: fresh };
+        });
 
         allDevices.push({ ...dev, instanceName: instName, terminals: matchedTerms, bbox: worldBbox, _termPoints: termPoints } as AnalogDevice & { _termPoints: typeof termPoints });
         if (termPoints.length === 0 && inst === 0) {
