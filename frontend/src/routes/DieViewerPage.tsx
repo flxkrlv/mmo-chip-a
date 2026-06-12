@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import type { AnnotationNet } from "shared";
+import type { AnalogDevice, AnnotationNet } from "shared";
 import { useAnnotations } from "../api/annotations";
 import { useAnnotationsWebSocket } from "../api/annotationsWebSocket";
 import { netChangesToAction, useActionDispatcher } from "../api/actions";
@@ -48,6 +48,7 @@ import {
 import { InspectorPanel } from "../components/dieViewer/InspectorPanel";
 import { AnalogDiePanel } from "../components/dieViewer/AnalogDiePanel";
 import { AnalogDeviceHighlights } from "../components/dieViewer/AnalogDeviceHighlights";
+import { DeviceInspector } from "../components/dieViewer/DeviceInspector";
 import { collectDieWideAnalogDevices } from "../api/dieWideAnalog";
 import { useMLJob, useMLStatus } from "../api/ml";
 import { WireDraftOverlay } from "../components/dieViewer/WireDraftOverlay";
@@ -633,6 +634,7 @@ function DieViewer({ dieId }: { dieId: string }) {
 
   // ── Device highlighting toggle ───────────────────────────────
   const [deviceOverlayOn, setDeviceOverlayOn] = useState(true);
+  const [selectedDevice, setSelectedDevice] = useState<AnalogDevice | null>(null);
 
 const analogDevices = useMemo(
     () => {
@@ -1986,6 +1988,7 @@ const analogDevices = useMemo(
             <AnalogDeviceHighlights
               devices={analogDevices}
               viewportStore={viewportLive}
+              onDeviceClick={(dev) => setSelectedDevice(dev)}
             />
           )}
         </section>
@@ -2021,7 +2024,11 @@ const analogDevices = useMemo(
                 overlay
               </label>
             </div>
-            <AnalogDiePanel annotations={annotations ?? (undefined as any)} />
+            {selectedDevice ? (
+              <DeviceInspector device={selectedDevice} onClose={() => setSelectedDevice(null)} />
+            ) : (
+              <AnalogDiePanel annotations={annotations ?? (undefined as any)} />
+            )}
           </div>
         </aside>
       </main>
