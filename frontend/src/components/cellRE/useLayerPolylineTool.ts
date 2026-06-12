@@ -17,9 +17,9 @@ export function useLayerPolylineTool(opts: {
   cellType: CellType | null;
   activeLayer: LayerType;
   active: boolean;
-  width: number;
 }): LayerPolylineTool {
-  const { dispatcher, cellType, activeLayer, active, width } = opts;
+  const { dispatcher, cellType, activeLayer, active } = opts;
+  const width = useCellREStore((s) => s.polylineWidth);
   const [points, setPoints] = useState<Point[]>([]);
   const pointsRef = useRef(points); pointsRef.current = points;
   const redoRef = useRef<Point[]>([]);

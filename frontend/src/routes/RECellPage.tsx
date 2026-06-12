@@ -324,7 +324,6 @@ function RE({ dieId }: { dieId: string }) {
     cellType,
     activeLayer,
     active: activeTool === "polyline",
-    width: useCellREStore((s) => s.polylineWidth),
   });
 
   // ── Cell orientation (right-click) ────────────────────────────────
@@ -744,12 +743,12 @@ function RE({ dieId }: { dieId: string }) {
                 onPolylineAddVertex={polyline.addPoint}
                 onPolylineCommit={polyline.commit}
                 onPolylineCancel={polyline.cancel}
-                polylineWidth={useCellREStore(s=>s.polylineWidth)}
+                polylineWidth={useCellREStore.getState().polylineWidth}
                 polylineDraft={polyline.points}
                 onPolylineAddVertex={polyline.addPoint}
                 onPolylineCommit={polyline.commit}
                 onPolylineCancel={polyline.cancel}
-                polylineWidth={useCellREStore(s=>s.polylineWidth)}
+                polylineWidth={useCellREStore.getState().polylineWidth}
                 onEscape={() => setActiveTool("select")}
                 onShapeContextMenu={(target, x, y) => {
                   if (!target) {
