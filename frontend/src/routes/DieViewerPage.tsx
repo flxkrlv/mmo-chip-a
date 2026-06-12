@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import type { AnnotationNet } from "shared";
+import type { AnalogDevice, AnnotationNet } from "shared";
 import { useAnnotations } from "../api/annotations";
 import { useAnnotationsWebSocket } from "../api/annotationsWebSocket";
 import { netChangesToAction, useActionDispatcher } from "../api/actions";
@@ -47,6 +47,9 @@ import {
 } from "../components/dieViewer/DieContextMenu";
 import { InspectorPanel } from "../components/dieViewer/InspectorPanel";
 import { AnalogDiePanel } from "../components/dieViewer/AnalogDiePanel";
+import { AnalogDeviceHighlights } from "../components/dieViewer/AnalogDeviceHighlights";
+import { DeviceInspector } from "../components/dieViewer/DeviceInspector";
+import { collectDieWideAnalogDevices } from "../api/dieWideAnalog";
 import { useMLJob, useMLStatus } from "../api/ml";
 import { WireDraftOverlay } from "../components/dieViewer/WireDraftOverlay";
 import { RectDraftOverlay } from "../components/dieViewer/RectDraftOverlay";
@@ -57,7 +60,6 @@ import { useCanvasSelection } from "../components/dieViewer/useCanvasSelection";
 import {
   HIT_TOLERANCE_PX,
   type TerminalSnapTarget,
-  TERMINAL_SNAP_TOLERANCE_PX,
   useWireTool,
   type WireSnap
 } from "../components/dieViewer/useWireTool";
@@ -607,21 +609,10 @@ function DieViewer({ dieId }: { dieId: string }) {
   // layers or cell placements change.
   const cellTerminals = useMemo(
     () => {
-      const terms = buildInstanceTerminalMap(
+      return buildInstanceTerminalMap(
         annotations?.cellTypes ?? [],
         annotations?.cells ?? []
       );
-      console.log(`[DieViewerPage] cellTerminals: ${terms.length} total (from ${annotations?.cellTypes.length ?? 0} types, ${annotations?.cells.length ?? 0} instances)`);
-      if (terms.length > 0) {
-        console.log('[DieViewerPage] first 3 terminals:', terms.slice(0, 3).map(t => ({
-          id: t.id,
-          worldX: t.worldX,
-          worldY: t.worldY,
-          portName: t.portName,
-          cellPos: { x: t.cell.x, y: t.cell.y }
-        })));
-      }
-      return terms;
     },
     [annotations?.cellTypes, annotations?.cells]
   );
@@ -639,6 +630,21 @@ function DieViewer({ dieId }: { dieId: string }) {
       return best;
     },
     [cellTerminals]
+  );
+
+  // ── Analog device highlighting ────────────────────────────────
+  const [selectedDevice, setSelectedDevice] = useState<AnalogDevice | null>(null);
+  const [deviceHighlightVisible, setDeviceHighlightVisible] = useState(true);
+  const analogDevices = useMemo(
+    () => {
+      if (!annotations) return [];
+      try {
+        return collectDieWideAnalogDevices(annotations as any, 1.0);
+      } catch {
+        return [];
+      }
+    },
+    [annotations]
   );
 
   const wire = useWireTool({
@@ -1975,6 +1981,14 @@ function DieViewer({ dieId }: { dieId: string }) {
             dragStore={guideDragLive}
             segStart={guide.segStart}
           />
+          {/* Analog device highlights overlay */}
+          {deviceHighlightVisible && (
+            <AnalogDeviceHighlights
+              devices={analogDevices}
+              viewport={viewportLive.get()}
+              onDeviceClick={(dev) => setSelectedDevice(dev)}
+            />
+          )}
         </section>
         <aside style={panelStyle}>
           <InspectorPanel
@@ -1984,19 +1998,26 @@ function DieViewer({ dieId }: { dieId: string }) {
             mlViasLayer={mlViasLayer}
           />
           <div style={{ borderTop: "2px solid var(--l2)" }}>
-            <details open>
-              <summary
-                className="u"
-                style={{
-                  padding: "6px 10px", fontSize: 10, cursor: "pointer",
-                  color: "var(--ink3)", letterSpacing: 1,
-                  userSelect: "none",
-                }}
-              >
-                ANALOG DEVICES
-              </summary>
-              <AnalogDiePanel annotations={annotations ?? (undefined as any)} />
-            </details>
+            {selectedDevice ? (
+              <DeviceInspector
+                device={selectedDevice}
+                onClose={() => setSelectedDevice(null)}
+              />
+            ) : (
+              <details open>
+                <summary
+                  className="u"
+                  style={{
+                    padding: "6px 10px", fontSize: 10, cursor: "pointer",
+                    color: "var(--ink3)", letterSpacing: 1,
+                    userSelect: "none",
+                  }}
+                >
+                  ANALOG DEVICES
+                </summary>
+                <AnalogDiePanel annotations={annotations ?? (undefined as any)} />
+              </details>
+            )}
           </div>
         </aside>
       </main>

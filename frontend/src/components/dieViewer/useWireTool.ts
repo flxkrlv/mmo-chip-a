@@ -223,18 +223,9 @@ export function useWireTool(opts: {
   const resolveTerminalSnap = useCallback(
     (world: Point, zoom: number): TerminalSnapTarget | null => {
       const { findNearestTerminal } = snapRef.current;
-      if (!findNearestTerminal) {
-        console.log('[snap] findNearestTerminal not provided');
-        return null;
-      }
+      if (!findNearestTerminal) return null;
       const tol = TERMINAL_SNAP_TOLERANCE_PX / zoom;
-      const result = findNearestTerminal(world, tol);
-      if (result) {
-        console.log(`[snap] TERMINAL SNAP at (${result.x}, ${result.y}) id=${result.terminalId}`);
-      } else {
-        console.log(`[snap] no terminal within tol=${tol.toFixed(1)}`);
-      }
-      return result;
+      return findNearestTerminal(world, tol);
     },
     []
   );
