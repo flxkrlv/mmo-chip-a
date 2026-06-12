@@ -79,7 +79,7 @@ function matchWireToTerminal(
   termRect: {x:number;y:number;w:number;h:number},
   netIdMap: Map<string,number>,
   nextId: {v:number},
-): number|null {
+): {netId:number; wireId:string}|null {
   for (const net of nets) {
     for (const edge of net.edges) {
       const a = net.nodes.find(n=>n.id===edge.from);
@@ -87,7 +87,7 @@ function matchWireToTerminal(
       if (!a||!b) continue;
       if (segmentIntersectsRect(a.x,a.y,b.x,b.y, termRect.x,termRect.y,termRect.w,termRect.h)) {
         if (!netIdMap.has(net.id)) netIdMap.set(net.id, nextId.v++);
-        return netIdMap.get(net.id)!;
+        return {netId: netIdMap.get(net.id)!, wireId: net.id};
       }
     }
   }
@@ -196,15 +196,19 @@ export function collectDieWideAnalogDevices(
           }
         }
 
-        // ── Wire matching per-shape intersection ─────────
+        // ── Wire matching: one wire → one terminal per device ─
+        const usedWires = new Set<string>();
         const matchedTerms = dev.terminals.map((t,ti)=>{
           if (t.netId<0) {
             const fresh = 2000 + allDevices.length*10 + ti;
             return {...t, netId: fresh};
           }
           for (const tr of termRects[ti]) {
-            const wid = matchWireToTerminal(nets, tr, netIdMap, nextNetId);
-            if (wid!=null) return {...t, netId: wid};
+            const m = matchWireToTerminal(nets, tr, netIdMap, nextNetId);
+            if (m && !usedWires.has(m.wireId)) {
+              usedWires.add(m.wireId);
+              return {...t, netId: m.netId};
+            }
           }
           const fresh = 2000 + allDevices.length*10 + ti;
           return {...t, netId: fresh};
