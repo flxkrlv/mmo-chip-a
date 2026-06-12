@@ -56,9 +56,12 @@ import { usePersistedViewport } from "../components/dieViewer/usePersistedViewpo
 import { useCanvasSelection } from "../components/dieViewer/useCanvasSelection";
 import {
   HIT_TOLERANCE_PX,
+  type TerminalSnapTarget,
+  TERMINAL_SNAP_TOLERANCE_PX,
   useWireTool,
   type WireSnap
 } from "../components/dieViewer/useWireTool";
+import { buildInstanceTerminalMap } from "../lib/extraction/terminalDetect";
 import { useCellTool } from "../components/dieViewer/useCellTool";
 import { useViaPolyTool } from "../components/dieViewer/useViaPolyTool";
 import {
@@ -598,6 +601,34 @@ function DieViewer({ dieId }: { dieId: string }) {
     []
   );
 
+  // ── Cell-terminal snapping ────────────────────────────────────
+  // Build terminal positions from all cell instances (metal1 n contact
+  // on each cell type). Memoized on annotations so it recomputes when
+  // layers or cell placements change.
+  const cellTerminals = useMemo(
+    () =>
+      buildInstanceTerminalMap(
+        annotations?.cellTypes ?? [],
+        annotations?.cells ?? []
+      ),
+    [annotations?.cellTypes, annotations?.cells]
+  );
+  const findNearestTerminal = useCallback(
+    (world: Point, tolWorld: number): TerminalSnapTarget | null => {
+      let best: TerminalSnapTarget | null = null;
+      let bestD = tolWorld;
+      for (const t of cellTerminals) {
+        const d = Math.hypot(t.worldX - world.x, t.worldY - world.y);
+        if (d <= bestD) {
+          bestD = d;
+          best = { x: t.worldX, y: t.worldY, terminalId: t.id };
+        }
+      }
+      return best;
+    },
+    [cellTerminals]
+  );
+
   const wire = useWireTool({
     dispatcher,
     annotationLayer,
@@ -610,7 +641,8 @@ function DieViewer({ dieId }: { dieId: string }) {
     findViaOnSegment,
     snapToViasEnabled,
     autoEndOnViaEnabled,
-    getViaSizeWorld
+    getViaSizeWorld,
+    findNearestTerminal
   });
 
   const cell = useCellTool({
