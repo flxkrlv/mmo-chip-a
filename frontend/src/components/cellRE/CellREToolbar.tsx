@@ -1,7 +1,7 @@
 import { Fragment, type ReactNode } from "react";
 import type { LayerType } from "shared";
 import { Ic } from "../../icons";
-import { TOOL_LAYERS, type ReToolKind } from "../../state/cellRE";
+import { TOOL_LAYERS, type ReToolKind, useCellREStore } from "../../state/cellRE";
 import { BigToolDivider, Tool } from "../dieViewer/DieViewerUI";
 import { ToolDivider } from "../shell/SubBar";
 import { LayerChips } from "./LayerChips";
@@ -50,9 +50,7 @@ export function CellREToolbar({
   setActiveTool,
   activeLayer,
   setActiveLayer,
-  polyDraftLen,
-  polylineWidth,
-  setPolylineWidth
+  polyDraftLen
 }: {
   activeTool: ReToolKind;
   setActiveTool: (tool: ReToolKind) => void;
@@ -61,9 +59,9 @@ export function CellREToolbar({
   /** Optional hint: # of vertices in the in-progress polygon. Renders a tiny
    *  status line under the layer chips when > 0. */
   polyDraftLen?: number;
-  polylineWidth?: number;
-  setPolylineWidth?: (w: number) => void;
 }) {
+  const plWidth = useCellREStore((s) => s.polylineWidth);
+  const setPlWidth = useCellREStore((s) => s.setPolylineWidth);
   return (
     <>
       {TOOL_GROUPS.map((group, gi) => (
@@ -132,7 +130,7 @@ export function CellREToolbar({
           {polylineWidth != null && setPolylineWidth && (
             <>
               <span className="m" style={{fontSize:10,color:'var(--ink3)'}}>W:</span>
-              <input type='number' min={1} max={50} value={polylineWidth} onChange={e=>setPolylineWidth(+e.target.value)} style={{width:45,background:'var(--bg1)',border:'1px solid var(--border)',color:'var(--ink0)',fontSize:10,padding:'1px 4px',borderRadius:3}} />
+              <input type='number' min={1} max={50} value={plWidth} onChange={e=>setPlWidth(+e.target.value)} style={{width:45,background:'var(--bg1)',border:'1px solid var(--border)',color:'var(--ink0)',fontSize:10,padding:'1px 4px',borderRadius:3}} />
               <span className="m" style={{fontSize:10,color:'var(--ink3)'}}>px</span>
             </>
           )}

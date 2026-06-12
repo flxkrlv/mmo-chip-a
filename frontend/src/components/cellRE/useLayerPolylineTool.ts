@@ -7,6 +7,7 @@ import { useDieViewerStore } from "../../state/dieViewer";
 
 export interface LayerPolylineTool {
   points: Point[];
+  width: number;
   addPoint: (p: Point) => void;
   commit: () => void;
   cancel: () => void;
@@ -95,5 +96,5 @@ export function useLayerPolylineTool(opts: {
     return () => setUndoOverride(null);
   }, [drafting, undoPoint, redoPoint, setUndoOverride]);
 
-  return { points, addPoint, commit, cancel };
+  return { points, width, addPoint, commit, cancel };
 }

@@ -1384,7 +1384,7 @@ export const CellRECanvas = forwardRef<CellRECanvasHandle, Props>(function CellR
       const lw = polylineWidth;
       ctx.strokeStyle = COLOR_LAYER[activeLayer] ?? "#fff";
       ctx.lineWidth = lw / v.zoom;
-      ctx.lineCap = "round"; ctx.lineJoin = "round";
+      ctx.lineCap = "butt"; ctx.lineJoin = "miter";
       ctx.beginPath();
       ctx.moveTo(polylineDraft[0].x, polylineDraft[0].y);
       for (let i = 1; i < polylineDraft.length; i++) ctx.lineTo(polylineDraft[i].x, polylineDraft[i].y);
