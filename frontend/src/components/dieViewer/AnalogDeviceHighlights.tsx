@@ -145,6 +145,9 @@ export function AnalogDeviceHighlights({
             ctx.textBaseline = "top";
             ctx.fillText(paramStr, labelBX + 3, labelBY + labelH + 2);
           }
+
+          // Terminal labels (C B E / D G S B / PLUS MINUS)
+          drawTerminalLabels(ctx, dev, sx, sy, sw, sh, vp.zoom);
         }
       }
     };
@@ -249,5 +252,41 @@ function paramHint(dev: AnalogDevice): string {
     }
     default:
       return "";
+  }
+}
+
+// ── Terminal label rendering ─────────────────────────────────────
+
+/** Draw terminal labels (C B E / D G S B / PLUS MINUS) along the left
+ *  edge of the device bbox. Labels are stacked vertically with the terminal
+ *  name in the device kind's colour on a dark background. */
+function drawTerminalLabels(
+  ctx: CanvasRenderingContext2D,
+  dev: AnalogDevice,
+  sx: number, sy: number, sw: number, sh: number,
+  zoom: number
+): void {
+  if (dev.terminals.length === 0) return;
+  const color = DEVICE_COLORS[dev.kind] ?? DEVICE_COLORS.unknown;
+  const fontSize = Math.max(8, Math.min(11, sh * 0.12 / dev.terminals.length));
+  if (sh < fontSize * dev.terminals.length * 1.5) return; // not enough vertical space
+
+  ctx.font = `600 ${fontSize}px monospace`;
+  ctx.textBaseline = "middle";
+  const spacing = sh / (dev.terminals.length + 1);
+
+  for (let i = 0; i < dev.terminals.length; i++) {
+    const t = dev.terminals[i];
+    const shortName = t.name.slice(0, 3);
+    const tm = ctx.measureText(shortName);
+    const tw = tm.width + 4;
+    const th = fontSize + 4;
+    const tx = sx + sw + 2;  // right of bbox
+    const ty = sy + spacing * (i + 1);
+
+    ctx.fillStyle = "rgba(0, 0, 0, 0.65)";
+    ctx.fillRect(tx, ty - th / 2, tw, th);
+    ctx.fillStyle = color;
+    ctx.fillText(shortName, tx + 2, ty);
   }
 }
