@@ -173,12 +173,16 @@ export const TOOL_LAYERS: Record<"rect" | "polygon" | "point", LayerType[]> = {
     "capacitor_bottom", "capacitor_top", "metal3", "metal4", "metal5", "metal6",
     // Simple RE marker layers
     "npn_id", "pnp_id", "mos_id", "res_id", "cap_id", "diode_id",
-    "collector", "drain", "gate", "source", "bulk"],
+    "collector", "drain", "gate", "source", "bulk",
+    // Hitbox — click-target for die-level wire snapping
+    "wire_hitbox"],
   polygon: ["diffusion", "polysilicon", "metal1", "metal2",
     "nwell", "pwell", "base", "emitter", "resistor_body",
     "capacitor_bottom", "capacitor_top", "metal3", "metal4", "metal5", "metal6",
     "npn_id", "pnp_id", "mos_id", "res_id", "cap_id", "diode_id",
-    "collector", "drain", "gate", "source", "bulk"],
+    "collector", "drain", "gate", "source", "bulk",
+    // Hitbox — click-target for die-level wire snapping
+    "wire_hitbox"],
   point: ["contact", "via1", "via2", "via3", "via4"]
 };
 

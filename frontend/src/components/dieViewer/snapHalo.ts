@@ -67,3 +67,40 @@ export function drawSnapHalo(
   ctx.arc(x, y, ringR, 0, Math.PI * 2);
   ctx.stroke();
 }
+
+/** Accent color for a cell-terminal snap halo — warm orange so it's
+ *  visually distinct from the vertex snap (blue) and the via snap (also
+ *  blue via the solid halo). */
+export const TERMINAL_RING_COLOR = "#f0a030";
+const TERMINAL_RING_FILL = "rgba(240, 160, 48, 0.25)";
+
+/** Draw the cell-terminal snap halo at a screen point: same ring shape as
+ *  the vertex snap but in orange, so the user knows this is a cell port
+ *  connection, not a net-vertex join. */
+export function drawTerminalHalo(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  ringR: number
+): void {
+  ctx.beginPath();
+  ctx.arc(x, y, ringR, 0, Math.PI * 2);
+  ctx.fillStyle = TERMINAL_RING_FILL;
+  ctx.fill();
+  ctx.lineWidth = 2;
+  ctx.strokeStyle = TERMINAL_RING_COLOR;
+  ctx.beginPath();
+  ctx.arc(x, y, ringR, 0, Math.PI * 2);
+  ctx.stroke();
+  // Draw a small cross-hair at centre so the terminal feels distinct from
+  // an existing vertex.
+  const p = Math.max(2, ringR * 0.3);
+  ctx.beginPath();
+  ctx.moveTo(x - p, y);
+  ctx.lineTo(x + p, y);
+  ctx.moveTo(x, y - p);
+  ctx.lineTo(x, y + p);
+  ctx.strokeStyle = TERMINAL_RING_COLOR;
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
+}

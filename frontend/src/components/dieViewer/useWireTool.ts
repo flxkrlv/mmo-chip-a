@@ -33,11 +33,25 @@ import type { WirePreview } from "./WireDraftOverlay";
 /** Click tolerance in CSS pixels — world tolerance is this divided by zoom. */
 export const HIT_TOLERANCE_PX = 4;
 
+/** Tolerance for snapping to a cell terminal (world px at the current zoom).
+ *  Slightly larger than the vertex tolerance so the user can feel the snap
+ *  area around a terminal without having to be pixel-accurate. */
+export const TERMINAL_SNAP_TOLERANCE_PX = 10;
+
 export interface ResolvedNode {
   netId: string;
   nodeId: string;
   x: number;
   y: number;
+}
+
+/** A terminal snap target - the cursor is near a cell instance terminal.
+ *  Committing here places a node at the terminal center so the SPICE export
+ *  can match the wire to the cell port via distance. */
+export interface TerminalSnapTarget {
+  x: number;
+  y: number;
+  terminalId: string;
 }
 
 /** A point snapped onto the *body* of an existing edge — committing here
@@ -57,6 +71,8 @@ export interface WireSnap {
   /** Snapped to a via (ML or manual) rather than a net vertex / wire body.
    *  Drawn with the solid snap halo, matching the multi-wire overlay. */
   via?: boolean;
+  /** Snapped to a cell terminal. Drawn with the orange terminal halo. */
+  terminal?: TerminalSnapTarget;
 }
 
 /** Draft polyline. `segLayers[i]` is the conductor layer of the segment
@@ -133,6 +149,10 @@ export function useWireTool(opts: {
    *  the snap area equals the rendered via dot's radius, so clicks inside
    *  the visible via always land on it. */
   getViaSizeWorld?: () => number;
+  /** Nearest cell-instance terminal within `tolWorld` world px of the cursor.
+   *  Returns the centre point and a unique terminal id for visual feedback.
+   *  Optional — when absent, terminal snapping is disabled. */
+  findNearestTerminal?: (world: Point, tolWorld: number) => TerminalSnapTarget | null;
 }): WireTool {
   const {
     dispatcher,
@@ -146,7 +166,8 @@ export function useWireTool(opts: {
     findViaOnSegment,
     snapToViasEnabled,
     autoEndOnViaEnabled,
-    getViaSizeWorld
+    getViaSizeWorld,
+    findNearestTerminal
   } = opts;
   // Mirror the snap providers into a ref so callbacks don't re-bind every
   // render (would invalidate downstream useEffects + churn React Query).
@@ -155,7 +176,8 @@ export function useWireTool(opts: {
     findViaOnSegment,
     snapToViasEnabled,
     autoEndOnViaEnabled,
-    getViaSizeWorld
+    getViaSizeWorld,
+    findNearestTerminal
   });
   snapRef.current = {
     findNearestVia,
@@ -188,6 +210,21 @@ export function useWireTool(opts: {
       if (end.x === last.x && end.y === last.y) return null;
       const tol = viaSnapTolerance(zoom, getViaSizeWorld?.() ?? VIA_DEFAULT_SIZE);
       return findViaOnSegment(last, end, tol);
+    },
+    []
+  );
+
+  /** Nearest cell terminal within the zoom-adjusted tolerance. Returns the
+   *  terminal centre and its unique id so the overlay can paint the orange
+   *  terminal halo instead of the blue vertex ring. Applied after vertex / 
+   *  edge-split and before via — the user already sees the wire body via the
+   *  virtual vertex marker, so a terminal under that wire doesn't confuse. */
+  const resolveTerminalSnap = useCallback(
+    (world: Point, zoom: number): TerminalSnapTarget | null => {
+      const { findNearestTerminal } = snapRef.current;
+      if (!findNearestTerminal) return null;
+      const tol = TERMINAL_SNAP_TOLERANCE_PX / zoom;
+      return findNearestTerminal(world, tol);
     },
     []
   );
@@ -305,6 +342,11 @@ export function useWireTool(opts: {
       if (node) return { x: node.x, y: node.y, virtual: false };
       const edge = edgeSplitFromHit(hit, world);
       if (edge) return { x: edge.at.x, y: edge.at.y, virtual: true };
+      // Cell terminal snap: before via so a terminal near a via gets the
+      // terminal halo (orange) instead of the via halo (blue). The terminal
+      // marks a deliberate connection point; the via is just passing through.
+      const terminal = resolveTerminalSnap(world, vp.zoom);
+      if (terminal) return { x: terminal.x, y: terminal.y, virtual: false, terminal };
       // Via snap is the lowest-priority preview: only kicks in when there's
       // no existing wire to anchor to. Flagged `via` so the overlay draws the
       // solid snap halo (same as the multi-wire tool), not the edge-split
@@ -312,7 +354,7 @@ export function useWireTool(opts: {
       if (via) return { x: via.x, y: via.y, virtual: true, via: true };
       return null;
     },
-    [annotationLayer, viewportLive, edgeSplitFromHit, viaSnap, snapNode]
+    [annotationLayer, viewportLive, edgeSplitFromHit, viaSnap, snapNode, resolveTerminalSnap]
   );
 
   /** Run a net-graph edit, transparently splitting the start edge first when
@@ -382,8 +424,9 @@ export function useWireTool(opts: {
 
       if (!d) {
         draftRedoRef.current = [];
-        // Vertex beats via: snap the start to an existing vertex (even one
-        // hidden under a via) so the new wire extends that net.
+        // Vertex beats terminal beats via: snap the start to an existing
+        // vertex (even one hidden under a via) so the new wire extends that
+        // net.
         const via = viaSnap(world, vp.zoom);
         const node = snapNode(world, via, vp.zoom, true);
         if (node) {
@@ -404,14 +447,27 @@ export function useWireTool(opts: {
             segLayers: [],
             startSplit: split
           });
-        } else {
-          // No wire / vertex to anchor into → optionally pin the start to a
-          // nearby via (ML or manual).
-          const start = via
-            ? { x: Math.round(via.x), y: Math.round(via.y) }
-            : world;
-          setDraft({ points: [start], anchor: null, segLayers: [] });
+          return;
         }
+        // Cell terminal: start the wire at the terminal centre. No net
+        // anchor — the SPICE export matches the wire to the terminal by
+        // distance. The wire node is placed right at the terminal centre so
+        // the match is exact.
+        const terminal = resolveTerminalSnap(world, vp.zoom);
+        if (terminal) {
+          setDraft({
+            points: [{ x: terminal.x, y: terminal.y }],
+            anchor: null,
+            segLayers: []
+          });
+          return;
+        }
+        // No wire / vertex / terminal to anchor into → optionally pin the
+        // start to a nearby via (ML or manual).
+        const start = via
+          ? { x: Math.round(via.x), y: Math.round(via.y) }
+          : world;
+        setDraft({ points: [start], anchor: null, segLayers: [] });
         return;
       }
 
@@ -580,18 +636,31 @@ export function useWireTool(opts: {
       } else if (shiftKey) {
         preview = { ...world, onNode: false };
       } else {
-        preview = via
-          ? {
-              x: Math.round(via.x),
-              y: Math.round(via.y),
-              onNode: false,
-              onVia: true
-            }
-          : { ...snapped45, onNode: false };
+        // Cell terminal: before via so the orange terminal halo appears in
+        // preference to the blue via halo — the terminal is a deliberate
+        // connection target.
+        const terminal = resolveTerminalSnap(world, zoom);
+        if (terminal) {
+          preview = {
+            x: terminal.x,
+            y: terminal.y,
+            onNode: false,
+            onTerminal: terminal
+          };
+        } else if (via) {
+          preview = {
+            x: Math.round(via.x),
+            y: Math.round(via.y),
+            onNode: false,
+            onVia: true
+          };
+        } else {
+          preview = { ...snapped45, onNode: false };
+        }
       }
       wirePreviewLive.set(preview);
     },
-    [annotationLayer, wirePreviewLive, viaSnap, viaOnProjection, snapNode]
+    [annotationLayer, wirePreviewLive, viaSnap, viaOnProjection, snapNode, resolveTerminalSnap]
   );
 
   // Leaving the wire tool abandons any uncommitted draft.

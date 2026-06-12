@@ -13,6 +13,17 @@ export const DEFAULT_ML_CONFIG: DieMLConfig = {
   traceWidth: 8
 };
 
+/** Analog layer ids selectable from the die-viewer layer palette. */
+export type AnalogLayerId =
+  | "nwell" | "pwell" | "deep_nwell" | "buried_layer"
+  | "base" | "emitter" | "collector_sinker"
+  | "jfet_gate" | "jfet_channel"
+  | "resistor_body"
+  | "capacitor_bottom" | "capacitor_top"
+  | "npn_id" | "pnp_id" | "res_id" | "cap_id" | "diode_id"
+  | "mos_id" | "collector" | "drain" | "gate" | "source" | "bulk"
+  | "metal3" | "metal4" | "metal5" | "metal6";
+
 export type ToolKind =
   | "select"
   | "pan"
