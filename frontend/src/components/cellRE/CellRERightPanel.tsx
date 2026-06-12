@@ -68,6 +68,8 @@ interface Props {
    *  shared hover state so the image canvas + schematic light up the
    *  matching elements. */
   onHoverEntity?: (entity: HoverEntity) => void;
+  /** Callback to upsert a shape (e.g. changing resistor width). */
+  onUpdateShape?: (layer: LayerType, shape: LayerShape) => void;
   /** Replace the canvas selection with these shape keys. */
   onSelect: (ids: Set<string>) => void;
   /** Rename the active cell type. Called by the header's double-click
@@ -114,6 +116,7 @@ export function CellRERightPanel({
   canvasTab,
   onHoverEntity,
   onSelect,
+  onUpdateShape,
   onRename,
   onRenameNet,
   onSetNetLabel,
