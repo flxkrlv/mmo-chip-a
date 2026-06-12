@@ -327,8 +327,6 @@ function RE({ dieId }: { dieId: string }) {
     width: useCellREStore((s) => s.polylineWidth),
   });
 
-  const polyline = useLayerPolylineTool({ dispatcher, activeTool, setActiveTool });
-
   // ── Cell orientation (right-click) ────────────────────────────────
   const orient = useCallback(
     (
