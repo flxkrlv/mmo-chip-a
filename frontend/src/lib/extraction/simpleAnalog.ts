@@ -178,7 +178,7 @@ export function extractMarkedDevices(
           },
           cellTypeId,
           instanceName: `${prefix}${counter}`,
-          modelName: "NPN_GEN",
+          modelName: marker.kind === "bjt_npn" ? "NPN_GEN" : "PNP_GEN",
           terminals: [
             { name: "C", netId: terminalNet(collectors) },
             { name: "B", netId: terminalNet(bases) },

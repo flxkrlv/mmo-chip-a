@@ -140,13 +140,14 @@ export function collectDieWideAnalogDevices(
         // with two base contacts → two B labels, but one net.
         const termPoints: Array<{x:number;y:number;name:string}> = [];
         for (const t of dev.terminals) {
-          const layerName = terminalLayerOf(dev.kind, t.name);
-          if (!layerName) continue;
-          const shapes = ct.layers?.[layerName as keyof typeof ct.layers] as LayerShape[] | undefined;
-          if (!shapes) continue;
-          for (const s of shapes) {
-            const c = centerOfShape(s as any);
-            if (c) termPoints.push({ x: cellCX + c.x, y: cellCY + c.y, name: t.name });
+          const layerNames = terminalLayersOf(dev.kind, t.name);
+          for (const layerName of layerNames) {
+            const shapes = ct.layers?.[layerName as keyof typeof ct.layers] as LayerShape[] | undefined;
+            if (!shapes) continue;
+            for (const s of shapes) {
+              const c = centerOfShape(s as any);
+              if (c) termPoints.push({ x: cellCX + c.x, y: cellCY + c.y, name: t.name });
+            }
           }
         }
 
@@ -192,15 +193,30 @@ export function detectAndExportDieWide(
 
 // ── Terminal-position helpers ───────────────────────────────────
 
-/** Map device kind + terminal name to the layer type that holds its shape. */
-function terminalLayerOf(kind: DeviceKind, name: string): string | null {
+/** Map device kind + terminal name to the layer type(s) that hold its shape.
+ *  Returns primary then fallback layers — so a BJT base checks "base" first,
+ *  then "bulk" if the user drew the base with the bulk tool. */
+function terminalLayersOf(kind: DeviceKind, name: string): string[] {
   switch (kind) {
-    case "bjt_npn": case "bjt_pnp":
-      return { C: "collector", B: "base", E: "emitter" }[name] ?? null;
-    case "mos":
-      return { D: "drain", G: "gate", S: "source", B: "bulk" }[name] ?? null;
+    case "bjt_npn": case "bjt_pnp": {
+      const bjt: Record<string, string[]> = {
+        C: ["collector"],
+        B: ["base", "bulk"],
+        E: ["emitter"],
+      };
+      return bjt[name] ?? [];
+    }
+    case "mos": {
+      const mos: Record<string, string[]> = {
+        D: ["drain"],
+        G: ["gate"],
+        S: ["source"],
+        B: ["bulk"],
+      };
+      return mos[name] ?? [];
+    }
     default:
-      return "contact";
+      return ["contact"];
   }
 }
 
