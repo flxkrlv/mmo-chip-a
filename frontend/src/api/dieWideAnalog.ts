@@ -76,10 +76,7 @@ export function collectDieWideAnalogDevices(
   }
   console.log(`[dieWide] ${cells.length} cells, ${instancesByCt.size} types`);
 
-  const counters: Record<string, number> = {
-    mos: 0, bjt_npn: 0, bjt_pnp: 0,
-    jfet_n: 0, jfet_p: 0, resistor: 0, capacitor: 0, diode: 0, unknown: 0,
-  };
+  const counters: Record<string, number> = {};
   const pref: Record<string, string> = {
     bjt_npn: "Q", bjt_pnp: "Q",
     mos: "M", resistor: "R", capacitor: "C", diode: "D",
@@ -103,8 +100,8 @@ export function collectDieWideAnalogDevices(
       const instCell = instanceList[inst];
       for (const dev of ctDevices) {
         const p = pref[dev.kind] ?? "X";
-        counters[dev.kind] = (counters[dev.kind] ?? 0) + 1;
-        const instName = `${p}${counters[dev.kind]}`;
+        counters[p] = (counters[p] ?? 0) + 1;
+        const instName = `${p}${counters[p]}`;
 
         const cellCX = instCell?.x ?? 0;
         const cellCY = instCell?.y ?? 0;
