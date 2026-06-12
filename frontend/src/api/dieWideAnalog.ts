@@ -135,18 +135,29 @@ export function collectDieWideAnalogDevices(
         });
 
         // Compute terminal die-world positions from cell type layers
-        // so the overlay can draw terminal labels (C/B/E) at actual shape centers.
-        // Collect terminal positions per shape (not per terminal): a terminal
-        // with two base contacts → two B labels, but one net.
+        // Terminal labels at CONTACT positions: for each terminal, find all
+        // contact shapes that overlap the terminal's layer shapes, and draw
+        // the label at each contact centre (not the polygon centre).
         const termPoints: Array<{x:number;y:number;name:string}> = [];
+        const allContacts = (ct.layers?.contact ?? []) as LayerShape[];
         for (const t of dev.terminals) {
           const layerNames = terminalLayersOf(dev.kind, t.name);
           for (const layerName of layerNames) {
-            const shapes = ct.layers?.[layerName as keyof typeof ct.layers] as LayerShape[] | undefined;
-            if (!shapes) continue;
-            for (const s of shapes) {
-              const c = centerOfShape(s as any);
-              if (c) termPoints.push({ x: cellCX + c.x, y: cellCY + c.y, name: t.name });
+            const termShapes = ct.layers?.[layerName as keyof typeof ct.layers] as LayerShape[] | undefined;
+            if (!termShapes || termShapes.length === 0) continue;
+            for (const ts of termShapes) {
+              const tb = shapeBounds(ts);
+              if (!tb) continue;
+              // Find every contact that overlaps this terminal shape
+              for (const cs of allContacts) {
+                const cb = shapeBounds(cs);
+                if (!cb) continue;
+                if (rectsOverlap(tb.x, tb.y, tb.x + tb.width, tb.y + tb.height,
+                                  cb.x, cb.y, cb.x + cb.width, cb.y + cb.height)) {
+                  const cc = centerOfShape(cs as any);
+                  if (cc) termPoints.push({ x: cellCX + cc.x, y: cellCY + cc.y, name: t.name });
+                }
+              }
             }
           }
         }
@@ -235,4 +246,33 @@ function centerOfShape(s: LayerShape): { x: number; y: number } | null {
     case "line": return { x: (s.x1 + s.x2) / 2, y: (s.y1 + s.y2) / 2 };
     default: return null;
   }
+}
+
+/** Axis-aligned bounding box of a LayerShape. */
+function shapeBounds(s: LayerShape): {x:number;y:number;width:number;height:number} | null {
+  switch (s.kind) {
+    case "rect": return { x: s.x, y: s.y, width: s.width, height: s.height };
+    case "point": return { x: s.x - s.size/2, y: s.y - s.size/2, width: s.size, height: s.size };
+    case "circle": return { x: s.x - s.radius, y: s.y - s.radius, width: s.radius*2, height: s.radius*2 };
+    case "polygon": {
+      if (s.points.length === 0) return null;
+      let mx = Infinity, my = Infinity, Mx = -Infinity, My = -Infinity;
+      for (const p of s.points) {
+        if (p.x < mx) mx = p.x; if (p.x > Mx) Mx = p.x;
+        if (p.y < my) my = p.y; if (p.y > My) My = p.y;
+      }
+      return { x: mx, y: my, width: Mx - mx, height: My - my };
+    }
+    case "line": {
+      const x1=Math.min(s.x1,s.x2), x2=Math.max(s.x1,s.x2);
+      const y1=Math.min(s.y1,s.y2), y2=Math.max(s.y1,s.y2);
+      return { x: x1, y: y1, width: x2-x1, height: y2-y1 };
+    }
+    default: return null;
+  }
+}
+
+function rectsOverlap(ax1:number, ay1:number, ax2:number, ay2:number,
+                       bx1:number, by1:number, bx2:number, by2:number): boolean {
+  return ax1 < bx2 && ax2 > bx1 && ay1 < by2 && ay2 > by1;
 }
