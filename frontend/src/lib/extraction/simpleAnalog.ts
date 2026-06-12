@@ -241,22 +241,50 @@ export function extractMarkedDevices(
 
       // ── Resistor ─────────────────────────────────────────────
       case "resistor": {
+        const bodyLines = shapesInside(layers, "resistor_body", marker.bbox);
         const contacts = shapesInside(layers, "contact", marker.bbox);
-        const W = marker.bbox.width * umPerPx;
-        const L = marker.bbox.height * umPerPx;
-        const squares = (W > 0 && L > 0) ? Math.max(L, W) / Math.min(L, W) : 0;
+
+        // Compute from polyline if lines exist, otherwise from bbox
+        let L_um = 0, W_um = 0, squares = 0, corners = 0;
+        const lines = bodyLines.filter(s=>s.kind==="line") as Array<{kind:"line";x1:number;y1:number;x2:number;y2:number;width:number}>;
+        if (lines.length > 0) {
+          // Polyline mode: sum segment lengths, count corners
+          let totalL = 0;
+          W_um = (lines[0].width || 4) * umPerPx;
+          let prevAngle: number|null = null;
+          for (let i = 0; i < lines.length; i++) {
+            const l = lines[i];
+            const dx = l.x2 - l.x1, dy = l.y2 - l.y1;
+            const segLen = Math.sqrt(dx*dx + dy*dy);
+            totalL += segLen;
+            if (i > 0) {
+              const angle = Math.atan2(dy, dx);
+              if (prevAngle != null && Math.abs(angle - prevAngle) > Math.PI/6) corners++;
+              prevAngle = angle;
+            } else {
+              prevAngle = Math.atan2(dy, dx);
+            }
+          }
+          L_um = totalL * umPerPx;
+          squares = (totalL - corners * lines[0].width) / lines[0].width + 0.55 * corners;
+        } else {
+          // Bbox fallback
+          W_um = marker.bbox.width * umPerPx;
+          L_um = marker.bbox.height * umPerPx;
+          squares = (W_um > 0 && L_um > 0) ? Math.max(L_um, W_um) / Math.min(L_um, W_um) : 0;
+        }
 
         devices.push({
           id: devId,
           kind: "resistor",
           geometry: {
-            L_um: Math.max(L, W),
-            W_um: Math.min(L, W),
+            L_um,
+            W_um,
             squares,
             resistance_ohms: squares * 50,
             fingers: 1,
             multiplier: 1,
-            shape: "straight",
+            shape: lines.length > 0 ? "meander" : "straight",
           },
           cellTypeId,
           instanceName: `${prefix}${counter}`,

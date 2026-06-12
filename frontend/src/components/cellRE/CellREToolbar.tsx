@@ -33,7 +33,8 @@ const TOOL_GROUPS: ToolGroup[] = [
     items: [
       { kind: "rect", icon: Ic.cellRect, label: "Draw layer rectangle — R" },
       { kind: "polygon", icon: Ic.viaPolygon, label: "Draw layer polygon — P" },
-      { kind: "point", icon: Ic.viaPoint, label: "Place via point — X" }
+      { kind: "point", icon: Ic.viaPoint, label: "Place via point — X" },
+      { kind: "polyline", icon: Ic.wire, label: "Draw polyline (resistor) — L" }
     ]
   }
 ];
