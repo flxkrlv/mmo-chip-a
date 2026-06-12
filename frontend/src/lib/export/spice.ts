@@ -322,7 +322,7 @@ function paramString(d: AnalogDevice, dialect: "cdl" | "spectre" | "hspice"): st
     case "bjt_npn":
     case "bjt_pnp": {
       const bg = g as DeviceGeometryBJT;
-      const area = bg.totalAE_um2 > 0 ? (dialect === "cdl" ? `AREA=${(bg.totalAE_um2 * 1e-12).toExponential(2)}` : `area=${(bg.totalAE_um2 * 1e-12).toExponential(2)}`) : "";
+      const area = (bg as any).AE_um2 > 0 ? (dialect === "cdl" ? `AREA=${((bg as any).AE_um2 * 1e-12).toExponential(2)}` : `area=${((bg as any).AE_um2 * 1e-12).toExponential(2)}`) : "";
       const m = bg.multiplier > 1 ? (dialect === "cdl" ? `M=${bg.multiplier}` : `m=${bg.multiplier}`) : "";
       return [area, m].filter((s) => s).join(" ");
     }

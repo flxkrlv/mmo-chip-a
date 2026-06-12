@@ -154,27 +154,33 @@ export function extractMarkedDevices(
           return nextNet(); // still give it a net even without contact
         }
 
-        // AE = largest base×emitter overlap
-        let maxAE = 0;
-        for (const baseS of bases) {
-          const bb = shapeBbox(baseS);
-          if (!bb) continue;
-          for (const emitS of emitters) {
-            const eb = shapeBbox(emitS);
-            if (!eb) continue;
-            maxAE = Math.max(maxAE, overlapArea(bb, eb));
+        // AE = sum of each emitter's overlap with base (not max).
+        // Multiple emitter shapes → multiplier = emitter count.
+        let totalAE = 0;
+        const emitterCount = Math.max(emitters.length, 1);
+        for (const emitS of emitters) {
+          const eb = shapeBbox(emitS);
+          if (!eb) { totalAE += 0; continue; }
+          // Find overlap of this emitter with any base shape
+          let emitterArea = 0;
+          for (const baseS of bases) {
+            const bb = shapeBbox(baseS);
+            if (!bb) continue;
+            const a = overlapArea(bb, eb);
+            if (a > emitterArea) emitterArea = a;
           }
+          totalAE += emitterArea;
         }
-        const ae_um2 = maxAE * umPerPx * umPerPx;
+        const perFingerAE_um2 = totalAE / emitterCount * umPerPx * umPerPx;
 
         devices.push({
           id: devId,
           kind: marker.kind,
           geometry: {
-            AE_um2: ae_um2,
+            AE_um2: perFingerAE_um2,
             PE_um: 0,
-            multiplier: 1,
-            totalAE_um2: ae_um2,
+            multiplier: emitterCount,
+            totalAE_um2: totalAE * umPerPx * umPerPx,
             emitterFingers: Math.max(emitters.length, 1),
             bjtType: marker.kind === "bjt_npn" ? ("npn" as const) : ("pnp" as const),
           },
