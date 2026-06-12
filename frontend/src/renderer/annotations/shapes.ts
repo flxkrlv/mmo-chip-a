@@ -260,6 +260,7 @@ export function drawCellLayers(
     const nonLines = shapes.filter(s => s.kind !== "line");
     if (lines.length > 0) {
       applyShapeStyle(ctx, layer, lines[0]);
+      ctx.lineWidth = Math.max((lines[0] as any).width ?? 4, 0.5);
       ctx.lineCap = "butt";
       ctx.lineJoin = "round";
       ctx.beginPath();
