@@ -200,6 +200,10 @@ export const CellRECanvas = forwardRef<CellRECanvasHandle, Props>(function CellR
     onPolyAddVertex,
     onPolyCommit,
     onPolyCancel,
+    polylineDraft,
+    onPolylineAddVertex,
+    onPolylineCommit,
+    onPolylineCancel,
     onEscape,
     onShapeContextMenu,
     onCanvasHover
@@ -265,6 +269,10 @@ export const CellRECanvas = forwardRef<CellRECanvasHandle, Props>(function CellR
     onPolyAddVertex,
     onPolyCommit,
     onPolyCancel,
+    polylineDraft,
+    onPolylineAddVertex,
+    onPolylineCommit,
+    onPolylineCancel,
     onEscape,
     onShapeContextMenu: undefined as Props["onShapeContextMenu"],
     onCanvasHover: undefined as Props["onCanvasHover"]
@@ -284,6 +292,10 @@ export const CellRECanvas = forwardRef<CellRECanvasHandle, Props>(function CellR
     onPolyAddVertex,
     onPolyCommit,
     onPolyCancel,
+    polylineDraft,
+    onPolylineAddVertex,
+    onPolylineCommit,
+    onPolylineCancel,
     onEscape,
     onShapeContextMenu,
     onCanvasHover
