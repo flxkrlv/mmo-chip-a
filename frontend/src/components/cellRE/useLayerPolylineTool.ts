@@ -4,6 +4,7 @@ import type { ActionDispatcher } from "../../api/actions";
 import type { Point } from "../../lib/geometry";
 import { buildUpsertShapeAction } from "../../lib/cellLayers";
 import { useDieViewerStore } from "../../state/dieViewer";
+import { useCellREStore } from "../../state/cellRE";
 
 export interface LayerPolylineTool {
   points: Point[];
