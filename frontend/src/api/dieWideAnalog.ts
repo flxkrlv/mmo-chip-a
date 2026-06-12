@@ -27,30 +27,31 @@ export function extractAnalogDevicesFromCellType(
 
 /**
  * Match a terminal position (in die coords) to the closest die-level wire.
- * Returns a stable net ID derived from the wire name, or null if none found.
+ * Returns a stable net ID derived from the wire's unique ID (not name),
+ * so two terminals on the SAME wire always get the same net ID.
  */
 function matchWireNetId(
   nets: AnnotationNet[],
   dieX: number,
   dieY: number,
   tolerance: number,
+  netIdMap: Map<string, number>,
+  nextId: { v: number },
 ): number | null {
-  let bestHash: number | null = null;
+  let bestNet: AnnotationNet | null = null;
   let bestDist = tolerance;
   for (const net of nets) {
     for (const node of net.nodes) {
       const d = Math.hypot(node.x - dieX, node.y - dieY);
       if (d < bestDist) {
         bestDist = d;
-        // Stable hash from wire name
-        let h = 0;
-        for (let i = 0; i < net.name.length; i++)
-          h = ((h << 5) - h) + net.name.charCodeAt(i), h |= 0;
-        bestHash = Math.abs(h) % 9000 + 100;
+        bestNet = net;
       }
     }
   }
-  return bestHash;
+  if (!bestNet) return null;
+  if (!netIdMap.has(bestNet.id)) netIdMap.set(bestNet.id, nextId.v++);
+  return netIdMap.get(bestNet.id)!;
 }
 
 /**
@@ -75,6 +76,10 @@ export function collectDieWideAnalogDevices(
     instancesByCt.set(cell.cellTypeId, list);
   }
   console.log(`[dieWide] ${cells.length} cells, ${instancesByCt.size} types`);
+
+  // Wire ID → stable net number (same wire = same net)
+  const netIdMap = new Map<string, number>();
+  const nextNetId = { v: 100 };
 
   const counters: Record<string, number> = {};
   const pref: Record<string, string> = {
@@ -178,7 +183,7 @@ export function collectDieWideAnalogDevices(
           }
           const tc = termCenters[ti];
           if (tc) {
-            const wireNetId = matchWireNetId(nets, tc.x, tc.y, 80);
+            const wireNetId = matchWireNetId(nets, tc.x, tc.y, 80, netIdMap, nextNetId);
             if (wireNetId != null) {
               console.log(`[wire] ${instName}.${t.name} @(${Math.round(tc.x)},${Math.round(tc.y)}) -> net ${wireNetId}`);
               return { ...t, netId: wireNetId };
