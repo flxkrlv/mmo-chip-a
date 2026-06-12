@@ -124,7 +124,7 @@ function drawShapeLine(
   const prev = ctx.lineWidth;
   const prevCap = ctx.lineCap;
   ctx.lineWidth = Math.max(l.width, 0.5 / bounds.zoom);
-  ctx.lineCap = "butt";
+  ctx.lineCap = "square";
   ctx.lineJoin = "round";
   ctx.beginPath();
   ctx.moveTo(l.x1, l.y1);
