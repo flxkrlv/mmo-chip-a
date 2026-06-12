@@ -116,17 +116,18 @@ export function collectDieWideAnalogDevices(
           ? { ...dev.bbox, x: dev.bbox.x + cellCX, y: dev.bbox.y + cellCY }
           : dev.bbox;
 
-        // 1. Compute terminal POSITIONS from actual contact centres first.
-        //    Each terminal gets the average centre of all contacts that overlap
-        //    its terminal-layer shapes. This is the same data used for labels.
-        const termPoints: Array<{x:number;y:number;name:string}> = [];
+        // 1. Compute contact-level terminal positions.
+        //    Each contact is tagged with which terminals it overlaps.
+        //    Shared contacts → used for LABELS only.
+        //    Unique contacts → used for wire matching (prevents accidental B/E shorting).
+        const termPoints: Array<{x:number;y:number;name:string;cid:string}> = [];
         const allContacts = (ct.layers?.contact ?? []) as LayerShape[];
-        // Per-terminal contact centres in die-world coords
-        const termCenters: Array<{x:number;y:number}|null> = dev.terminals.map(() => null);
+        const contactTis = new Map<string, Set<number>>();
+        const contactPos = new Map<string, {x:number;y:number}>(); // contact id → cell-local centre
+
         for (let ti = 0; ti < dev.terminals.length; ti++) {
           const t = dev.terminals[ti];
           const layerNames = terminalLayersOf(dev.kind, t.name);
-          let sx = 0, sy = 0, n = 0;
           for (const layerName of layerNames) {
             const termShapes = ct.layers?.[layerName as keyof typeof ct.layers] as LayerShape[] | undefined;
             if (!termShapes) continue;
@@ -140,12 +141,27 @@ export function collectDieWideAnalogDevices(
                                   cb.x, cb.y, cb.x+cb.width, cb.y+cb.height)) {
                   const cc = centerOfShape(cs as any);
                   if (cc) {
-                    termPoints.push({ x: cellCX + cc.x, y: cellCY + cc.y, name: t.name });
-                    sx += cc.x; sy += cc.y; n++;
+                    termPoints.push({ x: cellCX + cc.x, y: cellCY + cc.y, name: t.name, cid: cs.id });
+                    const set = contactTis.get(cs.id) ?? new Set();
+                    set.add(ti);
+                    contactTis.set(cs.id, set);
+                    if (!contactPos.has(cs.id)) contactPos.set(cs.id, cc);
                   }
                 }
               }
             }
+          }
+        }
+
+        // Per-terminal centre for wire matching — only unique contacts.
+        const termCenters: Array<{x:number;y:number}|null> = dev.terminals.map(() => null);
+        for (let ti = 0; ti < dev.terminals.length; ti++) {
+          let sx = 0, sy = 0, n = 0;
+          for (const [cid, tis] of contactTis) {
+            if (tis.size !== 1 || !tis.has(ti)) continue;
+            const cp = contactPos.get(cid);
+            if (!cp) continue;
+            sx += cp.x; sy += cp.y; n++;
           }
           if (n > 0) termCenters[ti] = { x: cellCX + sx/n, y: cellCY + sy/n };
         }
@@ -173,7 +189,7 @@ export function collectDieWideAnalogDevices(
           return { ...t, netId: fresh };
         });
 
-        allDevices.push({ ...dev, instanceName: instName, terminals: matchedTerms, bbox: worldBbox, _termPoints: termPoints } as AnalogDevice & { _termPoints: typeof termPoints });
+        allDevices.push({ ...dev, instanceName: instName, terminals: matchedTerms, bbox: worldBbox, _termPoints: termPoints.map(p=>({x:p.x,y:p.y,name:p.name})) } as AnalogDevice & { _termPoints: Array<{x:number;y:number;name:string}> });
         if (termPoints.length === 0 && inst === 0) {
           console.log(`[terms] ${instName} (${dev.kind}) ct=${ct.name}: 0 terminal shapes found. layers present:`, Object.keys(ct.layers ?? {}));
         }
