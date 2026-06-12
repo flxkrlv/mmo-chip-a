@@ -59,8 +59,6 @@ export function CellREToolbar({
   /** Optional hint: # of vertices in the in-progress polygon. Renders a tiny
    *  status line under the layer chips when > 0. */
   polyDraftLen?: number;
-  polylineWidth?: number;
-  setPolylineWidth?: (w: number) => void;
 }) {
   return (
     <>
@@ -119,14 +117,6 @@ export function CellREToolbar({
           )}
         </>
       )}
-
-      {activeTool === "polyline" && polylineWidth != null && setPolylineWidth && (<>
-        <BigToolDivider />
-        <span className="m" style={{fontSize:10,color:'var(--ink3)'}}>W:</span>
-        <input type='number' min={1} max={50} value={polylineWidth} onChange={e=>setPolylineWidth(+e.target.value)} style={{width:45,background:'var(--bg1)',border:'1px solid var(--border)',color:'var(--ink0)',fontSize:10,padding:'1px 4px',borderRadius:3}} />
-        <span className="m" style={{fontSize:10,color:'var(--ink3)'}}>px</span>
-      </>)}
-
       {activeTool === "point" && (
         <>
           <BigToolDivider />
