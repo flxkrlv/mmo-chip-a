@@ -1993,39 +1993,31 @@ function DieViewer({ dieId }: { dieId: string }) {
             mlViasLayer={mlViasLayer}
           />
           <div style={{ borderTop: "2px solid var(--l2)" }}>
-            <details open>
-              <summary
-                className="u"
+            <div
+              style={{
+                padding: "5px 10px",
+                fontSize: 10, color: "var(--ink3)", letterSpacing: 1,
+                display: "flex", alignItems: "center", gap: 8,
+              }}
+            >
+              <span className="u">ANALOG DEVICES</span>
+              <label
                 style={{
-                  padding: "6px 10px", fontSize: 10, cursor: "pointer",
-                  color: "var(--ink3)", letterSpacing: 1,
-                  userSelect: "none",
-                  display: "flex", alignItems: "center", gap: 8,
-                }}
-                onClick={(e) => {
-                  // Prevent checkbox clicks from toggling details.
-                  if ((e.target as HTMLElement).closest("label")) e.preventDefault();
+                  marginLeft: "auto", fontSize: 8,
+                  display: "flex", alignItems: "center", gap: 3,
+                  cursor: "pointer", color: "var(--ink2)",
                 }}
               >
-                <span>ANALOG DEVICES</span>
-                <label
-                  style={{
-                    marginLeft: "auto", fontSize: 8,
-                    display: "flex", alignItems: "center", gap: 3,
-                    cursor: "pointer", color: "var(--ink2)",
-                  }}
-                >
-                  <input
-                    type="checkbox"
-                    checked={deviceOverlayOn}
-                    onChange={(e) => setDeviceOverlayOn(e.target.checked)}
-                    style={{ margin: 0 }}
-                  />
-                  o/l
-                </label>
-              </summary>
-              <AnalogDiePanel annotations={annotations ?? (undefined as any)} />
-            </details>
+                <input
+                  type="checkbox"
+                  checked={deviceOverlayOn}
+                  onChange={(e) => setDeviceOverlayOn(e.target.checked)}
+                  style={{ margin: 0 }}
+                />
+                overlay
+              </label>
+            </div>
+            <AnalogDiePanel annotations={annotations ?? (undefined as any)} />
           </div>
         </aside>
       </main>

@@ -106,6 +106,14 @@ export function collectDieWideAnalogDevices(
         counters[dev.kind] = (counters[dev.kind] ?? 0) + 1;
         const instName = `${p}${counters[dev.kind]}`;
 
+        const cellCX = instCell?.x ?? 0;
+        const cellCY = instCell?.y ?? 0;
+
+        // Transform bbox to die-world coordinates
+        const worldBbox = dev.bbox
+          ? { ...dev.bbox, x: dev.bbox.x + cellCX, y: dev.bbox.y + cellCY }
+          : dev.bbox;
+
         // Match each terminal to a die-level wire, or assign unique fresh net
         const matchedTerms = dev.terminals.map((t, ti) => {
           if (t.netId < 0) return t;
@@ -114,9 +122,6 @@ export function collectDieWideAnalogDevices(
             const fresh = 2000 + allDevices.length * 10 + ti;
             return { ...t, netId: fresh };
           }
-          // Terminal die position = instance offset + terminal bbox center
-          const cellCX = instCell?.x ?? 0;
-          const cellCY = instCell?.y ?? 0;
           const termDieX = cellCX + bbox.x + bbox.width * (ti + 0.5) / (dev.terminals.length + 1);
           const termDieY = cellCY + bbox.y + bbox.height * 0.5;
 
@@ -127,7 +132,7 @@ export function collectDieWideAnalogDevices(
           return { ...t, netId: fresh };
         });
 
-        allDevices.push({ ...dev, instanceName: instName, terminals: matchedTerms });
+        allDevices.push({ ...dev, instanceName: instName, terminals: matchedTerms, bbox: worldBbox });
       }
     }
     console.log(`  → ${ct.name}: ${ctDevices.length}dev × ${instanceList.length}inst`);
