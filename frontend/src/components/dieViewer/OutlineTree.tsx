@@ -31,6 +31,8 @@ type Props = {
   /** Base (die background) images. One per die today; the data model will
    *  grow to multiple later. Each gets independent visibility + opacity. */
   baseImages?: { id: string; name: string }[];
+  /** cell ID → device name (Q1, R1 etc.) from analog extraction */
+  deviceLabels?: Map<string, string>;
 };
 
 /** Session-group key for the "ML Regions" parent (it spans two annotation
@@ -47,7 +49,7 @@ const GUIDES_KEY = "guides";
  *  not an AnnotationKind — they render via the image layer, not rbush). */
 const BASE_IMAGES_KEY = "base-images";
 
-export function OutlineTree({ annotations, onFocus, baseImages = [] }: Props) {
+export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabels }: Props) {
   const expandedSections = usePreferences((s) => s.expandedSections);
   const hiddenKinds = usePreferences((s) => s.hiddenKinds);
   const toggleSection = usePreferences((s) => s.toggleSectionExpanded);
@@ -193,7 +195,7 @@ export function OutlineTree({ annotations, onFocus, baseImages = [] }: Props) {
                       depth={2}
                       icon={Ic.cell}
                       monoLabel
-                      label={cell.id}
+                      label={deviceLabels?.get(cell.id) ?? cell.id.slice(0,8)}
                       selected={selectedIds.has(id)}
                       onSelect={() => select([id])}
                       onDoubleClick={() => focus([id])}

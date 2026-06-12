@@ -633,7 +633,9 @@ function DieViewer({ dieId }: { dieId: string }) {
 
   // ── Device highlighting toggle ───────────────────────────────
   const [deviceOverlayOn, setDeviceOverlayOn] = useState(true);
-  const analogDevices = useMemo(
+  
+  const deviceLabels = useMemo(() => { const m = new Map<string,string>(); for(const d of analogDevices){ const cid = (d as any)._cellId; if(cid) m.set(cid, d.instanceName??d.id); } return m; }, [analogDevices]);
+const analogDevices = useMemo(
     () => {
       if (!annotations) return [];
       try {
@@ -1888,6 +1890,7 @@ function DieViewer({ dieId }: { dieId: string }) {
             annotations={annotations}
             onFocus={focusOnIds}
             baseImages={die ? [{ id: die.id, name: die.name }] : []}
+            deviceLabels={deviceLabels}
           />
         </aside>
         <section

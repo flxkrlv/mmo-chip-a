@@ -262,8 +262,9 @@ export function collectDieWideAnalogDevices(
         allDevices.push({
           ...dev,
           instanceName: instName, terminals: matchedTerms, bbox: worldBbox,
-          _termPoints: termPoints
-        } as AnalogDevice & { _termPoints: typeof termPoints });
+          _termPoints: termPoints,
+          _cellId: instCell.id,
+        } as AnalogDevice & { _termPoints: typeof termPoints; _cellId: string });
       }
     }
   }
