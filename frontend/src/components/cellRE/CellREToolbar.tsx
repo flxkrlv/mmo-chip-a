@@ -127,13 +127,9 @@ export function CellREToolbar({
             value={isInList(activeLayer, TOOL_LAYERS.polyline) ? activeLayer : TOOL_LAYERS.polyline[0]}
             onChange={setActiveLayer}
           />
-          {polylineWidth != null && setPolylineWidth && (
-            <>
-              <span className="m" style={{fontSize:10,color:'var(--ink3)'}}>W:</span>
+          <span className="m" style={{fontSize:10,color:'var(--ink3)'}}>W:</span>
               <input type='number' min={1} max={50} value={plWidth} onChange={e=>setPlWidth(+e.target.value)} style={{width:45,background:'var(--bg1)',border:'1px solid var(--border)',color:'var(--ink0)',fontSize:10,padding:'1px 4px',borderRadius:3}} />
               <span className="m" style={{fontSize:10,color:'var(--ink3)'}}>px</span>
-            </>
-          )}
         </>
       )}
       {activeTool === "point" && (
