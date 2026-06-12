@@ -238,8 +238,7 @@ function paramHint(dev: AnalogDevice): string {
     case "resistor": {
       if ("squares" in g) {
         const rg = g as { squares: number; resistance_ohms?: number };
-        if (rg.resistance_ohms) return `${rg.resistance_ohms.toFixed(0)}Ω`;
-        return `${rg.squares.toFixed(1)}sq`;
+        return `□${rg.squares.toFixed(1)}`;
       }
       return "";
     }
@@ -276,7 +275,7 @@ function drawTerminalLabels(
   for (const pt of points) {
     const sx = (pt.x - vp.originX) * vp.zoom;
     const sy = (pt.y - vp.originY) * vp.zoom;
-    const shortName = pt.name.slice(0, 4);
+    const shortName = pt.name;
     const tm = ctx.measureText(shortName);
     const tw = tm.width + 4;
     const th = fontSize + 4;
