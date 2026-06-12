@@ -47,6 +47,8 @@ import {
 } from "../components/dieViewer/DieContextMenu";
 import { InspectorPanel } from "../components/dieViewer/InspectorPanel";
 import { AnalogDiePanel } from "../components/dieViewer/AnalogDiePanel";
+import { AnalogDeviceHighlights } from "../components/dieViewer/AnalogDeviceHighlights";
+import { collectDieWideAnalogDevices } from "../api/dieWideAnalog";
 import { useMLJob, useMLStatus } from "../api/ml";
 import { WireDraftOverlay } from "../components/dieViewer/WireDraftOverlay";
 import { RectDraftOverlay } from "../components/dieViewer/RectDraftOverlay";
@@ -627,6 +629,18 @@ function DieViewer({ dieId }: { dieId: string }) {
       return best;
     },
     [cellTerminals]
+  );
+
+  // ── Device highlighting toggle ───────────────────────────────
+  const [deviceOverlayOn, setDeviceOverlayOn] = useState(true);
+  const analogDevices = useMemo(
+    () => {
+      if (!annotations) return [];
+      try {
+        return collectDieWideAnalogDevices(annotations as any, 1.0);
+      } catch { return []; }
+    },
+    [annotations]
   );
 
   const wire = useWireTool({
@@ -1963,6 +1977,13 @@ function DieViewer({ dieId }: { dieId: string }) {
             dragStore={guideDragLive}
             segStart={guide.segStart}
           />
+          {/* Analog device highlights —  own canvas, LiveValue-driven, no render loop */}
+          {deviceOverlayOn && (
+            <AnalogDeviceHighlights
+              devices={analogDevices}
+              viewportStore={viewportLive}
+            />
+          )}
         </section>
         <aside style={panelStyle}>
           <InspectorPanel
@@ -1979,9 +2000,29 @@ function DieViewer({ dieId }: { dieId: string }) {
                   padding: "6px 10px", fontSize: 10, cursor: "pointer",
                   color: "var(--ink3)", letterSpacing: 1,
                   userSelect: "none",
+                  display: "flex", alignItems: "center", gap: 8,
+                }}
+                onClick={(e) => {
+                  // Prevent checkbox clicks from toggling details.
+                  if ((e.target as HTMLElement).closest("label")) e.preventDefault();
                 }}
               >
-                ANALOG DEVICES
+                <span>ANALOG DEVICES</span>
+                <label
+                  style={{
+                    marginLeft: "auto", fontSize: 8,
+                    display: "flex", alignItems: "center", gap: 3,
+                    cursor: "pointer", color: "var(--ink2)",
+                  }}
+                >
+                  <input
+                    type="checkbox"
+                    checked={deviceOverlayOn}
+                    onChange={(e) => setDeviceOverlayOn(e.target.checked)}
+                    style={{ margin: 0 }}
+                  />
+                  o/l
+                </label>
               </summary>
               <AnalogDiePanel annotations={annotations ?? (undefined as any)} />
             </details>
