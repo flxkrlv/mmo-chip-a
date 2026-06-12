@@ -179,7 +179,20 @@ export function collectDieWideAnalogDevices(
           const tc = termCenters[ti];
           if (tc) {
             const wireNetId = matchWireNetId(nets, tc.x, tc.y, 80);
-            if (wireNetId != null) return { ...t, netId: wireNetId };
+            if (wireNetId != null) {
+              console.log(`[wire] ${instName}.${t.name} @(${Math.round(tc.x)},${Math.round(tc.y)}) -> net ${wireNetId}`);
+              return { ...t, netId: wireNetId };
+            }
+            console.log(`[wire] ${instName}.${t.name} @(${Math.round(tc.x)},${Math.round(tc.y)}) -> NO wire. nets=${nets.length} nodes=${nets.reduce((a:number,n:any)=>a+n.nodes.length,0)}`);
+            // Log closest wire nodes for debugging
+            let closestDist = Infinity, closestNode: any = null;
+            for (const net of nets) {
+              for (const node of net.nodes) {
+                const d = Math.hypot(node.x - tc.x, node.y - tc.y);
+                if (d < closestDist) { closestDist = d; closestNode = node; }
+              }
+            }
+            if (closestNode) console.log(`  closest wire node: (${Math.round(closestNode.x)},${Math.round(closestNode.y)}) dist=${Math.round(closestDist)}px`);
           }
           // No unique contacts or no wire found → fresh unconnected net
           const fresh = 2000 + allDevices.length * 10 + ti;
