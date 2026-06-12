@@ -266,20 +266,7 @@ function drawTerminalLabels(
   vp: { originX: number; originY: number; zoom: number }
 ): void {
   const points = (dev as any)._termPoints as Array<{x:number;y:number;name:string}> | undefined;
-  if (!points || points.length === 0) {
-    // Log once per frame per device with missing term points
-    if (!(dev as any)._loggedMissing) {
-      (dev as any)._loggedMissing = true;
-      console.log(`[terms] ${dev.instanceName ?? dev.id} (${dev.kind}): _termPoints missing or empty. terminals:`, dev.terminals.map(t=>t.name));
-    }
-    return;
-  }
-
-  // Log once per device
-  if (!(dev as any)._loggedTerms) {
-    (dev as any)._loggedTerms = true;
-    console.log(`[terms] ${dev.instanceName ?? dev.id} (${dev.kind}):`, points.map(p=>`${p.name}@(${Math.round(p.x)},${Math.round(p.y)})`).join(', '));
-  }
+  if (!points || points.length === 0) return;
 
   const color = DEVICE_COLORS[dev.kind] ?? DEVICE_COLORS.unknown;
   const fontSize = 9;
