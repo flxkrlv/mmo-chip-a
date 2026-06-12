@@ -30,6 +30,13 @@ export function useLayerPolylineTool(opts: {
 
   const addPoint = useCallback((p: Point) => {
     redoRef.current = [];
+    const pts = pointsRef.current;
+    if (pts.length > 0) {
+      const last = pts[pts.length - 1];
+      const dx = Math.abs(p.x - last.x), dy = Math.abs(p.y - last.y);
+      // Snap to nearest 90° axis
+      p = dx > dy ? { x: p.x, y: last.y } : { x: last.x, y: p.y };
+    }
     setPoints((cur) => [...cur, { x: Math.round(p.x), y: Math.round(p.y) }]);
   }, []);
 
