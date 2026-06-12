@@ -791,7 +791,7 @@ function RE({ dieId }: { dieId: string }) {
           selectedShapeIds={selectedShapeIds}
           activeDomainId={activeDomain?.id ?? null}
           canvasTab={canvasTab}
-          onUpdateShape={(layer, shape) => { if(cellType) void dispatcher.dispatch({ kind: 'upsertCellType', cellType: { ...cellType, layers: { ...cellType.layers, [layer]: (cellType.layers?.[layer]??[]).map((s:any)=>s.id===shape.id?shape:s) } }, prevCellType: cellType }) }}
+          onUpdateShape={(layer, shape) => { if(cellType) { const w = (shape as any).width; const updated = { ...cellType, layers: { ...cellType.layers, [layer]: (cellType.layers?.[layer]??[]).map((s:any)=>s.kind==='line'?{...s,width:w}:s) } }; void dispatcher.dispatch({ kind: 'upsertCellType', cellType: updated, prevCellType: cellType }) } }}
           onHoverEntity={setHoveredEntity}
           onSelect={setSelectedShapeIds}
           onRename={(newName) => {
