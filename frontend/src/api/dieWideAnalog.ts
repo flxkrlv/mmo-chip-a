@@ -166,25 +166,17 @@ export function collectDieWideAnalogDevices(
           if (n > 0) termCenters[ti] = { x: cellCX + sx/n, y: cellCY + sy/n };
         }
 
-        // 2. Match each terminal to a die-level wire using ACTUAL contact
-        //    positions, not bbox interpolation. Fall back to bbox centre if
-        //    no contacts found for a terminal.
+        // 2. Match each terminal to a die-level wire using unique-contact
+        //    centres. If a terminal has no unique contacts (all shared), it
+        //    gets a fresh unconnected net — not a bbox guess that could short.
         const matchedTerms = dev.terminals.map((t, ti) => {
           if (t.netId < 0) return t;
           const tc = termCenters[ti];
-          let mx: number, my: number;
           if (tc) {
-            mx = tc.x; my = tc.y;
-          } else if (dev.bbox) {
-            // Fallback: bbox interpolation
-            mx = cellCX + dev.bbox.x + dev.bbox.width * (ti + 0.5) / (dev.terminals.length + 1);
-            my = cellCY + dev.bbox.y + dev.bbox.height * 0.5;
-          } else {
-            const fresh = 2000 + allDevices.length * 10 + ti;
-            return { ...t, netId: fresh };
+            const wireNetId = matchWireNetId(nets, tc.x, tc.y, 80);
+            if (wireNetId != null) return { ...t, netId: wireNetId };
           }
-          const wireNetId = matchWireNetId(nets, mx, my, 80);
-          if (wireNetId != null) return { ...t, netId: wireNetId };
+          // No unique contacts or no wire found → fresh unconnected net
           const fresh = 2000 + allDevices.length * 10 + ti;
           return { ...t, netId: fresh };
         });
