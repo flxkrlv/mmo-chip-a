@@ -2,9 +2,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { CellType, LayerShape, LayerType } from "shared";
 import type { ActionDispatcher } from "../../api/actions";
 import type { Point } from "../../lib/geometry";
-import { buildUpsertShapeAction } from "../../lib/cellLayers";
-import { useDieViewerStore } from "../../state/dieViewer";
 import { useCellREStore } from "../../state/cellRE";
+import { useDieViewerStore } from "../../state/dieViewer";
 
 export interface LayerPolylineTool {
   points: Point[];
@@ -69,9 +68,8 @@ export function useLayerPolylineTool(opts: {
       };
       void dispatcher.dispatch({
         kind: "upsertCellType",
-        cellTypeId: cellType.id,
-        next,
-        prev: cellType,
+        cellType: next,
+        prevCellType: cellType,
       });
     }
     redoRef.current = [];
