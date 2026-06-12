@@ -12,7 +12,7 @@ import type {
   Transistor,
   TransmissionGate,
 } from "../../lib/extraction";
-import { shapeKey } from "../../state/cellRE";
+import { shapeKey, useCellREStore } from "../../state/cellRE";
 import {
   rowMatchesEntity,
   type HoverEntity,

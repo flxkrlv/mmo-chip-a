@@ -737,7 +737,7 @@ function RE({ dieId }: { dieId: string }) {
                 polylineDraft={polyline.points}
                 onPolylineAddVertex={polyline.addPoint}
                 onPolylineCommit={polyline.commit}
-                onPolylineCancel={polyline.cancel}
+                onPolylineCancel={polyline.cancel} polylineWidth={useCellREStore(s=>s.polylineWidth)}
                 onEscape={() => setActiveTool("select")}
                 onShapeContextMenu={(target, x, y) => {
                   if (!target) {

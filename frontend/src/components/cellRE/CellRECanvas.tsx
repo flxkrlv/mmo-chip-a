@@ -111,6 +111,7 @@ interface Props {
   onPolylineAddVertex: (p: Point) => void;
   onPolylineCommit: () => void;
   onPolylineCancel: () => void;
+  polylineWidth: number;
   /** Esc with no draft cancels the active tool back to select. */
   onEscape: () => void;
   /** Right-click on a shape. Canvas has already hit-tested + (re-)selected the
@@ -204,6 +205,7 @@ export const CellRECanvas = forwardRef<CellRECanvasHandle, Props>(function CellR
     onPolylineAddVertex,
     onPolylineCommit,
     onPolylineCancel,
+    polylineWidth,
     onEscape,
     onShapeContextMenu,
     onCanvasHover
@@ -273,6 +275,7 @@ export const CellRECanvas = forwardRef<CellRECanvasHandle, Props>(function CellR
     onPolylineAddVertex,
     onPolylineCommit,
     onPolylineCancel,
+    polylineWidth,
     onEscape,
     onShapeContextMenu: undefined as Props["onShapeContextMenu"],
     onCanvasHover: undefined as Props["onCanvasHover"]
@@ -296,6 +299,7 @@ export const CellRECanvas = forwardRef<CellRECanvasHandle, Props>(function CellR
     onPolylineAddVertex,
     onPolylineCommit,
     onPolylineCancel,
+    polylineWidth,
     onEscape,
     onShapeContextMenu,
     onCanvasHover
@@ -1377,7 +1381,7 @@ export const CellRECanvas = forwardRef<CellRECanvasHandle, Props>(function CellR
 
     // ── In-progress polyline ──────────────────────────────────────────
     if (activeTool === "polyline" && polylineDraft.length > 0) {
-      const lw = useCellREStore.getState().polylineWidth;
+      const lw = polylineWidth;
       ctx.strokeStyle = COLOR_LAYER[activeLayer] ?? "#fff";
       ctx.lineWidth = lw / v.zoom;
       ctx.lineCap = "round"; ctx.lineJoin = "round";
