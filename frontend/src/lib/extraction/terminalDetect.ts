@@ -102,36 +102,37 @@ export function detectCellTypeTerminals(
 
   if (metal1Shapes.length === 0 || contactShapes.length === 0) return [];
 
-  const contactBounds = contactShapes
-    .map((c) => ({ shape: c, bounds: shapeBounds(c) }))
-    .filter((e): e is { shape: LayerShape; bounds: SimpleRect } => e.bounds != null);
-
   const fakeCell: Cell = { id: "", cellTypeId, x: 0, y: 0 };
   const fakeCellType: CellType = { id: cellTypeId, name: "", cropRect: { x: 0, y: 0, width: 0, height: 0 }, layers };
 
   const terminals: InstanceTerminal[] = [];
   let portIdx = 0;
 
-  for (const m1 of metal1Shapes) {
-    const m1b = shapeBounds(m1);
-    if (!m1b) continue;
+  // Build a terminal for EACH contact that overlaps metal1.
+  // One metal1 polygon with 4 contacts → 4 snap targets, all at contact centres.
+  for (const cs of contactShapes) {
+    const cb = shapeBounds(cs);
+    if (!cb) continue;
 
-    // Does this metal1 overlap any contact?
-    const hasContact = contactBounds.some((cb) => rectsOverlap(m1b, cb.bounds));
-    if (!hasContact) continue;
+    // Does this contact overlap any metal1?
+    const overlapsM1 = metal1Shapes.some((m1) => {
+      const mb = shapeBounds(m1);
+      return mb && rectsOverlap(cb, mb);
+    });
+    if (!overlapsM1) continue;
 
-    const center = shapeCenter(m1);
+    const center = shapeCenter(cs);
     if (!center) continue;
 
-    const label = m1.label ?? `terminal_${portIdx}`;
+    const label = cs.label ?? `terminal_${portIdx}`;
     terminals.push({
-      id: `${cellTypeId}:${label}:${m1.id}`,
+      id: `${cellTypeId}:${label}:${cs.id}`,
       worldX: center.x,
       worldY: center.y,
       cell: fakeCell,
       cellType: fakeCellType,
       portName: label,
-      shape: m1,
+      shape: cs,
     });
     portIdx++;
   }
