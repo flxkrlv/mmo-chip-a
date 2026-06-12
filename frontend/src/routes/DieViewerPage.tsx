@@ -2011,9 +2011,32 @@ function DieViewer({ dieId }: { dieId: string }) {
                     padding: "6px 10px", fontSize: 10, cursor: "pointer",
                     color: "var(--ink3)", letterSpacing: 1,
                     userSelect: "none",
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 8,
                   }}
                 >
-                  ANALOG DEVICES
+                  <span>ANALOG DEVICES</span>
+                  <label
+                    style={{
+                      marginLeft: "auto",
+                      fontSize: 9,
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 4,
+                      cursor: "pointer",
+                      color: "var(--ink2)",
+                    }}
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={deviceHighlightVisible}
+                      onChange={(e) => setDeviceHighlightVisible(e.target.checked)}
+                      style={{ margin: 0 }}
+                    />
+                    overlay
+                  </label>
                 </summary>
                 <AnalogDiePanel annotations={annotations ?? (undefined as any)} />
               </details>
