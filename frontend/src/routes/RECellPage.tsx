@@ -606,8 +606,6 @@ function RE({ dieId }: { dieId: string }) {
           activeLayer={activeLayer}
           setActiveLayer={setActiveLayer}
           polyDraftLen={poly.points.length}
-          polylineWidth={useCellREStore(s=>s.polylineWidth)}
-          setPolylineWidth={(w:number)=>useCellREStore.getState().setPolylineWidth(w)}
         />
       </SubBar>
 
@@ -739,7 +737,7 @@ function RE({ dieId }: { dieId: string }) {
                 polylineDraft={polyline.points}
                 onPolylineAddVertex={polyline.addPoint}
                 onPolylineCommit={polyline.commit}
-                onPolylineCancel={polyline.cancel} polylineWidth={useCellREStore(s=>s.polylineWidth)}
+                onPolylineCancel={polyline.cancel}
                 onEscape={() => setActiveTool("select")}
                 onShapeContextMenu={(target, x, y) => {
                   if (!target) {
