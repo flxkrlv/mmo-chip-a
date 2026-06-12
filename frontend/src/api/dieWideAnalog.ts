@@ -134,22 +134,21 @@ export function collectDieWideAnalogDevices(
 
         // Compute terminal die-world positions from cell type layers
         // so the overlay can draw terminal labels (C/B/E) at actual shape centers.
-        const termPositions = dev.terminals.map((t) => {
+        // Collect terminal positions per shape (not per terminal): a terminal
+        // with two base contacts → two B labels, but one net.
+        const termPoints: Array<{x:number;y:number;name:string}> = [];
+        for (const t of dev.terminals) {
           const layerName = terminalLayerOf(dev.kind, t.name);
-          if (!layerName) return null;
+          if (!layerName) continue;
           const shapes = ct.layers?.[layerName as keyof typeof ct.layers] as LayerShape[] | undefined;
-          if (!shapes || shapes.length === 0) return null;
-          // Average centre of ALL shapes for this terminal (e.g. two base contacts → midpoint)
-          let sx = 0, sy = 0, n = 0;
+          if (!shapes) continue;
           for (const s of shapes) {
             const c = centerOfShape(s as any);
-            if (c) { sx += c.x; sy += c.y; n++; }
+            if (c) termPoints.push({ x: cellCX + c.x, y: cellCY + c.y, name: t.name });
           }
-          if (n === 0) return null;
-          return { x: cellCX + sx / n, y: cellCY + sy / n };
-        });
+        }
 
-        allDevices.push({ ...dev, instanceName: instName, terminals: matchedTerms, bbox: worldBbox, _termPos: termPositions } as AnalogDevice & { _termPos: Array<{x:number;y:number}|null> });
+        allDevices.push({ ...dev, instanceName: instName, terminals: matchedTerms, bbox: worldBbox, _termPoints: termPoints } as AnalogDevice & { _termPoints: typeof termPoints });
       }
     }
     console.log(`  → ${ct.name}: ${ctDevices.length}dev × ${instanceList.length}inst`);

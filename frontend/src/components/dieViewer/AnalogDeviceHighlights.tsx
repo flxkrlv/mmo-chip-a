@@ -257,33 +257,26 @@ function paramHint(dev: AnalogDevice): string {
 
 // ── Terminal label rendering ─────────────────────────────────────
 
-/** Draw terminal labels (C B E / D G S B / PLUS MINUS) at the actual
- *  terminal shape positions computed in collectDieWideAnalogDevices.
- *  Labels are drawn with the terminal name on a dark background at the
- *  layer centre, so "E" sits right on the emitter shape, etc. */
+/** Draw terminal labels at actual layer-shape positions. One label per
+ *  shape — so a BJT with two base contacts gets two "B" labels.
+ *  All same-name labels share one net (handled by the extractor). */
 function drawTerminalLabels(
   ctx: CanvasRenderingContext2D,
-  dev: AnalogDevice & { _termPos?: Array<{x:number;y:number}|null> },
+  dev: AnalogDevice & { _termPoints?: Array<{x:number;y:number;name:string}> },
   vp: { originX: number; originY: number; zoom: number }
 ): void {
-  const posList = (dev as any)._termPos as Array<{x:number;y:number}|null> | undefined;
-  if (!posList || posList.length === 0) return;
+  const points = (dev as any)._termPoints as Array<{x:number;y:number;name:string}> | undefined;
+  if (!points || points.length === 0) return;
 
   const color = DEVICE_COLORS[dev.kind] ?? DEVICE_COLORS.unknown;
   const fontSize = 9;
   ctx.font = `600 ${fontSize}px monospace`;
   ctx.textBaseline = "middle";
 
-  for (let i = 0; i < posList.length; i++) {
-    const p = posList[i];
-    if (!p) continue;
-    const t = dev.terminals[i];
-    if (!t) continue;
-
-    const sx = (p.x - vp.originX) * vp.zoom;
-    const sy = (p.y - vp.originY) * vp.zoom;
-
-    const shortName = t.name.slice(0, 4);
+  for (const pt of points) {
+    const sx = (pt.x - vp.originX) * vp.zoom;
+    const sy = (pt.y - vp.originY) * vp.zoom;
+    const shortName = pt.name.slice(0, 4);
     const tm = ctx.measureText(shortName);
     const tw = tm.width + 4;
     const th = fontSize + 4;
