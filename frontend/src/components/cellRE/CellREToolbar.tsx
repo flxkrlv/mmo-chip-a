@@ -50,7 +50,9 @@ export function CellREToolbar({
   setActiveTool,
   activeLayer,
   setActiveLayer,
-  polyDraftLen
+  polyDraftLen,
+  polylineWidth,
+  setPolylineWidth
 }: {
   activeTool: ReToolKind;
   setActiveTool: (tool: ReToolKind) => void;
