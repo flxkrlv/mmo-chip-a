@@ -124,7 +124,7 @@ function drawShapeLine(
   const prev = ctx.lineWidth;
   const prevCap = ctx.lineCap;
   ctx.lineWidth = Math.max(l.width, 0.5 / bounds.zoom);
-  ctx.lineCap = "square";
+  ctx.lineCap = "butt";
   ctx.lineJoin = "round";
   ctx.beginPath();
   ctx.moveTo(l.x1, l.y1);
@@ -253,7 +253,23 @@ export function drawCellLayers(
     if (isHidden?.(layer)) continue;
     const shapes = layers[layer];
     if (!shapes || shapes.length === 0) continue;
-    for (const s of shapes) {
+
+    // Group consecutive "line" shapes on resistor_body into a single path
+    // so lineJoin=round fills corners without affecting lineCap at ends.
+    const lines = shapes.filter((s): s is LayerLine => s.kind === "line");
+    const nonLines = shapes.filter(s => s.kind !== "line");
+    if (lines.length > 0) {
+      applyShapeStyle(ctx, layer, lines[0]);
+      ctx.lineCap = "butt";
+      ctx.lineJoin = "round";
+      ctx.beginPath();
+      for (const l of lines) {
+        ctx.moveTo(l.x1, l.y1);
+        ctx.lineTo(l.x2, l.y2);
+      }
+      ctx.stroke();
+    }
+    for (const s of nonLines) {
       const out = replaceShape ? replaceShape(layer, s) : s;
       if (!out) continue;
       applyShapeStyle(ctx, layer, out);
