@@ -112,6 +112,8 @@ export function detectCellTypeTerminals(
   const terminals: InstanceTerminal[] = [];
   let portIdx = 0;
 
+  console.log(`[terminalDetect] cellType ${cellTypeId}: ${metal1Shapes.length} metal1 shapes, ${contactShapes.length} contacts`);
+
   for (const m1 of metal1Shapes) {
     const m1b = shapeBounds(m1);
     if (!m1b) continue;
@@ -159,9 +161,14 @@ export function buildInstanceTerminalMap(
 
   const result: InstanceTerminal[] = [];
 
+  console.log(`[terminalDetect] building terminal map: ${cells.length} cells, ${cellTypes.length} types`);
+
   for (const cell of cells) {
     const typeTerminals = perType.get(cell.cellTypeId);
-    if (!typeTerminals || typeTerminals.length === 0) continue;
+    if (!typeTerminals || typeTerminals.length === 0) {
+      console.log(`[terminalDetect] cell ${cell.id} type ${cell.cellTypeId}: 0 terminals`);
+      continue;
+    }
 
     const ct = cellTypes.find((t) => t.id === cell.cellTypeId);
     if (!ct) continue;
@@ -178,5 +185,6 @@ export function buildInstanceTerminalMap(
     }
   }
 
+  console.log(`[terminalDetect] built ${result.length} instance terminals`);
   return result;
 }

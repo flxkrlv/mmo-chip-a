@@ -606,11 +606,23 @@ function DieViewer({ dieId }: { dieId: string }) {
   // on each cell type). Memoized on annotations so it recomputes when
   // layers or cell placements change.
   const cellTerminals = useMemo(
-    () =>
-      buildInstanceTerminalMap(
+    () => {
+      const terms = buildInstanceTerminalMap(
         annotations?.cellTypes ?? [],
         annotations?.cells ?? []
-      ),
+      );
+      console.log(`[DieViewerPage] cellTerminals: ${terms.length} total (from ${annotations?.cellTypes.length ?? 0} types, ${annotations?.cells.length ?? 0} instances)`);
+      if (terms.length > 0) {
+        console.log('[DieViewerPage] first 3 terminals:', terms.slice(0, 3).map(t => ({
+          id: t.id,
+          worldX: t.worldX,
+          worldY: t.worldY,
+          portName: t.portName,
+          cellPos: { x: t.cell.x, y: t.cell.y }
+        })));
+      }
+      return terms;
+    },
     [annotations?.cellTypes, annotations?.cells]
   );
   const findNearestTerminal = useCallback(
