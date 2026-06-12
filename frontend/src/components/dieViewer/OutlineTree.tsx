@@ -33,6 +33,8 @@ type Props = {
   baseImages?: { id: string; name: string }[];
   /** cell ID → device name (Q1, R1 etc.) from analog extraction */
   deviceLabels?: Map<string, string>;
+  /** Fired on double-click of a cell with a device label. */
+  onDeviceSelect?: (cellId: string) => void;
 };
 
 /** Session-group key for the "ML Regions" parent (it spans two annotation
@@ -49,7 +51,7 @@ const GUIDES_KEY = "guides";
  *  not an AnnotationKind — they render via the image layer, not rbush). */
 const BASE_IMAGES_KEY = "base-images";
 
-export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabels }: Props) {
+export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabels, onDeviceSelect }: Props) {
   const expandedSections = usePreferences((s) => s.expandedSections);
   const hiddenKinds = usePreferences((s) => s.hiddenKinds);
   const toggleSection = usePreferences((s) => s.toggleSectionExpanded);
@@ -198,7 +200,7 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
                       label={deviceLabels?.get(cell.id) ?? cell.id.slice(0,8)}
                       selected={selectedIds.has(id)}
                       onSelect={() => select([id])}
-                      onDoubleClick={() => focus([id])}
+                      onDoubleClick={() => { focus([id]); const label = deviceLabels?.get(cell.id); if (label && onDeviceSelect) onDeviceSelect(cell.id); }}
                     />
                   );
                 })}

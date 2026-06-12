@@ -203,10 +203,8 @@ export function AnalogDeviceHighlights({
         inset: 0,
         width: "100%",
         height: "100%",
-        pointerEvents: onDeviceClick ? "auto" : "none",
-        cursor: onDeviceClick ? "pointer" : "default",
+        pointerEvents: "none",
       }}
-      onClick={handleClick}
     />
   );
 }

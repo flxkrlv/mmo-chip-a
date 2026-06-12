@@ -1894,6 +1894,7 @@ const analogDevices = useMemo(
             onFocus={focusOnIds}
             baseImages={die ? [{ id: die.id, name: die.name }] : []}
             deviceLabels={deviceLabels}
+            onDeviceSelect={(id) => { const d = analogDevices.find((x:any) => x._cellId === id || (x as any)._cellId === id); if(d) setSelectedDevice(d) }}
           />
         </aside>
         <section
