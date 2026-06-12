@@ -1,17 +1,9 @@
-/**
- * useLayerPolylineTool.ts — Polyline-drawing helper for Cells-RE.
- *
- * Manages the in-progress polyline (array of world-space points).
- * On Enter: commits each segment as a `LayerLine` on the active layer
- * (resistor_body). Escape or tool change cancels the draft.
- */
-
-import { useCallback, useEffect, useRef } from "react";
-import type { LayerShape } from "shared";
-import { useCellREStore, type ReToolKind } from "../../state/cellRE";
-import { buildUpsertShapeAction } from "../../lib/cellLayers";
+import { useCallback, useEffect, useRef, useState } from "react";
+import type { CellType, LayerType } from "shared";
 import type { ActionDispatcher } from "../../api/actions";
 import type { Point } from "../../lib/geometry";
+import { buildUpsertShapeAction } from "../../lib/cellLayers";
+import { useDieViewerStore } from "../../state/dieViewer";
 
 export interface LayerPolylineTool {
   points: Point[];
@@ -22,53 +14,75 @@ export interface LayerPolylineTool {
 
 export function useLayerPolylineTool(opts: {
   dispatcher: ActionDispatcher;
-  activeTool: ReToolKind;
-  setActiveTool: (t: ReToolKind) => void;
+  cellType: CellType | null;
+  activeLayer: LayerType;
+  active: boolean;
+  width: number;
 }): LayerPolylineTool {
-  const { dispatcher, activeTool, setActiveTool } = opts;
-
-  const commit = useCallback(() => {
-    const draft = useCellREStore.getState().polylineDraft;
-    if (draft.length < 2) { useCellREStore.getState().clearPolylineDraft(); return; }
-    const layer = useCellREStore.getState().activeLayer;
-    const width = useCellREStore.getState().polylineWidth;
-
-    // Create one LayerLine per segment
-    const shapes: LayerShape[] = [];
-    for (let i = 0; i < draft.length - 1; i++) {
-      const a = draft[i], b = draft[i + 1];
-      shapes.push({
-        id: crypto.randomUUID(),
-        kind: "line",
-        x1: a.x, y1: a.y, x2: b.x, y2: b.y,
-        width,
-      });
-    }
-
-    const action = buildUpsertShapeAction(layer, shapes);
-    void dispatcher.dispatch(action);
-    useCellREStore.getState().clearPolylineDraft();
-  }, [dispatcher]);
+  const { dispatcher, cellType, activeLayer, active, width } = opts;
+  const [points, setPoints] = useState<Point[]>([]);
+  const pointsRef = useRef(points); pointsRef.current = points;
+  const redoRef = useRef<Point[]>([]);
+  const setUndoOverride = useDieViewerStore((s) => s.setUndoOverride);
+  const ctxRef = useRef({ dispatcher, cellType, activeLayer, width });
+  ctxRef.current = { dispatcher, cellType, activeLayer, width };
 
   const addPoint = useCallback((p: Point) => {
-    useCellREStore.getState().addPolylinePoint(p);
+    redoRef.current = [];
+    setPoints((cur) => [...cur, { x: Math.round(p.x), y: Math.round(p.y) }]);
+  }, []);
+
+  const undoPoint = useCallback(() => {
+    const pts = pointsRef.current;
+    if (pts.length === 0) return;
+    redoRef.current = [pts[pts.length - 1], ...redoRef.current];
+    setPoints(pts.slice(0, -1));
+  }, []);
+
+  const redoPoint = useCallback(() => {
+    if (redoRef.current.length === 0) return;
+    const [r, ...rest] = redoRef.current;
+    redoRef.current = rest;
+    setPoints((p) => [...p, r]);
+  }, []);
+
+  const commit = useCallback(() => {
+    const pts = pointsRef.current;
+    const { cellType, activeLayer, dispatcher, width } = ctxRef.current;
+    if (pts.length >= 2 && cellType) {
+      for (let i = 0; i < pts.length - 1; i++) {
+        const a = pts[i], b = pts[i + 1];
+        const shape = {
+          id: crypto.randomUUID(),
+          kind: "line" as const,
+          x1: a.x, y1: a.y, x2: b.x, y2: b.y,
+          width,
+        };
+        void dispatcher.dispatch(buildUpsertShapeAction(cellType, activeLayer, shape));
+      }
+    }
+    redoRef.current = [];
+    setPoints([]);
   }, []);
 
   const cancel = useCallback(() => {
-    useCellREStore.getState().clearPolylineDraft();
+    redoRef.current = [];
+    if (pointsRef.current.length > 0) setPoints([]);
   }, []);
 
-  // Discard draft on tool change from polyline
   useEffect(() => {
-    if (activeTool !== "polyline" && useCellREStore.getState().polylineDraft.length > 0) {
-      useCellREStore.getState().clearPolylineDraft();
-    }
-  }, [activeTool]);
+    if (!active && pointsRef.current.length > 0) { redoRef.current = []; setPoints([]); }
+  }, [active]);
+  useEffect(() => {
+    if (pointsRef.current.length > 0) { redoRef.current = []; setPoints([]); }
+  }, [cellType?.id]);
 
-  return {
-    points: useCellREStore((s) => s.polylineDraft),
-    addPoint,
-    commit,
-    cancel,
-  };
+  const drafting = points.length > 0;
+  useEffect(() => {
+    if (!drafting) return;
+    setUndoOverride({ undo: undoPoint, redo: redoPoint });
+    return () => setUndoOverride(null);
+  }, [drafting, undoPoint, redoPoint, setUndoOverride]);
+
+  return { points, addPoint, commit, cancel };
 }

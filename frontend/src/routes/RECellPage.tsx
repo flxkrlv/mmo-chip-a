@@ -319,6 +319,14 @@ function RE({ dieId }: { dieId: string }) {
     active: activeTool === "polygon"
   });
 
+  const polyline = useLayerPolylineTool({
+    dispatcher,
+    cellType,
+    activeLayer,
+    active: activeTool === "polyline",
+    width: useCellREStore((s) => s.polylineWidth),
+  });
+
   const polyline = useLayerPolylineTool({ dispatcher, activeTool, setActiveTool });
 
   // ── Cell orientation (right-click) ────────────────────────────────
@@ -738,6 +746,12 @@ function RE({ dieId }: { dieId: string }) {
                 onPolylineAddVertex={polyline.addPoint}
                 onPolylineCommit={polyline.commit}
                 onPolylineCancel={polyline.cancel}
+                polylineWidth={useCellREStore(s=>s.polylineWidth)}
+                polylineDraft={polyline.points}
+                onPolylineAddVertex={polyline.addPoint}
+                onPolylineCommit={polyline.commit}
+                onPolylineCancel={polyline.cancel}
+                polylineWidth={useCellREStore(s=>s.polylineWidth)}
                 onEscape={() => setActiveTool("select")}
                 onShapeContextMenu={(target, x, y) => {
                   if (!target) {

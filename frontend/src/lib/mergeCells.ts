@@ -51,7 +51,7 @@ export function sizeDistance(a: CellType, b: CellType): number {
 }
 
 const byName = (a: CellType, b: CellType) =>
-  a.name.localeCompare(b.name, undefined, { numeric: true });
+  (a.name ?? "").localeCompare(b.name ?? "", undefined, { numeric: true });
 
 export interface GroupedTypes {
   matched: CellType[];
