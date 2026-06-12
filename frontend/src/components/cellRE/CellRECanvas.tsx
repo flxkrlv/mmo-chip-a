@@ -106,6 +106,11 @@ interface Props {
   onPolyAddVertex: (p: Point) => void;
   onPolyCommit: () => void;
   onPolyCancel: () => void;
+  /** In-progress polyline (same pattern as polygon, open path). */
+  polylineDraft: Point[];
+  onPolylineAddVertex: (p: Point) => void;
+  onPolylineCommit: () => void;
+  onPolylineCancel: () => void;
   /** Esc with no draft cancels the active tool back to select. */
   onEscape: () => void;
   /** Right-click on a shape. Canvas has already hit-tested + (re-)selected the
@@ -587,7 +592,7 @@ export const CellRECanvas = forwardRef<CellRECanvasHandle, Props>(function CellR
       return;
     }
 
-    if (tool === "polygon") {
+    if (tool === "polygon" || tool === "polyline") {
       dragRef.current = {
         kind: null,
         sx: e.clientX,
@@ -848,6 +853,8 @@ export const CellRECanvas = forwardRef<CellRECanvasHandle, Props>(function CellR
         dispatch(buildUpsertShapeAction(cellType, layer, shape));
       } else if (tool === "polygon") {
         propsRef.current.onPolyAddVertex(world);
+      } else if (tool === "polyline") {
+        propsRef.current.onPolylineAddVertex(world);
       }
     }
     redraw();
@@ -905,7 +912,7 @@ export const CellRECanvas = forwardRef<CellRECanvasHandle, Props>(function CellR
       ) {
         return;
       }
-      const { activeTool, polyDraft } = propsRef.current;
+      const { activeTool, polyDraft, polylineDraft } = propsRef.current;
       if (e.key === "Escape") {
         // Cancel order: rect-draft > polygon-draft > clear selection > leave
         // tool to select.
@@ -918,6 +925,10 @@ export const CellRECanvas = forwardRef<CellRECanvasHandle, Props>(function CellR
           propsRef.current.onPolyCancel();
           return;
         }
+        if (activeTool === "polyline" && polylineDraft.length > 0) {
+          propsRef.current.onPolylineCancel();
+          return;
+        }
         if (propsRef.current.selectedShapeIds.size > 0) {
           propsRef.current.onSelect(new Set());
           return;
@@ -928,6 +939,11 @@ export const CellRECanvas = forwardRef<CellRECanvasHandle, Props>(function CellR
       if (e.key === "Enter" && activeTool === "polygon" && polyDraft.length >= 3) {
         e.preventDefault();
         propsRef.current.onPolyCommit();
+        return;
+      }
+      if (e.key === "Enter" && activeTool === "polyline" && polylineDraft.length >= 2) {
+        e.preventDefault();
+        propsRef.current.onPolylineCommit();
         return;
       }
       if ((e.key === "Delete" || e.key === "Backspace") && !e.metaKey && !e.ctrlKey) {
@@ -1347,6 +1363,27 @@ export const CellRECanvas = forwardRef<CellRECanvasHandle, Props>(function CellR
       }
     }
 
+    // ── In-progress polyline ──────────────────────────────────────────
+    if (activeTool === "polyline" && polylineDraft.length > 0) {
+      const lw = useCellREStore.getState().polylineWidth;
+      ctx.strokeStyle = COLOR_LAYER[activeLayer] ?? "#fff";
+      ctx.lineWidth = lw / v.zoom;
+      ctx.lineCap = "round"; ctx.lineJoin = "round";
+      ctx.beginPath();
+      ctx.moveTo(polylineDraft[0].x, polylineDraft[0].y);
+      for (let i = 1; i < polylineDraft.length; i++) ctx.lineTo(polylineDraft[i].x, polylineDraft[i].y);
+      const cur = cursorRef.current;
+      if (cur) {
+        ctx.lineTo(cur.x, cur.y); ctx.setLineDash([6/v.zoom,4/v.zoom]); ctx.stroke(); ctx.setLineDash([]);
+        ctx.beginPath(); ctx.moveTo(polylineDraft[0].x, polylineDraft[0].y);
+        for (let i = 1; i < polylineDraft.length; i++) ctx.lineTo(polylineDraft[i].x, polylineDraft[i].y);
+      }
+      ctx.stroke(); ctx.lineCap = "butt"; ctx.lineJoin = "miter";
+      ctx.fillStyle = COLOR_LAYER[activeLayer] ?? "#fff";
+      const dotR = 3/v.zoom;
+      for (const p of polylineDraft) { ctx.beginPath(); ctx.arc(p.x,p.y,dotR,0,Math.PI*2); ctx.fill(); }
+    }
+
     // ── Marquee rectangle ─────────────────────────────────────────────
     const liveM = liveMarqueeRef.current;
     if (liveM && (Math.abs(liveM.width) > 0 || Math.abs(liveM.height) > 0)) {
@@ -1363,7 +1400,7 @@ export const CellRECanvas = forwardRef<CellRECanvasHandle, Props>(function CellR
   const cursor = (() => {
     if (spaceRef.current) return "grab" as const;
     if (activeTool === "pan") return "grab" as const;
-    if (activeTool === "rect" || activeTool === "polygon" || activeTool === "point") {
+    if (activeTool === "rect" || activeTool === "polygon" || activeTool === "point" || activeTool === "polyline") {
       return "crosshair" as const;
     }
     return "default" as const;

@@ -77,6 +77,7 @@ import {
 } from "../components/cellRE/ShapeContextMenu";
 import type { CellType } from "shared";
 import { useLayerPolyTool } from "../components/cellRE/useLayerPolyTool";
+import { useLayerPolylineTool } from "../components/cellRE/useLayerPolylineTool";
 import { parseShapeKey, shapeKey } from "../state/cellRE";
 import { useCellExtraction } from "../api/cellExtraction";
 import { netDisplayName } from "../lib/labels";
@@ -317,6 +318,8 @@ function RE({ dieId }: { dieId: string }) {
     activeLayer,
     active: activeTool === "polygon"
   });
+
+  const polyline = useLayerPolylineTool({ dispatcher, activeTool, setActiveTool });
 
   // ── Cell orientation (right-click) ────────────────────────────────
   const orient = useCallback(
@@ -731,6 +734,10 @@ function RE({ dieId }: { dieId: string }) {
                 onPolyAddVertex={poly.addPoint}
                 onPolyCommit={poly.commit}
                 onPolyCancel={poly.cancel}
+                polylineDraft={polyline.points}
+                onPolylineAddVertex={polyline.addPoint}
+                onPolylineCommit={polyline.commit}
+                onPolylineCancel={polyline.cancel}
                 onEscape={() => setActiveTool("select")}
                 onShapeContextMenu={(target, x, y) => {
                   if (!target) {
