@@ -132,8 +132,10 @@ export function extractMarkedDevices(
       // ── BJT ──────────────────────────────────────────────────
       case "bjt_npn":
       case "bjt_pnp": {
+        // PNP: try "base" first, then "bulk" (user may have drawn base with bulk tool)
         const collectors = shapesInside(layers, "collector", marker.bbox);
-        const bases = shapesInside(layers, "base", marker.bbox);
+        let bases = shapesInside(layers, "base", marker.bbox);
+        if (bases.length === 0) bases = shapesInside(layers, "bulk", marker.bbox);
         const emitters = shapesInside(layers, "emitter", marker.bbox);
 
         function terminalNet(terminalShapes: LayerShape[]): number {

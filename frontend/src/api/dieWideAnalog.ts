@@ -170,7 +170,12 @@ export function collectDieWideAnalogDevices(
         //    centres. If a terminal has no unique contacts (all shared), it
         //    gets a fresh unconnected net — not a bbox guess that could short.
         const matchedTerms = dev.terminals.map((t, ti) => {
-          if (t.netId < 0) return t;
+          if (t.netId < 0) {
+            // Terminal has no shapes in extraction (e.g. "bulk" used for base).
+            // Still assign a fresh net — never return "0" (GND) for unconnected.
+            const fresh = 2000 + allDevices.length * 10 + ti;
+            return { ...t, netId: fresh };
+          }
           const tc = termCenters[ti];
           if (tc) {
             const wireNetId = matchWireNetId(nets, tc.x, tc.y, 80);

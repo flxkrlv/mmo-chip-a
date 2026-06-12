@@ -84,7 +84,7 @@ function netName(
   vddName: string,
   gndName: string,
 ): string {
-  if (netId < 0) return "0"; // unconnected = ground
+  if (netId < 0) return `nc_${Math.abs(netId)}`; // unconnected, NOT ground
   const custom = netLookup.get(netId);
   if (custom) return sanitizeSpiceName(custom);
 
