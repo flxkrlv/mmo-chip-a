@@ -463,15 +463,23 @@ function DieViewer({ dieId }: { dieId: string }) {
   }, []);
 
   // Auto-load overlay images from server on first mount (survives F5).
+  // Guard against double-run (React StrictMode / HMR).
+  const autoLoadRef = useRef(false);
   useEffect(() => {
+    if (autoLoadRef.current) return;
+    autoLoadRef.current = true;
     const addLayer = useOverlayLayers.getState().addLayer;
+    const layers = useOverlayLayers.getState().layers;
+    const existing = new Set(layers.map((l) => l.name));
     import("../api/overlayImages").then((mod) =>
       mod.fetchOverlayImageList().then((list) =>
         Promise.allSettled(
           list.images.map((img) => mod.loadOverlayImageFromServer(img.name))
         ).then((results) => {
           for (const r of results) {
-            if (r.status === "fulfilled") addLayer(r.value.name, r.value.image);
+            if (r.status === "fulfilled" && !existing.has(r.value.name)) {
+              addLayer(r.value.name, r.value.image, true); // hidden by default
+            }
           }
         })
       )

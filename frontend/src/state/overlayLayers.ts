@@ -30,7 +30,7 @@ interface OverlayLayersState {
   layers: OverlayLayerEntry[];
 
   /** Add a new layer from a loaded HTMLImageElement. Returns the layer id. */
-  addLayer: (name: string, image: HTMLImageElement) => string;
+  addLayer: (name: string, image: HTMLImageElement, hidden?: boolean) => string;
   /** Remove a layer by id. */
   removeLayer: (id: string) => void;
   /** Toggle visibility of a layer. */
@@ -52,7 +52,7 @@ interface OverlayLayersState {
 export const useOverlayLayers = create<OverlayLayersState>()((set, get) => ({
   layers: [],
 
-  addLayer: (name, image) => {
+  addLayer: (name, image, hidden = false) => {
     const id = crypto.randomUUID();
     const entry: OverlayLayerEntry = {
       id,
@@ -60,7 +60,8 @@ export const useOverlayLayers = create<OverlayLayersState>()((set, get) => ({
       src: image.src,
       image,
       loaded: true,
-      hidden: false,
+      hidden,
+      opacity: 1,
       opacity: 1,
       offsetX: 0,
       offsetY: 0

@@ -156,36 +156,43 @@ export function extractMarkedDevices(
           return nextNet(); // still give it a net even without contact
         }
 
-        // AE = sum of each emitter's overlap with base (not max).
-        // Multiple emitter shapes → multiplier = emitter count.
+        // AE = overlap of emitter with base (standard BJT), or
+        // emitter area (LPnp — no separate base, the gap IS the base).
         let totalAE = 0;
         const emitterCount = Math.max(emitters.length, 1);
-        for (const emitS of emitters) {
-          const eb = shapeBbox(emitS);
-          if (!eb) { totalAE += 0; continue; }
-          // Find overlap of this emitter with any base shape
-          let emitterArea = 0;
-          for (const baseS of bases) {
-            const bb = shapeBbox(baseS);
-            if (!bb) continue;
-            const a = overlapArea(bb, eb);
-            if (a > emitterArea) emitterArea = a;
-          }
-          totalAE += emitterArea;
-        }
-        const perFingerAE_um2 = totalAE / emitterCount * umPerPx * umPerPx;
-
-        // Compute PE: for lateral PNP this is the emitter perimeter
-        // (inner edge of collector ring ≈ emitter perimeter).
-        // For vertical NPN/PNP it stays 0 (not the dominant parameter).
-        let peUm = 0;
-        // Peek at geometry to see if this is likely lateral.
-        if (bases.length > 0 && emitters.length > 0) {
+        const isLpnp = emitters.length > 0 && bases.length === 0;
+        if (isLpnp) {
+          // LPnp: AE = raw emitter area.
           for (const emitS of emitters) {
             const eb = shapeBbox(emitS);
             if (!eb) continue;
-            const emitPerim = 2 * (eb.width + eb.height);
-            peUm += emitPerim * umPerPx;
+            totalAE += eb.width * eb.height;
+          }
+        } else {
+          // Standard BJT: AE = overlap(base, emitter).
+          for (const emitS of emitters) {
+            const eb = shapeBbox(emitS);
+            if (!eb) { totalAE += 0; continue; }
+            let emitterArea = 0;
+            for (const baseS of bases) {
+              const bb = shapeBbox(baseS);
+              if (!bb) continue;
+              const a = overlapArea(bb, eb);
+              if (a > emitterArea) emitterArea = a;
+            }
+            totalAE += emitterArea;
+          }
+        }
+        const perFingerAE_um2 = totalAE / emitterCount * umPerPx * umPerPx;
+
+        // PE: for LPnp = emitter perimeter (inner edge of collector ring ≈
+        // emitter perimeter). For NPN/VPNP stays 0 (not dominant).
+        let peUm = 0;
+        if (isLpnp || (bases.length > 0 && emitters.length > 0)) {
+          for (const emitS of emitters) {
+            const eb = shapeBbox(emitS);
+            if (!eb) continue;
+            peUm += 2 * (eb.width + eb.height) * umPerPx;
           }
         }
 

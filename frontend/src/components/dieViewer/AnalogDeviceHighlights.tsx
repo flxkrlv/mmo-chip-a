@@ -225,6 +225,11 @@ function paramHint(dev: AnalogDevice): string {
     }
     case "bjt_npn":
     case "bjt_pnp": {
+      if ("PE_um" in g && dev.kind === "bjt_pnp") {
+        const bg = g as { PE_um: number; multiplier?: number };
+        const pe = bg.PE_um;
+        if (pe > 0) return `PE=${pe.toFixed(1)}µm`;
+      }
       if ("AE_um2" in g) {
         const bg = g as { AE_um2: number; multiplier?: number };
         const ae = bg.AE_um2;

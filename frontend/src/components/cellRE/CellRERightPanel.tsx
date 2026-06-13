@@ -1528,8 +1528,14 @@ function AnalogDeviceRow({ device }: { device: import("shared").AnalogDevice }) 
       paramStr = `W=${g.W_um?.toFixed(1)} L=${g.L_um?.toFixed(2)}`;
       if ((g.fingers as number) > 1) paramStr += ` NF=${g.fingers}`;
       break;
-    case "bjt_npn": case "bjt_pnp":
-      paramStr = `AE=${(g.AE_um2 as number)?.toFixed(1)}μm²`;
+    case "bjt_npn":
+      paramStr = `AE=${(g.AE_um2 as number)?.toFixed(2)}μm²`;
+      break;
+    case "bjt_pnp": {
+      const pe = g.PE_um as number | undefined;
+      paramStr = pe && pe > 0 ? `PE=${pe.toFixed(1)}μm` : `AE=${(g.AE_um2 as number)?.toFixed(2)}μm²`;
+      break;
+    }
       break;
     case "resistor":
       paramStr = `${(g.squares as number)?.toFixed(0)}sq`;

@@ -1,4 +1,4 @@
-# ANALOG RE — 2026-06-12
+# ANALOG RE — 2026-06-13
 
 ## Архитектура: Mixed-Signal
 
@@ -14,58 +14,84 @@
 │ logic.ts       │ dieWideAnalog.ts        │
 │ verilog.ts     │ spice.ts                │
 ├────────────────┼────────────────────────┤
-│ Standard cells │ NPN, PNP, MOS, R, C, D  │
+│ Standard cells │ NPN, LPNP, MOS, R, C, D  │
 │ Gate-level     │ Transistor-level        │
 │ Verilog        │ SPICE/CDL/Spectre       │
 └────────────────┴────────────────────────┘
 ```
 
-**Оригинальный CMOS маршрут НЕ тронут.**  
-Файлы `cell.ts`, `gates.ts`, `logic.ts`, `verilog.ts` — без изменений.  
+**Оригинальный CMOS маршрут НЕ тронут.**
 Стандартные ячейки работают как раньше. Аналоговая экстракция — надстройка.
 
-## Multi-Layer Images
+---
 
-### Минимальный вариант (планируется)
-- Пользователь выравнивает и обрезает все слои в Inkscape (одинаковый crop)
-- Экспортирует каждый слой (metal1.jpg, metal2.jpg, via.jpg…)
-- Импортирует в mmo-chip под один die ID
-- В OutlineTree: переключение слоёв (visibility + opacity на каждый)
-- Рендеринг: стек `DieImageLayer[]` — рисуются один поверх другого
-- Offset = 0 (изображения совмещены заранее)
+## 2026-06-13 — Реализовано
 
-### Продвинутый вариант (на потом)
-- Смещение слоёв силами mmo-chip (offset x/y на слой)
-- GUI для подгонки offset в реальном времени
+### Overlay Layers (слои изображений)
+- Backend: `/api/overlay-images/*` — list, serve, upload
+- `OverlayImageLayer` — рендер статичных PNG/JPEG/GIF/WebP в tiled canvas
+- OutlineTree: секция "Overlay Layers", Add from File, Load from Server
+- Авто-загрузка изображений из `data/overlay-images/` при старте (скрыты по умолчанию)
+- Подсказка пути в UI
 
-### Оценка сложности
-| Компонент | Сложность |
-|-----------|-----------|
-| Data model (images[] на die) | Мало |
-| Backend multi-import | Средне |
-| UI (переключение слоёв) | Средне |
-| Rendering (стек слоёв) | Мало |
+### Ruler / Measurement Tool
+- Клавиша `k`, иконка 📏
+- Режимы: free, horizontal, vertical, orthogonal, diagonal (45°)
+- Жёлтая пунктирная линия с подписью в пикселях + микронах
+- Double-click → prompt "введи размер в µm" → `umPerPx` сохраняется в аннотации
+- `DieAnnotations.umPerPx` — масштаб µm/px
 
-**Итого: 2-3 дня на минимальный вариант.**
+### Hotkey System
+- `frontend/src/lib/hotkeys.ts` — центральный registry
+- Die Viewer: s=select, w=wire, b=bus, o=via, k=ruler, r=cell, p=pin, f=fit, +/-=zoom
+- Cell RE: r=rect, p=polygon, o=point/via
 
-## ✅ Реализовано
+### Per-Net Colors
+- `netColors: Record<string, string>` в preferences (persists)
+- OutlineTree: кликабельный swatch + палитра (VDD red, GND blue, VSS green...)
+- `buildNetAnnotation` принимает `(netId) => color` — оверрайд на отрисовке
 
-- BJT netlist (NPN/PNP, C/B/E, M=N, diode-connected, без B/E shorts)
-- Wire-to-terminal snapping (contact-based, оранжевый гало)
-- Device overlay (цветные боксы, terminal labels, toggle)
-- Resistor extraction (polyline, SQUARES, width editing)
-- Polyline tool (90° орто, Enter, W input)
-- Outline tree naming (UUID → Q1/Q2/R1)
-- Device Inspector (двойной клик в дереве)
-- SPICE model cards (NPN_GEN / PNP_GEN)
+### IO Pin Snapping + Netlist Alignment
+- `findNearestTerminal` теперь включает IO pins via `matchWireToPoint`
+- `collectDieWideAnalogDevices` возвращает `{ devices, namedNets }`
+- Netlist (.SUBCDK) использует имена аннотационных проводов + pin names как порты
+
+### LPnp + vpnp слои
+- `lpnp_id`, `vpnp` добавлены в LayerType, colors, toolbar, labels
+- LPnp: AE = площадь эмиттера, PE = периметр эмиттера (collector inner edge)
+- PNP в GUI показывает PE вместо AE
+- vpnp — заглушка (не детектится)
+
+### Исправления
+- Resistor wire matching: round-robin contact distribution (фикс короткого замыкания) 
+- Cell RE теперь использует `extractMarkedDevices` вместо `detectAnalogDevices` (маркерная детекция вместо Clipper-based)
+- umPerPx прокидывается от аннотаций через collect → экспорт
+- NPN/PNP kind правильные (было pnp вместо npn)
+
+---
 
 ## ❌ Очередь
 
 | Задача | Приоритет |
 |--------|-----------|
-| **Multi-layer images** (✅ MVP готов: статичные overlay-слои) | 🟢 Done |
+| **Multi-layer image tiling** (производительность >300MB) | 🟡 Medium |
 | **MOS аналоговые транзисторы** (4-pin) | 🔴 Critical |
 | Конденсаторы / диоды | 🟡 |
 | Клик на оверлей для инспектора | 🟡 |
 | Иерархический нетлист (.SUBCKT) | 🔵 |
 | Netlist visualization | 🔵 |
+| VPNP vertical PNP (vpnp слой) | 🟡 |
+
+---
+
+## Multi-Layer Images — Архитектурное решение
+
+### Текущая реализация (MVP)
+`OverlayImageLayer` — рендер статичных full-size изображений с клиппингом.
+Приемлемо для аналоговых БИС (сканы обычно ≤300 MB).
+
+### План на tile-сервер
+Когда появятся гигапиксельные сканы или 5+ слоёв:
+- N отдельных Image-сущностей, каждая со своей mipmap-пирамидой
+- `/api/images/import`, `/api/images/:id/tiles/:z/:x/:y`
+- `DieImageLayer` для каждой (переиспользовать существующий tile renderer)
