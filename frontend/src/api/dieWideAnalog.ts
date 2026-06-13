@@ -294,14 +294,22 @@ export function collectDieWideAnalogDevices(
     }
   }
 
-  // ── Match IO pins to wire nets ───────────────────────────
-  // Build a map: annotation netId → SPICE net id → pin name.
+  // ── Build namedNets: annotation net names + IO pin names ────
+  // Seed with annotation net names (user-editable in GUI) so they
+  // appear in the CDL .SUBCKT signature.
   const namedNets = new Map<number, string>();
+  for (const aNet of nets) {
+    const spiceId = netIdMap.get(aNet.id);
+    if (spiceId != null && aNet.name) {
+      namedNets.set(spiceId, aNet.name);
+    }
+  }
+  // IO pin names override annotation net names when a pin connects to
+  // the same net (the pin is the intended port name).
   const pins = ann.pins ?? [];
   for (const pin of pins) {
     const netId = matchWireToPoint(nets, pin.x, pin.y, 10, netIdMap, nextNetId);
     if (netId != null) {
-      // Use pin name as the net name in the netlist.
       if (!namedNets.has(netId)) namedNets.set(netId, pin.name);
     }
   }

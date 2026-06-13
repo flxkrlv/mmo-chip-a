@@ -17,14 +17,12 @@ import { useEffect, useMemo, useState } from "react";
 import type { CellType } from "shared";
 import type { LayerShape } from "shared";
 import {
-  detectAnalogDevices,
   extractCell,
   loadClipper,
-  shapeToPolygon,
   type CellExtraction,
-  type ExtractedShape,
   type InferredCellExtraction,
 } from "../lib/extraction";
+import { extractMarkedDevices } from "../lib/extraction/simpleAnalog";
 
 interface UseCellExtraction {
   data: CellExtraction | null;
@@ -61,53 +59,21 @@ export function useCellExtraction(
       const extraction = extractCell(cellType);
 
       // ── Analog device detection (Phase 1) ────────────────────
-      // detectAnalogDevices needs ExtractedShape entries for ALL layers,
-      // including analog ones (nwell, base, emitter…) that extractCell
-      // ignores. We supplement inf.shapes with shapes from analog layers.
+      // Uses marker-based detection (npn_id/pnp_id/res_id/cap_id/diode_id
+      // markers + terminal layers: collector/base/emitter for BJT,
+      // drain/gate/source/bulk for MOS). This matches what users draw
+      // in the Cell RE panel and is simpler than full geometry detection.
       if (extraction.kind === "inferred") {
         const inf = extraction as InferredCellExtraction;
         try {
-          // Build ExtractedShape entries for unprocessed analog layers
-          const analogLayerIds: ReadonlyArray<string> = [
-            "nwell", "pwell", "deep_nwell", "buried_layer",
-            "base", "emitter", "collector_sinker",
-            "jfet_gate", "jfet_channel",
-            "resistor_body",
-            "capacitor_bottom", "capacitor_top",
-            "metal3", "metal4", "metal5", "metal6",
-          ];
-          const extraShapes: ExtractedShape[] = [];
-          const layers = cellType.layers;
-          if (layers) {
-            for (const layerId of analogLayerIds) {
-              const shapes: LayerShape[] | undefined = (layers as Record<string, LayerShape[]>)[layerId];
-              if (!shapes) continue;
-              for (const s of shapes) {
-                extraShapes.push({
-                  id: s.id,
-                  layer: layerId as any,
-                  polygon: shapeToPolygon(s),
-                  netId: -1,
-                  label: s.label,
-                  customName: s.customName,
-                });
-              }
-            }
-          }
-
-          const allShapes = [...inf.shapes, ...extraShapes];
-          const analogDevices = detectAnalogDevices(
-            allShapes,
-            inf.transistors,
-            inf.diffusions,
-            inf.nets,
+          const analogDevices = extractMarkedDevices(
+            cellType.layers,
             cellType.id,
-            1.0,
-            undefined,
+            1.0, // umPerPx — Cell RE doesn't have per-die scale
           );
           return { ...inf, analogDevices } as InferredCellExtraction;
         } catch (ae) {
-          console.warn("detectAnalogDevices warning:", ae);
+          console.warn("extractMarkedDevices warning:", ae);
           return extraction;
         }
       }
