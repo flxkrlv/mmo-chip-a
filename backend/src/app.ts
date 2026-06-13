@@ -6,6 +6,7 @@ import { createDiesRouter } from "./api/dies.js";
 import { createHealthRouter } from "./api/health.js";
 import { createJobsRouter } from "./api/jobs.js";
 import { createMLRouter } from "./api/ml.js";
+import { createOverlayImagesRouter } from "./api/overlayImages.js";
 import { createMLExportRouter } from "./api/mlExport.js";
 import { createAnalogExportRouter } from "./api/analogExport.js";
 import { createTilesRouter } from "./api/tiles.js";
@@ -64,6 +65,7 @@ export function createApp(config: {
   );
   app.use(createMLExportRouter({ dataRoot: config.dataRoot }));
   app.use(createAnalogExportRouter({ dataRoot: config.dataRoot }));
+  app.use(createOverlayImagesRouter({ dataRoot: config.dataRoot }));
   app.use(createMLRouter({
     mlSidecarUrl: config.mlSidecarUrl,
     dataRoot: config.dataRoot,

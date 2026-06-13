@@ -388,6 +388,21 @@ export interface DieMLConfig {
   traceWidth: number;
 }
 
+/** A ruler/measurement line drawn on the die image. Stores raw pixel start/end
+ *  plus the µm length computed at draw time (cached so it survives zoom). */
+export interface RulerMeasurement {
+  id: string;
+  name?: string;
+  x1: number;
+  y1: number;
+  x2: number;
+  y2: number;
+  /** Pixel length at the time of drawing (cached). */
+  lengthPx: number;
+  /** µm length computed from umPerPx at draw time (cached). */
+  lengthUm: number;
+}
+
 export interface DieAnnotations {
   version: 2;
   /** Monotonically incremented every time the annotations are written.
@@ -409,6 +424,12 @@ export interface DieAnnotations {
    *  analog device detection. Same LayerType keys as CellType.layers:
    *  nwell, pwell, base, emitter, resistor_body, etc. */
   analogLayers?: CellLayers;
+  /** Scale factor: micrometres per source-image pixel. Populated by the ruler
+   *  tool's "Set scale" workflow. When set, measurements and device geometry
+   *  calculations can report physical (µm) dimensions. */
+  umPerPx?: number;
+  /** Ruler measurements — persistent lines with annotated pixel length. */
+  rulers?: RulerMeasurement[];
 
 
 export interface MLExportRequest {

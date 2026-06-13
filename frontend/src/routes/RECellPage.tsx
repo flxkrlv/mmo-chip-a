@@ -27,6 +27,7 @@ import { useCellREStore, TOOL_LAYERS } from "../state/cellRE";
 import { usePreferences } from "../state/preferences";
 import { fitRectViewport } from "../renderer/TiledCanvas";
 import { isTypingTarget } from "../lib/keyboard";
+import { CELL_RE_HOTKEYS } from "../lib/hotkeys";
 import {
   PASTE_OFFSET,
   resolveActiveCell,
@@ -532,22 +533,11 @@ function RE({ dieId }: { dieId: string }) {
         return;
       }
       if (meta || e.altKey) return;
-      switch (e.key.toLowerCase()) {
-        case "v":
-          setActiveTool("select");
-          break;
-        case "m":
-          setActiveTool("pan");
-          break;
-        case "r":
-          setActiveTool("rect");
-          break;
-        case "p":
-          setActiveTool("polygon");
-          break;
-        case "x":
-          setActiveTool("point");
-          break;
+      // Tool hotkeys from central registry.
+      const reToolId = CELL_RE_HOTKEYS[e.key.toLowerCase()];
+      if (reToolId) {
+        setActiveTool(reToolId);
+        return;
       }
     };
     window.addEventListener("keydown", onKey);

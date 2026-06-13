@@ -20,7 +20,8 @@ import type {
   IOPin,
   LayerShape,
   LayerType,
-  ROIRectangle
+  ROIRectangle,
+  RulerMeasurement
 } from "shared";
 
 const VALID_LAYERS: LayerType[] = [
@@ -81,6 +82,7 @@ export function createAnnotationsRouter(config: AnnotationsRouterConfig) {
   registerOptionalCollectionRoutes<ROIRectangle>(router, config, notify, "rois", "rois");
   registerOptionalCollectionRoutes<IgnoreRect>(router, config, notify, "ignores", "ignores");
   registerOptionalCollectionRoutes<Guide>(router, config, notify, "guides", "guides");
+  registerOptionalCollectionRoutes<RulerMeasurement>(router, config, notify, "rulers", "rulers");
 
   // ─── Net sub-entities ─────────────────────────────────────────────
 
@@ -204,6 +206,55 @@ export function createAnnotationsRouter(config: AnnotationsRouterConfig) {
       }
     }
   );
+
+  // ─── Ruler measurements ───────────────────────────────────────
+
+  router.put("/api/dies/:dieId/rulers/:id", async (request, response, next) => {
+    const { dieId, id } = request.params;
+    try {
+      const item = request.body as RulerMeasurement;
+      const result = await mutateAnnotations(config.dataRoot, dieId, (annotations) => {
+        const rulers = annotations.rulers ?? [];
+        annotations.rulers = upsertById(rulers, item);
+        return null;
+      });
+      sendMutationResult(response, dieId, result, notify);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.delete("/api/dies/:dieId/rulers/:id", async (request, response, next) => {
+    const { dieId, id } = request.params;
+    try {
+      const result = await mutateAnnotations(config.dataRoot, dieId, (annotations) => {
+        const rulers = annotations.rulers ?? [];
+        annotations.rulers = removeById(rulers, id);
+        return null;
+      });
+      sendMutationResult(response, dieId, result, notify);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // ─── Config (umPerPx) ─────────────────────────────────────────-
+
+  router.put("/api/dies/:dieId/config", async (request, response, next) => {
+    const { dieId } = request.params;
+    try {
+      const body = request.body as { umPerPx?: number };
+      const result = await mutateAnnotations(config.dataRoot, dieId, (annotations) => {
+        if (body.umPerPx !== undefined) annotations.umPerPx = body.umPerPx;
+        return null;
+      });
+      sendMutationResult(response, dieId, result, notify);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // ─── Cell-type layer shapes ────────────────────────────────────
 
   router.delete(
     "/api/dies/:dieId/cell-types/:ctId/layers/:layer/shapes/:shapeId",
@@ -334,7 +385,7 @@ function registerOptionalCollectionRoutes<T extends { id: string }>(
   config: { dataRoot: string },
   notify: (dieId: string, rev: number) => void,
   pathName: string,
-  field: "pins" | "annotations" | "rois" | "ignores" | "guides"
+  field: "pins" | "annotations" | "rois" | "ignores" | "guides" | "rulers"
 ) {
   router.put(`/api/dies/:dieId/${pathName}/:id`, async (request, response, next) => {
     const { dieId, id } = request.params;

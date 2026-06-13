@@ -282,6 +282,26 @@ export const Ic = {
       <path d="M6.5 11.5a2.5 2.5 0 01-3.5-3.5l2-2" />
     </>
   ),
+  ruler: Icon(
+    <>
+      <path d="M2.5 13.5v-3h11v3" />
+      <path d="M3.5 10.5v-1" />
+      <path d="M5.5 10.5v-1" />
+      <path d="M7.5 10.5v-1" />
+      <path d="M9.5 10.5v-1" />
+      <path d="M11.5 10.5v-1" />
+      <path d="M4.5 2.5v11M11.5 2.5v11" />
+    </>
+  ),
+  rulerOrtho: Icon(
+    <>
+      <path d="M2.5 13.5v-3h11v3" />
+      <path d="M3.5 13.5v-11" />
+      <path d="M4.5 2.5h9" />
+      <path d="M6 3.5l2-2 2 2" />
+      <path d="M12 8.5l2-2 2 2" stroke="currentColor" />
+    </>
+  ),
 };
 
 export function BrandMark(props: SVGProps<SVGSVGElement>) {

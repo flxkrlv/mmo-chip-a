@@ -37,7 +37,8 @@ export type ToolKind =
   | "cellGuideSeg"
   | "ioPoint"
   | "roi"
-  | "ignore";
+  | "ignore"
+  | "measure";
 
 /**
  * Modes for `select`:
@@ -82,6 +83,9 @@ interface DieViewerState {
   /** Orientation for the cell-grid guide-line tool: "x" = vertical line
    *  (fixed x), "y" = horizontal line (fixed y). */
   guideAxis: "x" | "y";
+  /** Ruler tool measurement mode. "free" = draw at any angle;
+   *  "h" = horizontal only; "v" = vertical only. */
+  measureMode: "free" | "h" | "v" | "ortho" | "diag";
   /** Draft ML config edited from the ML tab (mockup: client-side, seeded from
    *  the die's `annotations.mlConfig`). Source-pixel units. */
   mlConfig: DieMLConfig;
@@ -108,6 +112,7 @@ interface DieViewerActions {
   setUndoOverride: (override: UndoOverride | null) => void;
   setWireLayer: (layer: WireLayer | null) => void;
   setGuideAxis: (axis: "x" | "y") => void;
+  setMeasureMode: (mode: "free" | "h" | "v" | "ortho" | "diag") => void;
   /** Patch the draft ML config (one or more fields). */
   setMlConfig: (patch: Partial<DieMLConfig>) => void;
   /** Set the live ML-via cardinality — called by the layer when tiles load. */
@@ -128,6 +133,7 @@ const INITIAL_STATE: DieViewerState = {
   undoOverride: null,
   wireLayer: null,
   guideAxis: "x",
+  measureMode: "free",
   mlConfig: { ...DEFAULT_ML_CONFIG },
   mlViasCount: 0
 };
@@ -204,6 +210,7 @@ export const useDieViewerStore = create<DieViewerState & DieViewerActions>()((se
   setActiveAnalogLayer: (layer) => set({ activeAnalogLayer: layer }),
   setWireLayer: (layer) => set({ wireLayer: layer }),
   setGuideAxis: (axis) => set({ guideAxis: axis }),
+  setMeasureMode: (mode) => set({ measureMode: mode }),
   setMlConfig: (patch) =>
     set((state) => ({ mlConfig: { ...state.mlConfig, ...patch } })),
   setMlViasCount: (count) => {

@@ -9,7 +9,8 @@ import type {
   HumanAnnotation,
   IgnoreRect,
   IOPin,
-  ROIRectangle
+  ROIRectangle,
+  RulerMeasurement as Ruler
 } from "shared";
 import type { NetChange } from "../lib/netGraph";
 import { annotationKeys, removeById, upsertById } from "./annotations";
@@ -59,6 +60,9 @@ export type AnnotationAction =
   | { kind: "removeIgnore"; ignore: IgnoreRect }
   | { kind: "upsertGuide"; guide: Guide; prevGuide: Guide | null }
   | { kind: "removeGuide"; guide: Guide }
+  | { kind: "setUmPerPx"; umPerPx: number; prevUmPerPx: number | null }
+  | { kind: "upsertRuler"; ruler: Ruler; prevRuler: Ruler | null }
+  | { kind: "removeRuler"; ruler: Ruler }
   // ── Analog layers (Phase 1) — stores the entire CellLayers blob
   | { kind: "upsertAnalogLayers"; layers: CellLayers; prevLayers: CellLayers | null }
   // One user gesture that touches several nets atomically (cross-net merge,
@@ -133,6 +137,18 @@ export function inverseOf(action: AnnotationAction): AnnotationAction {
         : { kind: "upsertGuide", guide: action.prevGuide, prevGuide: action.guide };
     case "removeGuide":
       return { kind: "upsertGuide", guide: action.guide, prevGuide: null };
+    case "setUmPerPx":
+      return {
+        kind: "setUmPerPx",
+        umPerPx: action.prevUmPerPx ?? 0,
+        prevUmPerPx: action.umPerPx
+      };
+    case "upsertRuler":
+      return action.prevRuler === null
+        ? { kind: "removeRuler", ruler: action.ruler }
+        : { kind: "upsertRuler", ruler: action.prevRuler, prevRuler: action.ruler };
+    case "removeRuler":
+      return { kind: "upsertRuler", ruler: action.ruler, prevRuler: null };
     case "batch":
       return { kind: "batch", actions: [...action.actions].reverse().map(inverseOf) };
   }
@@ -226,6 +242,18 @@ export function applyAction(annotations: DieAnnotations, action: AnnotationActio
         ...annotations,
         guides: removeById(annotations.guides ?? [], action.guide.id)
       };
+    case "setUmPerPx":
+      return { ...annotations, umPerPx: action.umPerPx };
+    case "upsertRuler":
+      return {
+        ...annotations,
+        rulers: upsertById(annotations.rulers ?? [], action.ruler)
+      };
+    case "removeRuler":
+      return {
+        ...annotations,
+        rulers: removeById(annotations.rulers ?? [], action.ruler.id)
+      };
     case "batch":
       return action.actions.reduce(applyAction, annotations);
   }
@@ -282,6 +310,12 @@ export async function requestAction(
       return apiPut(`/api/dies/${dieId}/guides/${action.guide.id}`, action.guide);
     case "removeGuide":
       return apiDelete(`/api/dies/${dieId}/guides/${action.guide.id}`);
+    case "setUmPerPx":
+      return apiPut(`/api/dies/${dieId}/config`, { umPerPx: action.umPerPx });
+    case "upsertRuler":
+      return apiPut(`/api/dies/${dieId}/rulers/${action.ruler.id}`, action.ruler);
+    case "removeRuler":
+      return apiDelete(`/api/dies/${dieId}/rulers/${action.ruler.id}`);
     case "batch": {
       // Persist sub-actions in order; report the final revision.
       let result: { ok: true; rev: number } = { ok: true, rev: 0 };

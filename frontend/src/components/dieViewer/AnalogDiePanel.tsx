@@ -92,9 +92,8 @@ export function AnalogDiePanel({ annotations, onLayersChange }: Props) {
     );
   }
 
-
-
-  const [umPerPx, setUmPerPx] = useState(1.0);
+  // Read umPerPx from annotations (set via ruler tool's "Set Scale" workflow).
+  const umPerPx = annotations.umPerPx ?? 1.0;
   const [sheetRInput, setSheetRInput] = useState("");
   const [scanAllCells, setScanAllCells] = useState(false);
   const [scanning, setScanning] = useState(false);
@@ -117,14 +116,16 @@ export function AnalogDiePanel({ annotations, onLayersChange }: Props) {
 
   // Cell-level devices — only computed when the user clicks "Scan all cells"
   const [cellDevices, setCellDevices] = useState<AnalogDevice[]>([]);
+  const [namedNets, setNamedNets] = useState<Map<number, string>>(new Map());
 
   const handleScanAllCells = useCallback(async () => {
     if (!annotations) return;
     setScanning(true);
     await new Promise((r) => setTimeout(r, 50));
     try {
-      const allDevices = collectDieWideAnalogDevices(annotations, umPerPx);
+      const { devices: allDevices, namedNets: nn } = collectDieWideAnalogDevices(annotations, umPerPx);
       setCellDevices(allDevices);
+      setNamedNets(nn);
       setScanAllCells(true);
     } finally {
       setScanning(false);
@@ -142,9 +143,9 @@ export function AnalogDiePanel({ annotations, onLayersChange }: Props) {
     const result = generateSpiceNetlist(devices, "DIE_ANALOG", {
       sheetR_ohms: sheetR,
       umPerPx,
-    });
+    }, "cdl", namedNets);
     return result.text;
-  }, [devices, umPerPx, sheetR]);
+  }, [devices, umPerPx, sheetR, namedNets]);
 
   const byKind = useMemo(() => {
     const bk: Record<string, number> = {};
@@ -224,21 +225,19 @@ export function AnalogDiePanel({ annotations, onLayersChange }: Props) {
             </div>
             <div style={{ display: "flex", gap: 4, marginBottom: 4 }}>
               <label style={{ fontSize: 10, color: "var(--ink2)", flex: 1 }}>
-                μm/px
-                <input
-                  type="number"
-                  step={0.1}
-                  min={0.1}
-                  value={umPerPx}
-                  onChange={(e) => setUmPerPx(Number(e.target.value))}
+                μm/px (set via ruler tool)
+                <div
                   style={{
                     width: "100%", marginTop: 2,
                     background: "var(--bg1, #222)",
                     border: "1px solid var(--border, #444)",
                     borderRadius: 3, color: "var(--ink0, #eee)",
                     fontSize: 11, padding: "2px 6px",
+                    textAlign: "center"
                   }}
-                />
+                >
+                  {umPerPx.toFixed(4)}
+                </div>
               </label>
             </div>
             <div style={{ marginBottom: 4 }}>

@@ -65,9 +65,10 @@ export interface PopulateOptions {
   /** Live getter for the net wire base width (world units). Called at draw
    *  time so width-slider changes don't require repopulating. */
   netWidth?: () => number;
-  /** Live getter for the unselected wire/vertex color. Called at draw time so
-   *  color changes don't require repopulating. */
-  netColor?: () => string;
+  /** Live getter for the net color (per-net, called with the full annotation
+   *  id like "net:abc"). Called at draw time so color changes don't require
+   *  repopulating. Default: always returns NET_COLOR. */
+  netColor?: (netId: string) => string;
   /** Live getter for the cell outline/fill color. Called at draw time so
    *  color changes don't require repopulating. */
   cellColor?: () => string;
@@ -95,7 +96,7 @@ export function populateAnnotationLayer(
 ): void {
   layer.clear();
   const getNetWidth = options.netWidth ?? (() => NET_DEFAULT_WIDTH);
-  const getNetColor = options.netColor ?? (() => NET_COLOR);
+  const getNetColor = options.netColor ?? ((_: string) => NET_COLOR);
   const getCellColor = options.cellColor ?? (() => CELL_COLOR);
   const getCellShowShapes = options.cellShowShapes ?? (() => true);
   const getPointViaWorldRadius = options.pointViaWorldRadius ?? (() => null);

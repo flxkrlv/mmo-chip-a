@@ -28,6 +28,8 @@ interface PreferencesState {
   /** When true, the cell-rectangle tool snaps the drawn rect's edges to
    *  nearby grid guides (guide behaviour itself lands in a later phase). */
   cellSnapToGuides: boolean;
+  /** Per-net color overrides, keyed by `net:<netId>`. Absent = use `netColor`. */
+  netColors: Record<string, string>;
   /** Cell-grid guides hidden on the canvas. */
   guidesHidden: boolean;
   /** Guides locked — not selectable / movable (still visible). */
@@ -93,6 +95,8 @@ interface PreferencesState {
 interface PreferencesActions {
   setNetWidth: (width: number) => void;
   setNetColor: (color: string) => void;
+  /** Override color for a specific net (id like "net:abc"). null = clear. */
+  setNetColorOverride: (netId: string, color: string | null) => void;
   setCellColor: (color: string) => void;
   setCellShowShapes: (show: boolean) => void;
   setCellSnapToGuides: (snap: boolean) => void;
@@ -139,6 +143,7 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
       (set) => ({
         netWidth: NET_DEFAULT_WIDTH,
         netColor: NET_COLOR,
+        netColors: {},
         cellColor: CELL_COLOR,
         cellShowShapes: true,
         cellSnapToGuides: false,
@@ -164,6 +169,15 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
 
         setNetWidth: (width) => set({ netWidth: width }),
         setNetColor: (color) => set({ netColor: color }),
+        setNetColorOverride: (netId, color) =>
+          set((state) => {
+            if (color === null || color === state.netColor) {
+              if (!(netId in state.netColors)) return state;
+              const { [netId]: _, ...rest } = state.netColors;
+              return { netColors: rest };
+            }
+            return { netColors: { ...state.netColors, [netId]: color } };
+          }),
         setCellColor: (color) => set({ cellColor: color }),
         setCellShowShapes: (show) => set({ cellShowShapes: show }),
         setCellSnapToGuides: (snap) => set({ cellSnapToGuides: snap }),
@@ -278,6 +292,7 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
           mergeShowMlVias: state.mergeShowMlVias,
           savedViewports: state.savedViewports,
           reLayerHidden: state.reLayerHidden,
+          netColors: state.netColors,
           mlResultsHidden: state.mlResultsHidden,
           snapToVias: state.snapToVias,
           wireAutoEndOnVia: state.wireAutoEndOnVia,
@@ -289,6 +304,11 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
     )
   )
 );
+
+/** Select the effective color for a net: override if set, else global netColor. */
+export function selectNetColor(netId: string) {
+  return (state: PreferencesState) => state.netColors[netId] ?? state.netColor;
+}
 
 /** Helper selector: is this annotation kind currently visible on the canvas? */
 export function selectIsKindVisible(kind: AnnotationKind) {

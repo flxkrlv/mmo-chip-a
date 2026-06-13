@@ -1,6 +1,7 @@
-import { useMemo } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import type { DieAnnotations } from "shared";
 import { Ic } from "../../icons";
+import { useOverlayLayers } from "../../state/overlayLayers";
 import {
   CELL_COLOR_OPTIONS,
   NET_COLOR_OPTIONS,
@@ -50,6 +51,8 @@ const GUIDES_KEY = "guides";
 /** Session-group key for the "Base Images" section (die background images;
  *  not an AnnotationKind — they render via the image layer, not rbush). */
 const BASE_IMAGES_KEY = "base-images";
+/** Session-group key for the "Overlay Layers" section. */
+const OVERLAY_LAYERS_KEY = "overlay-layers";
 
 export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabels, onDeviceSelect }: Props) {
   const expandedSections = usePreferences((s) => s.expandedSections);
@@ -68,18 +71,78 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
   const mlResultsHidden = usePreferences((s) => s.mlResultsHidden);
   const setMlResultsHidden = usePreferences((s) => s.setMlResultsHidden);
 
+  // Read per-net color overrides once (not inside the .map, hooks rules).
+  const netColors = usePreferences((s) => s.netColors);
+  const globalNetColor = usePreferences((s) => s.netColor);
+  const setNetColorOverride = usePreferences((s) => s.setNetColorOverride);
+
   const selectedIds = useDieViewerStore((s) => s.selectedIds);
   const select = useDieViewerStore((s) => s.select);
   const expandedGroups = useDieViewerStore((s) => s.expandedGroups);
   const toggleGroup = useDieViewerStore((s) => s.toggleGroup);
   const mlViasCount = useDieViewerStore((s) => s.mlViasCount);
 
+  // Overlay layers (user-loaded images).
+  const overlayLayers = useOverlayLayers((s) => s.layers);
+  const addLayer = useOverlayLayers((s) => s.addLayer);
+  const setLayerHidden = useOverlayLayers((s) => s.setLayerHidden);
+
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const onFilePick = useCallback(
+    (e: React.ChangeEvent<HTMLInputElement>) => {
+      const files = e.target.files;
+      if (!files) return;
+      for (let i = 0; i < files.length; i++) {
+        const file = files[i];
+        const url = URL.createObjectURL(file);
+        const img = new Image();
+        img.onload = () => {
+          addLayer(
+            file.name.replace(/\.[^.]+$/, ""),
+            img
+          );
+        };
+        img.src = url;
+      }
+      // Reset so the same file can be picked again.
+      e.target.value = "";
+    },
+    [addLayer]
+  );
+
+  const [loadingTestImages, setLoadingTestImages] = useState(false);
+  const onLoadFromServer = useCallback(() => {
+    if (loadingTestImages) return;
+    setLoadingTestImages(true);
+    import("../../api/overlayImages")
+      .then(async (mod) => {
+        const list = await mod.fetchOverlayImageList();
+        const results = await Promise.allSettled(
+          list.images.map((img) => mod.loadOverlayImageFromServer(img.name))
+        );
+        for (const result of results) {
+          if (result.status === "fulfilled") {
+            addLayer(result.value.name, result.value.image);
+          }
+        }
+        setLoadingTestImages(false);
+      })
+      .catch(() => setLoadingTestImages(false));
+  }, [addLayer, loadingTestImages]);
+
   const cellsByType = useMemo(() => groupCellsByType(annotations), [annotations]);
   const viaTotals = useMemo(() => viaCounts(annotations), [annotations]);
 
   if (!annotations) {
     return (
-      <div className="m" style={{ padding: "12px 10px", color: "var(--ink3)", fontSize: 10.5 }}>
+      <div
+        className="m"
+        style={{
+          padding: "12px 10px",
+          color: "var(--ink3)",
+          fontSize: 10.5
+        }}
+      >
         loading annotations…
       </div>
     );
@@ -97,6 +160,7 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
   const mlResultsOpen = expandedGroups.includes(ML_RESULTS_KEY);
   const guidesOpen = expandedGroups.includes(GUIDES_KEY);
   const baseImagesOpen = expandedGroups.includes(BASE_IMAGES_KEY);
+  const overlayLayersOpen = expandedGroups.includes(OVERLAY_LAYERS_KEY);
   const mlAnyVisible = ML_KINDS.some((k) => !hiddenKinds.includes(k));
   const mlVisibility = {
     visible: mlAnyVisible,
@@ -143,13 +207,21 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
       {isOpen("net") &&
         annotations.nets.map((net) => {
           const id = `net:${net.id}`;
+          const netColor = netColors[id] ?? globalNetColor;
           return (
             <TreeRow
               key={id}
               depth={1}
-              icon={Ic.wire}
+              swatch={netColor}
               label={net.name || net.id}
               meta={`${net.edges.length} edges`}
+              controls={
+                <NetColorSettings
+                  netId={id}
+                  currentColor={netColor}
+                  onPick={(c) => setNetColorOverride(id, c)}
+                />
+              }
               selected={selectedIds.has(id)}
               onSelect={() => select([id])}
               onDoubleClick={() => focus([id])}
@@ -440,7 +512,130 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
             />
           );
         })}
+
+      <TreeSep />
+
+      {/* Overlay layers (user-loaded images) ---------------------------- */}
+      <TreeRow
+        expand={overlayLayersOpen ? "open" : "closed"}
+        label="Overlay Layers"
+        meta={overlayLayers.length}
+        onToggleExpand={() => toggleGroup(OVERLAY_LAYERS_KEY)}
+        onSelect={() => toggleGroup(OVERLAY_LAYERS_KEY)}
+      />
+      {overlayLayersOpen && (
+        <>
+          {/* Add image buttons */}
+          <TreeRow
+            depth={1}
+            icon={Ic.plus}
+            label={<span style={{ color: "var(--accent)" }}>Add from File…</span>}
+            onSelect={() => fileInputRef.current?.click()}
+          />
+          <TreeRow
+            depth={1}
+            icon={Ic.download}
+            label={
+              <span style={{ color: "var(--accent)" }}>
+                {loadingTestImages ? "Loading…" : "Load from Server…"}
+              </span>
+            }
+            onSelect={onLoadFromServer}
+          />
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="image/png,image/jpeg,image/gif,image/webp"
+            multiple
+            style={{ display: "none" }}
+            onChange={onFilePick}
+          />
+          {overlayLayers.length === 0 && (
+            <div
+              style={{
+                padding: "6px 10px 6px 20px",
+                fontSize: 10,
+                color: "var(--ink3)",
+                lineHeight: 1.5
+              }}
+            >
+              Load PNG/GIF/WebP images as semi-transparent overlays on the die
+              view. Use visibility and opacity to compare layers.
+            </div>
+          )}
+          {overlayLayers.map((layer) => (
+            <TreeRow
+              key={layer.id}
+              depth={1}
+              icon={Ic.image}
+              label={layer.name}
+              controls={
+                <OverlayLayerSettings layerId={layer.id} />
+              }
+              visibility={{
+                visible: !layer.hidden,
+                onToggle: () =>
+                  setLayerHidden(layer.id, !layer.hidden)
+              }}
+            />
+          ))}
+        </>
+      )}
     </div>
+  );
+}
+
+/** Per-net color override. Cycles through a small palette. */
+const NET_OVERRIDE_COLORS = [
+  null,                     // reset to global
+  "#ff3333",               // VDD red
+  "#3388ff",               // GND blue
+  "#22d366",               // VSS green
+  "#ffaa00",               // IO yellow
+  "#ff66aa",               // pink
+  "#aa66ff",               // purple
+  "#66ffaa",               // mint
+];
+
+function NetColorSettings({ netId, currentColor, onPick }: {
+  netId: string;
+  currentColor: string;
+  onPick: (color: string | null) => void;
+}) {
+  return (
+    <SettingsPopover label="Net color">
+      <div className="u" style={{ marginBottom: 6, fontSize: 10 }}>
+        Override color
+      </div>
+      <div style={{ display: "flex", gap: 4, flexWrap: "wrap", maxWidth: 140 }}>
+        {NET_OVERRIDE_COLORS.map((c, i) => {
+          const label = c === null
+            ? "default"
+            : ["VDD red","GND blue","VSS green","IO yellow","pink","purple","mint"][i - 1] ?? "";
+          return (
+            <button
+              key={i}
+              type="button"
+              title={label}
+              style={{
+                width: 24, height: 24, borderRadius: 3,
+                border: currentColor === (c ?? "#2e97ff") ? "2px solid rgba(255,255,255,0.9)" : "1px solid rgba(255,255,255,0.2)",
+                background: c ?? "#555",
+                cursor: "pointer",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                fontSize: 9,
+                color: c ? "rgba(0,0,0,0.3)" : "rgba(255,255,255,0.5)",
+              }}
+              onClick={() => onPick(c)}
+            >
+              {c === null ? "↺" : ""}
+            </button>
+          );
+        })}
+      </div>
+    </SettingsPopover>
   );
 }
 
@@ -567,6 +762,60 @@ function ViaSettingsButton() {
           {viaSize.toFixed(1)}
         </span>
       </div>
+    </SettingsPopover>
+  );
+}
+
+/** Settings popover for an overlay image layer — opacity + delete. */
+function OverlayLayerSettings({ layerId }: { layerId: string }) {
+  const opacity = useOverlayLayers((s) => {
+    const l = s.layers.find((x) => x.id === layerId);
+    return l?.opacity ?? 1;
+  });
+  const setLayerOpacity = useOverlayLayers((s) => s.setLayerOpacity);
+  const removeLayer = useOverlayLayers((s) => s.removeLayer);
+  const pct = Math.round(opacity * 100);
+
+  return (
+    <SettingsPopover label="Overlay layer settings">
+      <div className="u" style={{ marginBottom: 8 }}>
+        Opacity
+      </div>
+      <div className="row" style={{ gap: 10 }}>
+        <input
+          type="range"
+          min={0}
+          max={100}
+          step={1}
+          value={pct}
+          onChange={(e) =>
+            setLayerOpacity(layerId, Number(e.target.value) / 100)
+          }
+        />
+        <span
+          className="m"
+          style={{
+            width: 36,
+            color: "var(--ink2)",
+            fontSize: 11,
+            textAlign: "right"
+          }}
+        >
+          {pct}%
+        </span>
+      </div>
+      <button
+        className="btn ghost"
+        style={{
+          marginTop: 8,
+          width: "100%",
+          justifyContent: "center",
+          color: "var(--err)"
+        }}
+        onClick={() => removeLayer(layerId)}
+      >
+        {Ic.trash} Remove layer
+      </button>
     </SettingsPopover>
   );
 }

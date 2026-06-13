@@ -24,8 +24,8 @@ interface ToolGroup {
 const TOOL_GROUPS: ToolGroup[] = [
   {
     items: [
-      { kind: "select", icon: Ic.cursor, label: "Select / marquee — V" },
-      { kind: "pan", icon: Ic.pan, label: "Pan / zoom — hold Space or middle-drag" }
+      { kind: "select", icon: Ic.cursor, label: "Select / marquee - V" },
+      { kind: "pan", icon: Ic.pan, label: "Pan / zoom - hold Space or middle-drag" }
     ]
   },
   {
@@ -33,8 +33,8 @@ const TOOL_GROUPS: ToolGroup[] = [
     items: [
       { kind: "rect", icon: Ic.cellRect, label: "Draw layer rectangle — R" },
       { kind: "polygon", icon: Ic.viaPolygon, label: "Draw layer polygon — P" },
-      { kind: "point", icon: Ic.viaPoint, label: "Place via point — X" },
-      { kind: "polyline", icon: Ic.wire, label: "Draw polyline (resistor) — L" }
+      { kind: "point", icon: Ic.viaPoint, label: "Place via/contact point — O" },
+      { kind: "polyline", icon: Ic.wire, label: "Draw polyline (resistor) - L" }
     ]
   }
 ];
@@ -113,7 +113,7 @@ export function CellREToolbar({
               className="m"
               style={{ fontSize: 10.5, color: "var(--ink3)", fontStyle: "italic" }}
             >
-              {polyDraftLen} vertex{polyDraftLen === 1 ? "" : "es"} — Enter to commit,
+              {polyDraftLen} vertex{polyDraftLen === 1 ? "" : "es"} - Enter to commit,
               Esc to cancel, ⌘Z removes last
             </span>
           )}
@@ -143,12 +143,12 @@ export function CellREToolbar({
             onChange={setActiveLayer}
           />
           {/* Divider gives the snap checkbox visual breathing room from the
-              layer chips — they're two distinct options groups, not one row. */}
+              layer chips - they're two distinct options groups, not one row. */}
           <ToolDivider />
           <label
             className="check"
             style={{ opacity: 0.45, cursor: "not-allowed" }}
-            title="Snap to ML via — feature not implemented yet"
+            title="Snap to ML via - feature not implemented yet"
           >
             <input type="checkbox" disabled checked={false} readOnly />
             Snap to ML via

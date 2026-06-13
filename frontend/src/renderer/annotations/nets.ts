@@ -26,7 +26,7 @@ import {
 export function buildNetAnnotation(
   net: AnnotationNet,
   getWidth: () => number,
-  getColor: () => string,
+  getColor: (netId: string) => string,
   /** ML mode: stroke uses the real document-space width (source px, scales
    *  with zoom like the image) and vertices are drawn flush with it (radius =
    *  half the stroke), so a net renders as the uniform-width trace the export
@@ -66,7 +66,7 @@ export function buildNetAnnotation(
       const mlMode = getMatchWidth();
       const screenWidth = netScreenWidth(bounds.zoom, getWidth());
       const worldWidth = mlMode ? getWidth() : screenWidth / bounds.zoom;
-      const baseColor = getColor();
+      const baseColor = getColor(netId);
       const whole = state.selected;
       const edgeSel = (e: AnnotationNet["edges"][number]) =>
         whole || state.isSelected(edgeSubId(e.id));

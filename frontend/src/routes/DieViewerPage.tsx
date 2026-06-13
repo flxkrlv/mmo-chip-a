@@ -25,6 +25,9 @@ import {
   isMlViaId,
   parseMlViaId
 } from "../renderer/layers/MLViasLayer";
+import { OverlayImageLayer } from "../renderer/layers/OverlayImageLayer";
+import { DIE_VIEWER_HOTKEYS, GLOBAL_HOTKEYS } from "../lib/hotkeys";
+import { RulerOverlay, type RulerDraft } from "../components/dieViewer/RulerOverlay";
 import {
   buildCellAnnotation,
   buildNetAnnotation,
@@ -114,6 +117,7 @@ import { createLiveValue } from "../lib/liveValue";
 import type { WirePreview } from "../components/dieViewer/WireDraftOverlay";
 import { ANNOTATION_KIND_VALUES } from "../state/annotationKinds";
 import { DEFAULT_ML_CONFIG, useDieViewerStore } from "../state/dieViewer";
+import { useOverlayLayers } from "../state/overlayLayers";
 import { usePreferences } from "../state/preferences";
 import { useSession } from "../state/session";
 
@@ -211,6 +215,8 @@ function DieViewer({ dieId }: { dieId: string }) {
     []
   );
   const shiftLive = useMemo(() => createLiveValue<boolean>(false), []);
+  const rulerDraftLive = useMemo(() => createLiveValue<RulerDraft | null>(null), []);
+  const rulerPendingLive = useMemo(() => createLiveValue<RulerDraft | null>(null), []);
 
   // Shift state captured from pointer-move, read by the click handler (which
   // has no event of its own).
@@ -252,8 +258,50 @@ function DieViewer({ dieId }: { dieId: string }) {
     };
   }, []);
 
+  // Die-viewer hotkeys from central registry. Uses refs for the zoom/fit
+  // callbacks so the effect doesn't need to re-bind when they're created.
+  const zoomInRef = useRef<() => void>(() => {});
+  const zoomOutRef = useRef<() => void>(() => {});
+  const fitToScreenRef = useRef<() => void>(() => {});
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.repeat || isTypingTarget(e.target)) return;
+      if (e.metaKey || e.ctrlKey) return; // handled by undo/redo
+
+      // Tool switch hotkeys.
+      const toolId = DIE_VIEWER_HOTKEYS[e.key];
+      if (toolId && toolId !== "pan") {
+        e.preventDefault();
+        setActiveTool(toolId);
+        return;
+      }
+
+      // Global actions (zoom, fit).
+      const globalAction = GLOBAL_HOTKEYS[e.key];
+      if (globalAction === "zoomIn") { e.preventDefault(); zoomInRef.current(); return; }
+      if (globalAction === "zoomOut") { e.preventDefault(); zoomOutRef.current(); return; }
+      if (globalAction === "fitToScreen") { e.preventDefault(); fitToScreenRef.current(); return; }
+
+      // f: also fit to screen (overlaps with DIE_VIEWER_HOTKEYS.pan above).
+      if (toolId === "pan") {
+        e.preventDefault();
+        fitToScreenRef.current();
+        return;
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [setActiveTool]);
+
   const getNetW = useCallback(() => usePreferences.getState().netWidth, []);
-  const getNetC = useCallback(() => usePreferences.getState().netColor, []);
+  /** Per-net color: return a (netId: string) => string function that checks
+   *  per-net override first, then falls back to global netColor. */
+  const getNetC = useCallback(() => {
+    const prefs = usePreferences.getState();
+    const overrides = prefs.netColors;
+    const global = prefs.netColor;
+    return (netId: string) => overrides[netId] ?? global;
+  }, []);
   const getCellC = useCallback(() => usePreferences.getState().cellColor, []);
   const getCellShapes = useCallback(
     () => usePreferences.getState().cellShowShapes,
@@ -357,7 +405,10 @@ function DieViewer({ dieId }: { dieId: string }) {
         usePreferences.getState().inspectorTab === "ml"
           ? useDieViewerStore.getState().mlConfig.traceWidth
           : usePreferences.getState().netWidth,
-      netColor: () => usePreferences.getState().netColor,
+      netColor: (netId: string) => {
+        const prefs = usePreferences.getState();
+        return prefs.netColors[netId] ?? prefs.netColor;
+      },
       cellColor: () => usePreferences.getState().cellColor,
       cellShowShapes: () => usePreferences.getState().cellShowShapes,
       pointViaWorldRadius: () => {
@@ -402,6 +453,13 @@ function DieViewer({ dieId }: { dieId: string }) {
       )
     );
     return () => unsubs.forEach((u) => u());
+  }, []);
+
+  // Overlay layers visibility/opacity changes → repaint.
+  useEffect(() => {
+    return useOverlayLayers.subscribe(() => {
+      canvasHandle.current?.invalidate();
+    });
   }, []);
 
   // Seed the (mockup, client-side) ML config from the die's annotations once
@@ -451,14 +509,73 @@ function DieViewer({ dieId }: { dieId: string }) {
     mlViasLayer?.setSelectedIds(selectedIds);
   }, [annotationLayer, mlViasLayer, selectedIds]);
 
+  // Overlay image layers — one Layer instance per user-loaded image.
+  // Instances live in a ref so they persist across renders; the map is
+  // rebuilt when layers are added/removed (new id => new instance).
+  // Each instance reads display state live from the store via callbacks.
+  const overlayLayerInstancesRef = useRef<Map<string, OverlayImageLayer>>(
+    new Map()
+  );
+  const overlayEntries = useOverlayLayers((s) => s.layers);
+  const overlayLayerInstances = useMemo(() => {
+    const map = overlayLayerInstancesRef.current;
+    // Create instances for new layers.
+    const instances: OverlayImageLayer[] = [];
+    for (const entry of overlayEntries) {
+      let layer = map.get(entry.id);
+      if (!layer || layer.id !== `overlay:${entry.id}`) {
+        layer = new OverlayImageLayer(`overlay:${entry.id}`, {
+          getImage: () => {
+            const live = useOverlayLayers
+              .getState()
+              .layers.find((l) => l.id === entry.id);
+            return live?.image ?? null;
+          },
+          getHidden: () => {
+            const live = useOverlayLayers
+              .getState()
+              .layers.find((l) => l.id === entry.id);
+            return live?.hidden ?? true;
+          },
+          getOpacity: () => {
+            const live = useOverlayLayers
+              .getState()
+              .layers.find((l) => l.id === entry.id);
+            return live?.opacity ?? 1;
+          },
+          getOffsetX: () => {
+            const live = useOverlayLayers
+              .getState()
+              .layers.find((l) => l.id === entry.id);
+            return live?.offsetX ?? 0;
+          },
+          getOffsetY: () => {
+            const live = useOverlayLayers
+              .getState()
+              .layers.find((l) => l.id === entry.id);
+            return live?.offsetY ?? 0;
+          }
+        });
+        map.set(entry.id, layer);
+      }
+      instances.push(layer);
+    }
+    // Remove stale instances.
+    for (const [id] of map) {
+      if (!overlayEntries.find((l) => l.id === id)) map.delete(id);
+    }
+    return instances;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [overlayEntries.length, overlayEntries.map((e) => e.id).join(",")]);
+
   const allLayers = useMemo<Layer[]>(() => {
-    // Paint order: die image → ML via overlay → user annotations. The user's
-    // own annotations sit on top so picks / selection always prefer them.
+    // Paint order: die image → overlay layers → ML via overlay → user annotations.
     const out: Layer[] = [...layers];
+    for (const ol of overlayLayerInstances) out.push(ol);
     if (mlViasLayer) out.push(mlViasLayer);
     if (annotationLayer) out.push(annotationLayer);
     return out;
-  }, [layers, mlViasLayer, annotationLayer]);
+  }, [layers, overlayLayerInstances, mlViasLayer, annotationLayer]);
 
   // ── Behaviors (extracted hooks) ─────────────────────────────────
 
@@ -620,11 +737,21 @@ function DieViewer({ dieId }: { dieId: string }) {
     (world: Point, tolWorld: number): TerminalSnapTarget | null => {
       let best: TerminalSnapTarget | null = null;
       let bestD = tolWorld;
+      // Check cell-instance terminals.
       for (const t of cellTerminals) {
         const d = Math.hypot(t.worldX - world.x, t.worldY - world.y);
         if (d <= bestD) {
           bestD = d;
           best = { x: t.worldX, y: t.worldY, terminalId: t.id };
+        }
+      }
+      // Also check IO pins from annotations.
+      const pins = annotationsRef.current?.pins ?? [];
+      for (const pin of pins) {
+        const d = Math.hypot(pin.x - world.x, pin.y - world.y);
+        if (d <= bestD) {
+          bestD = d;
+          best = { x: pin.x, y: pin.y, terminalId: `pin:${pin.id}` };
         }
       }
       return best;
@@ -640,7 +767,7 @@ const analogDevices = useMemo(
     () => {
       if (!annotations) return [];
       try {
-        return collectDieWideAnalogDevices(annotations as any, 1.0);
+        return collectDieWideAnalogDevices(annotations as any, annotations.umPerPx ?? 1).devices;
       } catch { return []; }
     },
     [annotations]
@@ -1159,6 +1286,90 @@ const analogDevices = useMemo(
         return drawRect;
       }
 
+      // Ruler tool: measure distance. Draw on drag, commit on release.
+      if (tool === "measure") {
+        const origin = { x: e.worldPoint.x, y: e.worldPoint.y };
+        const snapOrtho = (wp: { x: number; y: number }) => {
+          const mode = useDieViewerStore.getState().measureMode;
+          const dx = wp.x - origin.x;
+          const dy = wp.y - origin.y;
+          if (mode === "h") return { x: wp.x, y: origin.y };
+          if (mode === "v") return { x: origin.x, y: wp.y };
+          if (mode === "ortho") {
+            // Snap to the dominant axis.
+            if (Math.abs(dx) >= Math.abs(dy)) {
+              return { x: wp.x, y: origin.y };
+            } else {
+              return { x: origin.x, y: wp.y };
+            }
+          }
+          if (mode === "diag") {
+            // Snap to nearest 45-degree angle.
+            const len = Math.sqrt(dx * dx + dy * dy);
+            if (len < 1) return wp;
+            const angle = Math.atan2(dy, dx);
+            // Round to nearest multiple of PI/4 (45°).
+            const rounded = Math.round(angle / (Math.PI / 4)) * (Math.PI / 4);
+            return {
+              x: origin.x + Math.cos(rounded) * len,
+              y: origin.y + Math.sin(rounded) * len
+            };
+          }
+          return wp;
+        };
+        const setLive = (wp: { x: number; y: number }) => {
+          const s = snapOrtho(wp);
+          rulerPendingLive.set({ x1: origin.x, y1: origin.y, x2: s.x, y2: s.y });
+        };
+        const drawRuler: DragHandler = {
+          onDragStart: ({ worldPoint }) => {
+            rulerDraftLive.set({ x1: origin.x, y1: origin.y, x2: worldPoint.x, y2: worldPoint.y });
+            setLive(worldPoint);
+          },
+          onDragMove: ({ worldPoint }) => setLive(worldPoint),
+          onPointerUp: ({ worldPoint, dragged }) => {
+            if (dragged) {
+              const snapped = snapOrtho(worldPoint);
+              const dx = snapped.x - origin.x;
+              const dy = snapped.y - origin.y;
+              const lenPx = Math.sqrt(dx * dx + dy * dy);
+              // Keep the committed ruler visible in the draft store.
+              const committed: RulerDraft = {
+                x1: origin.x, y1: origin.y,
+                x2: snapped.x, y2: snapped.y
+              };
+              rulerDraftLive.set(committed);
+              rulerPendingLive.set(null);
+              // If scale is set, also persist ruler.
+              const umPerPx = annotations?.umPerPx ?? 0;
+              if (umPerPx > 0 && lenPx > 5) {
+                void dispatcher.dispatch({
+                  kind: "upsertRuler",
+                  ruler: {
+                    id: crypto.randomUUID(),
+                    x1: origin.x,
+                    y1: origin.y,
+                    x2: snapped.x,
+                    y2: snapped.y,
+                    lengthPx: lenPx,
+                    lengthUm: lenPx * umPerPx
+                  },
+                  prevRuler: null
+                });
+              }
+            } else {
+              // Click without drag: keep previous draft.
+              rulerPendingLive.set(null);
+            }
+          },
+          onCancel: () => {
+            // Cancel: keep the last committed, just clear the pending preview.
+            rulerPendingLive.set(null);
+          }
+        };
+        return drawRuler;
+      }
+
       // Click-to-place / draw tools defer to onCanvasClick; pan tool pans.
       if (
         tool === "pan" ||
@@ -1205,7 +1416,7 @@ const analogDevices = useMemo(
             onDragMove: ({ worldPoint }) => {
               const moved = moveNode(worldPoint);
               if (moved) {
-                annotationLayer.update(buildNetAnnotation(moved, getNetW, getNetC));
+                annotationLayer.update(buildNetAnnotation(moved, getNetW, getNetC()));
               }
             },
             onPointerUp: ({ dragged, worldPoint, modifiers }) => {
@@ -1220,7 +1431,7 @@ const analogDevices = useMemo(
             onCancel: () => {
               if (original) {
                 annotationLayer.update(
-                  buildNetAnnotation(original, getNetW, getNetC)
+                  buildNetAnnotation(original, getNetW, getNetC())
                 );
               }
             }
@@ -1725,6 +1936,41 @@ const analogDevices = useMemo(
         wire.commitWire({ dropLast: true });
         return;
       }
+      // Measure tool double-click → prompt for known size to set scale.
+      if (tool === "measure") {
+        // Read the committed ruler from the LiveValue (the visible yellow line).
+        const draft = rulerDraftLive.get();
+        if (draft) {
+          const dx = draft.x2 - draft.x1;
+          const dy = draft.y2 - draft.y1;
+          const lenPx = Math.sqrt(dx * dx + dy * dy);
+          const cachedUm =
+            annotationsRef.current?.rulers?.find(
+              (r) =>
+                Math.abs(r.x1 - draft.x1) < 0.5 &&
+                Math.abs(r.y1 - draft.y1) < 0.5
+            )?.lengthUm ?? 0;
+          const input = window.prompt(
+            `Ruler: ${Math.round(lenPx).toLocaleString()} px\nEnter known size in µm:`,
+            cachedUm > 0 ? String(cachedUm) : ""
+          );
+          if (input !== null) {
+            const um = parseFloat(input);
+            if (!isNaN(um) && um > 0) {
+              const umPerPx = um / lenPx;
+              void dispatcher.dispatch({
+                kind: "setUmPerPx",
+                umPerPx,
+                prevUmPerPx: annotationsRef.current?.umPerPx ?? null
+              });
+            }
+          }
+        } else {
+          window.alert("Draw a ruler first (drag to draw a yellow line), then double-click to set scale.");
+        }
+        return;
+      }
+
       if (tool !== "select") return;
       const c = containerRef.current?.querySelector("canvas") as
         | HTMLCanvasElement
@@ -1811,6 +2057,11 @@ const analogDevices = useMemo(
     const v = fitViewport(die.width, die.height, rect.width, rect.height, 24);
     canvasHandle.current?.setViewport(v);
   }, [die]);
+
+  // Wire hotkey refs after the callbacks are defined.
+  zoomInRef.current = zoomIn;
+  zoomOutRef.current = zoomOut;
+  fitToScreenRef.current = fitToScreen;
 
   const oneToOne = useCallback(() => setZoomCentered(1), [setZoomCentered]);
 
@@ -1929,6 +2180,12 @@ const analogDevices = useMemo(
               onCanvasClick={onCanvasClick}
             />
           )}
+          <RulerOverlay
+            draftStore={rulerDraftLive}
+            pendingStore={rulerPendingLive}
+            viewportStore={viewportLive}
+            umPerPx={annotations?.umPerPx ?? 0}
+          />
           <MarqueeOverlay store={marqueeLive} />
           <WireDraftOverlay
             points={wire.draft?.points ?? NO_DRAFT_POINTS}
@@ -2039,6 +2296,12 @@ const analogDevices = useMemo(
           <CursorReadout key="cursor" store={cursorLive} />,
           <ZoomReadout key="zoom" store={viewportLive} />,
           annotations ? annotationsSummary(annotations) : null,
+          annotations?.umPerPx != null
+            ? `scale: ${annotations.umPerPx.toFixed(3)} µm/px`
+            : null,
+          activeTool === "measure"
+            ? "📏 drag to measure — double-click a ruler to set scale"
+            : null,
           die?.tileProgress && die.tileProgress.percentage < 100
             ? `tiling ${formatPercent(die.tileProgress.percentage)}`
             : null,

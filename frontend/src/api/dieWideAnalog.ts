@@ -8,7 +8,7 @@
 
 import type {
   AnalogDevice, AnnotationNet, Cell, CellType,
-  DeviceKind, DieAnnotations, LayerShape, SpiceConfig,
+  DeviceKind, DieAnnotations, IOPin, LayerShape, SpiceConfig,
 } from "shared";
 import { extractMarkedDevices } from "../lib/extraction/simpleAnalog";
 import { generateSpiceNetlist } from "../lib/export/spice";
@@ -142,11 +142,17 @@ export function extractAnalogDevicesFromCellType(
   return extractMarkedDevices(cellType.layers, cellType.id, umPerPx);
 }
 
+export interface DieWideAnalogResult {
+  devices: AnalogDevice[];
+  /** netId → human-readable name (from IO pins and pin labels) */
+  namedNets: Map<number, string>;
+}
+
 export function collectDieWideAnalogDevices(
   annotations: DieAnnotations,
   umPerPx: number = 1.0,
   _spiceConfig?: SpiceConfig,
-): AnalogDevice[] {
+): DieWideAnalogResult {
   const ann = annotations as DieAnnotations;
   const allDevices: AnalogDevice[] = [];
   const nets = ann.nets ?? [];
@@ -210,12 +216,14 @@ export function collectDieWideAnalogDevices(
         }
 
         // ── Wire matching by contact proximity ──────────
-        // For each terminal, collect unique contact centres (contacts that
-        // belong to only this terminal). Match if any wire segment passes
-        // within 5px of a unique contact.
+        // For each terminal, find unique contact centers. For simple
+        // 2-terminal devices (resistor, capacitor, diode) where both
+        // terminals use the same layer ("contact"), include all contacts
+        // even if shared — the shared filter only runs for MOS/BJT where
+        // terminals have distinct layers (drain/gate/source, collector/
+        // base/emitter).
         const termContacts: Array<Array<{x:number;y:number}>> = dev.terminals.map(()=>[]);
         {
-          // Which terminals each contact overlaps
           const cTis = new Map<string, Set<number>>();
           const cPos = new Map<string, {x:number;y:number}>();
           const allContacts = (ct.layers?.contact??[]) as LayerShape[];
@@ -237,15 +245,32 @@ export function collectDieWideAnalogDevices(
               }
             }
           }
-          for (const [cid, tis] of cTis) {
-            if (tis.size!==1) continue; // shared contact — skip
-            const ti = [...tis][0];
-            const cp = cPos.get(cid); if (!cp) continue;
-            termContacts[ti].push({x:cx+cp.x, y:cy+cp.y});
+          // Check if all terminals use the same layers (e.g. resistor:
+          // both PLUS/MINUS use "contact" only). If so, distribute contacts
+          // round-robin across terminals so each gets unique contacts.
+          const tLayers = dev.terminals.map((t) =>
+            terminalLayersOf(dev.kind, t.name).join(",")
+          );
+          const allSameLayer = tLayers.every((l) => l === tLayers[0]);
+          if (allSameLayer) {
+            // Distribute unique contact positions round-robin by terminal.
+            const uniqueContactPositions = [...cPos.values()];
+            for (let ci = 0; ci < uniqueContactPositions.length; ci++) {
+              const ti = ci % dev.terminals.length;
+              const cp = uniqueContactPositions[ci];
+              termContacts[ti].push({x:cx+cp.x, y:cy+cp.y});
+            }
+          } else {
+            for (const [cid, tis] of cTis) {
+              if (tis.size !== 1) continue; // shared — skip
+              const ti = [...tis][0];
+              const cp = cPos.get(cid); if (!cp) continue;
+              termContacts[ti].push({x:cx+cp.x, y:cy+cp.y});
+            }
           }
         }
 
-        // ── Wire matching by contact proximity (5px) ────
+        // ── Wire matching by contact proximity (10px) ────
         const matchedTerms = dev.terminals.map((t,ti)=>{
           if (t.netId<0) {
             const fresh = 2000 + allDevices.length*10 + ti;
@@ -269,7 +294,19 @@ export function collectDieWideAnalogDevices(
     }
   }
 
-  return allDevices;
+  // ── Match IO pins to wire nets ───────────────────────────
+  // Build a map: annotation netId → SPICE net id → pin name.
+  const namedNets = new Map<number, string>();
+  const pins = ann.pins ?? [];
+  for (const pin of pins) {
+    const netId = matchWireToPoint(nets, pin.x, pin.y, 10, netIdMap, nextNetId);
+    if (netId != null) {
+      // Use pin name as the net name in the netlist.
+      if (!namedNets.has(netId)) namedNets.set(netId, pin.name);
+    }
+  }
+
+  return { devices: allDevices, namedNets };
 }
 
 // ── Export pipeline ──────────────────────────────────────────────
@@ -280,7 +317,7 @@ export function detectAndExportDieWide(
   dialect: "cdl"|"spectre"|"hspice" = "cdl",
   spiceConfig?: SpiceConfig,
 ) {
-  const devices = collectDieWideAnalogDevices(annotations, spiceConfig?.umPerPx??1.0, spiceConfig);
-  const result = generateSpiceNetlist(devices, moduleName, spiceConfig??{}, dialect);
+  const { devices, namedNets } = collectDieWideAnalogDevices(annotations, spiceConfig?.umPerPx??1.0, spiceConfig);
+  const result = generateSpiceNetlist(devices, moduleName, spiceConfig??{}, dialect, namedNets);
   return { devices, text: result.text, byKind: result.byKind, totalDevices: result.totalDevices, warnings: result.warnings };
 }

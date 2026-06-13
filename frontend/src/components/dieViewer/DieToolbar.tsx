@@ -59,6 +59,12 @@ const TOOL_GROUPS: ToolGroup[] = [
       { kind: "roi", icon: Ic.roi, label: "Draw ML ROI rectangle" },
       { kind: "ignore", icon: Ic.mlIgnore, label: "Draw ML ignore rectangle" }
     ]
+  },
+  {
+    label: "tools",
+    items: [
+      { kind: "measure", icon: Ic.ruler, label: "Ruler — drag to measure distance" }
+    ]
   }
 ];
 
@@ -135,8 +141,42 @@ function toolOptions(tool: ToolKind, multiWireHint?: string): ReactNode {
   if (tool === "addCell") return <CellOptions />;
   if (tool === "roi") return <RoiOptions />;
   if (tool === "cellGuideLine") return <GuideLineOptions />;
+  if (tool === "measure") return <MeasureOptions />;
   // others (incl. cellGuideSeg) have no options.
   return null;
+}
+
+function MeasureOptions() {
+  const mode = useDieViewerStore((s) => s.measureMode);
+  const setMode = useDieViewerStore((s) => s.setMeasureMode);
+  return (
+    <>
+      <span className="u" style={{ fontSize: 10 }}>
+        Mode
+      </span>
+      <span className="row" style={{ gap: 4 }}>
+        {(
+          [
+            ["free" as const, "free"],
+            ["ortho" as const, "orthogonal"],
+            ["h" as const, "horizontal"],
+            ["v" as const, "vertical"],
+            ["diag" as const, "diagonal"]
+          ] as const
+        ).map(([m, label]) => (
+          <button
+            key={m}
+            type="button"
+            className={"chip" + (mode === m ? " on" : "")}
+            style={{ cursor: "pointer" }}
+            onClick={() => setMode(m)}
+          >
+            {label}
+          </button>
+        ))}
+      </span>
+    </>
+  );
 }
 
 function GuideLineOptions() {

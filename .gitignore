@@ -6,3 +6,5 @@ frontend/dist/
 backend/dist/
 data/tmp/
 data
+
+test_dies_gitignore/
