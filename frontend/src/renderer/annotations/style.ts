@@ -46,6 +46,8 @@ export const COLOR_LAYER: Record<LayerType, string> = {
   // Marker layers
   npn_id: "#44ff66",
   pnp_id: "#66ff88",
+  lpnp_id: "#88ffaa",
+  vpnp: "#ff88cc",
   res_id: "#ffaa44",
   cap_id: "#44ddff",
   diode_id: "#ff6666",
@@ -92,6 +94,8 @@ export const LAYER_FILL_OPACITY: Record<LayerType, number> = {
   // Marker layers (visible but transparent)
   npn_id: 0.25,
   pnp_id: 0.25,
+  lpnp_id: 0.25,
+  vpnp: 0.2,
   res_id: 0.25,
   cap_id: 0.25,
   diode_id: 0.25,

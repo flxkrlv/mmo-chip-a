@@ -34,7 +34,7 @@ const ANALOG_LAYERS: LayerType[] = [
 ];
 
 const MARKER_LAYERS: LayerType[] = [
-  "npn_id", "pnp_id", "mos_id", "res_id", "cap_id", "diode_id",
+  "npn_id", "pnp_id", "lpnp_id", "vpnp", "mos_id", "res_id", "cap_id", "diode_id",
   "collector", "drain", "gate", "source", "bulk",
 ];
 // Extended metal stack

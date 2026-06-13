@@ -15,7 +15,6 @@
 
 import { useEffect, useMemo, useState } from "react";
 import type { CellType } from "shared";
-import type { LayerShape } from "shared";
 import {
   extractCell,
   loadClipper,

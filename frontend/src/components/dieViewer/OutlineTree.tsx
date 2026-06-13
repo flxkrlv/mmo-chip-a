@@ -563,6 +563,21 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
               view. Use visibility and opacity to compare layers.
             </div>
           )}
+          <div
+            style={{
+              padding: "4px 10px 6px 20px",
+              fontSize: 9,
+              color: "var(--ink3)",
+              lineHeight: 1.4
+            }}
+          >
+            <strong>Server path:</strong> copy files to
+            <code style={{ display: "block", marginTop: 2, padding: "2px 4px", background: "var(--bg)", borderRadius: 2 }}>
+              data/overlay-images/
+            </code>
+            then click <strong>Load from Server</strong> to add. Images persist
+            across page reloads. Upload via Add from File → server upload.
+          </div>
           {overlayLayers.map((layer) => (
             <TreeRow
               key={layer.id}

@@ -108,6 +108,8 @@ export type LayerType =
   // Analog marker layers (simple RE mode)
   | "npn_id"
   | "pnp_id"
+  | "lpnp_id"
+  | "vpnp"
   | "res_id"
   | "cap_id"
   | "diode_id"

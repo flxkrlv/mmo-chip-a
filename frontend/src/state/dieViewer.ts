@@ -20,7 +20,7 @@ export type AnalogLayerId =
   | "jfet_gate" | "jfet_channel"
   | "resistor_body"
   | "capacitor_bottom" | "capacitor_top"
-  | "npn_id" | "pnp_id" | "res_id" | "cap_id" | "diode_id"
+  | "npn_id" | "pnp_id" | "lpnp_id" | "vpnp" | "res_id" | "cap_id" | "diode_id"
   | "mos_id" | "collector" | "drain" | "gate" | "source" | "bulk"
   | "metal3" | "metal4" | "metal5" | "metal6";
 

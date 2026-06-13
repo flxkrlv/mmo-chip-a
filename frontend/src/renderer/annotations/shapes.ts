@@ -47,6 +47,8 @@ export const LAYER_DRAW_ORDER: LayerType[] = [
   // Analog marker layers (topmost — most visible)
   "npn_id",
   "pnp_id",
+  "lpnp_id",
+  "vpnp",
   "mos_id",
   "res_id",
   "cap_id",

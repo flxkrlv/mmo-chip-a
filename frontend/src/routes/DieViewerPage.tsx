@@ -462,6 +462,22 @@ function DieViewer({ dieId }: { dieId: string }) {
     });
   }, []);
 
+  // Auto-load overlay images from server on first mount (survives F5).
+  useEffect(() => {
+    const addLayer = useOverlayLayers.getState().addLayer;
+    import("../api/overlayImages").then((mod) =>
+      mod.fetchOverlayImageList().then((list) =>
+        Promise.allSettled(
+          list.images.map((img) => mod.loadOverlayImageFromServer(img.name))
+        ).then((results) => {
+          for (const r of results) {
+            if (r.status === "fulfilled") addLayer(r.value.name, r.value.image);
+          }
+        })
+      )
+    );
+  }, []);
+
   // Seed the (mockup, client-side) ML config from the die's annotations once
   // per die — `resetDieViewer` already restored defaults on the die change.
   const mlSeededRef = useRef<string | null>(null);

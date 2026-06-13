@@ -89,6 +89,8 @@ function findMarkers(layers: CellLayers | undefined): DeviceBox[] {
   const markerMap: Record<string, DeviceKind> = {
     npn_id: "bjt_npn",
     pnp_id: "bjt_pnp",
+    lpnp_id: "bjt_pnp",
+    vpnp: "unknown",
     mos_id: "mos",
     res_id: "resistor",
     cap_id: "capacitor",
@@ -173,12 +175,26 @@ export function extractMarkedDevices(
         }
         const perFingerAE_um2 = totalAE / emitterCount * umPerPx * umPerPx;
 
+        // Compute PE: for lateral PNP this is the emitter perimeter
+        // (inner edge of collector ring ≈ emitter perimeter).
+        // For vertical NPN/PNP it stays 0 (not the dominant parameter).
+        let peUm = 0;
+        // Peek at geometry to see if this is likely lateral.
+        if (bases.length > 0 && emitters.length > 0) {
+          for (const emitS of emitters) {
+            const eb = shapeBbox(emitS);
+            if (!eb) continue;
+            const emitPerim = 2 * (eb.width + eb.height);
+            peUm += emitPerim * umPerPx;
+          }
+        }
+
         devices.push({
           id: devId,
           kind: marker.kind,
           geometry: {
             AE_um2: perFingerAE_um2,
-            PE_um: 0,
+            PE_um: peUm,
             multiplier: emitterCount,
             totalAE_um2: totalAE * umPerPx * umPerPx,
             emitterFingers: Math.max(emitters.length, 1),
