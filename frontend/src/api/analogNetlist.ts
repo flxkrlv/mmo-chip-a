@@ -149,7 +149,7 @@ function buildAnalogNetlist(
 ): AnalogNetlistResult {
   const { devices, namedNets } = collectDieWideAnalogDevices(
     annotations,
-    spiceConfig?.umPerPx ?? 1.0,
+    spiceConfig?.umPerPx ?? annotations.umPerPx ?? 1.0,
   );
 
   // Assign instance names (M1, Q1, R1, …)
