@@ -20,8 +20,10 @@ const RESISTOR_TYPES: ResistorType[] = ["poly", "hsr", "pb", "npl", "film"];
  * Read current sheetR overrides from preferences.
  * Returns the full Record<string,number> (may be partial).
  */
+const _EMPTY_SR: Record<string, number> = {};
 function useSheetR(): Record<string, number> {
-  return usePreferences((s) => (s as any).sheetR ?? {});
+  const val = usePreferences((s) => (s as any).sheetR);
+  return val ?? _EMPTY_SR;
 }
 
 /**
