@@ -73,35 +73,11 @@ function segmentIntersectsRect(
 
 // ── Wire-to-terminal matching ────────────────────────────────────
 
-/** Check if any wire segment passes within `tol` px of a point. */
-function matchWireToPoint(
-  nets: AnnotationNet[],
-  px:number, py:number, tol:number,
-  netIdMap: Map<string,number>,
-  nextId: {v:number},
-): number|null {
-  const tol2 = tol*tol;
-  for (const net of nets) {
-    for (const edge of net.edges) {
-      const a = net.nodes.find(n=>n.id===edge.from);
-      const b = net.nodes.find(n=>n.id===edge.to);
-      if (!a||!b) continue;
-      const dx=b.x-a.x, dy=b.y-a.y;
-      const len2=dx*dx+dy*dy;
-      let t = len2===0 ? 0 : ((px-a.x)*dx+(py-a.y)*dy)/len2;
-      t = Math.max(0,Math.min(1,t));
-      const cx=a.x+t*dx, cy=a.y+t*dy;
-      const dist2 = (cx-px)*(cx-px)+(cy-py)*(cy-py);
-      if (dist2 <= tol2) {
-        if (!netIdMap.has(net.id)) netIdMap.set(net.id, nextId.v++);
-        return netIdMap.get(net.id)!;
-      }
-    }
-  }
-  return null;
-}
-
-/** Find the die-level wire whose segments intersect a terminal's bounding box. */
+/**
+ * Find the die-level wire whose segments intersect a terminal's bounding box.
+ * Replaces the old distance-based matchWireToPoint — uses segment-rectangle
+ * intersection for more reliable terminal-to-wire matching.
+ */
 function matchWireToTerminal(
   nets: AnnotationNet[],
   termRect: {x:number;y:number;w:number;h:number},
@@ -283,19 +259,33 @@ export function collectDieWideAnalogDevices(
           }
         }
 
-        // ── Wire matching by contact proximity (10px) ────
+        // ── Wire matching by terminal bbox intersection ────
+        // Compute terminal bounding box from contact points, then check
+        // if any wire segment intersects this bbox (instead of distance
+        // from contact center to wire). Uses existing segmentIntersectsRect.
         const matchedTerms = dev.terminals.map((t,ti)=>{
           if (t.netId<0) {
             const fresh = 2000 + allDevices.length*10 + ti;
             return {...t, netId: fresh};
           }
           const contacts = termContacts[ti];
-          // contacts.length === 0 — no contact centers
-          for (const cp of contacts) {
-            const wid = matchWireToPoint(nets, cp.x, cp.y, 10, netIdMap, nextNetId);
-            if (wid!=null) {
-              return {...t, netId: wid};
+          if (contacts.length > 0) {
+            // Compute bbox from contact points, with 5px margin
+            let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+            for (const c of contacts) {
+              if (c.x < minX) minX = c.x;
+              if (c.y < minY) minY = c.y;
+              if (c.x > maxX) maxX = c.x;
+              if (c.y > maxY) maxY = c.y;
             }
+            const MARGIN = 5;
+            const termRect = {
+              x: minX - MARGIN, y: minY - MARGIN,
+              w: maxX - minX + 2 * MARGIN,
+              h: maxY - minY + 2 * MARGIN,
+            };
+            const wid = matchWireToTerminal(nets, termRect, netIdMap, nextNetId);
+            if (wid != null) return {...t, netId: wid};
           }
           const fresh = 2000 + allDevices.length*10 + ti;
           return {...t, netId: fresh};
@@ -323,9 +313,14 @@ export function collectDieWideAnalogDevices(
   }
   // IO pin names override annotation net names when a pin connects to
   // the same net (the pin is the intended port name).
+  // IO pin matching uses the same bbox intersection as device terminals.
   const pins = ann.pins ?? [];
   for (const pin of pins) {
-    const netId = matchWireToPoint(nets, pin.x, pin.y, 10, netIdMap, nextNetId);
+    const PIN_MARGIN = 5;
+    const netId = matchWireToTerminal(nets, {
+      x: pin.x - PIN_MARGIN, y: pin.y - PIN_MARGIN,
+      w: 2 * PIN_MARGIN, h: 2 * PIN_MARGIN,
+    }, netIdMap, nextNetId);
     if (netId != null) {
       if (!namedNets.has(netId)) namedNets.set(netId, pin.name);
     }
