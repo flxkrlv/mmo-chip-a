@@ -13,6 +13,8 @@ import type {
   TransmissionGate,
 } from "../../lib/extraction";
 import { shapeKey, useCellREStore } from "../../state/cellRE";
+import { usePreferences } from "../../state/preferences";
+import { effectiveSheetR } from "../../lib/export/resistorDefaults";
 import {
   rowMatchesEntity,
   type HoverEntity,
