@@ -11,7 +11,8 @@ const PHASE_TABS = [
   { path: "/die", label: "Die viewer", die: "param" as const },
   { path: "/merge", label: "Merge cells", die: "query" as const },
   { path: "/re", label: "RE cell", die: "query" as const },
-  { path: "/code", label: "Code", die: "query" as const }
+  { path: "/code", label: "Code", die: "query" as const },
+  { path: "/analog-netlist", label: "Netlist (Analog)", die: "query" as const }
 ];
 
 function tabTarget(
