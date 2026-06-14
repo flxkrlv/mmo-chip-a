@@ -1838,8 +1838,13 @@ const analogDevices = useMemo(
             name: `pin_${nextNum}`
           }
         });
+        return;
       }
-      // Other tools land in future rounds.
+      // Single-click on an analog device → show inspector
+      const dev = hitTestAnalogDevice({ x, y }, analogDevices);
+      if (dev) {
+        setSelectedDevice(dev);
+      }
     },
     [
       dispatcher,
@@ -1850,6 +1855,7 @@ const analogDevices = useMemo(
       annotations,
       annotationLayer,
       viewportLive,
+      analogDevices,
       findNearestVia,
       findMultiWireEndpointViaSnap,
       findMultiWireAutoEndSnaps
@@ -2048,8 +2054,20 @@ const analogDevices = useMemo(
         const mlHit = mlViasLayer.hitTestVia(world, viaTol);
         if (mlHit) startWireAt({ x: mlHit.x, y: mlHit.y }, null);
       }
+
+      // Double-click on an analog device → open in RE Cell
+      const devDbl = hitTestAnalogDevice(world, analogDevices);
+      if (devDbl && annotations) {
+        const cid = (devDbl as any)._cellId;
+        if (cid) {
+          const cell = (annotations as any).cells?.find((c: any) => c.id === cid);
+          if (cell) {
+            navigate(`/re?die=${encodeURIComponent(dieId)}&type=${encodeURIComponent(cell.cellTypeId)}&cell=${encodeURIComponent(cid)}`);
+          }
+        }
+      }
     },
-    [annotationLayer, mlViasLayer, wire, startWireAt]
+    [annotationLayer, mlViasLayer, wire, startWireAt, analogDevices, annotations, navigate, dieId]
   );
 
   // Zoom button handlers read the latest viewport from the live store at
@@ -2400,4 +2418,29 @@ const analogDevices = useMemo(
       )}
     </AppShell>
   );
+}
+
+// ── Helpers ───────────────────────────────────────────────────────
+
+/** Hit-test analog devices at a world coordinate. Returns the smallest
+ *  (tightest bbox) device under the point, or null. */
+function hitTestAnalogDevice(
+  world: { x: number; y: number },
+  devices: readonly import("shared").AnalogDevice[],
+): import("shared").AnalogDevice | null {
+  let best: import("shared").AnalogDevice | null = null;
+  let bestArea = Infinity;
+  for (const dev of devices) {
+    const b = dev.bbox;
+    if (!b) continue;
+    if (world.x >= b.x && world.x <= b.x + b.width &&
+        world.y >= b.y && world.y <= b.y + b.height) {
+      const area = b.width * b.height;
+      if (area < bestArea) {
+        bestArea = area;
+        best = dev;
+      }
+    }
+  }
+  return best;
 }

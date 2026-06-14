@@ -219,13 +219,12 @@ export function AnalogDeviceHighlights({
   return (
     <canvas
       ref={canvasRef}
-      onClick={handleClick}
       style={{
         position: "absolute",
         inset: 0,
         width: "100%",
         height: "100%",
-        cursor: onDeviceClick || onDeviceDoubleClick ? "pointer" : undefined,
+        pointerEvents: "none",
       }}
     />
   );
