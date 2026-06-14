@@ -9,7 +9,9 @@
  *   - SPICE model name
  */
 
-import type { AnalogDevice } from "shared";
+import type { AnalogDevice, ResistorType } from "shared";
+import { effectiveSheetR } from "../../lib/export/resistorDefaults";
+import { usePreferences } from "../../state/preferences";
 
 interface Props {
   device: AnalogDevice;
@@ -212,22 +214,23 @@ function renderGeometry(dev: AnalogDevice): React.ReactNode {
   }
 
   if ("squares" in g) {
-    // Resistor
+    // Resistor — compute resistance from current sheetR config
     const rg = g as {
       L_um: number; W_um: number; squares: number;
       resistance_ohms?: number; shape?: string;
       fingers?: number; multiplier?: number;
       resistorType?: string;
     };
+    const sheetROverrides = usePreferences.getState().sheetR ?? {};
+    const sr = effectiveSheetR(rg.resistorType as ResistorType, sheetROverrides);
+    const resistance = sr * rg.squares;
     return (
       <>
         <Prop label="Type" val={rg.resistorType?.toUpperCase() ?? "POLY"} />
         <Prop label="L" val={`${rg.L_um.toFixed(2)} μm`} />
         <Prop label="W" val={`${rg.W_um.toFixed(2)} μm`} />
         <Prop label="Squares" val={rg.squares.toFixed(2)} />
-        {rg.resistance_ohms ? (
-          <Prop label="Resistance" val={`${rg.resistance_ohms.toFixed(0)} Ω`} />
-        ) : null}
+        <Prop label="Resistance" val={`${Math.round(resistance)} Ω`} />
         {rg.shape && <Prop label="Shape" val={rg.shape} />}
         {rg.fingers && rg.fingers > 1 && <Prop label="Fingers" val={rg.fingers} />}
       </>

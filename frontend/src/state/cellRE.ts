@@ -94,7 +94,7 @@ export const TOOL_LAYERS: Record<"rect" | "polygon" | "point" | "polyline", Laye
   rect: ["diffusion","polysilicon","metal1","metal2","nwell","pwell","base","emitter","resistor_body","hsr","film","capacitor_bottom","capacitor_top","metal3","metal4","metal5","metal6","npn_id","pnp_id","lpnp_id","vpnp","mos_id","res_id","cap_id","diode_id","collector","drain","gate","source","bulk","wire_hitbox"],
   polygon: ["diffusion","polysilicon","metal1","metal2","nwell","pwell","base","emitter","resistor_body","hsr","film","capacitor_bottom","capacitor_top","metal3","metal4","metal5","metal6","npn_id","pnp_id","lpnp_id","vpnp","mos_id","res_id","cap_id","diode_id","collector","drain","gate","source","bulk","wire_hitbox"],
   point: ["contact","via1"],
-  polyline: ["resistor_body","polysilicon","base","emitter"],
+  polyline: ["resistor_body","polysilicon","base","emitter","hsr","film"],
 };
 
 export const LAYER_LABEL: Record<LayerType, string> = {

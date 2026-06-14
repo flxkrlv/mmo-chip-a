@@ -93,6 +93,9 @@ interface PreferencesState {
    *  non-editable "groups" (inferred, die-viewer overlay) use the special
    *  keys `_inferred` / `_dieViewer`. */
   reLayerHidden: Record<string, boolean>;
+  /** Per-resistor-type sheet resistance overrides (persisted). Keyed by
+   *  ResistorType: poly, hsr, pb, npl, film. */
+  sheetR: Record<string, number>;
 }
 
 interface PreferencesActions {
@@ -171,6 +174,7 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
         viaSize: VIA_DEFAULT_SIZE,
         viaConfidenceThreshold: 0.5,
         inspectorTab: "inspector",
+        sheetR: {},
 
         setNetWidth: (width) => set({ netWidth: width }),
         setNetColor: (color) => set({ netColor: color }),
