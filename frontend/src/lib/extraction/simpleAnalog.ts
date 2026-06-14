@@ -263,13 +263,39 @@ export function extractMarkedDevices(
       }
 
       // ── Resistor ─────────────────────────────────────────────
+      // Body layer → resistor type mapping:
+      //   poly     → "poly" (default polysilicon)
+      //   base     → "pb"  (p base diffusion)
+      //   emitter  → "npl" (n+ emitter = n+ diffusion)
+      //   hsr      → "hsr" (ion implanted)
+      //   film     → "film" (thin film)
+      //   resistor_body → "poly" (backward compat, fallback)
       case "resistor": {
-        const bodyLines = shapesInside(layers, "resistor_body", marker.bbox);
+        const BODY_LAYERS: Array<{ layer: string; type: string }> = [
+          { layer: "poly", type: "poly" },
+          { layer: "polysilicon", type: "poly" },
+          { layer: "base", type: "pb" },
+          { layer: "emitter", type: "npl" },
+          { layer: "hsr", type: "hsr" },
+          { layer: "film", type: "film" },
+          { layer: "resistor_body", type: "poly" },
+        ];
+        let bodyShapes: LayerShape[] = [];
+        let resistorType = "poly";
+        for (const bl of BODY_LAYERS) {
+          const s = shapesInside(layers, bl.layer as any, marker.bbox);
+          if (s.length > 0) {
+            bodyShapes = s;
+            resistorType = bl.type;
+            break;
+          }
+        }
+
         const contacts = shapesInside(layers, "contact", marker.bbox);
 
         // Compute from polyline if lines exist, otherwise from bbox
         let L_um = 0, W_um = 0, squares = 0, corners = 0;
-        const lines = bodyLines.filter(s=>s.kind==="line") as Array<{kind:"line";x1:number;y1:number;x2:number;y2:number;width:number}>;
+        const lines = bodyShapes.filter(s=>s.kind==="line") as Array<{kind:"line";x1:number;y1:number;x2:number;y2:number;width:number}>;
         if (lines.length > 0) {
           // Polyline mode: sum segment lengths, count corners
           let totalL = 0;
@@ -308,6 +334,7 @@ export function extractMarkedDevices(
             fingers: 1,
             multiplier: 1,
             shape: lines.length > 0 ? "meander" : "straight",
+            resistorType: resistorType as any,
           },
           cellTypeId,
           instanceName: `${prefix}${counter}`,

@@ -29,6 +29,8 @@ export const DIE_ANALOG_LAYERS: LayerType[] = [
   "base", "emitter", "collector_sinker",
   "jfet_gate", "jfet_channel",
   "resistor_body",
+  "hsr",
+  "film",
   "capacitor_bottom", "capacitor_top",
 ];
 

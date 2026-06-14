@@ -105,6 +105,9 @@ export type LayerType =
   | "metal6"
   // Compound: user-drawn device boundary box
   | "device_box"
+  // Resistor body: material-specific layers for type detection
+  | "hsr"
+  | "film"
   // Analog marker layers (simple RE mode)
   | "npn_id"
   | "pnp_id"

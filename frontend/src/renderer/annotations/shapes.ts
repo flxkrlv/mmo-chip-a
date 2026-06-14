@@ -27,6 +27,8 @@ export const LAYER_DRAW_ORDER: LayerType[] = [
   "jfet_gate",
   "jfet_channel",
   "resistor_body",
+  "hsr",
+  "film",
   "polysilicon",
   // Capacitor plates
   "capacitor_bottom",

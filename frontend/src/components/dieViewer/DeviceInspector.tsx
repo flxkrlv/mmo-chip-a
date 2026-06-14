@@ -229,9 +229,11 @@ function renderGeometry(dev: AnalogDevice): React.ReactNode {
       L_um: number; W_um: number; squares: number;
       resistance_ohms?: number; shape?: string;
       fingers?: number; multiplier?: number;
+      resistorType?: string;
     };
     return (
       <>
+        <Prop label="Type" val={rg.resistorType?.toUpperCase() ?? "POLY"} />
         <Prop label="L" val={`${rg.L_um.toFixed(2)} μm`} />
         <Prop label="W" val={`${rg.W_um.toFixed(2)} μm`} />
         <Prop label="Squares" val={rg.squares.toFixed(2)} />
