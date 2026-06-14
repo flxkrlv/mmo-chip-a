@@ -2136,10 +2136,17 @@ const analogDevices = useMemo(
   // group/category's entities) in the viewport, with a margin.
   const focusOnIds = useCallback(
     (ids: string[]) => {
-      if (!annotationLayer || !containerRef.current) return;
+      if (!annotationLayer || !containerRef.current) {
+        console.log(`[focusOnIds] EARLY: layer=${!!annotationLayer} container=${!!containerRef.current}`);
+        return;
+      }
       const box = annotationLayer.unionBBox(ids);
-      if (!box) return;
+      if (!box) {
+        console.log(`[focusOnIds] NO BBOX for ids:`, ids);
+        return;
+      }
       const rect = containerRef.current.getBoundingClientRect();
+      console.log(`[focusOnIds] framing box:`, box, `viewport rect:`, {w:rect.width, h:rect.height});
       canvasHandle.current?.setViewport(
         fitRectViewport(box, rect.width, rect.height, 56, 32)
       );
