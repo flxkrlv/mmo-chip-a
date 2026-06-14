@@ -24,6 +24,8 @@ export interface AnalogNetlistLeaf {
   meta: string;        // device kind / type, e.g. "mos · NMOS"
   line: number;        // 1-based line in the source text
   deviceKind: string;
+  /** Cell instance ID this device belongs to (for framing). */
+  cellId: string;
 }
 
 export interface AnalogNetlistGroup {
@@ -40,6 +42,8 @@ export interface AnalogNetlistResult {
   warnings: string[];
   totalDevices: number;
   byKind: Record<string, number>;
+  /** instanceName → cellId lookup for cross-tab navigation. */
+  deviceCellMap: Map<string, string>;
 }
 
 // ── Helpers ───────────────────────────────────────────────────────
@@ -100,9 +104,8 @@ function buildLineIndex(
  * instance names to source lines.
  */
 function buildOutline(
-  devices: Array<{ instanceName: string; kind: string; modelName?: string }>,
+  devices: Array<{ instanceName: string; kind: string; modelName?: string; _cellId?: string }>,
   lineIndex: Map<string, number>,
-  byKind: Record<string, number>,
 ): AnalogNetlistGroup[] {
   const groups = new Map<string, AnalogNetlistGroup>();
   for (const d of devices) {
@@ -121,6 +124,7 @@ function buildOutline(
       meta: d.modelName ?? d.kind,
       line: lineIndex.get(d.instanceName) ?? 1,
       deviceKind: d.kind,
+      cellId: d._cellId ?? "",
     });
   }
   // Sort groups by kind, leaves by instance name numerically
@@ -163,7 +167,13 @@ function buildAnalogNetlist(
 
   // Build line index + outline
   const lineIndex = buildLineIndex(result.text, named);
-  const outline = buildOutline(named, lineIndex, result.byKind);
+  const outline = buildOutline(named, lineIndex);
+
+  // instanceName → cellId lookup
+  const deviceCellMap = new Map<string, string>();
+  for (const d of named) {
+    if (d._cellId) deviceCellMap.set(d.instanceName, d._cellId);
+  }
 
   return {
     source: result.text,
@@ -173,6 +183,7 @@ function buildAnalogNetlist(
     warnings: result.warnings,
     totalDevices: result.totalDevices,
     byKind: result.byKind,
+    deviceCellMap,
   };
 }
 

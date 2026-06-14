@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import type { AnalogDevice, AnnotationNet } from "shared";
 import { useAnnotations } from "../api/annotations";
 import { useAnnotationsWebSocket } from "../api/annotationsWebSocket";
@@ -120,6 +120,7 @@ import { DEFAULT_ML_CONFIG, useDieViewerStore } from "../state/dieViewer";
 import { useOverlayLayers } from "../state/overlayLayers";
 import { usePreferences } from "../state/preferences";
 import { useSession } from "../state/session";
+import { useCrossTabSelection } from "../state/crossTabSelection";
 
 /** Stable empty points array so the overlay effect doesn't churn when idle. */
 const NO_DRAFT_POINTS: Point[] = [];
@@ -165,6 +166,7 @@ function DieViewer({ dieId }: { dieId: string }) {
 
   const activeTool = useDieViewerStore((s) => s.activeTool);
   const setActiveTool = useDieViewerStore((s) => s.setActiveTool);
+  const navigate = useNavigate();
   const dispatcher = useActionDispatcher(dieId);
 
   // Hot-path live values. These never trigger DieViewer re-renders — only the
@@ -2109,6 +2111,25 @@ const analogDevices = useMemo(
     [annotationLayer]
   );
 
+  // ── Cross-tab focus: analog netlist → frame cell on die ──
+  const [searchParams] = useSearchParams();
+  const consumeAnalogFocus = useCrossTabSelection((s) => s.consumeAnalogFocus);
+  useEffect(() => {
+    if (!searchParams.has("focusAnalog") || !annotationLayer || !annotations) return;
+    const focus = consumeAnalogFocus();
+    if (!focus) return;
+    // Remove the param from the URL so a refresh doesn't re-trigger.
+    const url = new URL(window.location.href);
+    url.searchParams.delete("focusAnalog");
+    window.history.replaceState({}, "", url.pathname + url.search);
+    // Frame the cell
+    const cellAnnotationId = `cell:${focus.cellId}`;
+    focusOnIds([cellAnnotationId]);
+    // Highlight the analog device in the side panel
+    const dev = analogDevices.find((d: any) => d._cellId === focus.cellId || d.instanceName === focus.deviceName);
+    if (dev) setSelectedDevice(dev as any);
+  }, [searchParams, annotationLayer, annotations, consumeAnalogFocus, focusOnIds, analogDevices]);
+
   const minZoom = die ? (1 / Math.max(die.width, die.height)) * 50 : 0.01;
 
   return (
@@ -2175,6 +2196,7 @@ const analogDevices = useMemo(
             baseImages={die ? [{ id: die.id, name: die.name }] : []}
             deviceLabels={deviceLabels}
             onDeviceSelect={(id) => { const d = analogDevices.find((x:any) => x._cellId === id || (x as any)._cellId === id); if(d) setSelectedDevice(d) }}
+            onOpenInRE={dieId ? (cellId, cellTypeId) => navigate(`/re?die=${encodeURIComponent(dieId)}&type=${encodeURIComponent(cellTypeId)}&cell=${encodeURIComponent(cellId)}`) : undefined}
           />
         </aside>
         <section

@@ -36,6 +36,8 @@ type Props = {
   deviceLabels?: Map<string, string>;
   /** Fired on double-click of a cell with a device label. */
   onDeviceSelect?: (cellId: string) => void;
+  /** Navigate to the RE Cell tab for this cell. */
+  onOpenInRE?: (cellId: string, cellTypeId: string) => void;
 };
 
 /** Session-group key for the "ML Regions" parent (it spans two annotation
@@ -54,7 +56,7 @@ const BASE_IMAGES_KEY = "base-images";
 /** Session-group key for the "Overlay Layers" section. */
 const OVERLAY_LAYERS_KEY = "overlay-layers";
 
-export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabels, onDeviceSelect }: Props) {
+export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabels, onDeviceSelect, onOpenInRE }: Props) {
   const expandedSections = usePreferences((s) => s.expandedSections);
   const hiddenKinds = usePreferences((s) => s.hiddenKinds);
   const toggleSection = usePreferences((s) => s.toggleSectionExpanded);
@@ -273,6 +275,21 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
                       selected={selectedIds.has(id)}
                       onSelect={() => select([id])}
                       onDoubleClick={() => { focus([id]); const label = deviceLabels?.get(cell.id); if (label && onDeviceSelect) onDeviceSelect(cell.id); }}
+                      controls={onOpenInRE ? (
+                        <span
+                          onClick={(e) => { e.stopPropagation(); onOpenInRE(cell.id, cell.cellTypeId); }}
+                          title="Open in RE Cell"
+                          style={{
+                            display: "inline-flex",
+                            cursor: "pointer",
+                            color: "var(--ink3)",
+                            padding: "1px 3px",
+                            borderRadius: 3,
+                          }}
+                        >
+                          {Ic.link}
+                        </span>
+                      ) : undefined}
                     />
                   );
                 })}

@@ -9,7 +9,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useSearchParams } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import type { SpiceDialect } from "shared";
 import { AppShell } from "../components/shell/AppShell";
 import { StatusBar } from "../components/shell/StatusBar";
@@ -20,6 +20,7 @@ import { useDie } from "../api/dies";
 import { useAnnotations } from "../api/annotations";
 import { useAnnotationsWebSocket } from "../api/annotationsWebSocket";
 import { useSession } from "../state/session";
+import { useCrossTabSelection } from "../state/crossTabSelection";
 import { useAnalogNetlist } from "../api/analogNetlist";
 import { Ic } from "../icons";
 
@@ -56,10 +57,12 @@ export function AnalogNetlistPage() {
 // ── Inner page ────────────────────────────────────────────────────
 
 function AnalogNetlist({ dieId }: { dieId: string }) {
+  const navigate = useNavigate();
   const die = useDie(dieId).data;
   const annotationsQ = useAnnotations(dieId);
   useAnnotationsWebSocket(dieId);
   const annotations = annotationsQ.data;
+  const setAnalogFocus = useCrossTabSelection((s) => s.setAnalogFocus);
 
   // Dialect picker state
   const [dialect, setDialect] = useState<SpiceDialect>("cdl");
@@ -88,6 +91,18 @@ function AnalogNetlist({ dieId }: { dieId: string }) {
     setSelectedLine(line);
     viewerRef.current?.goToLine(line);
   }, []);
+
+  // Click a device instance → navigate to die viewer and frame it
+  const onSelectDevice = useCallback(
+    (instanceName: string, cellId: string, line: number) => {
+      setSelectedLine(line);
+      viewerRef.current?.goToLine(line);
+      setAnalogFocus(instanceName, cellId);
+      // Small delay to let the store update before navigation
+      setTimeout(() => navigate(`/die/${encodeURIComponent(dieId)}?focusAnalog=1`), 50);
+    },
+    [dieId, navigate, setAnalogFocus],
+  );
 
   const onCopy = useCallback(async () => {
     const text = netlist.data?.source;
@@ -226,6 +241,7 @@ function AnalogNetlist({ dieId }: { dieId: string }) {
               outline={netlist.data.outline}
               selectedLine={selectedLine ?? undefined}
               onGoToLine={goToLine}
+              onSelectDevice={onSelectDevice}
               totalDevices={netlist.data.totalDevices}
             />
           ) : (
@@ -278,11 +294,13 @@ function InstanceOutline({
   outline,
   selectedLine,
   onGoToLine,
+  onSelectDevice,
   totalDevices,
 }: {
   outline: import("../api/analogNetlist").AnalogNetlistGroup[];
   selectedLine?: number;
   onGoToLine: (line: number) => void;
+  onSelectDevice: (instanceName: string, cellId: string, line: number) => void;
   totalDevices: number;
 }) {
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
@@ -346,6 +364,9 @@ function InstanceOutline({
         >
           INSTANCES · {totalDevices}
         </span>
+        <span className="m" style={{ fontSize: 8.5, color: "var(--ink3)", display: "block", marginTop: 2 }}>
+          double-click to frame on die
+        </span>
       </div>
       <div style={{ flex: 1, overflow: "auto" }}>
         {outline.length === 0 ? (
@@ -383,6 +404,7 @@ function InstanceOutline({
                       monoLabel
                       selected={selectedLeafId === leaf.id}
                       onSelect={() => onGoToLine(leaf.line)}
+                      onDoubleClick={() => onSelectDevice(leaf.label, leaf.cellId, leaf.line)}
                     />
                   ))}
               </div>
