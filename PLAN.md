@@ -1,63 +1,117 @@
 # Plan — mmo-chip mixed-signal RE
 
-## Progress (2026-06-14)
+## Progress (2026-06-14 — end of day)
 
-### ✅ Done Today
+### ✅ Done today
 
-**1. Analog Netlist tab**
-- New route `/analog-netlist`, tab "Netlist (Analog)" in TopBar
-- Left panel: device instances grouped by kind (MOS, BJT, R, C, D…) with color swatches
-- Right panel: CodeViewer with CDL/Spectre/HSPICE syntax highlighting
-- Dialect selector toolbar (CDL | Spectre | HSPICE)
-- Copy/download netlist
-- Warnings panel (unconnected terminals, etc.)
+**Frontend — новые вкладки и навигация:**
 
-**2. Cross-tab navigation**
-- **Analog Netlist → Die Viewer**: double-click device instance → navigate to die viewer, camera frames the cell, device highlighted in Inspector
-- **Die Viewer → RE Cell**: double-click on any cell annotation on die image (analog device bbox OR drawn rect cell) → opens in RE Cell with that cell
-- **Die Viewer → RE Cell** (from Items panel): link icon 🔗 per cell row
+1. **Analog Netlist tab** (`/analog-netlist`)
+   - CDL/Spectre/HSPICE просмотрщик с подсветкой, поиском, навигацией
+   - Левая панель: instances по типам устройств с цветовыми swatches
+   - Dialect picker, copy/download, warnings
 
-**3. Hotkeys**
-- Number keys `1`-`5` for tab switching (1=Die viewer, 2=Merge, 3=RE Cell, 4=Code, 5=Netlist Analog)
-- Defined in `NAV_HOTKEYS` in `hotkeys.ts`
-- Global listener in `App.tsx` (ignores inputs/modifiers)
+2. **Net Graph (Cytoscape.js)** — визуализация соединений
+   - Force-directed D2D граф устройств
+   - Device type labels (M1·NMOS, Q1·NPN, R1·RES…)
+   - VDD/GND rail nodes (детектятся по именам nets)
+   - IO pins как diamond nodes (жёлтые)
+   - Клик → die viewer с фокусом на ячейку
+   - Hover подсветка соединений
+   - Code ↔ Graph переключение в тулбаре
 
-**4. Performance fixes**
-- Removed debug `console.log` from `dieWideAnalog.ts` (was logging every wire-match, hundreds per tick)
-- `analogDevicesRef` prevents `TiledCanvas` re-renders on annotation ticks (was flushing tile cache, causing ~1s base image reload)
-- Removed `analogDevices`/`annotations` from `onCanvasClick`/`onCanvasDoubleClick` dependency arrays (use refs)
+3. **Cross-tab навигация**
+   - Analog Netlist → die viewer: double-click device → камера фреймит cell + выбирает device
+   - Die viewer → RE Cell: double-click на любом cell на die (Q10 или rect)
+   - Die viewer → RE Cell: 🔗 иконка в Items panel
+   - URL query params (`?focusCell=&focusDevice=`) для передачи фокуса
 
-**5. Bugfixes**
-- `AnalogDeviceHighlights` canvas had `pointerEvents: "auto"` → stole all mouse events (pan/zoom/drag broken). Reverted to `pointerEvents: "none"`, click handling moved to `onCanvasClick`/`onCanvasDoubleClick` in DieViewerPage
-- Focus retry with `setTimeout` when `canvasHandle.current` is null (TiledCanvas not mounted yet)
-- URL query params (`?focusCell=&focusDevice=`) for cross-tab focus (more reliable than `location.state`)
+4. **Горячие клавиши**
+   - `1`-`5` для переключения вкладок (NAV_HOTKEYS в hotkeys.ts)
 
----
+**Bugfixes и производительность:**
 
-### Next (short-term)
-
-**Netlist visualization (Level 3 — SPICE graph view)**
-- Parse CDL → device net graph
-- Render as force-directed graph with Cytoscape.js or similar
-- Click on graph node → frame cell on die viewer + select device
-- Integration as sub-tab or separate page
-
-**Die viewer CDL preview sync**
-- Currently independent from Netlist tab (both call `collectDieWideAnalogDevices`)
-- Shared state for selected device → highlight in both views
-
-**SPICE netlist quality**
-- Named nets from IO pins + annotation net names
-- Model cards (.MODEL) with extracted parameters
-- Dialect-specific formatting tweaks
+5. Исправлен crash netlist вкладки (stale `useCrossTabSelection` reference)
+6. Исправлен захват мыши — AnalogDeviceHighlights canvas блокировал pan/zoom
+7. Исправлена производительность — TiledCanvas перерендеривался каждый WS-тик (через `analogDevicesRef`)
+8. Убран спам console.log из `dieWideAnalog.ts`
+9. Починено переключение double-click zoom / RE cell navigation в OutlineTree
+10. `overlayLayers.ts` — убран duplicate key
 
 ---
 
-### Future directions (from earlier discussion)
+### 🚧 Текущее состояние архитектуры
 
-1. Syntactic viewer + instance tree ← done (Netlist tab)
-2. Click device → frame on die ← done
-3. SPICE deck as clickable net graph ← current target
-4. Full schematic capture (bidirectional)
-5. Symbolic schematic canvas (NMOS → transistor symbol, R → zigzag)
-6. Integration with ngspice simulation
+```
+frontend/
+├── routes/
+│   ├── DieViewerPage.tsx        ← основная: die image + аннотации + тулы
+│   ├── RECellPage.tsx           ← RE ячейки
+│   ├── CodePage.tsx             ← цифровой Verilog
+│   ├── AnalogNetlistPage.tsx    ← CDL + Net Graph
+│   ├── MergeCellsPage.tsx
+│   └── LibraryPage.tsx
+├── components/
+│   ├── dieViewer/
+│   │   └── AnalogDeviceHighlights.tsx  ← device bbox overlay на die
+│   ├── netlist/
+│   │   └── NetGraphView.tsx           ← Cytoscape.js граф
+│   └── ...
+├── api/
+│   └── dieWideAnalog.ts         ← device extraction + wire matching
+├── lib/
+│   └── export/spice.ts          ← SPICE/CDL generation
+└── state/
+    └── session.ts               ← dieId, preferences
+```
+
+---
+
+### 🔴 Топ-5 задач сейчас
+
+1. **Net Graph — drag to fix node positions**
+   Сейчас force layout пересчитывается при каждом изменении аннотаций (WS tick). Нужно: сохранять позиции нод после ручной корректировки, layout только для новых нод.
+
+2. **Die viewer — analog device overlay as toggle layer (не чекбокс)**
+   Сейчас `deviceOverlayOn` — чекбокс в боковой панели. Лучше: кнопка в DieToolbar + видимость в Items panel как у других слоёв.
+
+3. **SPICE netlist — named nets из pin labels**
+   IO pin names уже используются для namedNets. Нужно: экранирование SPICE-спецсимволов в именах, user-friendly имена для unnamed nets.
+
+4. **CDL preview на die viewer — синхронизация с Netlist tab**
+   Сейчас оба независимо вызывают `collectDieWideAnalogDevices`. Нужно: вынести выделение device в shared state — клик на device в любом месте подсвечивает везде.
+
+5. **RE Cell — аналоговая схема для multi-device cell types**
+   Если cell type содержит >1 device — показать schematic внутри RE Cell (используя существующие `analogSymbols.tsx`).
+
+---
+
+### ⚠️ Архитектурные проблемы и риски
+
+1. **`collectDieWideAnalogDevices` тормозит на больших dies**
+   Бегает по всем cell types × все instances × все terminals × все wire edges. На dies с сотнями ячеек и тысячами соединений — секунды вычислений. Сейчас вызывается при каждом WS тике.
+   → Нужен debounce или мемоизация с глубоким сравнением `annotations`.
+
+2. **Wire matching (terminal → net) — хрупкий эвристический алгоритм**
+   `matchWireToPoint` ищет wire edge в пределах 10px от центра контакта. Если контакт дальше — fallback (device есть, но не подключен). Для реальной RE нужно intersection-based matching с учётом слоёв.
+   → При current точности часть устройств в графе будет «висеть» без соединений.
+
+3. **Нет разделения die-level и cell-level аналоговых устройств**
+   `collectDieWideAnalogDevices` собирает всё в кучу. Die-level shapes (нарисованные прямо на die) и cell-level devices (извлечённые из слоёв cell types) смешаны.
+   → При редактировании die-level shapes неясно, что пересчитывать.
+
+4. **React Router и WebSocket — гонки при переключении вкладок**
+   При смене вкладки старый WebSocket закрывается, новый открывается. Если annotations приходят во время размонтирования — ошибка в консоли. Не критично, но может вызывать моргание данных.
+
+5. **Нет тестов**
+   Весь аналоговый пайплайн (`collectDieWideAnalogDevices` → wire matching → SPICE gen → net graph) без единого теста. Изменение в любой функции может сломать всё остальное без предупреждения.
+
+---
+
+### Планы на будущее (после топ-5)
+
+- Simulation integration (ngspice WASM) — запуск симуляции из CDL
+- Net Graph → bi-directional: дроп ноды на die → создаёт annotation
+- Undo/redo для analog слоёв
+- Export CDL/Spectre/HSPICE с сервера
+- Multi-die проекты
