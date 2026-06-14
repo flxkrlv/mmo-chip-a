@@ -1,147 +1,137 @@
 # Plan — mmo-chip mixed-signal RE
 
-Этот план заменяет `ANALOG_PLAN.md` (оригинальный roadmap от 2026-06-13) и `PLAN.md`.
-Сопоставляет исходные R1-R8 с реальным прогрессом и актуальными приоритетами.
-
----
-
-## Оригинальный план (R1-R8) × Прогресс
-
-| Блок | Статус | Что сделано |
-|------|--------|-------------|
-| **R1 — Data model** | ✅ Done | Layer types, DeviceKind, DeviceGeometry\*, AnalogDevice, SpiceConfig |
-| **R2 — Detection** | 🟡 60% | `extractMarkedDevices` (marker-based), wire matching. Чисто-геометрической детекции (BJT/R/C/D из слоёв) нет — решили что marker-based проще и надёжнее |
-| **R3 — SPICE export** | ✅ Done | CDL/Spectre/HSPICE generators, wire matching, named nets |
-| **R4 — Frontend** | 🟡 80% | Analog layers, device inspector, analog symbols, **Net Graph (сегодня)**. Schematic render — отложили (сложно, пользы мало) |
-| **R5 — Backend** | ❌ Not started | Export API, SpiceConfig persistence, celery pipeline |
-| **R6 — Testing** | ❌ Not started | Ни одного теста |
-| **R7 — ML** | ❌ Phase 1+ | Не актуально |
-| **R8 — Overlay images** | ✅ MVP | Static PNG/JPEG upload, opacity, server preload |
-
----
-
 ## Реализовано (2026-06-14)
 
-**Аналоговый пайплайн** (всего за 3 дня):
-1. Data model (DeviceKind, geometry types, SpiceConfig)
-2. Device detection (marker-based: `extractMarkedDevices`)
-3. Die-wide collection + wire matching (`collectDieWideAnalogDevices`)
-4. SPICE/CDL/Spectre export (`spice.ts`)
-5. Analog Netlist tab (CDL viewer + net graph)
-6. Device Inspector + overlay highlights
-7. Cross-tab navigation (все вкладки связаны)
-8. Multi-layer image overlays + ruler tool
-9. LPnp слой для PNP детекции
-10. Per-net colors + IO pin snapping
+**Аналоговый пайплайн:**
+1. ✅ Data model (DeviceKind, DeviceGeometry\*, SpiceConfig)
+2. ✅ Device detection (marker-based: `extractMarkedDevices`)
+3. ✅ Die-wide collection + wire matching (`collectDieWideAnalogDevices`)
+4. ✅ SPICE/CDL/Spectre export (`spice.ts`)
+5. ✅ Analog Netlist tab (CDL viewer + net graph)
+6. ✅ Device Inspector + overlay highlights
+7. ✅ Cross-tab navigation (Netlist↔Die↔RE Cell)
+8. ✅ Multi-layer image overlays + ruler tool
+9. ✅ LPnp слой для PNP детекции
+10. ✅ Per-net colors + IO pin snapping
+11. ✅ Hotkeys 1-5 для переключения вкладок
 
 ---
 
-## 🔴 Топ-5 задач сейчас (актуальные)
+## Приоритеты
 
-### 1. Wire matching — надёжность
-**Проблема:** `matchWireToPoint` ищет провод в 10px от контакта. Если провод дальше — terminal остаётся unconnected (fallback netId < 0). Для реальной RE нужно точное intersection-based сопоставление.
-**Что делать:** Заменить distance-check на segment-rectangle intersection (уже есть `segmentIntersectsRect` в `dieWideAnalog.ts`). Сейчас matchWireToPoint ищет точку, а нужно проверять пересечение отрезка провода с bounding box терминала.
-**Приоритет:** 🔴 **Critical** — без этого часть устройств в графе и CDL висят «в воздухе».
+### 1. Wire matching — надёжность (🔴 Critical)
 
-### 2. Backend API для SPICE export
-**Проблема:** Всё на клиенте — `collectDieWideAnalogDevices` пересчитывается при каждом WS тике.
-**Что делать:** 
-- `POST /api/dies/:dieId/export/analog?format=cdl` — генерация на сервере
-- `GET /api/dies/:dieId/devices` — кэшированный список устройств
-- Сохранение SpiceConfig (sheetR, capDensity, model cards)
-**Приоритет:** 🔴 **Critical** — производительность на больших dies.
+**Проблема:** `matchWireToPoint` ищет провод по distance-check (10px от центра контакта). Если контакт дальше — terminal остаётся unconnected.
 
-### 3. Cell type device review — ручная верификация
-**Проблема:** `extractMarkedDevices` находит устройства по маркерным слоям. Если маркер неверный — устройство не найдено. Нужен UI для просмотра/редактирования списка устройств внутри каждого cell type.
-**Что делать:** 
-- Секция "Analog devices" в Cell RE left panel
-- Список найденных устройств с возможностью удалить/добавить
-- Выбор DeviceKind из выпадающего списка
-- Редактирование параметров (W/L/AE/squares)
-**Приоритет:** 🟡 **High** — без этого нет обратной связи о качестве extraction.
+**Решение:** Заменить distance-check на **segment-rectangle intersection**. Функция `segmentIntersectsRect` уже есть в `dieWideAnalog.ts` (строка 45). Надо применить её в `matchWireToTerminal` и использовать вместо `matchWireToPoint` во всех местах.
 
-### 4. Net Graph — стабильность и UX
-**Проблемы текущие:**
-- Force layout пересчитывается при каждом WS тике (прыгают ноды)
-- Нет сохранения позиций
-- Не все IO pins соединяются (требуют точного wire matching — см. п.1)
+**Snap to contact:** пользователь получает визуальное подтверждение что провод дошёл до контакта. Добавить как preferences toggle (аналог snapToVias).
+
+**Тесты:** После перехода на intersection — проверить на всех типах устройств (BJT, MOS, R, C, D). Сверять с эталонным SPICE-нетлистом.
+
+---
+
+### 2. SPICE — качество экспорта (🔴 Critical)
+
+**Проблема:** Текущий CDL/Spectre/HSPICE весьма условный. Параметры транзисторов, model cards, имена nets — всё надо доводить под реальные примеры.
+
+**Решение:**
+- Загрузить реальный SPICE-нетлист от работающей схемы
+- Подогнать `spice.ts` под этот формат
+- Сверить совпадение параметров (W/L, AE, m, fingers)
+- Проверить корректность model cards (.MODEL / model)
+
+---
+
+### 3. Resistor types + SheetR GUI (🟡 High)
+
+**Типы резисторов (новые layer types):**
+- `hsr` — ion implanted (high sheet R)
+- `pb` — p base (диффузионный)
+- `npl` — n plus (диффузионный)
+- `poly` — poly si
+- `film` — плёночный
+
+**SheetR:** задаётся в GUI (SpiceConfig panel) для каждого типа. По умолчанию: hsr=1000, pb=200, npl=50, poly=30, film=100 (Ω/□).
+
+---
+
+### 4. MOS analog transistors (🟡 High — deferred)
+
+**Когда:** После загрузки die с реальными аналоговыми MOS.
+
+**Что нужно:**
+- `fingers` — детекция параллельных poly-затворов
+- `multiplier` — детекция повторяющихся ячеек
+- `bulk` terminal — привязка к well
+
+Сейчас `extractMarkedDevices` уже умеет W/L и mosType. Остальное допилится на реальных данных.
+
+---
+
+### 5. Cell type device review (🟡 Medium)
+
+**Что это:** UI внутри RE Cell для просмотра/редактирования списка аналоговых устройств, найденных в текущем cell type.
+
+**Зачем:** Сейчас extraction — чёрный ящик. Если найдено не то устройство или неверные параметры — нет способа проверить/поправить.
+
 **Что делать:**
-- Debounce на annotations перед перестроением графа (300ms)
-- Сохранять user-dragged позиции нод (при перетаскивании ноды → фиксировать)
-- Синхронизация с die viewer (клик на device в графе → подсветка на die)
-**Приоритет:** 🟡 **High** — граф уже полезен, надо довести до ума.
-
-### 5. CDL → die viewer двусторонняя синхронизация
-**Проблема:** Выделение device в CDL preview на die viewer и в Netlist tab — независимые стейты.
-**Что делать:** Вынести `selectedAnalogDevice` в shared state (zustand), подписать все три вьюхи:
-- Die viewer (overlay + inspector)
-- Netlist tab (CDL строка)
-- Net graph (нода)
-Клик в любом месте → подсветка везде.
-**Приоритет:** 🟡 **High** — завершает идею cross-tab navigation.
+- Секция "Analog devices" в левой панели RE Cell
+- Список найденных устройств с типом и параметрами
+- Force override: пользователь может изменить kind, поправить W/L/AE/m
+- Добавить устройство вручную (если extraction пропустил)
 
 ---
 
 ## Когда будет сделано (следующие)
 
-| Задача | Когда | Зависит от |
+| Задача | Когда | Приоритет |
 |--------|-------|-----------|
-| **MOS 4-pin extraction** (bulk terminal) | После п.1 | Wire matching |
-| **Конденсаторы/диоды** (extraction) | После п.3 | Cell type review |
-| **Hierarchical netlist** (.SUBCKT) | После п.2 | Backend API |
-| **Schematic render в RE Cell** | Отложено | Нужен use-case >1 device/cell |
-| **Multi-layer image tiling** | Когда >300MB сканы | — |
-| **VPNP vertical PNP** | Низкий | Нет данных |
-| **Тесты** | После стабилизации API | П.1 + П.2 |
-| **Cadence SKILL export** | После п.2 | Backend API |
+| Wire matching → intersection | Сейчас (после обновления плана) | 🔴 Critical |
+| SPICE — quality pass | После загрузки эталонного нетлиста | 🔴 Critical |
+| Resistor types + SheetR GUI | После wire matching | 🟡 High |
+| MOS analog transistors | После загрузки die с аналоговыми MOS | 🟡 High |
+| Cell type device review | После резисторов | 🟡 Medium |
+| Net graph stability | Низкий | 🔵 Low |
+| Backend API (export) | Если performance проблемы на больших dies | 🔵 Deferred |
+| Layout-oriented export (SKILL) | Развитие идеи | 🔵 Research |
+| CDL preview на die viewer | **Удалить** — дублирует Netlist tab | 🗑️ |
 
 ---
 
-## ⚠️ Архитектурные риски
+## Cross-tab sync — что есть и что нужно
 
-### 1. `collectDieWideAnalogDevices` — монолит (🔴)
-Функция делает всё: extraction, wire matching, netlist gen. Вызывается:
-- Die viewer (каждый WS тик → overlay)
-- Netlist tab (каждый WS тик → CDL + граф)
-- CDL preview (по кнопке Scan)
+**Работает:**
+- Analog Netlist (device double-click) → die viewer (frame + select) ✅
+- Analog Netlist (Graph → node click) → die viewer ✅
+- Die viewer (double-click cell) → RE Cell ✅
+- Die viewer (🔗 icon) → RE Cell ✅
+- Die viewer (device double-click на die) → RE Cell ✅
+- OutlineTree double-click → zoom to cell ✅
 
-**Решение:** Backend API с кэшированием результата. Клиент только читает.
+**Не хватает:**
+- Die viewer (device inspector) → Net graph (highlight same node) — 🔵 Low
+- Выделение device в любом месте → подсветка везде — 🔵 Low
+  (потребует zustand store для selectedAnalogDevice)
 
-### 2. Wire matching — эвристика (🔴)
-10px tolerance когда-нибудь не сработает. Зависит от:
-- Разрешения скана (um/px)
-- Формы контактов
-- Количества metal слоёв
+---
 
-**Решение:** Segment-rect intersection (уже есть код — `segmentIntersectsRect`). Сделать в ближайшее время.
+## Архитектурные риски
+
+### 1. `collectDieWideAnalogDevices` — монолит (🟡)
+Функция делает всё: extraction, wire matching, netlist gen. Вызывается при каждом WS тике.
+**Решение:** Backend API если будут проблемы с производительностью на больших dies. Пока не критично.
+
+### 2. Wire matching — эвристика (🔴 — в процессе)
+10px distance-check → заменяем на intersection.
+**Решение:** Сделать в ближайшее время.
 
 ### 3. Нет тестов (🟡)
-Любое изменение в `dieWideAnalog.ts` или `spice.ts` может сломать:
-- CDL генерацию
-- Device extraction
-- Wire matching  
-- Net graph
-- Die viewer overlay
+Любое изменение в `dieWideAnalog.ts` или `spice.ts` может сломать всё.
+**Решение:** Snapshot-тесты после стабилизации wire matching + SPICE.
 
-**Решение:** Хотя бы snapshot-тесты на известные die конфигурации.
-
-### 4. Client-side only архитектура (🟡)
-Всё в браузере:
-- Большие dies → тормоза при extraction
-- Нет сохранения SpiceConfig между сессиями
-- Нет серверной валидации
-
-**Решение:** Перенос вычислительных задач на backend.
+### 4. Client-side only архитектура (🟢)
+Всё в браузере. На средних dies работает. Если тормозит — вынести на backend.
 
 ### 5. React Router + WebSocket race (🟢)
-При смене вкладок WebSocket закрывается с ошибкой. Не критично, но консоль замусорена.
-
----
-
-## Краткий итог
-
-**Сделано за 3 дня:** полный пайплайн от распознавания аналоговых устройств до CDL и графа.
-
-**Главное «узкое место» сейчас:** wire matching. Если соединения неправильные — всё остальное (CDL, граф, overlay) показывает неверную картину. Это первое, что надо фиксить.
-
-**Backend API — второй приоритет.** Без него `collectDieWideAnalogDevices` будет дёргаться на каждый WS тик и на больших dies станет неюзабельно.
+При смене вкладок WebSocket закрывается с ошибкой. Не критично.
