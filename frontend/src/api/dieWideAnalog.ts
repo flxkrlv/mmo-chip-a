@@ -94,12 +94,10 @@ function matchWireToPoint(
       const dist2 = (cx-px)*(cx-px)+(cy-py)*(cy-py);
       if (dist2 <= tol2) {
         if (!netIdMap.has(net.id)) netIdMap.set(net.id, nextId.v++);
-        console.log(`[debug] matchWireToPoint: cp(${px.toFixed(0)},${py.toFixed(0)}) → net ${net.id} edge ${edge.id} (${a.x.toFixed(0)},${a.y.toFixed(0)})→(${b.x.toFixed(0)},${b.y.toFixed(0)}) dist=${Math.sqrt(dist2).toFixed(1)}px`);
         return netIdMap.get(net.id)!;
       }
     }
   }
-  console.log(`[debug] matchWireToPoint: cp(${px.toFixed(0)},${py.toFixed(0)}) — NO MATCH (${nets.length} nets, ${nets.reduce((s,n)=>s+n.edges.length,0)} edges)`);
   return null;
 }
 
@@ -290,20 +288,14 @@ export function collectDieWideAnalogDevices(
             return {...t, netId: fresh};
           }
           const contacts = termContacts[ti];
-          if (contacts.length === 0) {
-            console.log(`[debug] ${instName}(${t.name}) — NO contact centers`);
-          }
+          // contacts.length === 0 — no contact centers
           for (const cp of contacts) {
             const wid = matchWireToPoint(nets, cp.x, cp.y, 10, netIdMap, nextNetId);
             if (wid!=null) {
-              console.log(`[debug] ${instName}(${t.name}) matched cp(${cp.x.toFixed(0)},${cp.y.toFixed(0)}) → netId ${wid}`);
               return {...t, netId: wid};
-            } else {
-              console.log(`[debug] ${instName}(${t.name}) cp(${cp.x.toFixed(0)},${cp.y.toFixed(0)}) — no wire within 10px`);
             }
           }
           const fresh = 2000 + allDevices.length*10 + ti;
-          console.log(`[debug] ${instName}(${t.name}) → FALLBACK ${fresh}`);
           return {...t, netId: fresh};
         });
 

@@ -2155,26 +2155,32 @@ const analogDevices = useMemo(
   useEffect(() => {
     const cellId = focusSearchParams.get("focusCell");
     const deviceName = focusSearchParams.get("focusDevice");
+    console.log(`[focus] params: cellId=${cellId} deviceName=${deviceName} consumed=${focusConsumedRef.current} annLayer=${!!annotationLayer} annots=${!!annotations}`);
     if (!cellId || !deviceName || focusConsumedRef.current) return;
     focusConsumedRef.current = true;
-    // Clean URL params
+    if (!annotationLayer || !annotations) {
+      console.log(`[focus] waiting for layer/annotations — will retry`);
+      focusConsumedRef.current = false;
+      return;
+    }
+    // Clean URL params (after successful consumption to survive retries)
     const url = new URL(window.location.href);
     url.searchParams.delete("focusCell");
     url.searchParams.delete("focusDevice");
     window.history.replaceState({}, "", url.pathname + url.search);
-    // Wait until annotation layer + annotations are ready
-    if (!annotationLayer || !annotations) {
-      // Will retry when annotationLayer or annotations change (retry effect below)
-      focusConsumedRef.current = false;
-      return;
-    }
+    console.log(`[focus] framing cell:${cellId} ...`);
     // Frame the cell
     focusOnIds([`cell:${cellId}`]);
     // Highlight the analog device in the side panel
     const dev = analogDevices.find(
       (d: any) => d._cellId === cellId || d.instanceName === deviceName
     );
-    if (dev) setSelectedDevice(dev as any);
+    if (dev) {
+      console.log(`[focus] selecting device ${dev.instanceName}`);
+      setSelectedDevice(dev as any);
+    } else {
+      console.log(`[focus] device not found in analogDevices`);
+    }
   }, [focusSearchParams, annotationLayer, annotations, focusOnIds, analogDevices]);
 
   const minZoom = die ? (1 / Math.max(die.width, die.height)) * 50 : 0.01;
