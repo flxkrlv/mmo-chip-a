@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import type { AnalogDevice, AnnotationNet } from "shared";
 import { useAnnotations } from "../api/annotations";
 import { useAnnotationsWebSocket } from "../api/annotationsWebSocket";
@@ -2055,16 +2055,35 @@ const analogDevices = useMemo(
         if (mlHit) startWireAt({ x: mlHit.x, y: mlHit.y }, null);
       }
 
-      // Double-click on an analog device → open in RE Cell
+      // Double-click on ANY cell annotation → open in RE Cell
+      // Checks: analog device first, then annotation layer for cells.
+      let cellId: string | null = null;
+      let cellTypeId: string | null = null;
       const devDbl = hitTestAnalogDevice(world, analogDevices);
       if (devDbl && annotations) {
         const cid = (devDbl as any)._cellId;
         if (cid) {
           const cell = (annotations as any).cells?.find((c: any) => c.id === cid);
           if (cell) {
-            navigate(`/re?die=${encodeURIComponent(dieId)}&type=${encodeURIComponent(cell.cellTypeId)}&cell=${encodeURIComponent(cid)}`);
+            cellId = cid;
+            cellTypeId = cell.cellTypeId;
           }
         }
+      }
+      if (!cellId && annotations) {
+        // Check annotation layer for cell hits (covers manually drawn cells)
+        const cellHit = annotationLayer?.hitTest(world, tol) ?? null;
+        if (cellHit && cellHit.annotation.id.startsWith("cell:")) {
+          const cid = cellHit.annotation.id.slice(5);
+          const cell = (annotations as any).cells?.find((c: any) => c.id === cid);
+          if (cell) {
+            cellId = cid;
+            cellTypeId = cell.cellTypeId;
+          }
+        }
+      }
+      if (cellId && cellTypeId) {
+        navigate(`/re?die=${encodeURIComponent(dieId)}&type=${encodeURIComponent(cellTypeId)}&cell=${encodeURIComponent(cellId)}`);
       }
     },
     [annotationLayer, mlViasLayer, wire, startWireAt, analogDevices, annotations, navigate, dieId]
@@ -2129,34 +2148,34 @@ const analogDevices = useMemo(
   );
 
   // ── Cross-tab focus: analog netlist → frame cell on die ──
-  // Uses React Router `location.state` which is guaranteed to survive
-  // any SPA navigation. The state is consumed once after annotations
-  // and the annotation layer are ready.
-  const location = useLocation();
-  const focusStateRef = useRef<{ cellId: string; deviceName: string } | null>(null);
+  // Uses URL query params (?focusCell=&focusDevice=) which survive
+  // any SPA navigation and page refreshes. Cleaned up after consumption.
+  const [focusSearchParams] = useSearchParams();
+  const focusConsumedRef = useRef(false);
   useEffect(() => {
-    const st = location.state as Record<string, string> | null;
-    if (st?.focusAnalogCell && st?.focusAnalogDevice) {
-      focusStateRef.current = {
-        cellId: st.focusAnalogCell,
-        deviceName: st.focusAnalogDevice,
-      };
-      // Clear the state so a refresh doesn't re-trigger
-      window.history.replaceState({}, "");
+    const cellId = focusSearchParams.get("focusCell");
+    const deviceName = focusSearchParams.get("focusDevice");
+    if (!cellId || !deviceName || focusConsumedRef.current) return;
+    focusConsumedRef.current = true;
+    // Clean URL params
+    const url = new URL(window.location.href);
+    url.searchParams.delete("focusCell");
+    url.searchParams.delete("focusDevice");
+    window.history.replaceState({}, "", url.pathname + url.search);
+    // Wait until annotation layer + annotations are ready
+    if (!annotationLayer || !annotations) {
+      // Will retry when annotationLayer or annotations change (retry effect below)
+      focusConsumedRef.current = false;
+      return;
     }
-  }, [location.state]);
-  useEffect(() => {
-    const focus = focusStateRef.current;
-    if (!focus || !annotationLayer || !annotations) return;
-    focusStateRef.current = null;
     // Frame the cell
-    focusOnIds([`cell:${focus.cellId}`]);
+    focusOnIds([`cell:${cellId}`]);
     // Highlight the analog device in the side panel
     const dev = analogDevices.find(
-      (d: any) => d._cellId === focus.cellId || d.instanceName === focus.deviceName
+      (d: any) => d._cellId === cellId || d.instanceName === deviceName
     );
     if (dev) setSelectedDevice(dev as any);
-  }, [annotationLayer, annotations, location.state, focusOnIds, analogDevices]);
+  }, [focusSearchParams, annotationLayer, annotations, focusOnIds, analogDevices]);
 
   const minZoom = die ? (1 / Math.max(die.width, die.height)) * 50 : 0.01;
 

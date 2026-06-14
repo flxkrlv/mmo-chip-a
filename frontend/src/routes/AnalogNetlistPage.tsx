@@ -95,10 +95,10 @@ function AnalogNetlist({ dieId }: { dieId: string }) {
     (instanceName: string, cellId: string, line: number) => {
       setSelectedLine(line);
       viewerRef.current?.goToLine(line);
-      // Use location.state — guaranteed to survive navigation
-      navigate(`/die/${encodeURIComponent(dieId)}`, {
-        state: { focusAnalogDevice: instanceName, focusAnalogCell: cellId },
-      });
+      // Use URL query params — always survives navigation
+      navigate(
+        `/die/${encodeURIComponent(dieId)}?focusCell=${encodeURIComponent(cellId)}&focusDevice=${encodeURIComponent(instanceName)}`,
+      );
     },
     [dieId, navigate],
   );
