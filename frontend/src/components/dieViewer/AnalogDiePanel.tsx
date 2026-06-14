@@ -11,7 +11,6 @@ import type { DieAnnotations } from "shared";
 import { collectDieWideAnalogDevices } from "../../api/dieWideAnalog";
 import { SheetRConfigPanel } from "../config/SheetRConfigPanel";
 import { usePreferences } from "../../state/preferences";
-import { DEFAULT_SHEET_R } from "../../lib/export/resistorDefaults";
 
 interface Props {
   annotations: DieAnnotations | null | undefined;
@@ -92,12 +91,6 @@ export function AnalogDiePanel({ annotations }: Props) {
       {sheetROpen && (
         <div style={{ marginTop: 4 }}>
           <SheetRConfigPanel compact />
-          {/* Show effective values summary */}
-          <div className="m" style={{ fontSize: 8.5, color: "var(--ink3)", marginTop: 4, lineHeight: 1.5 }}>
-            {["poly", "hsr", "pb", "npl", "film"]
-              .map(t => `${t}=${sheetR[t] ?? DEFAULT_SHEET_R[t]}`)
-              .join(" · ")}
-          </div>
         </div>
       )}
     </div>
