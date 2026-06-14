@@ -77,7 +77,7 @@ function buildElements(devs: NamedDevice[]): ElementDefinition[] {
         cellId: (d as any)._cellId ?? "",
       },
       style: {
-        "background-color": c + "22",
+        "background-color": c + "33",
         "border-color": c,
         shape: NODE_SHAPE,
       },
@@ -116,16 +116,16 @@ const STYLE: cytoscape.Stylesheet[] = [
   {
     selector: "node",
     style: {
-      "font-family": "var(--mono)",
-      color: "var(--ink)",
+      "font-family": "monospace",
+      color: "#e8e8e8",
       "text-valign": "center",
       "text-halign": "center",
       "min-zoomed-font-size": 6,
       "border-width": 3,
       width: 48,
-      height: 48,  // equal = circle
+      height: 48,
       "font-size": 10,
-      "background-color": "var(--card)",
+      "background-color": "#1a1a1a",
       label: "data(label)",
       "border-color": "#666",
     },
@@ -135,17 +135,16 @@ const STYLE: cytoscape.Stylesheet[] = [
     selector: "edge",
     style: {
       width: 1.5,
-      "line-color": "var(--l2)",
+      "line-color": "#444",
       "curve-style": "bezier",
       "font-size": 8,
       "font-family": "var(--mono)",
-      color: "var(--ink2)",
-      "text-background-color": "var(--card)",
-      "text-background-opacity": 0.9,
+      color: "#e8e8e8",
+      "text-background-color": "#333",
+      "text-background-opacity": 0.85,
       "text-background-padding": 2,
-      "text-border-color": "var(--l1)",
+      "text-border-color": "#555",
       "text-border-width": 0.5,
-      "text-border-opacity": 0.6,
       label: "data(label)",
       "text-valign": "center",
       "text-halign": "center",
@@ -212,7 +211,7 @@ export function NetGraphView({ annotations, onDeviceClick }: Props) {
     cy.on("mouseout", "node", (evt) => {
       const n = evt.target;
       n.style({ "border-width": 3 });
-      n.connectedEdges().style({ width: 1.5, "line-color": "var(--l2)" });
+      n.connectedEdges().style({ width: 1.5, "line-color": "#444" });
     });
 
     cyRef.current = cy;
