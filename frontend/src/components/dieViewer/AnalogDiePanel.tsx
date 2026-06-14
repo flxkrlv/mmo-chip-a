@@ -21,6 +21,7 @@ import type {
 } from "shared";
 import { collectDieWideAnalogDevices } from "../../api/dieWideAnalog";
 import { generateSpiceNetlist } from "../../lib/export/spice";
+import { SheetRConfigPanel, buildSheetRConfig } from "../config/SheetRConfigPanel";
 
 /** Layers available for die-level analog annotation. */
 export const DIE_ANALOG_LAYERS: LayerType[] = [
@@ -94,9 +95,9 @@ export function AnalogDiePanel({ annotations, onLayersChange }: Props) {
 
   // Read umPerPx from annotations (set via ruler tool's "Set Scale" workflow).
   const umPerPx = annotations.umPerPx ?? 1.0;
-  const [sheetRInput, setSheetRInput] = useState("");
   const [scanAllCells, setScanAllCells] = useState(false);
   const [scanning, setScanning] = useState(false);
+  const [sheetROpen, setSheetROpen] = useState(false);
 
   // Die-level devices from analogLayers (always computed, Clipper NOT needed)
   const dieDevices = useMemo(
@@ -104,15 +105,8 @@ export function AnalogDiePanel({ annotations, onLayersChange }: Props) {
     [annotations?.analogLayers, umPerPx],
   );
 
-  // Sheet resistance — must be defined before callbacks
-  const sheetR = useMemo(() => {
-    if (!sheetRInput.trim()) return undefined;
-    try {
-      return JSON.parse(`{${sheetRInput}}`) as Record<string, number>;
-    } catch {
-      return undefined;
-    }
-  }, [sheetRInput]);
+  // Sheet resistance from preferences (built from the GUI)
+  const sheetR = useMemo(() => buildSheetRConfig(), []);
 
   // Cell-level devices — only computed when the user clicks "Scan all cells"
   const [cellDevices, setCellDevices] = useState<AnalogDevice[]>([]);
@@ -240,23 +234,18 @@ export function AnalogDiePanel({ annotations, onLayersChange }: Props) {
                 </div>
               </label>
             </div>
-            <div style={{ marginBottom: 4 }}>
-              <label style={{ fontSize: 10, color: "var(--ink2)" }}>
-                Sheet R (poly:50, diffusion:10)
-                <input
-                  type="text"
-                  value={sheetRInput}
-                  onChange={(e) => setSheetRInput(e.target.value)}
-                  placeholder='poly:50, nwell:1000'
-                  style={{
-                    width: "100%", marginTop: 2,
-                    background: "var(--bg1, #222)",
-                    border: "1px solid var(--border, #444)",
-                    borderRadius: 3, color: "var(--ink0, #eee)",
-                    fontSize: 11, padding: "2px 6px",
-                  }}
-                />
-              </label>
+            <div style={{ marginTop: 8, marginBottom: 4 }}>
+              <div
+                style={{
+                  fontSize: 10, fontWeight: 600, color: "var(--ink3)",
+                  cursor: "pointer", display: "flex", alignItems: "center", gap: 4,
+                  marginBottom: 4,
+                }}
+                onClick={() => setSheetROpen((v) => !v)}
+              >
+                {sheetROpen ? "▼" : "▶"} SHEET RESISTANCE
+              </div>
+              {sheetROpen && <SheetRConfigPanel compact />}
             </div>
             <button
               type="button"

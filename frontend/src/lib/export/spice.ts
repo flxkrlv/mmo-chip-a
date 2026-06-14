@@ -28,7 +28,9 @@ import type {
   DeviceTerminal,
   SpiceConfig,
   SpiceDialect,
+  ResistorType,
 } from "shared";
+import { effectiveSheetR } from "./resistorDefaults";
 
 // ═════════════════════════════════════════════════════════════════
 // Naming helpers
@@ -125,11 +127,15 @@ function fmtPerim(geom: DeviceGeometryBJT | DeviceGeometryDiode): string {
     : (geom as DeviceGeometryDiode).perimeter_um;
   return perim > 0 ? `PJ=${perim.toFixed(3)}E-6` : "";
 }
-function fmtRes(geom: DeviceGeometryResistor): string {
+function fmtRes(geom: DeviceGeometryResistor, config: SpiceConfig): string {
   const parts: string[] = [];
   if (geom.squares > 0) parts.push(`SQUARES=${geom.squares.toFixed(1)}`);
+  // Include sheetR if a custom value or a known type provides it
+  const sr = effectiveSheetR(geom.resistorType as ResistorType, config.sheetR_ohms);
+  if (sr > 0 && !geom.sheetR_ohms) parts.push(`R=${(sr * geom.squares).toFixed(0)}`);
   if (geom.W_um > 0) parts.push(`W=${geom.W_um.toFixed(1)}u`);
   if (geom.L_um > 0) parts.push(`L=${geom.L_um.toFixed(1)}u`);
+  if (geom.resistorType && geom.resistorType !== "poly") parts.push(`TYPE=${geom.resistorType}`);
   return parts.join(" ");
 }
 function fmtCap(geom: DeviceGeometryCapacitor): string {
@@ -277,11 +283,12 @@ function deviceLine(
   gnd: string,
   dialect: "cdl" | "spectre" | "hspice",
   indent: string,
+  config?: SpiceConfig,
 ): string {
   const instName = d.instanceName ?? d.id;
   const termStr = terminalString(d.kind, d.terminals, netLookup, vdd, gnd);
   const modelName = d.modelName ?? guessModelName(d);
-  const params = paramString(d, dialect);
+  const params = paramString(d, dialect, config);
 
   switch (dialect) {
     case "cdl":
@@ -310,7 +317,7 @@ function deviceLine(
   }
 }
 
-function paramString(d: AnalogDevice, dialect: "cdl" | "spectre" | "hspice"): string {
+function paramString(d: AnalogDevice, dialect: "cdl" | "spectre" | "hspice", config?: SpiceConfig): string {
   const g = d.geometry;
   switch (d.kind) {
     case "mos": {
@@ -334,7 +341,7 @@ function paramString(d: AnalogDevice, dialect: "cdl" | "spectre" | "hspice"): st
         .join(" ");
     }
     case "resistor":
-      return fmtRes(g as DeviceGeometryResistor);
+      return fmtRes(g as DeviceGeometryResistor, config ?? {});
     case "capacitor":
       return fmtCap(g as DeviceGeometryCapacitor);
     case "diode":
@@ -496,7 +503,7 @@ function generateCDL(
 
   // Device instances
   for (const d of devices) {
-    lines.push(deviceLine(d, netLookup, vdd, gnd, "cdl", indent));
+    lines.push(deviceLine(d, netLookup, vdd, gnd, "cdl", indent, config));
   }
 
   // Model cards
@@ -551,7 +558,7 @@ function generateSpectre(
 
   // Device instances
   for (const d of devices) {
-    lines.push(deviceLine(d, netLookup, vdd, gnd, "spectre", indent));
+    lines.push(deviceLine(d, netLookup, vdd, gnd, "spectre", indent, config));
   }
 
   // Model cards (Spectre: model name type params=...)
@@ -640,7 +647,7 @@ function generateHSPICE(
   lines.push(`.SUBCKT ${sanitizeSpiceName(moduleName)} ${ports.join(" ")} ${vdd} ${gnd}`);
 
   for (const d of devices) {
-    lines.push(deviceLine(d, netLookup, vdd, gnd, "hspice", ""));
+    lines.push(deviceLine(d, netLookup, vdd, gnd, "hspice", "", config));
   }
 
   // Models

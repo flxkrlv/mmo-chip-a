@@ -696,6 +696,9 @@ export interface DeviceGeometryJFET {
   jfetType: "njf" | "pjf" | "unknown";
 }
 
+/** Resistor material type — determines default sheetR. */
+export type ResistorType = "poly" | "hsr" | "pb" | "npl" | "film";
+
 export interface DeviceGeometryResistor {
   /** Physical body length [μm] */
   L_um: number;
@@ -713,6 +716,8 @@ export interface DeviceGeometryResistor {
   multiplier: number;
   /** Body shape */
   shape?: "straight" | "meander" | "serpentine" | "unknown";
+  /** Resistor material type. Defaults to "poly" (polysilicon). */
+  resistorType?: ResistorType;
 }
 
 export interface DeviceGeometryCapacitor {
