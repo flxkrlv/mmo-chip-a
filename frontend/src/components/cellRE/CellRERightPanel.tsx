@@ -1557,10 +1557,14 @@ function AnalogDeviceRow({ device }: { device: import("shared").AnalogDevice }) 
       break;
     }
       break;
-    case "resistor":
-      paramStr = `${(g.squares as number)?.toFixed(0)}sq`;
-      if (g.resistance_ohms != null) paramStr += ` ${g.resistance_ohms}Ω`;
+    case "resistor": {
+      const sq = (g.squares as number) ?? 0;
+      const type = ((g as any).resistorType ?? "poly") as ResistorType;
+      const overrides = usePreferences.getState().sheetR ?? {};
+      const sr = effectiveSheetR(type, overrides);
+      paramStr = `${sq.toFixed(1)}sq ${Math.round(sr * sq)}Ω`;
       break;
+    }
     case "capacitor":
       paramStr = `${(g.area_um2 as number)?.toFixed(1)}μm²`;
       if (g.capacitance_fF != null) paramStr += ` ${g.capacitance_fF}fF`;
@@ -1596,11 +1600,7 @@ function AnalogDeviceRow({ device }: { device: import("shared").AnalogDevice }) 
         <div style={{ fontSize: 10, color: "var(--ink3)", marginTop: 1 }}>
           {paramStr}
         </div>
-        {termStr && (
-          <div style={{ fontSize: 9, color: "var(--ink2)", marginTop: 1 }}>
-            {termStr}
-          </div>
-        )}
+        {/* terminal info removed — not useful here */}
       </div>
     </div>
   );
