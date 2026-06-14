@@ -90,35 +90,18 @@ function nameDevices(raw: ReturnType<typeof collectDieWideAnalogDevices>["device
 interface BuildCtx {
   annotations: DieAnnotations;
   devs: NamedDevice[];
+  namedNets: Map<number, string>;
+  netIdMap: Map<string, number>;
 }
 
 function buildElements(ctx: BuildCtx): ElementDefinition[] {
-  const { annotations, devs } = ctx;
+  const { annotations, devs, namedNets, netIdMap } = ctx;
   const nets = annotations.nets ?? [];
   const pins = annotations.pins ?? [];
 
-  // ── Build netIdMap (UUID → numerical ID) matching dieWideAnalog ──
-  const netIdMap = new Map<string, number>();
-  let nextNetId = 100;
-  for (const net of nets) {
-    if (!netIdMap.has(net.id)) netIdMap.set(net.id, nextNetId++);
-  }
-  // Also collect human-readable names (from annotation net name + pins)
-  const netNames = new Map<number, string>();
-  for (const net of nets) {
-    const nid = netIdMap.get(net.id);
-    if (nid != null && net.name) netNames.set(nid, net.name);
-  }
-  for (const pin of pins) {
-    const matched = netAtPoint(nets, pin.x, pin.y);
-    if (!matched) continue;
-    const nid = netIdMap.get(matched.id);
-    if (nid != null && !netNames.has(nid)) netNames.set(nid, pin.name);
-  }
-
-  // ── Detect VDD / GND by net name ────────────────────────────────
+  // ── Detect VDD / GND by net name (use real namedNets from collector) ──
   const railForNet = new Map<number, "vdd" | "gnd">();
-  for (const [nid, name] of netNames) {
+  for (const [nid, name] of namedNets) {
     const r = railKind(name);
     if (r) railForNet.set(nid, r);
   }
@@ -199,12 +182,14 @@ function buildElements(ctx: BuildCtx): ElementDefinition[] {
     }
   }
 
-  // ── IO pins ────────────────────────────────────────────────
+  // ── IO pins (match via real netIdMap from collector) ───────
   for (const pin of pins) {
     const matched = netAtPoint(nets, pin.x, pin.y);
     if (!matched) continue;
     const spid = netIdMap.get(matched.id);
     if (spid == null) continue;
+    // Ensure the net has a name in namedNets for rail detection
+    const netName = namedNets.get(spid) ?? pin.name;
     const pinId = `pin:${pin.name}`;
     result.push({
       group: "nodes",
@@ -284,8 +269,8 @@ export function NetGraphView({ annotations, onDeviceClick }: Props) {
 
   const elements = useMemo<ElementDefinition[]>(() => {
     if (!annotations) return [];
-    const { devices } = collectDieWideAnalogDevices(annotations);
-    return buildElements({ annotations, devs: nameDevices(devices) });
+    const { devices, namedNets, netIdMap } = collectDieWideAnalogDevices(annotations);
+    return buildElements({ annotations, devs: nameDevices(devices), namedNets, netIdMap });
   }, [annotations]);
 
   // Elements already have inline style with correct Cytoscape property names.

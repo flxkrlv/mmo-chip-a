@@ -147,6 +147,8 @@ export interface DieWideAnalogResult {
   devices: AnalogDevice[];
   /** netId → human-readable name (from IO pins and pin labels) */
   namedNets: Map<number, string>;
+  /** Annotation-net UUID → numerical netId used in devices' terminals. */
+  netIdMap: Map<string, number>;
 }
 
 export function collectDieWideAnalogDevices(
@@ -329,7 +331,7 @@ export function collectDieWideAnalogDevices(
     }
   }
 
-  return { devices: allDevices, namedNets };
+  return { devices: allDevices, namedNets, netIdMap };
 }
 
 // ── Export pipeline ──────────────────────────────────────────────
