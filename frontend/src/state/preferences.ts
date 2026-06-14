@@ -309,7 +309,8 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
           autoEndOnContact: state.autoEndOnContact,
           viaSize: state.viaSize,
           viaConfidenceThreshold: state.viaConfidenceThreshold,
-          inspectorTab: state.inspectorTab
+          inspectorTab: state.inspectorTab,
+          sheetR: state.sheetR
         })
       }
     )
