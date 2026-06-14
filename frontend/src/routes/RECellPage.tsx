@@ -283,25 +283,36 @@ function RE({ dieId }: { dieId: string }) {
   );
 
   // Auto-select the first available cell type when there's nothing yet.
-  // Runs after URL hydration (above), so a deep link's `?type=` wins.
+  // Also checks URL params as fallback (in case useLayoutEffect hydration
+  // was skipped due to StrictMode double-invocation of effects).
   useEffect(() => {
     if (!annotations || activeCellTypeId) return;
+    // URL hydration fallback: if params exist, use them
+    const urlType = params.get("type");
+    const urlCell = params.get("cell");
+    if (urlType) {
+      setActiveCellType(urlType, urlCell);
+      return;
+    }
     const first =
       annotations.cellTypes.find((c) => c.matched === true) ??
       annotations.cellTypes[0] ??
       null;
     if (first) setActiveCellType(first.id, null);
-  }, [annotations, activeCellTypeId, setActiveCellType]);
+  }, [annotations, activeCellTypeId, setActiveCellType, params]);
 
   // If the URL points at a stale cell type (deleted between sessions) the
   // initial hydration set a non-existent id; once annotations load, drop
   // back to the auto-select path so the page stays usable.
   useEffect(() => {
     if (!annotations || !activeCellTypeId) return;
+    // Don't clear if URL params point to this type (it's valid)
+    const urlType = params.get("type");
+    if (urlType && urlType === activeCellTypeId) return;
     if (!annotations.cellTypes.some((ct) => ct.id === activeCellTypeId)) {
       setActiveCellType(null, null);
     }
-  }, [annotations, activeCellTypeId, setActiveCellType]);
+  }, [annotations, activeCellTypeId, setActiveCellType, params]);
 
   // Switching the active tool to one whose layer doesn't accept the current
   // layer (e.g. rect → point: "polysilicon" isn't in TOOL_LAYERS.point)
