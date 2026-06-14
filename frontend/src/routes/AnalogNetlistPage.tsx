@@ -10,7 +10,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
-import { NetGraphView, type GraphMode } from "../components/netlist/NetGraphView";
+import { NetGraphView } from "../components/netlist/NetGraphView";
 import type { SpiceDialect } from "shared";
 import { AppShell } from "../components/shell/AppShell";
 import { StatusBar } from "../components/shell/StatusBar";
@@ -76,7 +76,6 @@ function AnalogNetlist({ dieId }: { dieId: string }) {
 
   // ── UI state ────────────────────────────────────────────────────
   const [rightView, setRightView] = useState<"code" | "graph">("code");
-  const [graphMode, setGraphMode] = useState<GraphMode>("d2d");
   const viewerRef = useRef<CodeViewerHandle | null>(null);
   const [selectedLine, setSelectedLine] = useState<number | null>(null);
   const [copied, setCopied] = useState(false);
@@ -283,39 +282,12 @@ function AnalogNetlist({ dieId }: { dieId: string }) {
           }}
         >
           {rightView === "graph" && annotations && netlist.data ? (
-            <>
-              {/* Mode toggle: D2D / N2N */}
-              <div style={{ padding: "4px 8px", borderBottom: "1px solid var(--l2)", display: "flex", gap: 4, alignItems: "center" }}>
-                <span className="m" style={{ fontSize: 9.5, color: "var(--ink3)", marginRight: 4 }}>MODE:</span>
-                <button
-                  type="button"
-                  className={"btn sm" + (graphMode === "d2d" ? " on" : "")}
-                  onClick={() => setGraphMode("d2d")}
-                  style={{ fontSize: 9.5, fontWeight: 600 }}
-                >
-                  D2D
-                </button>
-                <button
-                  type="button"
-                  className={"btn sm" + (graphMode === "n2n" ? " on" : "")}
-                  onClick={() => setGraphMode("n2n")}
-                  style={{ fontSize: 9.5, fontWeight: 600 }}
-                >
-                  N2N
-                </button>
-                <span style={{ flex: 1 }} />
-                <span className="m" style={{ fontSize: 9, color: "var(--ink3)" }}>
-                  {graphMode === "d2d" ? <span>device → device <span style={{opacity:.5}}>(shared net)</span></span> : <span>device ↔ net <span style={{opacity:.5}}>(bipartite)</span></span>}
-                </span>
-              </div>
-              <NetGraphView
-                annotations={annotations}
-                mode={graphMode}
-                onDeviceClick={(name, cellId) => {
-                  navigate(`/die/${encodeURIComponent(dieId)}?focusCell=${encodeURIComponent(cellId)}&focusDevice=${encodeURIComponent(name)}`);
-                }}
-              />
-            </>
+            <NetGraphView
+              annotations={annotations}
+              onDeviceClick={(name, cellId) => {
+                navigate(`/die/${encodeURIComponent(dieId)}?focusCell=${encodeURIComponent(cellId)}&focusDevice=${encodeURIComponent(name)}`);
+              }}
+            />
           ) : netlist.data ? (
             <CodeViewer
               ref={viewerRef}
