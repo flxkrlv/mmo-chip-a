@@ -802,6 +802,12 @@ const analogDevices = useMemo(
     [annotations]
   );
 
+  // Mirror analogDevices in a ref so callbacks passed to TiledCanvas
+  // (onCanvasClick, onCanvasDoubleClick) don't get new references on
+  // every annotation tick, preventing unnecessary tile cache flushes.
+  const analogDevicesRef = useRef(analogDevices);
+  analogDevicesRef.current = analogDevices;
+
   const deviceLabels = useMemo(() => { const m = new Map<string,string>(); for(const d of analogDevices){ const cid = (d as any)._cellId; if(cid) m.set(cid, d.instanceName??d.id); } return m; }, [analogDevices]);
 
   const wire = useWireTool({
@@ -1841,7 +1847,7 @@ const analogDevices = useMemo(
         return;
       }
       // Single-click on an analog device → show inspector
-      const dev = hitTestAnalogDevice({ x, y }, analogDevices);
+      const dev = hitTestAnalogDevice({ x, y }, analogDevicesRef.current);
       if (dev) {
         setSelectedDevice(dev);
       }
@@ -1855,7 +1861,6 @@ const analogDevices = useMemo(
       annotations,
       annotationLayer,
       viewportLive,
-      analogDevices,
       findNearestVia,
       findMultiWireEndpointViaSnap,
       findMultiWireAutoEndSnaps
@@ -2059,23 +2064,24 @@ const analogDevices = useMemo(
       // Checks: analog device first, then annotation layer for cells.
       let cellId: string | null = null;
       let cellTypeId: string | null = null;
-      const devDbl = hitTestAnalogDevice(world, analogDevices);
-      if (devDbl && annotations) {
+      const devDbl = hitTestAnalogDevice(world, analogDevicesRef.current);
+      const anns = annotationsRef.current;
+      if (devDbl && anns) {
         const cid = (devDbl as any)._cellId;
         if (cid) {
-          const cell = (annotations as any).cells?.find((c: any) => c.id === cid);
+          const cell = (anns as any).cells?.find((c: any) => c.id === cid);
           if (cell) {
             cellId = cid;
             cellTypeId = cell.cellTypeId;
           }
         }
       }
-      if (!cellId && annotations) {
+      if (!cellId && anns) {
         // Check annotation layer for cell hits (covers manually drawn cells)
         const cellHit = annotationLayer?.hitTest(world, tol) ?? null;
         if (cellHit && cellHit.annotation.id.startsWith("cell:")) {
           const cid = cellHit.annotation.id.slice(5);
-          const cell = (annotations as any).cells?.find((c: any) => c.id === cid);
+          const cell = (anns as any).cells?.find((c: any) => c.id === cid);
           if (cell) {
             cellId = cid;
             cellTypeId = cell.cellTypeId;
@@ -2086,7 +2092,7 @@ const analogDevices = useMemo(
         navigate(`/re?die=${encodeURIComponent(dieId)}&type=${encodeURIComponent(cellTypeId)}&cell=${encodeURIComponent(cellId)}`);
       }
     },
-    [annotationLayer, mlViasLayer, wire, startWireAt, analogDevices, annotations, navigate, dieId]
+    [annotationLayer, mlViasLayer, wire, startWireAt, navigate, dieId]
   );
 
   // Zoom button handlers read the latest viewport from the live store at
@@ -2136,29 +2142,18 @@ const analogDevices = useMemo(
   // group/category's entities) in the viewport, with a margin.
   const focusOnIds = useCallback(
     (ids: string[]) => {
-      if (!annotationLayer || !containerRef.current) {
-        console.log(`[focusOnIds] EARLY: layer=${!!annotationLayer} container=${!!containerRef.current}`);
-        return;
-      }
+      if (!annotationLayer || !containerRef.current) return;
       const box = annotationLayer.unionBBox(ids);
-      if (!box) {
-        console.log(`[focusOnIds] NO BBOX for ids:`, ids);
-        return;
-      }
+      if (!box) return;
       const rect = containerRef.current.getBoundingClientRect();
       const newVp = fitRectViewport(box, rect.width, rect.height, 56, 32);
-      console.log(`[focusOnIds] framing box:`, box, `newVp:`, newVp, `canvasHandle:`, !!canvasHandle.current);
       if (canvasHandle.current) {
         canvasHandle.current.setViewport(newVp);
       } else {
         // Canvas not mounted yet — retry after a short delay
-        console.log(`[focusOnIds] canvas not ready, scheduling retry...`);
         setTimeout(() => {
           if (canvasHandle.current) {
-            console.log(`[focusOnIds] retry: setting viewport now`);
             canvasHandle.current.setViewport(newVp);
-          } else {
-            console.log(`[focusOnIds] retry: still no canvas`);
           }
         }, 200);
       }
@@ -2174,11 +2169,9 @@ const analogDevices = useMemo(
   useEffect(() => {
     const cellId = focusSearchParams.get("focusCell");
     const deviceName = focusSearchParams.get("focusDevice");
-    console.log(`[focus] params: cellId=${cellId} deviceName=${deviceName} consumed=${focusConsumedRef.current} annLayer=${!!annotationLayer} annots=${!!annotations}`);
     if (!cellId || !deviceName || focusConsumedRef.current) return;
     focusConsumedRef.current = true;
     if (!annotationLayer || !annotations) {
-      console.log(`[focus] waiting for layer/annotations — will retry`);
       focusConsumedRef.current = false;
       return;
     }
@@ -2187,20 +2180,14 @@ const analogDevices = useMemo(
     url.searchParams.delete("focusCell");
     url.searchParams.delete("focusDevice");
     window.history.replaceState({}, "", url.pathname + url.search);
-    console.log(`[focus] framing cell:${cellId} ...`);
     // Frame the cell
     focusOnIds([`cell:${cellId}`]);
     // Highlight the analog device in the side panel
-    const dev = analogDevices.find(
+    const dev = analogDevicesRef.current.find(
       (d: any) => d._cellId === cellId || d.instanceName === deviceName
     );
-    if (dev) {
-      console.log(`[focus] selecting device ${dev.instanceName}`);
-      setSelectedDevice(dev as any);
-    } else {
-      console.log(`[focus] device not found in analogDevices`);
-    }
-  }, [focusSearchParams, annotationLayer, annotations, focusOnIds, analogDevices]);
+    if (dev) setSelectedDevice(dev as any);
+  }, [focusSearchParams, annotationLayer, annotations, focusOnIds]);
 
   const minZoom = die ? (1 / Math.max(die.width, die.height)) * 50 : 0.01;
 
