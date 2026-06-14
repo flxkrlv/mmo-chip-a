@@ -112,19 +112,7 @@ export function DeviceInspector({ device, onClose }: Props) {
         <Section>Geometry</Section>
         {renderGeometry(device)}
 
-        {/* Terminals */}
-        {device.terminals.length > 0 && (
-          <>
-            <Section>Terminals</Section>
-            {device.terminals.map((t, i) => (
-              <Prop
-                key={t.name ?? i}
-                label={t.name}
-                val={t.netId >= 0 ? `net ${t.netId}` : "— (unconnected)"}
-              />
-            ))}
-          </>
-        )}
+        {/* Terminal section removed — was duplicating net info not useful here */}
 
         {/* Comment */}
         {device.comment && (

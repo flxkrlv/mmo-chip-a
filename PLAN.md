@@ -14,6 +14,7 @@
 9. ✅ LPnp слой для PNP детекции
 10. ✅ Per-net colors + IO pin snapping
 11. ✅ Hotkeys 1-5 для переключения вкладок
+12. ✅ Resistor types: body layer → type detection (poly/pb/npl/hsr/film) + SheetR GUI + ResistorType в DeviceInspector
 
 ---
 

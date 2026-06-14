@@ -195,15 +195,35 @@ export function CellRERightPanel({
   // because the menu only acts on a single row (no selection
   // semantics) and rendering it here keeps the page lean.
 
+  // Resistor body layer keys that support polyline width editing
+  const RESISTOR_BODY_KEYS = ["resistor_body","polysilicon","base","emitter","hsr","film"] as const;
   const reselected = useMemo(() => {
-    if (!cellType?.layers?.resistor_body?.length) return null;
-    const lines = cellType.layers.resistor_body.filter(s=>s.kind==='line');
-    if (!lines.length) return null;
-    let totalL=0, corners=0; let prevAngle: number|null=null; const w=(lines[0] as any).width||4;
-    for(let i=0;i<lines.length;i++){const l=lines[i] as any; const dx=l.x2-l.x1, dy=l.y2-l.y1; totalL+=Math.sqrt(dx*dx+dy*dy); if(i>0){const a=Math.atan2(dy,dx); if(prevAngle!=null&&Math.abs(a-prevAngle)>Math.PI/6)corners++; prevAngle=a;}else{prevAngle=Math.atan2(dy,dx);}}
-    const sq=(totalL-corners*w)/w+0.55*corners;
-    return {totalL:totalL.toFixed(0), width:w, corners, squares:sq.toFixed(1), segs:lines.length};
-  }, [cellType?.layers?.resistor_body]);
+    const layers = cellType?.layers ?? {};
+    for (const key of RESISTOR_BODY_KEYS) {
+      const shapes = (layers as any)[key] as any[] | undefined;
+      if (!shapes?.length) continue;
+      const lines = shapes.filter((s: any) => s.kind === "line");
+      if (!lines.length) continue;
+      let totalL = 0, corners = 0;
+      let prevAngle: number | null = null;
+      const w = (lines[0] as any).width || 4;
+      for (let i = 0; i < lines.length; i++) {
+        const l = lines[i] as any;
+        const dx = l.x2 - l.x1, dy = l.y2 - l.y1;
+        totalL += Math.sqrt(dx * dx + dy * dy);
+        if (i > 0) {
+          const a = Math.atan2(dy, dx);
+          if (prevAngle != null && Math.abs(a - prevAngle) > Math.PI / 6) corners++;
+          prevAngle = a;
+        } else {
+          prevAngle = Math.atan2(dy, dx);
+        }
+      }
+      const sq = (totalL - corners * w) / w + 0.55 * corners;
+      return { layerKey: key, totalL: totalL.toFixed(0), width: w, corners, squares: sq.toFixed(1), segs: lines.length };
+    }
+    return null;
+  }, [cellType?.layers]);
 
   const [rowMenu, setRowMenu] = useState<RowContextMenuState | null>(null);
   const openNetMenu = (
@@ -388,7 +408,7 @@ export function CellRERightPanel({
         )}
       </div>
   
-      {reselected && (<div style={{borderTop:'1px solid var(--l1)',padding:'6px 10px',fontSize:10,color:'var(--ink2)'}}><div className='u' style={{fontSize:9,color:'var(--ink3)',marginBottom:3}}>RESISTOR</div><div>segs: {reselected.segs} | L: {reselected.totalL}px</div><div style={{display:'flex',alignItems:'center',gap:4,margin:'2px 0'}}><span>W:</span><input key={reselected.width} type='number' min={1} max={50} defaultValue={reselected.width} onBlur={e=>{const n=+e.target.value; if(n>=1&&n<=50&&n!==reselected.width&&onUpdateShape){onUpdateShape('resistor_body',{id:'',kind:'line',x1:0,y1:0,x2:0,y2:0,width:n})}}} style={{width:45,background:'var(--bg1)',border:'1px solid var(--border)',color:'var(--ink0)',fontSize:10,padding:'1px 4px',borderRadius:3}} /><span>px</span></div><div>corners: {reselected.corners} | squares: {reselected.squares}</div></div>)}
+      {reselected && (<div style={{borderTop:'1px solid var(--l1)',padding:'6px 10px',fontSize:10,color:'var(--ink2)'}}><div className='u' style={{fontSize:9,color:'var(--ink3)',marginBottom:3}}>RESISTOR ({reselected.layerKey})</div><div>segs: {reselected.segs} | L: {reselected.totalL}px</div><div style={{display:'flex',alignItems:'center',gap:4,margin:'2px 0'}}><span>W:</span><input key={reselected.width} type='number' min={1} max={50} defaultValue={reselected.width} onBlur={e=>{const n=+e.target.value; if(n>=1&&n<=50&&n!==reselected.width&&onUpdateShape){onUpdateShape(reselected.layerKey as any,{id:'',kind:'line',x1:0,y1:0,x2:0,y2:0,width:n})}}} style={{width:45,background:'var(--bg1)',border:'1px solid var(--border)',color:'var(--ink0)',fontSize:10,padding:'1px 4px',borderRadius:3}} /><span>px</span></div><div>corners: {reselected.corners} | squares: {reselected.squares}</div></div>)}
   </aside>
   );
 }

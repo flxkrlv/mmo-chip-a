@@ -261,8 +261,9 @@ function paramHint(dev: AnalogDevice): string {
     }
     case "resistor": {
       if ("squares" in g) {
-        const rg = g as { squares: number; resistance_ohms?: number };
-        return `□${rg.squares.toFixed(1)}`;
+        const rg = g as { squares: number; resistance_ohms?: number; resistorType?: string };
+        const typeTag = rg.resistorType ? rg.resistorType.toUpperCase() : "POLY";
+        return `${typeTag} □${rg.squares.toFixed(1)}`;
       }
       return "";
     }
