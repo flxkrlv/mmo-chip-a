@@ -2308,6 +2308,14 @@ const analogDevices = useMemo(
               devices={analogDevices}
               viewportStore={viewportLive}
               onDeviceClick={(dev) => setSelectedDevice(dev)}
+              onDeviceDoubleClick={(dev) => {
+                if (!annotations) return;
+                const cid = (dev as any)._cellId;
+                if (!cid) return;
+                const cell = (annotations as any).cells?.find((c: any) => c.id === cid);
+                if (!cell) return;
+                navigate(`/re?die=${encodeURIComponent(dieId)}&type=${encodeURIComponent(cell.cellTypeId)}&cell=${encodeURIComponent(cid)}`);
+              }}
             />
           )}
         </section>

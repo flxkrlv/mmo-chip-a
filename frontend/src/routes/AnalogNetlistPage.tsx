@@ -61,7 +61,6 @@ function AnalogNetlist({ dieId }: { dieId: string }) {
   const annotationsQ = useAnnotations(dieId);
   useAnnotationsWebSocket(dieId);
   const annotations = annotationsQ.data;
-  const setAnalogFocus = useCrossTabSelection((s) => s.setAnalogFocus);
 
   // Dialect picker state
   const [dialect, setDialect] = useState<SpiceDialect>("cdl");

@@ -55,3 +55,14 @@ export const GLOBAL_HOTKEYS: Record<string, GlobalAction> = {
   "=": "zoomIn",    // unshifted +
   "-": "zoomOut",
 };
+
+// ── Navigation hotkeys (1–5, tab switching) ─────────────────────
+// Maps key → index into TAB_ROUTES in App.tsx.
+// 0=Library, 1=Die viewer, 2=Merge cells, 3=RE cell, 4=Code, 5=Netlist (Analog)
+export const NAV_HOTKEYS: Record<string, number> = {
+  "1": 1,  // Die viewer
+  "2": 2,  // Merge cells
+  "3": 3,  // RE cell
+  "4": 4,  // Code
+  "5": 5,  // Netlist (Analog)
+};

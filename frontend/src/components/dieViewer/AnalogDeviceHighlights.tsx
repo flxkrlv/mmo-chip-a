@@ -55,6 +55,8 @@ interface Props {
   viewportStore: LiveValue<Viewport | null>;
   /** Called when the user clicks on a device. */
   onDeviceClick?: (device: AnalogDevice) => void;
+  /** Called when the user double-clicks a device (e.g. to open in RE Cell). */
+  onDeviceDoubleClick?: (device: AnalogDevice) => void;
 }
 
 /** Minimum device bbox area (world px²) to bother drawing the label. */
@@ -64,6 +66,7 @@ export function AnalogDeviceHighlights({
   devices,
   viewportStore,
   onDeviceClick,
+  onDeviceDoubleClick,
 }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const viewport = useLiveValue(viewportStore);
@@ -167,14 +170,15 @@ export function AnalogDeviceHighlights({
     };
   }, [devices, viewportStore]);
 
-  // Click hit-test
-  // Click hit-test: reads viewport from ref so the handler stays stable.
-  const handleClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
-    if (!onDeviceClick) return;
+  // ── Click / double-click handling ───────────────────────────
+  // Tracks click timing for double-click detection (300ms threshold).
+  const lastClickRef = useRef<{ time: number; device: AnalogDevice } | null>(null);
+
+  const hitTest = (e: React.MouseEvent<HTMLCanvasElement>): AnalogDevice | null => {
     const vp = viewportRef.current;
-    if (!vp) return;
+    if (!vp) return null;
     const rect = canvasRef.current?.getBoundingClientRect();
-    if (!rect) return;
+    if (!rect) return null;
     const clickX = (e.clientX - rect.left) / vp.zoom + vp.originX;
     const clickY = (e.clientY - rect.top) / vp.zoom + vp.originY;
 
@@ -192,18 +196,36 @@ export function AnalogDeviceHighlights({
         }
       }
     }
-    if (best) onDeviceClick(best);
+    return best;
+  };
+
+  const handleClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    const dev = hitTest(e);
+    if (!dev) return;
+
+    // Double-click detection: two clicks on same device within 300ms
+    const last = lastClickRef.current;
+    const now = Date.now();
+    if (last && last.device === dev && now - last.time < 300) {
+      lastClickRef.current = null;
+      onDeviceDoubleClick?.(dev);
+      return;
+    }
+
+    lastClickRef.current = { time: now, device: dev };
+    onDeviceClick?.(dev);
   };
 
   return (
     <canvas
       ref={canvasRef}
+      onClick={handleClick}
       style={{
         position: "absolute",
         inset: 0,
         width: "100%",
         height: "100%",
-        pointerEvents: "none",
+        cursor: onDeviceClick || onDeviceDoubleClick ? "pointer" : undefined,
       }}
     />
   );
