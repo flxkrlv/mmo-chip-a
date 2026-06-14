@@ -13,10 +13,12 @@
  */
 
 import { useEffect, useRef } from "react";
-import type { AnalogDevice } from "shared";
+import type { AnalogDevice, ResistorType } from "shared";
 import type { LiveValue } from "../../lib/liveValue";
 import { useLiveValue } from "../../lib/liveValue";
 import type { Viewport } from "../../renderer/types";
+import { effectiveSheetR } from "../../lib/export/resistorDefaults";
+import { usePreferences } from "../../state/preferences";
 
 // ── Colour palette per device kind ───────────────────────────────
 
@@ -150,8 +152,7 @@ export function AnalogDeviceHighlights({
           }
         }
 
-        // Terminal labels at actual layer positions (independent of bbox area)
-        drawTerminalLabels(ctx, dev, vp);
+        // Terminal labels removed — was showing noisy contact-point info
       }
     };
 
@@ -261,9 +262,13 @@ function paramHint(dev: AnalogDevice): string {
     }
     case "resistor": {
       if ("squares" in g) {
-        const rg = g as { squares: number; resistance_ohms?: number; resistorType?: string };
-        const typeTag = rg.resistorType ? rg.resistorType.toUpperCase() : "POLY";
-        return `${typeTag} □${rg.squares.toFixed(1)}`;
+        const rg = g as { squares: number; resistorType?: string };
+        const type = (rg.resistorType ?? "poly") as ResistorType;
+        const overrides = usePreferences.getState().sheetR ?? {};
+        const sr = effectiveSheetR(type, overrides);
+        const r = Math.round(sr * rg.squares);
+        const typeTag = type.toUpperCase();
+        return `${typeTag} □${rg.squares.toFixed(1)} ${r}Ω`;
       }
       return "";
     }
@@ -279,35 +284,4 @@ function paramHint(dev: AnalogDevice): string {
   }
 }
 
-// ── Terminal label rendering ─────────────────────────────────────
 
-/** Draw terminal labels at actual layer-shape positions. One label per
- *  shape — so a BJT with two base contacts gets two "B" labels.
- *  All same-name labels share one net (handled by the extractor). */
-function drawTerminalLabels(
-  ctx: CanvasRenderingContext2D,
-  dev: AnalogDevice & { _termPoints?: Array<{x:number;y:number;name:string}> },
-  vp: { originX: number; originY: number; zoom: number }
-): void {
-  const points = (dev as any)._termPoints as Array<{x:number;y:number;name:string}> | undefined;
-  if (!points || points.length === 0) return;
-
-  const color = DEVICE_COLORS[dev.kind] ?? DEVICE_COLORS.unknown;
-  const fontSize = 9;
-  ctx.font = `600 ${fontSize}px monospace`;
-  ctx.textBaseline = "middle";
-
-  for (const pt of points) {
-    const sx = (pt.x - vp.originX) * vp.zoom;
-    const sy = (pt.y - vp.originY) * vp.zoom;
-    const shortName = pt.name;
-    const tm = ctx.measureText(shortName);
-    const tw = tm.width + 4;
-    const th = fontSize + 4;
-
-    ctx.fillStyle = "rgba(0, 0, 0, 0.7)";
-    ctx.fillRect(sx + 4, sy - th / 2, tw, th);
-    ctx.fillStyle = color;
-    ctx.fillText(shortName, sx + 6, sy);
-  }
-}
