@@ -96,6 +96,9 @@ interface PreferencesState {
   /** Per-resistor-type sheet resistance overrides (persisted). Keyed by
    *  ResistorType: poly, hsr, pb, npl, film. */
   sheetR: Record<string, number>;
+  /** Per-cell-type analog device parameter overrides.
+   *  Key: cellTypeId → deviceId → paramName → value. */
+  analogOverrides: Record<string, Record<string, Record<string, number>>>;
 }
 
 interface PreferencesActions {
@@ -175,6 +178,7 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
         viaConfidenceThreshold: 0.5,
         inspectorTab: "inspector",
         sheetR: {},
+        analogOverrides: {},
 
         setNetWidth: (width) => set({ netWidth: width }),
         setNetColor: (color) => set({ netColor: color }),
@@ -310,7 +314,8 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
           viaSize: state.viaSize,
           viaConfidenceThreshold: state.viaConfidenceThreshold,
           inspectorTab: state.inspectorTab,
-          sheetR: state.sheetR
+          sheetR: state.sheetR,
+          analogOverrides: state.analogOverrides
         })
       }
     )

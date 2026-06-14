@@ -403,7 +403,25 @@ export function CellRERightPanel({
           <Section title="Analog Devices" count={inferred.analogDevices.length}>
             <List>
               {inferred.analogDevices.map((ad) => (
-                <AnalogDeviceRow key={ad.id} device={ad} />
+                <AnalogDeviceRow
+                  key={ad.id}
+                  device={ad}
+                  cellTypeId={activeCellTypeId ?? ""}
+                  onOverride={(deviceId, param, value) => {
+                    usePreferences.setState((s: any) => ({
+                      analogOverrides: {
+                        ...(s.analogOverrides ?? {}),
+                        [activeCellTypeId ?? ""]: {
+                          ...((s.analogOverrides ?? {})[activeCellTypeId ?? ""] ?? {}),
+                          [deviceId]: {
+                            ...(((s.analogOverrides ?? {})[activeCellTypeId ?? ""] ?? {})[deviceId] ?? {}),
+                            [param]: value,
+                          },
+                        },
+                      },
+                    }));
+                  }}
+                />
               ))}
             </List>
           </Section>
@@ -1526,7 +1544,7 @@ const panelStyle: React.CSSProperties = {
   minHeight: 0,
 };
 
-// ── Analog Device Row ────────────────────────────────────────
+// ── Analog Device Row (editable params) ────────────────────
 
 const DEVICE_COLORS: Record<string, string> = {
   mos: "#4488ff", bjt_npn: "#22cc66", bjt_pnp: "#ff8844",
@@ -1536,50 +1554,74 @@ const DEVICE_COLORS: Record<string, string> = {
   inductor: "#66aaff", unknown: "#888888",
 };
 
-function AnalogDeviceRow({ device }: { device: import("shared").AnalogDevice }) {
+interface AnalogDeviceRowProps {
+  device: import("shared").AnalogDevice;
+  cellTypeId: string;
+  /** Called when user overrides a parameter. Stored in preferences. */
+  onOverride?: (deviceId: string, param: string, value: number) => void;
+}
+
+function AnalogDeviceRow({ device, cellTypeId, onOverride }: AnalogDeviceRowProps) {
   const color = DEVICE_COLORS[device.kind] ?? "#888";
   const g = device.geometry as Record<string, unknown>;
+  const overrides = usePreferences((s) =>
+    (s as any).analogOverrides?.[cellTypeId]?.[device.id] ?? {}
+  ) as Record<string, number>;
 
   const label = device.instanceName ?? device.id;
   const subtitle = device.kind;
+
+  // Helper: get effective value (override → extracted)
+  const eff = (key: string, fallback: number): number =>
+    overrides[key] ?? (g[key] as number) ?? fallback;
+  const isOverridden = (key: string) => overrides[key] != null;
+  const setOv = (key: string, val: number) => onOverride?.(device.id, key, val);
 
   // One-line param summary
   let paramStr = "";
   switch (device.kind) {
     case "mos":
-      paramStr = `W=${g.W_um?.toFixed(1)} L=${g.L_um?.toFixed(2)}`;
+      paramStr = `W=${eff("W_um", 0).toFixed(1)} L=${eff("L_um", 0).toFixed(2)}`;
       if ((g.fingers as number) > 1) paramStr += ` NF=${g.fingers}`;
       break;
     case "bjt_npn":
-      paramStr = `AE=${(g.AE_um2 as number)?.toFixed(2)}μm²`;
+      paramStr = `AE=${eff("AE_um2", 0).toFixed(2)}μm²`;
       break;
     case "bjt_pnp": {
-      const pe = g.PE_um as number | undefined;
-      paramStr = pe && pe > 0 ? `PE=${pe.toFixed(1)}μm` : `AE=${(g.AE_um2 as number)?.toFixed(2)}μm²`;
+      const pe = eff("PE_um", 0);
+      paramStr = pe > 0 ? `PE=${pe.toFixed(1)}μm` : `AE=${eff("AE_um2", 0).toFixed(2)}μm²`;
       break;
     }
-      break;
     case "resistor": {
-      const sq = (g.squares as number) ?? 0;
+      const sq = eff("squares", 0);
       const type = ((g as any).resistorType ?? "poly") as ResistorType;
-      const overrides = usePreferences.getState().sheetR ?? {};
-      const sr = effectiveSheetR(type, overrides);
+      const sheetROverrides = usePreferences.getState().sheetR ?? {};
+      const sr = effectiveSheetR(type, sheetROverrides);
       paramStr = `${sq.toFixed(1)}sq ${Math.round(sr * sq)}Ω`;
       break;
     }
     case "capacitor":
-      paramStr = `${(g.area_um2 as number)?.toFixed(1)}μm²`;
+      paramStr = `${eff("area_um2", 0).toFixed(1)}μm²`;
       if (g.capacitance_fF != null) paramStr += ` ${g.capacitance_fF}fF`;
       break;
     case "diode":
-      paramStr = `${(g.area_um2 as number)?.toFixed(1)}μm²`;
+      paramStr = `${eff("area_um2", 0).toFixed(1)}μm²`;
       break;
   }
 
-  const termStr = device.terminals
-    .filter((t) => t.netId >= 0)
-    .map((t) => `${t.name}:n${t.netId}`)
-    .join(" ");
+  // Editable parameter groups by device kind
+  const editableParams = useMemo<(keyof typeof g & string)[]>(() => {
+    switch (device.kind) {
+      case "mos": return ["W_um", "L_um", "fingers", "multiplier"];
+      case "bjt_npn": case "bjt_pnp": return ["AE_um2", "PE_um", "multiplier"];
+      case "resistor": return ["squares", "W_um", "L_um"];
+      case "capacitor": return ["area_um2", "capacitance_fF"];
+      case "diode": return ["area_um2"];
+      default: return [];
+    }
+  }, [device.kind]);
+
+  const [expanded, setExpanded] = useState(false);
 
   return (
     <div
@@ -1602,7 +1644,60 @@ function AnalogDeviceRow({ device }: { device: import("shared").AnalogDevice }) 
         <div style={{ fontSize: 10, color: "var(--ink3)", marginTop: 1 }}>
           {paramStr}
         </div>
-        {/* terminal info removed — not useful here */}
+        {/* Override toggler */}
+        {editableParams.length > 0 && (
+          <div style={{ marginTop: 2 }}>
+            <span
+              className="m"
+              style={{ fontSize: 8.5, cursor: "pointer", color: "var(--accent)" }}
+              onClick={() => setExpanded((v) => !v)}
+            >
+              {expanded ? "− overrides" : "+ override"}
+            </span>
+            {expanded && (
+              <div
+                style={{
+                  display: "flex", flexWrap: "wrap", gap: 4,
+                  marginTop: 3, padding: 4,
+                  background: "var(--l1)", borderRadius: 3,
+                }}
+              >
+                {editableParams.map((key) => {
+                  const val = eff(key, 0);
+                  const over = isOverridden(key);
+                  return (
+                    <label
+                      key={key}
+                      style={{
+                        display: "flex", alignItems: "center", gap: 2,
+                        fontSize: 9, color: over ? "var(--accent)" : "var(--ink2)",
+                      }}
+                    >
+                      {key}:
+                      <input
+                        type="number"
+                        step="any"
+                        value={val}
+                        onChange={(e) => {
+                          const v = parseFloat(e.target.value);
+                          if (!isNaN(v)) setOv(key, v);
+                        }}
+                        style={{
+                          width: 50, height: 18,
+                          fontSize: 9, fontFamily: "var(--mono)",
+                          background: over ? "var(--accentBg)" : "var(--bg1)",
+                          border: `1px solid ${over ? "var(--accent)" : "var(--border)"}`,
+                          borderRadius: 2, color: "var(--ink0)",
+                          padding: "0 3px",
+                        }}
+                      />
+                    </label>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );

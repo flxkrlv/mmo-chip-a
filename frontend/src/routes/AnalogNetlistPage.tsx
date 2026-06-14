@@ -23,6 +23,7 @@ import { useAnnotationsWebSocket } from "../api/annotationsWebSocket";
 import { useSession } from "../state/session";
 import { useAnalogNetlist } from "../api/analogNetlist";
 import { Ic } from "../icons";
+import { exportLayout, renderLayoutCsv } from "../lib/export/layoutExport";
 
 // ── Dialect selector ─────────────────────────────────────────────
 
@@ -131,6 +132,22 @@ function AnalogNetlist({ dieId }: { dieId: string }) {
     URL.revokeObjectURL(url);
   }, [netlist.data?.source, moduleName, dialect]);
 
+  const onDownloadLayout = useCallback(() => {
+    if (!annotations) return;
+    const umPerPx = annotations.umPerPx ?? 1.0;
+    const entries = exportLayout(annotations, umPerPx);
+    const csv = renderLayoutCsv(entries);
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${moduleName}_placement.csv`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }, [annotations, moduleName]);
+
   // ── Status bar items ────────────────────────────────────────────
 
   const statusItems = useMemo(() => {
@@ -230,6 +247,16 @@ function AnalogNetlist({ dieId }: { dieId: string }) {
               <span style={{ marginLeft: 4 }}>
                 {netlist.data ? netlist.data.fileName : "download"}
               </span>
+            </button>
+            <button
+              type="button"
+              className="btn"
+              onClick={onDownloadLayout}
+              disabled={!annotations}
+              title="Download layout placement CSV"
+            >
+              {Ic.download}
+              <span style={{ marginLeft: 4 }}>layout</span>
             </button>
           </>
         }
