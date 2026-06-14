@@ -1,6 +1,6 @@
 /**
- * NetGraphView.tsx — Force-directed device graph with device symbols,
- * IO pins, and VDD/GND rail nodes.
+ * NetGraphView.tsx — Device graph with IO pins, VDD/GND rails.
+ * Shows device type info in labels (M1·NMOS, Q1·NPN, R1·RES…).
  */
 
 import { useEffect, useMemo, useRef } from "react";
@@ -10,79 +10,7 @@ import { collectDieWideAnalogDevices } from "../../api/dieWideAnalog";
 import { useNavigate } from "react-router-dom";
 import { useSession } from "../../state/session";
 
-// ═════════════════════════════════════════════════════════════════
-// SVG symbols as data URIs
-// ═════════════════════════════════════════════════════════════════
-
-function svgUri(svg: string): string {
-  return `data:image/svg+xml,${encodeURIComponent(svg.replace(/\s+/g, " ").trim())}`;
-}
-
-/** NPN BJT symbol: circle with emitter arrow. */
-const BJT_SVG = svgUri(`<svg viewBox="0 0 28 28" xmlns="http://www.w3.org/2000/svg">
-  <circle cx="14" cy="14" r="10" fill="none" stroke="currentColor" stroke-width="1.5"/>
-  <line x1="14" y1="24" x2="14" y2="4" stroke="currentColor" stroke-width="1.2"/>
-  <line x1="4" y1="14" x2="14" y2="14" stroke="currentColor" stroke-width="1.2"/>
-  <line x1="17" y1="17" x2="20" y2="20" stroke="currentColor" stroke-width="1.2"/>
-  <line x1="17" y1="20" x2="20" y2="20" stroke="currentColor" stroke-width="1.2"/>
-  <line x1="20" y1="17" x2="20" y2="20" stroke="currentColor" stroke-width="1.2"/>
-</svg>`);
-
-/** MOS symbol: simple channel + gate. */
-const MOS_SVG = svgUri(`<svg viewBox="0 0 28 28" xmlns="http://www.w3.org/2000/svg">
-  <line x1="14" y1="4" x2="14" y2="10" stroke="currentColor" stroke-width="1.5"/>
-  <line x1="14" y1="14" x2="14" y2="24" stroke="currentColor" stroke-width="1.5"/>
-  <line x1="14" y1="12" x2="14" y2="14" stroke="currentColor" stroke-width="3"/>
-  <line x1="4" y1="14" x2="14" y2="14" stroke="currentColor" stroke-width="1.2"/>
-  <line x1="17" y1="17" x2="20" y2="20" stroke="currentColor" stroke-width="1.2"/>
-  <line x1="17" y1="20" x2="20" y2="20" stroke="currentColor" stroke-width="1.2"/>
-  <line x1="20" y1="17" x2="20" y2="20" stroke="currentColor" stroke-width="1.2"/>
-</svg>`);
-
-/** Resistor symbol: zigzag. */
-const RES_SVG = svgUri(`<svg viewBox="0 0 28 28" xmlns="http://www.w3.org/2000/svg">
-  <polyline points="2,14 6,14 8,6 12,22 16,6 20,22 22,14 26,14"
-    fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>
-</svg>`);
-
-/** Capacitor symbol: two parallel plates. */
-const CAP_SVG = svgUri(`<svg viewBox="0 0 28 28" xmlns="http://www.w3.org/2000/svg">
-  <line x1="10" y1="4" x2="10" y2="24" stroke="currentColor" stroke-width="1.5"/>
-  <line x1="18" y1="4" x2="18" y2="24" stroke="currentColor" stroke-width="1.5"/>
-  <line x1="14" y1="5" x2="14" y2="10" stroke="currentColor" stroke-width="1.5"/>
-  <line x1="14" y1="18" x2="14" y2="23" stroke="currentColor" stroke-width="1.5"/>
-</svg>`);
-
-/** Diode symbol: triangle + line. */
-const DIODE_SVG = svgUri(`<svg viewBox="0 0 28 28" xmlns="http://www.w3.org/2000/svg">
-  <polygon points="16,4 16,24 4,14" fill="none" stroke="currentColor" stroke-width="1.5"/>
-  <line x1="16" y1="4" x2="22" y2="4" stroke="currentColor" stroke-width="1.5"/>
-  <line x1="16" y1="24" x2="22" y2="24" stroke="currentColor" stroke-width="1.5"/>
-  <line x1="22" y1="4" x2="22" y2="24" stroke="currentColor" stroke-width="1.2"/>
-</svg>`);
-
-/** Inductor: loop. */
-const IND_SVG = svgUri(`<svg viewBox="0 0 28 28" xmlns="http://www.w3.org/2000/svg">
-  <path d="M4,14 Q8,4 12,14 Q16,4 20,14 Q24,4 26,14"
-    fill="none" stroke="currentColor" stroke-width="1.5"/>
-</svg>`);
-
-function symbolSvg(kind: string): string {
-  switch (kind) {
-    case "mos": return MOS_SVG;
-    case "bjt_npn": case "bjt_pnp": return BJT_SVG;
-    case "jfet_n": case "jfet_p": return BJT_SVG;
-    case "resistor": return RES_SVG;
-    case "capacitor": return CAP_SVG;
-    case "diode": case "zener": case "schottky": return DIODE_SVG;
-    case "inductor": return IND_SVG;
-    default: return "";
-  }
-}
-
-// ═════════════════════════════════════════════════════════════════
-// Colour palette
-// ═════════════════════════════════════════════════════════════════
+// ── Palette ──────────────────────────────────────────────────────
 
 const KIND_COLOR: Record<string, string> = {
   mos: "#4488ff", bjt_npn: "#44ff66", bjt_pnp: "#66ff88",
@@ -92,40 +20,48 @@ const KIND_COLOR: Record<string, string> = {
   inductor: "#6aadc8", unknown: "#888888",
 };
 
-const RAIL_COLOR = { vdd: "#ff4466", gnd: "#aa8855" };
+const KIND_LABEL: Record<string, string> = {
+  mos: "MOS", bjt_npn: "NPN", bjt_pnp: "PNP",
+  jfet_n: "NJF", jfet_p: "PJF",
+  resistor: "RES", capacitor: "CAP",
+  diode: "DIODE", zener: "ZENER", schottky: "SCHOTTKY",
+  inductor: "IND", unknown: "?",
+};
 
-// ═════════════════════════════════════════════════════════════════
-// Wire matching helper (exported from dieWideAnalog, duplicated for
-// simplicity — ~15 lines)
-// ═════════════════════════════════════════════════════════════════
+/** Categorise net names to detect power / ground rails. */
+function railKind(name: string): "vdd" | "gnd" | null {
+  const lo = name.toLowerCase().replace(/[^a-z0-9]/g, "");
+  if (/^v(dd|cc|bat|ddio)$/.test(lo)) return "vdd";
+  if (/^g(nd|round)$/.test(lo) || /^vss?$/.test(lo)) return "gnd";
+  return null;
+}
 
-function matchWireToPoint(
-  nets: import("shared").AnnotationNet[],
-  px: number, py: number, tol: number,
-): number | null {
+// ── Wire → point matching ───────────────────────────────────────
+
+function netAtPoint(
+  nets: DieAnnotations["nets"],
+  px: number, py: number, tol = 10,
+): (DieAnnotations["nets"][number]) | null {
   const tol2 = tol * tol;
   for (const net of nets) {
     for (const edge of net.edges) {
       const a = net.nodes.find(n => n.id === edge.from);
       const b = net.nodes.find(n => n.id === edge.to);
       if (!a || !b) continue;
-      const dx = b.x - a.x, dy = b.y - a.y;
-      const len2 = dx * dx + dy * dy;
+      const dx = b.x - a.x, dy = b.y - a.y, len2 = dx * dx + dy * dy;
       let t = len2 === 0 ? 0 : ((px - a.x) * dx + (py - a.y) * dy) / len2;
       t = Math.max(0, Math.min(1, t));
-      const cx = a.x + t * dx, cy = a.y + t * dy;
-      if ((cx - px) * (cx - px) + (cy - py) * (cy - py) <= tol2) return net.id as any;
+      if (((a.x + t * dx - px) ** 2 + (a.y + t * dy - py) ** 2) <= tol2) return net;
     }
   }
   return null;
 }
 
-// ═════════════════════════════════════════════════════════════════
-// Device naming
-// ═════════════════════════════════════════════════════════════════
+// ── Device naming ────────────────────────────────────────────────
 
 type NamedDevice = ReturnType<typeof collectDieWideAnalogDevices>["devices"][number] & {
   instanceName: string;
+  kindLabel: string;
 };
 
 function nameDevices(raw: ReturnType<typeof collectDieWideAnalogDevices>["devices"]): NamedDevice[] {
@@ -138,156 +74,117 @@ function nameDevices(raw: ReturnType<typeof collectDieWideAnalogDevices>["device
   return raw.map(d => {
     const p = pre[d.kind] ?? "X";
     c[p] = (c[p] ?? 0) + 1;
-    return { ...d, instanceName: `${p}${c[p]}` };
+    // Build a short type tag: mos → NMOS/PMOS, bjt_npn → NPN, etc.
+    let kl = KIND_LABEL[d.kind] ?? "?";
+    if (d.kind === "mos" && d.geometry && "mosType" in d.geometry) {
+      kl = (d.geometry as any).mosType === "pmos" ? "PMOS" : "NMOS";
+    }
+    return { ...d, instanceName: `${p}${c[p]}`, kindLabel: kl };
   });
-}
-
-// ═════════════════════════════════════════════════════════════════
-// Props
-// ═════════════════════════════════════════════════════════════════
-
-interface Props {
-  annotations: DieAnnotations | undefined;
-  onDeviceClick?: (name: string, cellId: string) => void;
 }
 
 // ═════════════════════════════════════════════════════════════════
 // Build elements
 // ═════════════════════════════════════════════════════════════════
 
-function buildElements(
-  devs: NamedDevice[],
-  annotations: DieAnnotations,
-): ElementDefinition[] {
+interface BuildCtx {
+  annotations: DieAnnotations;
+  devs: NamedDevice[];
+}
+
+function buildElements(ctx: BuildCtx): ElementDefinition[] {
+  const { annotations, devs } = ctx;
   const nets = annotations.nets ?? [];
   const pins = annotations.pins ?? [];
 
-  // ── Detect VDD / GND nets ──────────────────────────────────
-  // We scan all device terminals: if a net's name matches VDD/GND
-  // patterns, we route it to a rail node instead of creating
-  // device-to-device edges.
-  const allNetIdNames = new Map<number, string>();
-  for (const d of devs) {
-    for (const t of d.terminals) {
-      if (t.netId >= 0 && !allNetIdNames.has(t.netId)) {
-        // Try to find a human-readable name
-        const an = nets.find(n => n.nodes.some(node => (node as any).netId === t.netId));
-        allNetIdNames.set(t.netId, an?.name ?? `net${t.netId}`);
-      }
-    }
+  // ── Build netIdMap (UUID → numerical ID) matching dieWideAnalog ──
+  const netIdMap = new Map<string, number>();
+  let nextNetId = 100;
+  for (const net of nets) {
+    if (!netIdMap.has(net.id)) netIdMap.set(net.id, nextNetId++);
   }
-  const vddIds = new Set<number>();
-  const gndIds = new Set<number>();
-  for (const [id, name] of allNetIdNames) {
-    const lo = name.toLowerCase();
-    if (/vdd|vcc|vbat|vddio/.test(lo)) vddIds.add(id);
-    else if (/gnd|vss|v0|ground/.test(lo)) gndIds.add(id);
+  // Also collect human-readable names (from annotation net name + pins)
+  const netNames = new Map<number, string>();
+  for (const net of nets) {
+    const nid = netIdMap.get(net.id);
+    if (nid != null && net.name) netNames.set(nid, net.name);
+  }
+  for (const pin of pins) {
+    const matched = netAtPoint(nets, pin.x, pin.y);
+    if (!matched) continue;
+    const nid = netIdMap.get(matched.id);
+    if (nid != null && !netNames.has(nid)) netNames.set(nid, pin.name);
   }
 
-  // ── Collect terminals by net ────────────────────────────────
-  // Skips VDD/GND nets — those go to rail nodes.
-  const netMap = new Map<number, Array<{ dev: string; term: string; cellId: string }>>();
+  // ── Detect VDD / GND by net name ────────────────────────────────
+  const railForNet = new Map<number, "vdd" | "gnd">();
+  for (const [nid, name] of netNames) {
+    const r = railKind(name);
+    if (r) railForNet.set(nid, r);
+  }
+
+  // ── Classify device terminals ───────────────────────────────────
+  const byNet = new Map<number, Array<{ dev: string; term: string }>>();
+  const vddDevs = new Set<string>();
+  const gndDevs = new Set<string>();
+
+  function addTerm(dev: string, term: string, netId: number) {
+    const r = railForNet.get(netId);
+    if (r === "vdd") { vddDevs.add(dev); return; }
+    if (r === "gnd") { gndDevs.add(dev); return; }
+    if (!byNet.has(netId)) byNet.set(netId, []);
+    byNet.get(netId)!.push({ dev, term });
+  }
+
   for (const d of devs) {
     for (const t of d.terminals) {
-      if (vddIds.has(t.netId) || gndIds.has(t.netId)) continue;
-      if (!netMap.has(t.netId)) netMap.set(t.netId, []);
-      netMap.get(t.netId)!.push({
-        dev: d.instanceName,
-        term: t.name,
-        cellId: (d as any)._cellId ?? "",
-      });
+      addTerm(d.instanceName, t.name, t.netId);
     }
   }
 
   const result: ElementDefinition[] = [];
-  const edgeSet = new Set<string>();
 
-  // ── VDD / GND rail nodes ───────────────────────────────────
-  const hasVdd = devs.some(d => d.terminals.some(t => vddIds.has(t.netId)));
-  const hasGnd = devs.some(d => d.terminals.some(t => gndIds.has(t.netId)));
-
-  if (hasVdd) {
+  // ── VDD / GND rail nodes ────────────────────────────────────
+  if (vddDevs.size > 0) {
     result.push({
-      group: "nodes",
-      data: { id: "VDD", label: "VDD", nodeType: "rail", rail: "vdd" },
-      style: {
-        "background-color": RAIL_COLOR.vdd + "22",
-        "border-color": RAIL_COLOR.vdd,
-        width: 60, height: 32, shape: "roundrectangle",
-        "font-size": 11, "font-weight": "bold",
-      },
+      group: "nodes", data: { id: "VDD", label: "VDD", nt: "rail" },
+      style: { "background-color": "#ff446622", "border-color": "#ff4466", width: 60, height: 32, shape: "roundrectangle", "font-size": 11, "font-weight": "bold" },
     });
-    for (const d of devs) {
-      const vddTerms = d.terminals.filter(t => vddIds.has(t.netId));
-      if (vddTerms.length === 0) continue;
+    for (const d of vddDevs) {
+      const terms = devs.find(x => x.instanceName === d)?.terminals.filter(t => railForNet.get(t.netId) === "vdd") ?? [];
       result.push({
         group: "edges",
-        data: {
-          id: `e:VDD:${d.instanceName}`,
-          source: "VDD",
-          target: d.instanceName,
-          label: vddTerms.map(t => t.name).join("/"),
-        },
+        data: { id: `e:VDD:${d}`, source: "VDD", target: d, label: terms.map(t => t.name).join("/") },
+      });
+    }
+  }
+  if (gndDevs.size > 0) {
+    result.push({
+      group: "nodes", data: { id: "GND", label: "GND", nt: "rail" },
+      style: { "background-color": "#aa885522", "border-color": "#aa8855", width: 60, height: 32, shape: "roundrectangle", "font-size": 11, "font-weight": "bold" },
+    });
+    for (const d of gndDevs) {
+      const terms = devs.find(x => x.instanceName === d)?.terminals.filter(t => railForNet.get(t.netId) === "gnd") ?? [];
+      result.push({
+        group: "edges",
+        data: { id: `e:GND:${d}`, source: "GND", target: d, label: terms.map(t => t.name).join("/") },
       });
     }
   }
 
-  if (hasGnd) {
-    result.push({
-      group: "nodes",
-      data: { id: "GND", label: "GND", nodeType: "rail", rail: "gnd" },
-      style: {
-        "background-color": RAIL_COLOR.gnd + "22",
-        "border-color": RAIL_COLOR.gnd,
-        width: 60, height: 32, shape: "roundrectangle",
-        "font-size": 11, "font-weight": "bold",
-      },
-    });
-    for (const d of devs) {
-      const gndTerms = d.terminals.filter(t => gndIds.has(t.netId));
-      if (gndTerms.length === 0) continue;
-      result.push({
-        group: "edges",
-        data: {
-          id: `e:GND:${d.instanceName}`,
-          source: "GND",
-          target: d.instanceName,
-          label: gndTerms.map(t => t.name).join("/"),
-        },
-      });
-    }
-  }
-
-  // ── Device nodes ───────────────────────────────────────────
+  // ── Device nodes ────────────────────────────────────────────
   for (const d of devs) {
     const c = KIND_COLOR[d.kind] ?? "#888";
-    const sym = symbolSvg(d.kind);
     result.push({
       group: "nodes",
-      data: { id: d.instanceName, label: d.instanceName, kind: d.kind, cellId: (d as any)._cellId ?? "" },
-      style: {
-        "background-color": c + "22",
-        "border-color": c,
-        shape: "ellipse",
-        width: 52,
-        height: 52,
-        "background-image": sym || undefined,
-        "background-width": "60%",
-        "background-height": "60%",
-        "background-fit": "contain",
-        "background-position-x": "50%",
-        "background-position-y": "60%",
-        "padding": "4px",
-        "text-valign": "top",
-        "text-margin-y": -2,
-        "font-size": 8,
-        "min-zoomed-font-size": 5,
-      },
+      data: { id: d.instanceName, label: `${d.instanceName}·${d.kindLabel}`, k: d.kind, cellId: (d as any)._cellId ?? "", nt: "dev" },
+      style: { "background-color": c + "22", "border-color": c },
     });
   }
 
-  // ── D2D edges (non-VDD/GND nets) ────────────────────────────
-  for (const [, list] of netMap) {
+  // ── Device-to-device edges (non-rail nets) ──────────────────
+  const edgeSet = new Set<string>();
+  for (const [, list] of byNet) {
     for (let i = 0; i < list.length; i++) {
       for (let j = i + 1; j < list.length; j++) {
         const key = [list[i].dev, list[j].dev].sort().join("<>");
@@ -296,56 +193,38 @@ function buildElements(
         const terms = [...new Set(list.map(e => e.term))];
         result.push({
           group: "edges",
-          data: {
-            id: `e:${key}`,
-            source: list[i].dev,
-            target: list[j].dev,
-            label: terms.join("/"),
-          },
+          data: { id: `e:${key}`, source: list[i].dev, target: list[j].dev, label: terms.join("/") },
         });
       }
     }
   }
 
   // ── IO pins ────────────────────────────────────────────────
-  // Match each pin to a net, then connect it to the devices on that net.
-  if (pins.length > 0) {
-    const netByDev = new Map<string, Set<number>>();
+  for (const pin of pins) {
+    const matched = netAtPoint(nets, pin.x, pin.y);
+    if (!matched) continue;
+    const spid = netIdMap.get(matched.id);
+    if (spid == null) continue;
+    const pinId = `pin:${pin.name}`;
+    result.push({
+      group: "nodes",
+      data: { id: pinId, label: pin.name, nt: "io", netUuid: matched.id },
+      style: {
+        "background-color": "#e8d44d22", "border-color": "#e8d44d", width: 32, height: 32, shape: "diamond", "font-size": 7.5,
+      },
+    });
+    // Connect pin to all devices sharing its net
+    const devsOnNet = new Set<string>();
     for (const d of devs) {
-      const s = new Set<number>();
-      for (const t of d.terminals) s.add(t.netId);
-      netByDev.set(d.instanceName, s);
-    }
-
-    for (const pin of pins) {
-      const matchedNet = matchWireToPoint(nets, pin.x, pin.y, 10);
-      if (matchedNet == null) continue;
-      const pinId = `pin:${pin.name}`;
-      result.push({
-        group: "nodes",
-        data: { id: pinId, label: pin.name, nodeType: "io", netId: matchedNet },
-        style: {
-          "background-color": "#e8d44d22",
-          "border-color": "#e8d44d",
-          width: 32,
-          height: 32,
-          shape: "diamond",
-          "font-size": 7.5,
-        },
-      });
-      // Connect pin to all devices on this net
-      const connected = new Set<string>();
-      for (const d of devs) {
-        if (connected.has(d.instanceName)) continue;
-        if (d.terminals.some(t => t.netId === matchedNet)) {
-          connected.add(d.instanceName);
-          const key = `e:${pinId}:${d.instanceName}`;
-          result.push({
-            group: "edges",
-            data: { id: key, source: pinId, target: d.instanceName, label: "" },
-          });
-        }
+      for (const t of d.terminals) {
+        if (t.netId === spid) devsOnNet.add(d.instanceName);
       }
+    }
+    for (const d of devsOnNet) {
+      result.push({
+        group: "edges",
+        data: { id: `e:${pinId}:${d}`, source: pinId, target: d, label: "" },
+      });
     }
   }
 
@@ -356,13 +235,19 @@ function buildElements(
 // Stylesheet
 // ═════════════════════════════════════════════════════════════════
 
-const STYLE: cytoscape.Stylesheet[] = [
+// Cytoscape node style keys: use the short aliases for brevity
+// bg = background-color, bc = border-color, w = width, h = height
+// sh = shape, fs = font-size, fw = font-weight
+
+type ES = cytoscape.Stylesheet;
+const BASE: ES[] = [
   { selector: "node", style: {
     "font-family": "monospace", color: "#e8e8e8",
     "text-valign": "center", "text-halign": "center",
     "min-zoomed-font-size": 5, "border-width": 3,
     "background-color": "#1a1a1a",
-    label: "data(label)",
+    label: "data(label)", width: 52, height: 52, shape: "ellipse",
+    "font-size": 8.5,
   }},
   { selector: "edge", style: {
     width: 1.5, "line-color": "#444", "curve-style": "bezier",
@@ -384,6 +269,11 @@ const STYLE: cytoscape.Stylesheet[] = [
 // Component
 // ═════════════════════════════════════════════════════════════════
 
+interface Props {
+  annotations: DieAnnotations | undefined;
+  onDeviceClick?: (name: string, cellId: string) => void;
+}
+
 export function NetGraphView({ annotations, onDeviceClick }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const cyRef = useRef<Core | null>(null);
@@ -395,31 +285,31 @@ export function NetGraphView({ annotations, onDeviceClick }: Props) {
   const elements = useMemo<ElementDefinition[]>(() => {
     if (!annotations) return [];
     const { devices } = collectDieWideAnalogDevices(annotations);
-    return buildElements(nameDevices(devices), annotations);
+    return buildElements({ annotations, devs: nameDevices(devices) });
   }, [annotations]);
+
+  // Elements already have inline style with correct Cytoscape property names.
 
   useEffect(() => {
     if (!containerRef.current || elements.length === 0) return;
     const cy = cytoscape({
       container: containerRef.current,
       elements,
-      style: STYLE,
+      style: BASE,
       layout: {
         name: "cose",
         animate: false,
-        nodeRepulsion: n => n.data("nodeType") === "rail" ? 500 : 6000,
-        idealEdgeLength: e => e.data("source") === "VDD" || e.data("source") === "GND" ? 80 : 100,
+        nodeRepulsion: n => n.data("nt") === "rail" ? 500 : 6000,
+        idealEdgeLength: e => (e.data("source") === "VDD" || e.data("source") === "GND") ? 80 : 100,
         gravity: 0.25,
         numIter: 300,
       },
-      minZoom: 0.15,
-      maxZoom: 5,
-      wheelSensitivity: 0.3,
+      minZoom: 0.15, maxZoom: 5, wheelSensitivity: 0.3,
     });
 
     cy.on("tap", "node", (evt) => {
       const n = evt.target;
-      if (n.data("nodeType") === "rail" || n.data("nodeType") === "io") return;
+      if (n.data("nt") === "rail" || n.data("nt") === "io") return;
       const cellId = n.data("cellId");
       if (!cellId) return;
       const name = n.data("label");
