@@ -10,6 +10,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
+import { NetGraphView } from "../components/netlist/NetGraphView";
 import type { SpiceDialect } from "shared";
 import { AppShell } from "../components/shell/AppShell";
 import { StatusBar } from "../components/shell/StatusBar";
@@ -74,6 +75,7 @@ function AnalogNetlist({ dieId }: { dieId: string }) {
   const netlist = useAnalogNetlist(annotations, moduleName, dialect);
 
   // ── UI state ────────────────────────────────────────────────────
+  const [rightView, setRightView] = useState<"code" | "graph">("code");
   const viewerRef = useRef<CodeViewerHandle | null>(null);
   const [selectedLine, setSelectedLine] = useState<number | null>(null);
   const [copied, setCopied] = useState(false);
@@ -170,20 +172,42 @@ function AnalogNetlist({ dieId }: { dieId: string }) {
                 </span>
               </span>
             )}
-            {/* Dialect picker */}
+            {/* View toggle: Code / Graph */}
             <div className="row" style={{ gap: 2, background: "var(--l1)", borderRadius: 4, padding: 2 }}>
-              {DIALECT_OPTIONS.map((opt) => (
-                <button
-                  key={opt.value}
-                  type="button"
-                  className={"btn sm" + (dialect === opt.value ? " on" : "")}
-                  onClick={() => setDialect(opt.value)}
-                  style={{ fontSize: 10, fontWeight: 600 }}
-                >
-                  {opt.label}
-                </button>
-              ))}
+              <button
+                type="button"
+                className={"btn sm" + (rightView === "code" ? " on" : "")}
+                onClick={() => setRightView("code")}
+                style={{ fontSize: 10, fontWeight: 600 }}
+              >
+                Code
+              </button>
+              <button
+                type="button"
+                className={"btn sm" + (rightView === "graph" ? " on" : "")}
+                onClick={() => setRightView("graph")}
+                style={{ fontSize: 10, fontWeight: 600 }}
+              >
+                Graph
+              </button>
             </div>
+            <ToolDivider />
+            {/* Dialect picker (only shown in code view) */}
+            {rightView === "code" && (
+              <div className="row" style={{ gap: 2, background: "var(--l1)", borderRadius: 4, padding: 2 }}>
+                {DIALECT_OPTIONS.map((opt) => (
+                  <button
+                    key={opt.value}
+                    type="button"
+                    className={"btn sm" + (dialect === opt.value ? " on" : "")}
+                    onClick={() => setDialect(opt.value)}
+                    style={{ fontSize: 10, fontWeight: 600 }}
+                  >
+                    {opt.label}
+                  </button>
+                ))}
+              </div>
+            )}
             <ToolDivider />
             <button
               type="button"
@@ -258,13 +282,23 @@ function AnalogNetlist({ dieId }: { dieId: string }) {
           }}
         >
           {netlist.data ? (
-            <CodeViewer
-              ref={viewerRef}
-              source={netlist.data.source}
-              markers={[]}
-              selectedLine={selectedLine ?? undefined}
-              onSelectLine={setSelectedLine}
-            />
+            rightView === "code" ? (
+              <CodeViewer
+                ref={viewerRef}
+                source={netlist.data.source}
+                markers={[]}
+                selectedLine={selectedLine ?? undefined}
+                onSelectLine={setSelectedLine}
+              />
+            ) : (
+              <NetGraphView
+                annotations={annotations}
+                onDeviceClick={(name, cellId) => {
+                  // Navigate to die viewer with focus
+                  navigate(`/die/${encodeURIComponent(dieId)}?focusCell=${encodeURIComponent(cellId)}&focusDevice=${encodeURIComponent(name)}`);
+                }}
+              />
+            )
           ) : (
             <ViewerPlaceholder
               loading={netlist.loading}

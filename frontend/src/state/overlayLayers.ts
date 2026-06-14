@@ -62,7 +62,6 @@ export const useOverlayLayers = create<OverlayLayersState>()((set, get) => ({
       loaded: true,
       hidden,
       opacity: 1,
-      opacity: 1,
       offsetX: 0,
       offsetY: 0
     };
