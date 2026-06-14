@@ -229,6 +229,8 @@ function WireOptions({ hint }: { hint?: string }) {
   const setSnapToVias = usePreferences((s) => s.setSnapToVias);
   const autoEndOnVia = usePreferences((s) => s.wireAutoEndOnVia);
   const setAutoEndOnVia = usePreferences((s) => s.setWireAutoEndOnVia);
+  const autoEndOnContact = usePreferences((s) => s.autoEndOnContact);
+  const setAutoEndOnContact = usePreferences((s) => s.setAutoEndOnContact);
   return (
     <>
       <span className="u" style={{ fontSize: 10 }}>
@@ -256,6 +258,17 @@ function WireOptions({ hint }: { hint?: string }) {
           onChange={(e) => setAutoEndOnVia(e.target.checked)}
         />
         Auto-end on via
+      </label>
+      <label
+        className="check"
+        title="When clicking on a cell terminal (orange snap halo), commit the wire immediately instead of staying in edit mode."
+      >
+        <input
+          type="checkbox"
+          checked={autoEndOnContact}
+          onChange={(e) => setAutoEndOnContact(e.target.checked)}
+        />
+        Auto-end on contact
       </label>
       {hint && (
         <span

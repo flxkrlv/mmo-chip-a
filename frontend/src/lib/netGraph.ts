@@ -58,8 +58,32 @@ const makeEdge = (
   ...(layer ? { layer } : {})
 });
 
+/** Monotonically increasing counter for net names. Never reuses a name,
+ *  even when nets are deleted/merged. Resets on die change. */
+let _netNameCounter = 0;
 function nextNetName(nets: AnnotationNet[]): string {
-  return `Net ${nets.length + 1}`;
+  // Find the max existing net number to seed the counter.
+  if (_netNameCounter === 0) {
+    let maxN = 0;
+    for (const net of nets) {
+      const m = net.name?.match(/^Net (\d+)$/);
+      if (m) {
+        const n = parseInt(m[1], 10);
+        if (n > maxN) maxN = n;
+      }
+    }
+    _netNameCounter = maxN;
+  }
+  // Also catch nets that already have a higher numeric suffix.
+  for (const net of nets) {
+    const m = net.name?.match(/(\d+)$/);
+    if (m) {
+      const n = parseInt(m[1], 10);
+      if (n > _netNameCounter) _netNameCounter = n;
+    }
+  }
+  _netNameCounter++;
+  return `Net ${_netNameCounter}`;
 }
 
 /**

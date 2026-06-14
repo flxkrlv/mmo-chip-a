@@ -744,6 +744,10 @@ function DieViewer({ dieId }: { dieId: string }) {
     () => usePreferences.getState().wireAutoEndOnVia,
     []
   );
+  const autoEndOnContactEnabled = useCallback(
+    () => usePreferences.getState().autoEndOnContact,
+    []
+  );
 
   // ── Cell-terminal snapping ────────────────────────────────────
   // Build terminal positions from all cell instances (metal1 n contact
@@ -812,7 +816,8 @@ const analogDevices = useMemo(
     snapToViasEnabled,
     autoEndOnViaEnabled,
     getViaSizeWorld,
-    findNearestTerminal
+    findNearestTerminal,
+    autoEndOnContactEnabled
   });
 
   const cell = useCellTool({

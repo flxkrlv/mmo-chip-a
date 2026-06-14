@@ -73,6 +73,9 @@ interface PreferencesState {
    *  via and finish the wire there (each wire in a multi-wire bus snaps
    *  independently on its own projected line). Off by default. */
   wireAutoEndOnVia: boolean;
+  /** Wire: when clicking on a cell terminal snap (orange halo), auto-commit
+   *  the wire immediately instead of staying in edit mode. */
+  autoEndOnContact: boolean;
   /** Render radius for point vias (world / source-pixel units). Shared by
    *  the manual via annotation render path and the ML-via overlay, and used
    *  as the snap-to-via tolerance. One setting because the user thinks of
@@ -126,6 +129,7 @@ interface PreferencesActions {
   setMlResultsHidden: (hidden: boolean) => void;
   setSnapToVias: (snap: boolean) => void;
   setWireAutoEndOnVia: (enabled: boolean) => void;
+  setAutoEndOnContact: (enabled: boolean) => void;
   setViaSize: (size: number) => void;
   setViaConfidenceThreshold: (threshold: number) => void;
   setInspectorTab: (tab: InspectorTab) => void;
@@ -163,6 +167,7 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
         mlResultsHidden: true,
         snapToVias: false,
         wireAutoEndOnVia: false,
+        autoEndOnContact: true,
         viaSize: VIA_DEFAULT_SIZE,
         viaConfidenceThreshold: 0.5,
         inspectorTab: "inspector",
@@ -235,6 +240,7 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
         setMlResultsHidden: (hidden) => set({ mlResultsHidden: hidden }),
         setSnapToVias: (snap) => set({ snapToVias: snap }),
         setWireAutoEndOnVia: (enabled) => set({ wireAutoEndOnVia: enabled }),
+        setAutoEndOnContact: (enabled) => set({ autoEndOnContact: enabled }),
         setViaSize: (size) => set({ viaSize: size }),
         setViaConfidenceThreshold: (threshold) =>
           set({
@@ -296,6 +302,7 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
           mlResultsHidden: state.mlResultsHidden,
           snapToVias: state.snapToVias,
           wireAutoEndOnVia: state.wireAutoEndOnVia,
+          autoEndOnContact: state.autoEndOnContact,
           viaSize: state.viaSize,
           viaConfidenceThreshold: state.viaConfidenceThreshold,
           inspectorTab: state.inspectorTab

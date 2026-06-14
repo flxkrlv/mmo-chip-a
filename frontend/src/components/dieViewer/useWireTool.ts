@@ -153,6 +153,9 @@ export function useWireTool(opts: {
    *  Returns the centre point and a unique terminal id for visual feedback.
    *  Optional — when absent, terminal snapping is disabled. */
   findNearestTerminal?: (world: Point, tolWorld: number) => TerminalSnapTarget | null;
+  /** Live getter for the "Auto-end on contact" pref. When true, clicking on
+   *  a cell terminal (orange halo) commits the wire immediately. Default = on. */
+  autoEndOnContactEnabled?: () => boolean;
 }): WireTool {
   const {
     dispatcher,
@@ -167,7 +170,8 @@ export function useWireTool(opts: {
     snapToViasEnabled,
     autoEndOnViaEnabled,
     getViaSizeWorld,
-    findNearestTerminal
+    findNearestTerminal,
+    autoEndOnContactEnabled
   } = opts;
   // Mirror the snap providers into a ref so callbacks don't re-bind every
   // render (would invalidate downstream useEffects + churn React Query).
@@ -185,7 +189,8 @@ export function useWireTool(opts: {
     snapToViasEnabled,
     autoEndOnViaEnabled,
     getViaSizeWorld,
-    findNearestTerminal
+    findNearestTerminal,
+    autoEndOnContactEnabled
   };
 
   /** Try the via-snap path: return the snapped point if the pref is on and
@@ -498,6 +503,22 @@ export function useWireTool(opts: {
         });
         return;
       }
+      // Terminal snap: when auto-end-on-contact is on, snap the endpoint
+      // to the terminal centre and commit. Otherwise fall through to
+      // via/vertex/free placement.
+      if (snapRef.current.autoEndOnContactEnabled?.()) {
+        const terminal = resolveTerminalSnap(world, vp.zoom);
+        if (terminal) {
+          const point = { x: terminal.x, y: terminal.y };
+          draftRedoRef.current = [];
+          const action = buildAction(d, (nets, anchor) =>
+            commitDraft(nets, [...d.points, point], anchor, [...d.segLayers, layer])
+          );
+          if (action) void dispatcher.dispatch(action);
+          clearDraft();
+          return;
+        }
+      }
       const snapped45 = snapTo45(last, world);
       const via = shift ? null : viaSnap(snapped45, vp.zoom);
       const node = snapNode(world, via, vp.zoom, !shift);
@@ -551,7 +572,8 @@ export function useWireTool(opts: {
       viewportLive,
       viaSnap,
       viaOnProjection,
-      snapNode
+      snapNode,
+      resolveTerminalSnap
     ]
   );
 

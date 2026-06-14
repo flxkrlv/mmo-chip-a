@@ -91,12 +91,15 @@ function matchWireToPoint(
       let t = len2===0 ? 0 : ((px-a.x)*dx+(py-a.y)*dy)/len2;
       t = Math.max(0,Math.min(1,t));
       const cx=a.x+t*dx, cy=a.y+t*dy;
-      if ((cx-px)*(cx-px)+(cy-py)*(cy-py) <= tol2) {
+      const dist2 = (cx-px)*(cx-px)+(cy-py)*(cy-py);
+      if (dist2 <= tol2) {
         if (!netIdMap.has(net.id)) netIdMap.set(net.id, nextId.v++);
+        console.log(`[debug] matchWireToPoint: cp(${px.toFixed(0)},${py.toFixed(0)}) → net ${net.id} edge ${edge.id} (${a.x.toFixed(0)},${a.y.toFixed(0)})→(${b.x.toFixed(0)},${b.y.toFixed(0)}) dist=${Math.sqrt(dist2).toFixed(1)}px`);
         return netIdMap.get(net.id)!;
       }
     }
   }
+  console.log(`[debug] matchWireToPoint: cp(${px.toFixed(0)},${py.toFixed(0)}) — NO MATCH (${nets.length} nets, ${nets.reduce((s,n)=>s+n.edges.length,0)} edges)`);
   return null;
 }
 
@@ -245,15 +248,17 @@ export function collectDieWideAnalogDevices(
               }
             }
           }
-          // Check if all terminals use the same layers (e.g. resistor:
-          // both PLUS/MINUS use "contact" only). If so, distribute contacts
-          // round-robin across terminals so each gets unique contacts.
+          // Two strategies depending on whether all terminals share the
+          // same layer set (resistor: PLUS/MINUS both "contact") or have
+          // distinct layers (BJT: collector/base/emitter; MOS: drain/gate/
+          // source/bulk).
           const tLayers = dev.terminals.map((t) =>
             terminalLayersOf(dev.kind, t.name).join(",")
           );
           const allSameLayer = tLayers.every((l) => l === tLayers[0]);
           if (allSameLayer) {
-            // Distribute unique contact positions round-robin by terminal.
+            // Resistor/capacitor/diode: same layer for all terminals.
+            // Distribute unique contact positions round-robin.
             const uniqueContactPositions = [...cPos.values()];
             for (let ci = 0; ci < uniqueContactPositions.length; ci++) {
               const ti = ci % dev.terminals.length;
@@ -261,10 +266,18 @@ export function collectDieWideAnalogDevices(
               termContacts[ti].push({x:cx+cp.x, y:cy+cp.y});
             }
           } else {
+            // BJT/MOS: distinct layers per terminal. Contacts shared between
+            // terminals (e.g. base+emitter) are a single physical contact;
+            // assign it to the LAST terminal in the check order (E for BJT,
+            // B for MOS) to avoid shorts. Terminal check order: C→B→E for
+            // BJT, D→G→S→B for MOS.
+            // Find the highest-index terminal that overlaps this contact.
             for (const [cid, tis] of cTis) {
-              if (tis.size !== 1) continue; // shared — skip
-              const ti = [...tis][0];
               const cp = cPos.get(cid); if (!cp) continue;
+              // Assign to the last overlapping terminal (highest ti).
+              // For BJT: C=0, B=1, E=2 → shared C/B/E → only E gets it.
+              // For MOS: D=0, G=1, S=2, B=3 → shared → only B gets it.
+              const ti = Math.max(...tis);
               termContacts[ti].push({x:cx+cp.x, y:cy+cp.y});
             }
           }
@@ -276,11 +289,21 @@ export function collectDieWideAnalogDevices(
             const fresh = 2000 + allDevices.length*10 + ti;
             return {...t, netId: fresh};
           }
-          for (const cp of termContacts[ti]) {
+          const contacts = termContacts[ti];
+          if (contacts.length === 0) {
+            console.log(`[debug] ${instName}(${t.name}) — NO contact centers`);
+          }
+          for (const cp of contacts) {
             const wid = matchWireToPoint(nets, cp.x, cp.y, 10, netIdMap, nextNetId);
-            if (wid!=null) return {...t, netId: wid};
+            if (wid!=null) {
+              console.log(`[debug] ${instName}(${t.name}) matched cp(${cp.x.toFixed(0)},${cp.y.toFixed(0)}) → netId ${wid}`);
+              return {...t, netId: wid};
+            } else {
+              console.log(`[debug] ${instName}(${t.name}) cp(${cp.x.toFixed(0)},${cp.y.toFixed(0)}) — no wire within 10px`);
+            }
           }
           const fresh = 2000 + allDevices.length*10 + ti;
+          console.log(`[debug] ${instName}(${t.name}) → FALLBACK ${fresh}`);
           return {...t, netId: fresh};
         });
 
