@@ -2146,10 +2146,13 @@ const analogDevices = useMemo(
         return;
       }
       const rect = containerRef.current.getBoundingClientRect();
-      console.log(`[focusOnIds] framing box:`, box, `viewport rect:`, {w:rect.width, h:rect.height});
-      canvasHandle.current?.setViewport(
-        fitRectViewport(box, rect.width, rect.height, 56, 32)
-      );
+      const newVp = fitRectViewport(box, rect.width, rect.height, 56, 32);
+      console.log(`[focusOnIds] framing box:`, box, `viewport rect:`, {w:rect.width, h:rect.height}, `canvasHandle:`, !!canvasHandle.current, `newVp:`, newVp);
+      if (canvasHandle.current) {
+        canvasHandle.current.setViewport(newVp);
+      } else {
+        console.log(`[focusOnIds] ERROR: canvasHandle.current is null`);
+      }
     },
     [annotationLayer]
   );
