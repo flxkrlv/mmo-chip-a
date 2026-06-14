@@ -274,7 +274,13 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
                       label={deviceLabels?.get(cell.id) ?? cell.id.slice(0,8)}
                       selected={selectedIds.has(id)}
                       onSelect={() => select([id])}
-                      onDoubleClick={() => { focus([id]); const label = deviceLabels?.get(cell.id); if (label && onDeviceSelect) onDeviceSelect(cell.id); }}
+                      onDoubleClick={() => {
+                        focus([id]);
+                        const label = deviceLabels?.get(cell.id);
+                        if (label && onDeviceSelect) onDeviceSelect(cell.id);
+                        // Also navigate to RE Cell on double-click
+                        if (onOpenInRE) onOpenInRE(cell.id, cell.cellTypeId);
+                      }}
                       controls={onOpenInRE ? (
                         <span
                           onClick={(e) => { e.stopPropagation(); onOpenInRE(cell.id, cell.cellTypeId); }}

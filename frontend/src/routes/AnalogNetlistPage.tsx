@@ -20,7 +20,6 @@ import { useDie } from "../api/dies";
 import { useAnnotations } from "../api/annotations";
 import { useAnnotationsWebSocket } from "../api/annotationsWebSocket";
 import { useSession } from "../state/session";
-import { useCrossTabSelection } from "../state/crossTabSelection";
 import { useAnalogNetlist } from "../api/analogNetlist";
 import { Ic } from "../icons";
 
@@ -97,11 +96,12 @@ function AnalogNetlist({ dieId }: { dieId: string }) {
     (instanceName: string, cellId: string, line: number) => {
       setSelectedLine(line);
       viewerRef.current?.goToLine(line);
-      setAnalogFocus(instanceName, cellId);
-      // Small delay to let the store update before navigation
-      setTimeout(() => navigate(`/die/${encodeURIComponent(dieId)}?focusAnalog=1`), 50);
+      // Use location.state — guaranteed to survive navigation
+      navigate(`/die/${encodeURIComponent(dieId)}`, {
+        state: { focusAnalogDevice: instanceName, focusAnalogCell: cellId },
+      });
     },
-    [dieId, navigate, setAnalogFocus],
+    [dieId, navigate],
   );
 
   const onCopy = useCallback(async () => {

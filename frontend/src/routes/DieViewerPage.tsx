@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
+import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
 import type { AnalogDevice, AnnotationNet } from "shared";
 import { useAnnotations } from "../api/annotations";
 import { useAnnotationsWebSocket } from "../api/annotationsWebSocket";
@@ -120,7 +120,6 @@ import { DEFAULT_ML_CONFIG, useDieViewerStore } from "../state/dieViewer";
 import { useOverlayLayers } from "../state/overlayLayers";
 import { usePreferences } from "../state/preferences";
 import { useSession } from "../state/session";
-import { useCrossTabSelection } from "../state/crossTabSelection";
 
 /** Stable empty points array so the overlay effect doesn't churn when idle. */
 const NO_DRAFT_POINTS: Point[] = [];
@@ -2112,23 +2111,34 @@ const analogDevices = useMemo(
   );
 
   // ── Cross-tab focus: analog netlist → frame cell on die ──
-  const [searchParams] = useSearchParams();
-  const consumeAnalogFocus = useCrossTabSelection((s) => s.consumeAnalogFocus);
+  // Uses React Router `location.state` which is guaranteed to survive
+  // any SPA navigation. The state is consumed once after annotations
+  // and the annotation layer are ready.
+  const location = useLocation();
+  const focusStateRef = useRef<{ cellId: string; deviceName: string } | null>(null);
   useEffect(() => {
-    if (!searchParams.has("focusAnalog") || !annotationLayer || !annotations) return;
-    const focus = consumeAnalogFocus();
-    if (!focus) return;
-    // Remove the param from the URL so a refresh doesn't re-trigger.
-    const url = new URL(window.location.href);
-    url.searchParams.delete("focusAnalog");
-    window.history.replaceState({}, "", url.pathname + url.search);
+    const st = location.state as Record<string, string> | null;
+    if (st?.focusAnalogCell && st?.focusAnalogDevice) {
+      focusStateRef.current = {
+        cellId: st.focusAnalogCell,
+        deviceName: st.focusAnalogDevice,
+      };
+      // Clear the state so a refresh doesn't re-trigger
+      window.history.replaceState({}, "");
+    }
+  }, [location.state]);
+  useEffect(() => {
+    const focus = focusStateRef.current;
+    if (!focus || !annotationLayer || !annotations) return;
+    focusStateRef.current = null;
     // Frame the cell
-    const cellAnnotationId = `cell:${focus.cellId}`;
-    focusOnIds([cellAnnotationId]);
+    focusOnIds([`cell:${focus.cellId}`]);
     // Highlight the analog device in the side panel
-    const dev = analogDevices.find((d: any) => d._cellId === focus.cellId || d.instanceName === focus.deviceName);
+    const dev = analogDevices.find(
+      (d: any) => d._cellId === focus.cellId || d.instanceName === focus.deviceName
+    );
     if (dev) setSelectedDevice(dev as any);
-  }, [searchParams, annotationLayer, annotations, consumeAnalogFocus, focusOnIds, analogDevices]);
+  }, [annotationLayer, annotations, location.state, focusOnIds, analogDevices]);
 
   const minZoom = die ? (1 / Math.max(die.width, die.height)) * 50 : 0.01;
 
