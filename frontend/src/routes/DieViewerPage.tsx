@@ -2147,11 +2147,20 @@ const analogDevices = useMemo(
       }
       const rect = containerRef.current.getBoundingClientRect();
       const newVp = fitRectViewport(box, rect.width, rect.height, 56, 32);
-      console.log(`[focusOnIds] framing box:`, box, `viewport rect:`, {w:rect.width, h:rect.height}, `canvasHandle:`, !!canvasHandle.current, `newVp:`, newVp);
+      console.log(`[focusOnIds] framing box:`, box, `newVp:`, newVp, `canvasHandle:`, !!canvasHandle.current);
       if (canvasHandle.current) {
         canvasHandle.current.setViewport(newVp);
       } else {
-        console.log(`[focusOnIds] ERROR: canvasHandle.current is null`);
+        // Canvas not mounted yet — retry after a short delay
+        console.log(`[focusOnIds] canvas not ready, scheduling retry...`);
+        setTimeout(() => {
+          if (canvasHandle.current) {
+            console.log(`[focusOnIds] retry: setting viewport now`);
+            canvasHandle.current.setViewport(newVp);
+          } else {
+            console.log(`[focusOnIds] retry: still no canvas`);
+          }
+        }, 200);
       }
     },
     [annotationLayer]
