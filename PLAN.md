@@ -22,13 +22,17 @@
 
 ## 🔴 Priority
 
-### 1. SPICE — quality pass (блокировано)
+### 1. RE Cell стабильность (баги пофикшены)
+- `activeCellTypeId is not defined` в `CellRERightPanel` — пофикшено (15.06)
+- Бесконечный цикл рендера в `AnalogDeviceRow` через zustand selector — пофикшено (15.06)
+
+### 2. SPICE — quality pass (блокировано)
 Ждёт эталонный netlist от пользователя. Подогнать `spice.ts` под реальный формат.
 
-### 2. MOS analog transistors (блокировано)  
+### 3. MOS analog transistors (блокировано)  
 Ждёт die с реальными аналоговыми MOS. Допилить fingers/multiplier/bulk.
 
-### 3. Wire matching → intersection (отложено)
+### 4. Wire matching → intersection (отложено)
 Пробная попытка — откатили. Нужен правильный bbox из contact shapes, не из центров.
 
 ---

@@ -130,6 +130,8 @@ export function CellRERightPanel({
       ? (extraction as InferredCellExtraction)
       : null;
 
+  const activeCellTypeId = useCellREStore((s) => s.activeCellTypeId);
+
   // Build a single shape index once per render so every row's hover/click
   // handler can map its (mixed) shape ids → canvas selection keys without
   // re-scanning the shape list.
@@ -1554,6 +1556,11 @@ const DEVICE_COLORS: Record<string, string> = {
   inductor: "#66aaff", unknown: "#888888",
 };
 
+/** Stable empty record used as zustand selector sentinel — avoids
+ *  creating a new `{}` every render (which triggers infinite re-render
+ *  via useSyncExternalStore's snapshot comparison). */
+const NO_OVERRIDES: Record<string, number> = {};
+
 interface AnalogDeviceRowProps {
   device: import("shared").AnalogDevice;
   cellTypeId: string;
@@ -1565,7 +1572,7 @@ function AnalogDeviceRow({ device, cellTypeId, onOverride }: AnalogDeviceRowProp
   const color = DEVICE_COLORS[device.kind] ?? "#888";
   const g = device.geometry as Record<string, unknown>;
   const overrides = usePreferences((s) =>
-    (s as any).analogOverrides?.[cellTypeId]?.[device.id] ?? {}
+    (s as any).analogOverrides?.[cellTypeId]?.[device.id] ?? NO_OVERRIDES
   ) as Record<string, number>;
 
   const label = device.instanceName ?? device.id;
