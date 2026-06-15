@@ -1630,13 +1630,15 @@ function AnalogDeviceRow({ device, cellTypeId, onOverride }: AnalogDeviceRowProp
 
   return (
     <div
-      className="trow"
-      style={{ padding: "6px 12px", gap: 8, cursor: "default" }}
+      style={{
+        display: "flex", gap: 8, padding: "6px 12px", cursor: "default",
+        borderBottom: "1px solid var(--l2)",
+      }}
     >
       <span
         style={{
           width: 12, height: 12, borderRadius: "50%",
-          background: color, flex: "0 0 auto",
+          background: color, flex: "0 0 auto", marginTop: 2,
         }}
       />
       <div style={{ flex: 1, minWidth: 0 }}>
@@ -1647,7 +1649,7 @@ function AnalogDeviceRow({ device, cellTypeId, onOverride }: AnalogDeviceRowProp
           </span>
         </div>
         {paramStr && (
-          <div style={{ fontSize: 10, color: "var(--ink3)", marginTop: 1 }}>
+          <div style={{ fontSize: 10, color: "var(--ink3)", marginTop: 2, marginBottom: 2 }}>
             {paramStr}
           </div>
         )}
