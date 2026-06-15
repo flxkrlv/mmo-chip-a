@@ -13,7 +13,7 @@
 
 import type {
   AnalogDevice, CellLayers, DeviceGeometry,
-  DeviceKind, LayerShape,
+  DeviceGeometryMOS, DeviceKind, DeviceTerminal, LayerShape,
 } from "shared";
 import { polygonBounds } from "../geometry";
 import type { Rect } from "../geometry";
@@ -398,5 +398,177 @@ export function extractMarkedDevices(
       }
     }
   }
+  return devices;
+}
+
+/**
+ * Well-based MOS detection — alternative to device_box + drain/gate/source/bulk
+ * markers.  Infers PMOS/NMOS, bulk terminal, and geometry from:
+ *
+ *   1. nwell/pwell layers → determines transistor type (P/N) and bulk well
+ *   2. diffusion overlapping the well → body region
+ *   3. polysilicon crossing the diffusion → gate + S/D sub-regions
+ *   4. contacts on the well → bulk net (if no contact, bulk = VCC for nwell,
+ *      GND for pwell)
+ *   5. finger count = number of polys crossing one diffusion
+ *   6. multiplier = number of separate diffusions with same well + poly pattern
+ *
+ * Returns devices with D, G, S, B terminals (dummy net IDs — the die-wide
+ * pipeline resolves real nets later).
+ */
+export function detectMOSFromLayers(
+  layers: CellLayers | undefined,
+  cellTypeId: string,
+  umPerPx: number,
+): AnalogDevice[] {
+  if (!layers) return [];
+  const devices: AnalogDevice[] = [];
+  const allLayers = layers as Record<string, LayerShape[]>;
+
+  const nwells = allLayers["nwell"] ?? [];
+  const pwells = allLayers["pwell"] ?? [];
+  const diffusions = allLayers["diffusion"] ?? [];
+  const polys = allLayers["polysilicon"] ?? [];
+  const contacts = allLayers["contact"] ?? [];
+  const vias = allLayers["via1"] ?? [];
+  const metals1 = allLayers["metal1"] ?? [];
+
+  const WELLS: Array<{ shapes: LayerShape[]; type: "pmos" | "nmos"; wellLabel: string }> = [
+    { shapes: nwells, type: "pmos", wellLabel: "nwell" },
+    { shapes: pwells, type: "nmos", wellLabel: "pwell" },
+  ];
+
+  let counter = 0;
+
+  for (const { shapes: wellShapes, type: mosType, wellLabel } of WELLS) {
+    for (const well of wellShapes) {
+      const wellBox = shapeBbox(well);
+      if (!wellBox) continue;
+
+      // Find diffusions inside this well.
+      const bodyDiffs = diffusions.filter((d) => {
+        const db = shapeBbox(d);
+        return db && overlapArea(wellBox, db) > 0;
+      });
+
+      for (const body of bodyDiffs) {
+        const bodyBox = shapeBbox(body);
+        if (!bodyBox) continue;
+
+        // Find poly gates crossing this diffusion.
+        const gates = polys.filter((p) => {
+          const pb = shapeBbox(p);
+          return pb && overlapArea(bodyBox, pb) > 0;
+        });
+        if (gates.length === 0) continue;
+
+        const fingers = gates.length;
+        const bw = bodyBox.width * umPerPx;
+        const bh = bodyBox.height * umPerPx;
+        const W_um = Math.max(bw, bh);
+        const L_um = Math.min(bw, bh) / fingers; // shared diffusion, each gate shorter
+
+        counter++;
+        const devId = `mos_well_${wellLabel}_${counter}`;
+
+        // ── Bulk net from well contact ────────────────────────
+        // Check if any well shape overlaps a contact → follow to metal1.
+        let bulkNetId = -1;
+        const wellContact = contacts.find((c) => {
+          const cb = shapeBbox(c);
+          return cb && overlapArea(wellBox, cb) > 0;
+        });
+        if (wellContact) {
+          const wcBox = shapeBbox(wellContact);
+          // Check if well contact connects to metal1 (bulk net).
+          const metalOverlap = metals1.find((m) => {
+            const mb = shapeBbox(m);
+            return mb && wcBox && overlapArea(mb, wcBox) > 0;
+          });
+          bulkNetId = metalOverlap ? nextNet() : -1;
+          // Also check via1 (if contact → via → metal1)
+          if (bulkNetId < 0) {
+            const viaOverlap = vias.find((v) => {
+              const vb = shapeBbox(v);
+              return vb && wcBox && overlapArea(vb, wcBox) > 0;
+            });
+            if (viaOverlap) {
+              const vmOverlap = metals1.find((m) => {
+                const mb = shapeBbox(m);
+                const vb = viaOverlap ? shapeBbox(viaOverlap) : null;
+                return mb && vb && overlapArea(mb, vb) > 0;
+              });
+              if (vmOverlap) bulkNetId = nextNet();
+            }
+          }
+        }
+        // No well contact → default to VCC (nwell) or GND (pwell)
+        if (bulkNetId < 0) {
+          bulkNetId = -2; // sentinel: resolves to VCC/GND in wire matching
+        }
+
+        // ── S/D terminals ─────────────────────────────────────
+        // We can't precisely split diffusion sub-regions here (that needs
+        // Clipper2 in cell.ts). Instead use two dummy nets from contacts
+        // on the diffusion — the die-wide wire matching will resolve them.
+        const diffContacts = contacts.filter((c) => {
+          const cb = shapeBbox(c);
+          return cb && overlapArea(bodyBox, cb) > 0;
+        });
+        const sNet = diffContacts.length > 0 ? nextNet() : -1;
+        const dNet = diffContacts.length > 1 ? nextNet() : -1;
+        const gNet = nextNet();
+
+        const terminals: DeviceTerminal[] = [
+          { name: "D", netId: dNet },
+          { name: "G", netId: gNet },
+          { name: "S", netId: sNet },
+          { name: "B", netId: bulkNetId },
+        ];
+
+        const geometry: DeviceGeometryMOS = {
+          L_um,
+          W_um,
+          fingers,
+          multiplier: 1, // updated below
+          totalW_um: W_um * fingers,
+          mosType,
+        };
+
+        devices.push({
+          id: devId,
+          kind: "mos",
+          geometry,
+          cellTypeId,
+          instanceName: `M_${counter}`,
+          modelName: mosType === "pmos" ? "PMOS" : "NMOS",
+          terminals,
+          bbox: bodyBox,
+        });
+      }
+    }
+  }
+
+  // ── Multiplier detection ────────────────────────────────────
+  // Group devices by well type + approximate W/L. Devices in the same
+  // well region with matching geometry get multiplier > 1.
+  const groups = new Map<string, AnalogDevice[]>();
+  for (const d of devices) {
+    const g = d.geometry as DeviceGeometryMOS;
+    const key = `${g.mosType}_W${Math.round(g.W_um)}_L${g.L_um.toFixed(2)}`;
+    const list = groups.get(key) ?? [];
+    list.push(d);
+    groups.set(key, list);
+  }
+  for (const [, list] of groups) {
+    if (list.length > 1) {
+      for (let i = 0; i < list.length; i++) {
+        const g = list[i].geometry as DeviceGeometryMOS;
+        g.multiplier = list.length;
+        g.totalW_um = g.W_um * g.fingers * g.multiplier;
+      }
+    }
+  }
+
   return devices;
 }

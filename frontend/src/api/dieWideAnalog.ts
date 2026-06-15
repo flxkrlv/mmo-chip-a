@@ -10,7 +10,7 @@ import type {
   AnalogDevice, AnnotationNet, Cell, CellType,
   DeviceKind, DieAnnotations, IOPin, LayerShape, SpiceConfig,
 } from "shared";
-import { extractMarkedDevices } from "../lib/extraction/simpleAnalog";
+import { extractMarkedDevices, detectMOSFromLayers } from "../lib/extraction/simpleAnalog";
 import { generateSpiceNetlist } from "../lib/export/spice";
 
 // ── Geometry helpers ─────────────────────────────────────────────
@@ -129,7 +129,9 @@ function terminalLayersOf(kind: DeviceKind, name: string): string[] {
     case "bjt_npn": case "bjt_pnp":
       return {C:["collector"], B:["base","bulk"], E:["emitter"]}[name]??[];
     case "mos":
-      return {D:["drain"], G:["gate"], S:["source"], B:["bulk"]}[name]??[];
+      // Bulk layer: check "bulk" marker layer first, then nwell/pwell
+      // (user draws well + contact → bulk connection resolved here).
+      return {D:["drain"], G:["gate"], S:["source"], B:["bulk","nwell","pwell"]}[name]??[];
     default:
       return ["contact"];
   }
@@ -140,7 +142,18 @@ function terminalLayersOf(kind: DeviceKind, name: string): string[] {
 export function extractAnalogDevicesFromCellType(
   cellType: CellType, umPerPx: number,
 ): AnalogDevice[] {
-  return extractMarkedDevices(cellType.layers, cellType.id, umPerPx);
+  const marker = extractMarkedDevices(cellType.layers, cellType.id, umPerPx);
+  const well = detectMOSFromLayers(cellType.layers, cellType.id, umPerPx);
+  // Merge: well-based MOS + marker-based devices (dedup by removing
+  // duplicate mos devices — keep well-detected ones over markers)
+  const markedMosIds = new Set(
+    marker.filter((d) => d.kind === "mos").map((d) => d.id),
+  );
+  const merged = [
+    ...well,
+    ...marker.filter((d) => !(d.kind === "mos" && markedMosIds.has(d.id))),
+  ];
+  return merged;
 }
 
 export interface DieWideAnalogResult {
@@ -182,8 +195,9 @@ export function collectDieWideAnalogDevices(
     if (instanceList.length===0) continue;
 
     let ctDevices: AnalogDevice[];
-    try { ctDevices = extractMarkedDevices(ct.layers, ct.id, umPerPx); }
-    catch(e) { console.warn(`extractMarkedDevices("${ct.name}") failed:`,e); continue; }
+    try {
+      ctDevices = extractAnalogDevicesFromCellType(ct, umPerPx);
+    } catch(e) { console.warn(`extractAnalogDevicesFromCellType("${ct.name}") failed:`,e); continue; }
     if (ctDevices.length===0) continue;
 
     for (let inst=0; inst<instanceList.length; inst++) {
