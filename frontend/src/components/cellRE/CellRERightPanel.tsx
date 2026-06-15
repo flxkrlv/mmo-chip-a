@@ -1640,12 +1640,17 @@ function AnalogDeviceRow({ device, cellTypeId, onOverride }: AnalogDeviceRowProp
         }}
       />
       <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ display: "flex", gap: 8, alignItems: "baseline" }}>
+        <div style={{ display: "flex", gap: 6, alignItems: "baseline" }}>
           <span style={{ fontSize: 12, fontWeight: 600 }}>{label}</span>
           <span className="m" style={{ fontSize: 10, color: "var(--ink3)" }}>
-            {subtitle} {paramStr}
+            {subtitle}
           </span>
         </div>
+        {paramStr && (
+          <div style={{ fontSize: 10, color: "var(--ink3)", marginTop: 1 }}>
+            {paramStr}
+          </div>
+        )}
         {/* Always-visible override inputs */}
         {editableParams.length > 0 && (
           <div
