@@ -349,7 +349,7 @@ export function collectDieWideAnalogDevices(
         }
 
         // ── Wire matching by contact proximity (10px) ────
-        let matchedTerms = dev.terminals.map((t,ti)=>{
+        const matchedTerms = dev.terminals.map((t,ti)=>{
           if (t.netId<0) {
             const fresh = 2000 + allDevices.length*10 + ti;
             return {...t, netId: fresh};
@@ -366,32 +366,12 @@ export function collectDieWideAnalogDevices(
           return {...t, netId: fresh};
         });
 
-        // ── MOS S/D assignment relative to B (bulk) ────────
-        // If one of the S/D pads shares a net with B, that pad is Source
-        // (typical for analog MOS where bulk is tied to source).
+        // ── MOS: relabel D/S termPoints to "S/D" (symmetric) ─
+        // MOSFET is electrically symmetric; the overlay shows both as "S/D"
+        // to avoid implying a distinction that isn't geometrically resolved.
         if (dev.kind === "mos") {
-          const dIdx = matchedTerms.findIndex((t) => t.name === "D");
-          const sIdx = matchedTerms.findIndex((t) => t.name === "S");
-          const bIdx = matchedTerms.findIndex((t) => t.name === "B");
-          if (dIdx >= 0 && sIdx >= 0 && bIdx >= 0) {
-            const dNet = matchedTerms[dIdx].netId;
-            const sNet = matchedTerms[sIdx].netId;
-            const bNet = matchedTerms[bIdx].netId;
-            if (dNet === bNet && sNet !== bNet) {
-              // D is connected to bulk → swap so S = bulk
-              const tmp = matchedTerms[dIdx];
-              matchedTerms[dIdx] = matchedTerms[sIdx];
-              matchedTerms[sIdx] = tmp;
-              // Also swap termPoints labels so overlay shows correct names
-              for (const pt of termPoints) {
-                if (pt.name === "D") pt.name = "S_tmp";
-                else if (pt.name === "S") pt.name = "D";
-              }
-              for (const pt of termPoints) {
-                if (pt.name === "S_tmp") pt.name = "S";
-              }
-            }
-            // If S already = B, leave as-is
+          for (const pt of termPoints) {
+            if (pt.name === "D" || pt.name === "S") pt.name = "S/D";
           }
         }
 
