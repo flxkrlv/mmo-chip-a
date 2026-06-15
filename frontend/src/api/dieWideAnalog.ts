@@ -249,7 +249,17 @@ export function collectDieWideAnalogDevices(
                     }
                     contactIdx++;
                   }
-                  termPoints.push({x:cx+cc.x, y:cy+cc.y, name:t.name});
+                  // Dedup: if another terminal already claimed this exact
+                  // position (e.g. B terminal on nwell overlapping same
+                  // contact as D/G/S on diffusion/poly), skip.
+                  const wx = Math.round(cx + cc.x);
+                  const wy = Math.round(cy + cc.y);
+                  const alreadyClaimed = termPoints.some(
+                    (p) => Math.round(p.x) === wx && Math.round(p.y) === wy
+                  );
+                  if (!alreadyClaimed) {
+                    termPoints.push({x:cx+cc.x, y:cy+cc.y, name:t.name});
+                  }
                 }
               }
             }
