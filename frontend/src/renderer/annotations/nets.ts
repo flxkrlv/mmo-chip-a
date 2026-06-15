@@ -32,7 +32,12 @@ export function buildNetAnnotation(
    *  half the stroke), so a net renders as the uniform-width trace the export
    *  rasterises. Default false → zoom-stable on-screen width + larger edit
    *  handles. */
-  getMatchWidth: () => boolean = () => false
+  getMatchWidth: () => boolean = () => false,
+  /** Optional: per-net colour override that should win over layer-based
+   *  colouring. When non-null for a netId, ALL edges of that net render in
+   *  this colour (ignoring WIRE_LAYER_COLOR) — this makes an overridden net
+   *  visually cohesive across all metal layers. */
+  getNetOverrideColor?: (netId: string) => string | null,
 ): Annotation {
   // Compute bbox from all nodes.
   let minX = Infinity,
@@ -76,13 +81,16 @@ export function buildNetAnnotation(
       ctx.lineCap = "round";
       ctx.lineJoin = "round";
 
-      // Unselected edges: one batched path per layer color (unknown layer →
-      // the configurable base color). Selected edges then drawn on top in the
-      // amber accent, thicker, so the selection stands out regardless of layer.
+      // Unselected edges: one batched path per colour. When a per-net colour
+      // override is active for this net, ALL edges use it (overriding the
+      // layer-based colours) so the net reads as one cohesive trace across
+      // metal layers. Otherwise use the per-layer colour, falling back to the
+      // configurable base colour for edges without a known layer.
+      const netOverrideColor = getNetOverrideColor?.(netId);
       const byColor = new Map<string, AnnotationNet["edges"]>();
       for (const e of net.edges) {
         if (edgeSel(e)) continue;
-        const col = e.layer ? WIRE_LAYER_COLOR[e.layer] : baseColor;
+        const col = netOverrideColor ?? (e.layer ? WIRE_LAYER_COLOR[e.layer] : baseColor);
         const list = byColor.get(col);
         if (list) list.push(e);
         else byColor.set(col, [e]);

@@ -410,6 +410,10 @@ function DieViewer({ dieId }: { dieId: string }) {
         const prefs = usePreferences.getState();
         return prefs.netColors[netId] ?? prefs.netColor;
       },
+      netOverrideColor: (netId: string) => {
+        const prefs = usePreferences.getState();
+        return prefs.netColors[netId] ?? null;
+      },
       cellColor: () => usePreferences.getState().cellColor,
       cellShowShapes: () => usePreferences.getState().cellShowShapes,
       pointViaWorldRadius: () => {

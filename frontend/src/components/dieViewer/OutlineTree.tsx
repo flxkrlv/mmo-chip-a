@@ -214,7 +214,6 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
             <TreeRow
               key={id}
               depth={1}
-              swatch={netColor}
               label={net.name || net.id}
               meta={`${net.edges.length} edges`}
               controls={
@@ -629,13 +628,29 @@ const NET_OVERRIDE_COLORS = [
   "#66ffaa",               // mint
 ];
 
+/** Tiny color swatch used as the popover trigger for per-net color
+ *  override — replaces the generic sliders icon so the coloured square
+ *  itself is clickable. */
+const SWATCH_TRIGGER = (color: string) => (
+  <span
+    style={{
+      width: 8, height: 8,
+      background: color,
+      border: "1px solid rgba(0,0,0,0.15)",
+      borderRadius: 1,
+      flex: "0 0 auto",
+      display: "block",
+    }}
+  />
+);
+
 function NetColorSettings({ netId, currentColor, onPick }: {
   netId: string;
   currentColor: string;
   onPick: (color: string | null) => void;
 }) {
   return (
-    <SettingsPopover label="Net color">
+    <SettingsPopover label="Net color" triggerContent={SWATCH_TRIGGER(currentColor)}>
       <div className="u" style={{ marginBottom: 6, fontSize: 10 }}>
         Override color
       </div>

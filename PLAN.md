@@ -25,9 +25,13 @@
 ### 1. RE Cell стабильность (баги пофикшены)
 - `activeCellTypeId is not defined` в `CellRERightPanel` — пофикшено (15.06)
 - Бесконечный цикл рендера в `AnalogDeviceRow` через zustand selector — пофикшено (15.06)
+- Цветной квадратик выбора цвета нета теперь кликабельный (popover на квадрате вместо иконки слайдеров) — пофикшено (15.06)
+- Per-net color override теперь работает для всех сегментов нета, а не только для безслойных (unk) — пофикшено (15.06)
 
-### 2. SPICE — quality pass (блокировано)
-Ждёт эталонный netlist от пользователя. Подогнать `spice.ts` под реальный формат.
+### 2. ~~SPICE — quality pass (блокировано)~~ ✅ **Готово**
+- Получены эталонные Spectre нетлисты (OPA547 BJT, FD6288 MOS)
+- `spice.ts` приведён к реальному формату: MOS w/l/m, BJT m (нормализация AE/PE),
+  резисторы r=VALUE, Spectre type-keywords, model cards опциональны
 
 ### 3. MOS analog transistors (блокировано)  
 Ждёт die с реальными аналоговыми MOS. Допилить fingers/multiplier/bulk.

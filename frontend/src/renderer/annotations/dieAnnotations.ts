@@ -69,6 +69,11 @@ export interface PopulateOptions {
    *  id like "net:abc"). Called at draw time so color changes don't require
    *  repopulating. Default: always returns NET_COLOR. */
   netColor?: (netId: string) => string;
+  /** Live getter for per-net colour overrides. When non-null for a netId,
+   *  ALL edges of that net render in that colour, ignoring per-layer wire
+   *  colours (WIRE_LAYER_COLOR). Null/undefined → use layer-based colours.
+   *  Default: always returns null. */
+  netOverrideColor?: (netId: string) => string | null;
   /** Live getter for the cell outline/fill color. Called at draw time so
    *  color changes don't require repopulating. */
   cellColor?: () => string;
@@ -111,10 +116,15 @@ export function populateAnnotationLayer(
     layer.add(buildCellAnnotation(cell, ct, getCellColor, getCellShowShapes));
   }
 
+  const getNetOverrideColor = options.netOverrideColor ?? ((_: string) => null);
+
   for (const net of annotations.nets) {
     if (net.nodes.length === 0 && net.edges.length === 0) continue;
     layer.add(
-      buildNetAnnotation(net, getNetWidth, getNetColor, getNetNodeMatchesWidth)
+      buildNetAnnotation(
+        net, getNetWidth, getNetColor, getNetNodeMatchesWidth,
+        getNetOverrideColor
+      )
     );
   }
 

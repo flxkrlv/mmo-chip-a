@@ -1,18 +1,16 @@
 /**
- * spice.ts — SPICE/CDL/Spectre netlist generation for analog circuits.
+ * spice.ts — SPICE/Spectre netlist generation for analog circuits.
  *
- * Converts extracted AnalogDevice[] → text netlist in three dialects:
- *   - CDL     (Cadence Design Language) — standard for Cadence CI/CV
- *   - Spectre — modern Cadence/Mentor format
- *   - HSPICE  — Synopsys HSPICE format
+ * Targets Cadence Spectre syntax based on real extracted netlists
+ * (OPA547 bjt_sample, FD6288 mos_sample). Key conventions:
  *
- * Architecture:
- *   1. `buildSpiceModel` — sort devices, assign instance names, resolve nets
- *   2. `generateCDL`     — emit .SUBCKT/.ENDS, M/Q/R/C cards
- *   3. `generateSpectre` — emit subckt/ends, device instances
- *   4. `generateHSPICE`  — emit .SUBCKT, device lines
- *
- * Each dialect emits the same electrical content with different syntax.
+ *   — MOSFET:  M<name> (D G S B) <model> w=…u l=…u m=…  (no AS/AD/PS/PD)
+ *   — BJT:     Q<name> (C B E [SUB]) npn/pnp m=…         (m normalised
+ *               to the smallest AE for NPN, smallest PE for PNP in the set)
+ *   — Resistor: R<name> (N+ N–) resistor r=<Ω>           (no W/L/type)
+ *   — Capacitor:C<name> (N+ N–) capacitor c=<fF>f
+ *   — Zener:    D<name> (N+ N–) zener
+ *   — Diode:    D<name> (N+ N–) diode
  */
 
 import type {
@@ -112,38 +110,21 @@ function fmtL(geom: DeviceGeometryMOS): string {
   return `L=${fmtValue(geom.L_um, "u")}`;
 }
 function fmtM(geom: { multiplier?: number }): string {
-  return geom.multiplier && geom.multiplier > 1 ? `M=${geom.multiplier}` : "";
+  return geom.multiplier && geom.multiplier > 1 ? `m=${geom.multiplier}` : "";
 }
-function fmtNF(geom: { fingers?: number }): string {
-  return geom.fingers && geom.fingers > 1 ? `NF=${geom.fingers}` : "";
-}
-function fmtArea(geom: DeviceGeometryBJT | DeviceGeometryDiode): string {
-  const area = "area_um2" in geom ? (geom as DeviceGeometryBJT).totalAE_um2
-    : (geom as DeviceGeometryDiode).area_um2;
-  return area > 0 ? `AREA=${area.toFixed(4)}E-12` : "";
-}
-function fmtPerim(geom: DeviceGeometryBJT | DeviceGeometryDiode): string {
-  const perim = "PE_um" in geom ? (geom as DeviceGeometryBJT).PE_um
-    : (geom as DeviceGeometryDiode).perimeter_um;
-  return perim > 0 ? `PJ=${perim.toFixed(3)}E-6` : "";
-}
+/** Resistor: r=<Ω> — just the resistance, no geometry. */
 function fmtRes(geom: DeviceGeometryResistor, config: SpiceConfig): string {
-  const parts: string[] = [];
-  if (geom.squares > 0) parts.push(`SQUARES=${geom.squares.toFixed(1)}`);
-  // Include sheetR if a custom value or a known type provides it
-  const sr = effectiveSheetR(geom.resistorType as ResistorType, config.sheetR_ohms);
-  if (sr > 0 && !geom.sheetR_ohms) parts.push(`R=${(sr * geom.squares).toFixed(0)}`);
-  if (geom.W_um > 0) parts.push(`W=${geom.W_um.toFixed(1)}u`);
-  if (geom.L_um > 0) parts.push(`L=${geom.L_um.toFixed(1)}u`);
-  if (geom.resistorType && geom.resistorType !== "poly") parts.push(`TYPE=${geom.resistorType}`);
-  return parts.join(" ");
+  const rType = (geom.resistorType ?? "poly") as ResistorType;
+  const sr = effectiveSheetR(rType, config.sheetR_ohms);
+  const rOhms = Math.round(geom.squares * sr);
+  return `r=${rOhms}`;
 }
+/** Capacitor: c=<value> — in femtofarads if known. */
 function fmtCap(geom: DeviceGeometryCapacitor): string {
   if (geom.capacitance_fF != null && geom.capacitance_fF > 0) {
-    return `C=${geom.capacitance_fF.toFixed(3)}f`;
+    return `c=${geom.capacitance_fF.toFixed(3)}f`;
   }
-  return `W=${fmtValue(Math.sqrt(geom.area_um2), "u")} ` +
-    `L=${fmtValue(Math.sqrt(geom.area_um2), "u")}`;
+  return `c=${geom.area_um2.toFixed(1)}`; // flat-area fallback
 }
 
 // ═════════════════════════════════════════════════════════════════
@@ -304,9 +285,25 @@ function deviceLine(
       }
       return `${indent}${instName} ${termStr} ${modelName} ${params}`;
 
-    case "spectre":
-      // Spectre format: M1 (D G S B) model w=10u l=0.35u m=1
+    case "spectre": {
+      // Spectre format: uses type keywords for passives & BJTs
+      if (d.kind === "resistor")
+        return `${indent}${instName} (${termStr}) resistor ${params}`;
+      if (d.kind === "capacitor")
+        return `${indent}${instName} (${termStr}) capacitor ${params}`;
+      if (d.kind === "inductor")
+        return `${indent}${instName} (${termStr}) inductor ${params}`;
+      if (d.kind === "bjt_npn")
+        return `${indent}${instName} (${termStr}) npn ${params}`;
+      if (d.kind === "bjt_pnp")
+        return `${indent}${instName} (${termStr}) pnp ${params}`;
+      if (d.kind === "zener")
+        return `${indent}${instName} (${termStr}) zener ${params}`;
+      if (d.kind === "schottky" || d.kind === "diode")
+        return `${indent}${instName} (${termStr}) diode ${params}`;
+      // MOS, JFET → use model name
       return `${indent}${instName} (${termStr}) ${modelName} ${params}`;
+    }
 
     case "hspice":
       // HSPICE format: M1 D G S B model W=10u L=0.35u M=1
@@ -322,16 +319,15 @@ function paramString(d: AnalogDevice, dialect: "cdl" | "spectre" | "hspice", con
   switch (d.kind) {
     case "mos": {
       const mg = g as DeviceGeometryMOS;
-      return [fmtW(mg), fmtL(mg), fmtM(mg), fmtNF(mg)]
+      return [fmtW(mg), fmtL(mg), fmtM(mg)]
         .filter((s) => s)
         .join(" ");
     }
     case "bjt_npn":
     case "bjt_pnp": {
       const bg = g as DeviceGeometryBJT;
-      const area = (bg as any).AE_um2 > 0 ? (dialect === "cdl" ? `AREA=${((bg as any).AE_um2 * 1e-12).toExponential(2)}` : `area=${((bg as any).AE_um2 * 1e-12).toExponential(2)}`) : "";
-      const m = bg.multiplier > 1 ? (dialect === "cdl" ? `M=${bg.multiplier}` : `m=${bg.multiplier}`) : "";
-      return [area, m].filter((s) => s).join(" ");
+      const m = bg.multiplier > 1 ? `m=${bg.multiplier}` : "";
+      return m;
     }
     case "jfet_n":
     case "jfet_p": {
@@ -346,12 +342,8 @@ function paramString(d: AnalogDevice, dialect: "cdl" | "spectre" | "hspice", con
       return fmtCap(g as DeviceGeometryCapacitor);
     case "diode":
     case "zener":
-    case "schottky": {
-      const dg = g as DeviceGeometryDiode;
-      return [fmtArea(dg), fmtPerim(dg), fmtM({ multiplier: dg.multiplier })]
-        .filter((s) => s)
-        .join(" ");
-    }
+    case "schottky":
+      return "";
     default:
       return "";
   }
@@ -399,6 +391,46 @@ export interface SpiceNetlist {
 }
 
 /**
+ * Normalise BJT multipliers against the smallest device found in the set.
+ *
+ * For NPNs the reference is the minimum AE (<AE_um2>); for PNPs the minimum
+ * PE (<PE_um>).  Every BJT gets `multiplier = round(its_value / min_value)`
+ * so that a unit-size device has m=1 and larger devices scale up linearly.
+ *
+ * The normalised multiplier is written into each device geometry; the raw
+ * area/perimeter values are kept in the original fields for reference.
+ */
+function normalizeBJTM(devices: AnalogDevice[]): AnalogDevice[] {
+  let minNpnAE = Infinity;
+  let minPnpPE = Infinity;
+
+  for (const d of devices) {
+    if (d.kind === "bjt_npn") {
+      const bg = d.geometry as DeviceGeometryBJT;
+      if (bg.AE_um2 > 0 && bg.AE_um2 < minNpnAE) minNpnAE = bg.AE_um2;
+    }
+    if (d.kind === "bjt_pnp") {
+      const bg = d.geometry as DeviceGeometryBJT;
+      if (bg.PE_um > 0 && bg.PE_um < minPnpPE) minPnpPE = bg.PE_um;
+    }
+  }
+
+  return devices.map((d) => {
+    if (d.kind === "bjt_npn" && minNpnAE > 0 && isFinite(minNpnAE)) {
+      const bg = { ...d.geometry } as DeviceGeometryBJT;
+      const m = Math.max(1, Math.round(bg.AE_um2 / minNpnAE));
+      return { ...d, geometry: { ...bg, multiplier: m } };
+    }
+    if (d.kind === "bjt_pnp" && minPnpPE > 0 && isFinite(minPnpPE)) {
+      const bg = { ...d.geometry } as DeviceGeometryBJT;
+      const m = Math.max(1, Math.round(bg.PE_um / minPnpPE));
+      return { ...d, geometry: { ...bg, multiplier: m } };
+    }
+    return d;
+  });
+}
+
+/**
  * Generate a SPICE netlist from extracted analog devices.
  *
  * @param devices   — extracted analog devices (before instance naming)
@@ -415,7 +447,10 @@ export function generateSpiceNetlist(
   dialect: SpiceDialect = "cdl",
   netLookup?: Map<number, string>,
 ): SpiceNetlist {
-  const named = assignInstanceNames(devices);
+  // BJT multiplier normalisation (must happen before instance naming so
+  // the unit-size BJT becomes the reference — its m=1, larger ones scale)
+  const normalised = normalizeBJTM(devices);
+  const named = assignInstanceNames(normalised);
   const nl = buildNetNameMap(named, netLookup ?? new Map());
   const vdd = config.vdd ?? "VDD";
   const gnd = config.gnd ?? "GND";
@@ -480,6 +515,9 @@ function generateCDL(
   lines.push(`* SPICE netlist generated by mmo-chip analog export`);
   lines.push(`* Source: ${moduleName}`);
   lines.push(`* Date: ${new Date().toISOString().split("T")[0]}`);
+  if (config.sheetR_ohms && Object.keys(config.sheetR_ohms).length > 0) {
+    lines.push(`* Exported with SheetR: ${JSON.stringify(config.sheetR_ohms)}`);
+  }
   lines.push(`.GLOBAL ${vdd} ${gnd}`);
   lines.push("");
 
@@ -506,11 +544,12 @@ function generateCDL(
     lines.push(deviceLine(d, netLookup, vdd, gnd, "cdl", indent, config));
   }
 
-  // Model cards
-  if (config.models || devices.length > 0) {
+  // Model cards — optional; user provides models via .scs in Cadence
+  if (config.models && Object.keys(config.models).length > 0) {
     lines.push("");
-    const modelCards = buildModelCards(devices, config);
-    for (const mc of modelCards) lines.push(mc);
+    for (const [name, def] of Object.entries(config.models)) {
+      lines.push(def);
+    }
   }
 
   // Footer
@@ -538,6 +577,10 @@ function generateSpectre(
   // Header
   lines.push(`// Spectre netlist generated by mmo-chip analog export`);
   lines.push(`// Source: ${moduleName}`);
+  lines.push(`// Date: ${new Date().toISOString().split("T")[0]}`);
+  if (config.sheetR_ohms && Object.keys(config.sheetR_ohms).length > 0) {
+    lines.push(`// Exported with SheetR: ${JSON.stringify(config.sheetR_ohms)}`);
+  }
   lines.push("");
 
   // Ports (same collection as CDL)
@@ -561,18 +604,10 @@ function generateSpectre(
     lines.push(deviceLine(d, netLookup, vdd, gnd, "spectre", indent, config));
   }
 
-  // Model cards (Spectre: model name type params=...)
-  const seen = new Set<string>();
-  for (const d of devices) {
-    const modelName = d.modelName ?? guessModelName(d);
-    if (seen.has(modelName)) continue;
-    seen.add(modelName);
-    if (config.models?.[modelName]) {
-      lines.push(`${indent}${config.models[modelName]}`);
-    } else {
-      // Generate Spectre-format model
-      const genModel = makeGenericModelSpectre(d, modelName);
-      if (genModel) lines.push(genModel);
+  // Model cards — skipped by default; user provides .scs in Cadence
+  if (config.models && Object.keys(config.models).length > 0) {
+    for (const [name, def] of Object.entries(config.models)) {
+      lines.push(`${indent}${def}`);
     }
   }
 
@@ -650,11 +685,12 @@ function generateHSPICE(
     lines.push(deviceLine(d, netLookup, vdd, gnd, "hspice", "", config));
   }
 
-  // Models
-  if (config.models || devices.length > 0) {
+  // Models — optional
+  if (config.models && Object.keys(config.models).length > 0) {
     lines.push("");
-    const modelCards = buildModelCards(devices, config);
-    for (const mc of modelCards) lines.push(mc);
+    for (const [name, def] of Object.entries(config.models)) {
+      lines.push(def);
+    }
   }
 
   lines.push(`.ENDS ${sanitizeSpiceName(moduleName)}`);

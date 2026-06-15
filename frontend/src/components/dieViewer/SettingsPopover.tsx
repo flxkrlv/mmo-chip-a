@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { Ic } from "../../icons";
 
@@ -9,10 +9,14 @@ import { Ic } from "../../icons";
  */
 export function SettingsPopover({
   label,
-  children
+  children,
+  triggerContent
 }: {
   label: string;
   children: React.ReactNode;
+  /** Replace the default sliders icon with custom content
+   *  (e.g. a colored swatch that acts as the trigger). */
+  triggerContent?: ReactNode;
 }) {
   const [open, setOpen] = useState(false);
   const triggerRef = useRef<HTMLButtonElement>(null);
@@ -66,7 +70,7 @@ export function SettingsPopover({
           setOpen((o) => !o);
         }}
       >
-        {Ic.sliders}
+        {triggerContent ?? Ic.sliders}
       </button>
       {open &&
         createPortal(
