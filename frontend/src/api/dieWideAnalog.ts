@@ -129,9 +129,11 @@ function terminalLayersOf(kind: DeviceKind, name: string): string[] {
     case "bjt_npn": case "bjt_pnp":
       return {C:["collector"], B:["base","bulk"], E:["emitter"]}[name]??[];
     case "mos":
-      // Bulk layer: check "bulk" marker layer first, then nwell/pwell
-      // (user draws well + contact → bulk connection resolved here).
-      return {D:["drain"], G:["gate"], S:["source"], B:["bulk","nwell","pwell"]}[name]??[];
+      // Use REAL layout layers instead of marker layers:
+      //   D/S → diffusion contacts (round-robin distributed)
+      //   G   → polysilicon contacts
+      //   B   → well contacts (nwell/pmos, pwell/nmos)
+      return {D:["diffusion"], G:["polysilicon"], S:["diffusion"], B:["bulk","nwell","pwell"]}[name]??[];
     default:
       return ["contact"];
   }
@@ -215,24 +217,44 @@ export function collectDieWideAnalogDevices(
         // ── Contact labels ─────────────────────────────────
         const termPoints: Array<{x:number;y:number;name:string}> = [];
         const allContacts = (ct.layers?.contact??[]) as LayerShape[];
-        for (const t of dev.terminals) {
+        // Map each layer to which terminal indices use it (for shared-layer
+        // round-robin distribution, e.g. MOS D+S both on "diffusion").
+        const layerToTerminals = new Map<string, number[]>();
+        for (let ti=0; ti<dev.terminals.length; ti++) {
+          const layers = terminalLayersOf(dev.kind, dev.terminals[ti].name);
+          for (const ln of layers) {
+            const list = layerToTerminals.get(ln) ?? [];
+            if (!list.includes(ti)) list.push(ti);
+            layerToTerminals.set(ln, list);
+          }
+        }
+        for (let ti=0; ti<dev.terminals.length; ti++) {
+          const t = dev.terminals[ti];
           for (const ln of terminalLayersOf(dev.kind, t.name)) {
             const shps = ct.layers?.[ln as keyof typeof ct.layers] as LayerShape[]|undefined;
             if (!shps) continue;
+            const sharing = layerToTerminals.get(ln) ?? [ti];
+            let contactIdx = 0;
             for (const ts of shps) {
               const tb = shapeBounds(ts); if (!tb) continue;
               for (const cs of allContacts) {
                 const cb = shapeBounds(cs); if (!cb) continue;
                 if (rectsOverlap(tb.x,tb.y,tb.x+tb.width,tb.y+tb.height, cb.x,cb.y,cb.x+cb.width,cb.y+cb.height)) {
                   const cc = centerOfShape(cs as any);
-                  if (cc) termPoints.push({x:cx+cc.x, y:cy+cc.y, name:t.name});
+                  if (!cc) continue;
+                  if (sharing.length > 1) {
+                    if (sharing[contactIdx % sharing.length] !== ti) {
+                      contactIdx++;
+                      continue;
+                    }
+                    contactIdx++;
+                  }
+                  termPoints.push({x:cx+cc.x, y:cy+cc.y, name:t.name});
                 }
               }
             }
           }
-        }
-
-        // ── Wire matching by contact proximity ──────────
+        } // ── Wire matching by contact proximity ──────────
         // For each terminal, find unique contact centers. For simple
         // 2-terminal devices (resistor, capacitor, diode) where both
         // terminals use the same layer ("contact"), include all contacts
@@ -280,19 +302,38 @@ export function collectDieWideAnalogDevices(
               termContacts[ti].push({x:cx+cp.x, y:cy+cp.y});
             }
           } else {
-            // BJT/MOS: distinct layers per terminal. Contacts shared between
-            // terminals (e.g. base+emitter) are a single physical contact;
-            // assign it to the LAST terminal in the check order (E for BJT,
-            // B for MOS) to avoid shorts. Terminal check order: C→B→E for
-            // BJT, D→G→S→B for MOS.
-            // Find the highest-index terminal that overlaps this contact.
+            // BJT/MOS: distinct layers per terminal. Terminals that share
+            // the EXACT same layer set (e.g. MOS D+S both "diffusion") get
+            // round-robin distribution so both S/D get contacts.
+            // Terminals with unique layers get their contacts directly.
+            //
+            // First, collect contacts per unique layer signature.
+            const bySig = new Map<string, Array<{cid:string;cp:{x:number;y:number}}>>();
             for (const [cid, tis] of cTis) {
+              // Layer signature of this contact = sorted terminal names.
+              const sig = [...tis].sort().map((ti) => dev.terminals[ti].name).join(",");
               const cp = cPos.get(cid); if (!cp) continue;
-              // Assign to the last overlapping terminal (highest ti).
-              // For BJT: C=0, B=1, E=2 → shared C/B/E → only E gets it.
-              // For MOS: D=0, G=1, S=2, B=3 → shared → only B gets it.
-              const ti = Math.max(...tis);
-              termContacts[ti].push({x:cx+cp.x, y:cy+cp.y});
+              const list = bySig.get(sig) ?? [];
+              list.push({cid, cp});
+              bySig.set(sig, list);
+            }
+            for (const [sig, contacts] of bySig) {
+              const termIndices = sig.split(",").map((n) =>
+                dev.terminals.findIndex((t) => t.name === n)
+              ).filter((i) => i >= 0);
+              if (termIndices.length <= 1) {
+                // Unique layer → assign all contacts to that terminal.
+                for (const {cp} of contacts)
+                  termContacts[termIndices[0]].push({x:cx+cp.x, y:cy+cp.y});
+              } else {
+                // Shared layer (D+S for MOS, C+B+E for BJT overlapping
+                // same contact) → distribute round-robin.
+                for (let ci = 0; ci < contacts.length; ci++) {
+                  const ti = termIndices[ci % termIndices.length];
+                  const cp = contacts[ci].cp;
+                  termContacts[ti].push({x:cx+cp.x, y:cy+cp.y});
+                }
+              }
             }
           }
         }

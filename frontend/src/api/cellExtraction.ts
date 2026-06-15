@@ -21,7 +21,7 @@ import {
   type CellExtraction,
   type InferredCellExtraction,
 } from "../lib/extraction";
-import { extractMarkedDevices } from "../lib/extraction/simpleAnalog";
+import { extractMarkedDevices, detectMOSFromLayers } from "../lib/extraction/simpleAnalog";
 
 interface UseCellExtraction {
   data: CellExtraction | null;
@@ -65,14 +65,27 @@ export function useCellExtraction(
       if (extraction.kind === "inferred") {
         const inf = extraction as InferredCellExtraction;
         try {
-          const analogDevices = extractMarkedDevices(
+          // 1. Marker-based devices (device_box markers)
+          const markerDevices = extractMarkedDevices(
             cellType.layers,
             cellType.id,
             1.0, // umPerPx — Cell RE doesn't have per-die scale
           );
+          // 2. Well-based MOS detection (nwell/pwell → PMOS/NMOS + bulk)
+          const wellMos = detectMOSFromLayers(
+            cellType.layers,
+            cellType.id,
+            1.0,
+          );
+          // 3. Merge: well-based MOS preferred, markers for everything else
+          const wellMosIds = new Set(wellMos.map((d) => d.id));
+          const analogDevices = [
+            ...wellMos,
+            ...markerDevices.filter((d) => !(d.kind === "mos" && wellMosIds.has(d.id))),
+          ];
           return { ...inf, analogDevices } as InferredCellExtraction;
         } catch (ae) {
-          console.warn("extractMarkedDevices warning:", ae);
+          console.warn("analog device detection warning:", ae);
           return extraction;
         }
       }
