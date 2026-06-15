@@ -8,7 +8,8 @@
 
 import type {
   AnalogDevice, AnnotationNet, Cell, CellType,
-  DeviceKind, DieAnnotations, IOPin, LayerShape, SpiceConfig,
+  DeviceGeometryMOS, DeviceKind, DieAnnotations, IOPin,
+  LayerShape, SpiceConfig,
 } from "shared";
 import { extractMarkedDevices, detectMOSFromLayers } from "../lib/extraction/simpleAnalog";
 import { generateSpiceNetlist } from "../lib/export/spice";
@@ -350,7 +351,15 @@ export function collectDieWideAnalogDevices(
 
         // ── Wire matching by contact proximity (10px) ────
         const matchedTerms = dev.terminals.map((t,ti)=>{
-          if (t.netId<0) {
+          if (t.netId === -2) {
+            // Sentinel: no well contact → bulk = VCC (PMOS) or GND (NMOS)
+            const mosType = (dev.geometry as DeviceGeometryMOS)?.mosType;
+            const vccNet = nets.find((n) => n.label === "vcc" || n.name === "VDD" || n.name === "VCC");
+            const gndNet = nets.find((n) => n.label === "gnd" || n.name === "GND" || n.name === "VSS");
+            const fallback = mosType === "pmos" ? (vccNet?.id ?? 0) : (gndNet?.id ?? 0);
+            return {...t, netId: fallback};
+          }
+          if (t.netId === -1) {
             const fresh = 2000 + allDevices.length*10 + ti;
             return {...t, netId: fresh};
           }

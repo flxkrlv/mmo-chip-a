@@ -1633,40 +1633,37 @@ function AnalogDeviceRow({ device, cellTypeId, onOverride }: AnalogDeviceRowProp
   return (
     <div
       className="trow"
-      style={{ padding: "4px 10px", gap: 6, cursor: "default" }}
+      style={{ padding: "6px 12px", gap: 8, cursor: "default" }}
     >
       <span
         style={{
-          width: 10, height: 10, borderRadius: "50%",
+          width: 12, height: 12, borderRadius: "50%",
           background: color, flex: "0 0 auto",
         }}
       />
       <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ display: "flex", gap: 6, alignItems: "baseline" }}>
-          <span style={{ fontSize: 11.5, fontWeight: 600 }}>{label}</span>
-          <span className="m" style={{ fontSize: 9.5, color: "var(--ink3)" }}>
-            {subtitle}
+        <div style={{ display: "flex", gap: 8, alignItems: "baseline" }}>
+          <span style={{ fontSize: 12, fontWeight: 600 }}>{label}</span>
+          <span className="m" style={{ fontSize: 10, color: "var(--ink3)" }}>
+            {subtitle} {paramStr}
           </span>
-        </div>
-        <div style={{ fontSize: 10, color: "var(--ink3)", marginTop: 1 }}>
-          {paramStr}
         </div>
         {/* Override toggler */}
         {editableParams.length > 0 && (
-          <div style={{ marginTop: 2 }}>
+          <div style={{ marginTop: 4 }}>
             <span
               className="m"
-              style={{ fontSize: 8.5, cursor: "pointer", color: "var(--accent)" }}
+              style={{ fontSize: 9, cursor: "pointer", color: "var(--accent)", userSelect: "none" }}
               onClick={() => setExpanded((v) => !v)}
             >
-              {expanded ? "− overrides" : "+ override"}
+              {expanded ? "▾ overrides" : "▸ override"}
             </span>
             {expanded && (
               <div
                 style={{
-                  display: "flex", flexWrap: "wrap", gap: 4,
-                  marginTop: 3, padding: 4,
-                  background: "var(--l1)", borderRadius: 3,
+                  display: "flex", flexWrap: "wrap", gap: 6,
+                  marginTop: 6, padding: 6,
+                  background: "var(--l1)", borderRadius: 4,
                 }}
               >
                 {editableParams.map((key) => {
@@ -1676,11 +1673,11 @@ function AnalogDeviceRow({ device, cellTypeId, onOverride }: AnalogDeviceRowProp
                     <label
                       key={key}
                       style={{
-                        display: "flex", alignItems: "center", gap: 2,
-                        fontSize: 9, color: over ? "var(--accent)" : "var(--ink2)",
+                        display: "flex", alignItems: "center", gap: 3,
+                        fontSize: 9.5, color: over ? "var(--accent)" : "var(--ink2)",
                       }}
                     >
-                      {key}:
+                      <span style={{ minWidth: 0, whiteSpace: "nowrap" }}>{key.replace("_", " ")}:</span>
                       <input
                         type="number"
                         step="any"
@@ -1690,14 +1687,24 @@ function AnalogDeviceRow({ device, cellTypeId, onOverride }: AnalogDeviceRowProp
                           if (!isNaN(v)) setOv(key, v);
                         }}
                         style={{
-                          width: 50, height: 18,
-                          fontSize: 9, fontFamily: "var(--mono)",
+                          width: 55, height: 20,
+                          fontSize: 9.5, fontFamily: "var(--mono)",
                           background: over ? "var(--accentBg)" : "var(--bg1)",
                           border: `1px solid ${over ? "var(--accent)" : "var(--border)"}`,
-                          borderRadius: 2, color: "var(--ink0)",
-                          padding: "0 3px",
+                          borderRadius: 3, color: "var(--ink0)",
+                          padding: "0 4px",
                         }}
                       />
+                      {over && (
+                        <span
+                          style={{
+                            fontSize: 8, cursor: "pointer", color: "var(--err)",
+                            padding: "0 2px",
+                          }}
+                          onClick={() => setOv(key, (g[key] as number) ?? 0)}
+                          title="Reset to extracted value"
+                        >↺</span>
+                      )}
                     </label>
                   );
                 })}

@@ -238,9 +238,10 @@ function paramHint(dev: AnalogDevice): string {
     case "mos": {
       if ("L_um" in g && "W_um" in g) {
         const mg = g as { L_um: number; W_um: number; fingers?: number; multiplier?: number };
-        const m = mg.multiplier && mg.multiplier > 1 ? `×${mg.multiplier}` : "";
-        const f = mg.fingers && mg.fingers > 1 ? `f${mg.fingers}` : "";
-        return `W=${mg.W_um.toFixed(1)}u L=${mg.L_um.toFixed(2)}u${f}${m}`;
+        const parts = [`W=${mg.W_um.toFixed(1)}u`, `L=${mg.L_um.toFixed(2)}u`];
+        if (mg.fingers && mg.fingers > 1) parts.push(`F=${mg.fingers}`);
+        if (mg.multiplier && mg.multiplier > 1) parts.push(`M=${mg.multiplier}`);
+        return parts.join(" ");
       }
       return "";
     }
