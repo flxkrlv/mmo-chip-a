@@ -11,7 +11,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { NetGraphView } from "../components/netlist/NetGraphView";
-import type { SpiceDialect } from "shared";
+import type { SpiceConfig, SpiceDialect } from "shared";
 import { AppShell } from "../components/shell/AppShell";
 import { StatusBar } from "../components/shell/StatusBar";
 import { SubBar, ToolDivider } from "../components/shell/SubBar";
@@ -66,6 +66,8 @@ function AnalogNetlist({ dieId }: { dieId: string }) {
 
   // Dialect picker state
   const [dialect, setDialect] = useState<SpiceDialect>("cdl");
+  // Resistor format: ohms (resolved value) vs sqRs (squares × sheetR)
+  const [resistorFormat, setResistorFormat] = useState<"ohms" | "sqRs">("ohms");
 
   // Module name: same convention as the Code page.
   const moduleName = useMemo(
@@ -73,7 +75,12 @@ function AnalogNetlist({ dieId }: { dieId: string }) {
     [die?.name, dieId],
   );
 
-  const netlist = useAnalogNetlist(annotations, moduleName, dialect);
+  const spiceConfig: SpiceConfig = useMemo(
+    () => ({ resistorFormat }),
+    [resistorFormat],
+  );
+
+  const netlist = useAnalogNetlist(annotations, moduleName, dialect, spiceConfig);
 
   // ── UI state ────────────────────────────────────────────────────
   const [rightView, setRightView] = useState<"code" | "graph">("code");
@@ -225,6 +232,28 @@ function AnalogNetlist({ dieId }: { dieId: string }) {
                 ))}
               </div>
             )}
+            <ToolDivider />
+            {/* Resistor format toggle */}
+            <div className="row" style={{ gap: 2, background: "var(--l1)", borderRadius: 4, padding: 2 }}>
+              <button
+                type="button"
+                className={"btn sm" + (resistorFormat === "ohms" ? " on" : "")}
+                onClick={() => setResistorFormat("ohms")}
+                style={{ fontSize: 10, fontWeight: 600 }}
+                title="Resistor: resolved ohms value"
+              >
+                R=Ω
+              </button>
+              <button
+                type="button"
+                className={"btn sm" + (resistorFormat === "sqRs" ? " on" : "")}
+                onClick={() => setResistorFormat("sqRs")}
+                style={{ fontSize: 10, fontWeight: 600 }}
+                title="Resistor: squares × sheetR expression"
+              >
+                R=sq·Rs
+              </button>
+            </div>
             <ToolDivider />
             <button
               type="button"

@@ -178,7 +178,7 @@ function buildAnalogNetlist(
   return {
     source: result.text,
     moduleName,
-    fileName: `${moduleName}.cdl`,
+    fileName: `${moduleName}.${dialect === "cdl" ? "cdl" : dialect === "spectre" ? "scs" : "sp"}`,
     outline,
     warnings: result.warnings,
     totalDevices: result.totalDevices,

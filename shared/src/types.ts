@@ -807,6 +807,11 @@ export interface SpiceConfig {
   gnd?: string;
   /** Scale factor — μm per pixel */
   umPerPx?: number;
+  /** Resistor value format.
+   *  - "ohms":  r=2500       (resolved resistance)
+   *  - "sqRs":  r=10*250     (squares × sheetR, as expression)
+   *  Default: "ohms". */
+  resistorFormat?: "ohms" | "sqRs";
 }
 
 // ── Export request / response ───────────────────────────────────

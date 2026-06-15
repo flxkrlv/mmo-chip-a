@@ -112,11 +112,20 @@ function fmtL(geom: DeviceGeometryMOS): string {
 function fmtM(geom: { multiplier?: number }): string {
   return geom.multiplier && geom.multiplier > 1 ? `m=${geom.multiplier}` : "";
 }
-/** Resistor: r=<Ω> — just the resistance, no geometry. */
+/** Resistor: r=<Ω> or r=<sq>*<Rs> depending on config.resistorFormat.
+ *  "ohms" (default) → resolved value, e.g. r=2500.
+ *  "sqRs"           → expression, e.g. r=10*250  (squares × sheetR). */
 function fmtRes(geom: DeviceGeometryResistor, config: SpiceConfig): string {
   const rType = (geom.resistorType ?? "poly") as ResistorType;
   const sr = effectiveSheetR(rType, config.sheetR_ohms);
-  const rOhms = Math.round(geom.squares * sr);
+  const sq = geom.squares;
+  if (config.resistorFormat === "sqRs") {
+    const srInt = Math.round(sr);
+    const sqFmt = sq === Math.round(sq) ? sq.toFixed(0) : sq.toFixed(1);
+    return `r=${sqFmt}*${srInt}`;
+  }
+  // default "ohms"
+  const rOhms = Math.round(sq * sr);
   return `r=${rOhms}`;
 }
 /** Capacitor: c=<value> — in femtofarads if known. */
