@@ -23,6 +23,7 @@ import {
   segmentIntersectsRect
 } from "./geometry";
 import type { Point, Rect } from "./geometry";
+import { uuid } from "./uuid";
 
 /**
  * Generic geometry / mutation helpers for `CellType.layers`. Anything in here
@@ -38,7 +39,7 @@ import type { Point, Rect } from "./geometry";
 export function makeRect(rect: Rect): LayerRect {
   const r = normalizeRect(rect);
   return {
-    id: crypto.randomUUID(),
+    id: uuid(),
     kind: "rect",
     x: Math.round(r.x),
     y: Math.round(r.y),
@@ -49,7 +50,7 @@ export function makeRect(rect: Rect): LayerRect {
 
 export function makePolygon(points: Point[]): LayerPolygon {
   return {
-    id: crypto.randomUUID(),
+    id: uuid(),
     kind: "polygon",
     points: points.map((p) => ({ x: Math.round(p.x), y: Math.round(p.y) }))
   };
@@ -59,7 +60,7 @@ export function makePolygon(points: Point[]): LayerPolygon {
  *  comfortable visibility at typical cell zooms. */
 export function makePoint(p: Point, size = 4): LayerPoint {
   return {
-    id: crypto.randomUUID(),
+    id: uuid(),
     kind: "point",
     x: Math.round(p.x),
     y: Math.round(p.y),
@@ -536,7 +537,7 @@ export function buildInsertShapesAction(
   layer: LayerType,
   shapes: LayerShape[]
 ): { action: AnnotationAction; insertedIds: string[] } {
-  const fresh = shapes.map((s) => ({ ...s, id: crypto.randomUUID() } as LayerShape));
+  const fresh = shapes.map((s) => ({ ...s, id: uuid() } as LayerShape));
   const next: CellType = {
     ...cellType,
     layers: withLayer(cellType.layers, layer, (cur) => [...cur, ...fresh])

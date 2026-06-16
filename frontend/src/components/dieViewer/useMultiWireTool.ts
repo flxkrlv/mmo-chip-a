@@ -9,6 +9,7 @@ import {
 import { isTypingTarget } from "../../lib/keyboard";
 import type { DrawAnchor } from "../../lib/netGraph";
 import { useDieViewerStore, type ToolKind } from "../../state/dieViewer";
+import { uuid } from "../../lib/uuid";
 
 /** Phase-2 endpoint for the reference start point. 45°-snapped to the cursor
  *  by default; `free` (Shift held) lets the bus take any angle. Every wire
@@ -176,7 +177,7 @@ export function useMultiWireTool(opts: {
       const layer = useDieViewerStore.getState().wireLayer;
       const nets = netsRef.current;
       const nameBase = nets.length;
-      const uid = () => crypto.randomUUID();
+      const uid = () => uuid();
       const mkEdge = (from: string, to: string) => ({
         id: uid(),
         from,

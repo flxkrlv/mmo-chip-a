@@ -6,6 +6,7 @@ import { isTypingTarget } from "../../lib/keyboard";
 import type { LiveValue } from "../../lib/liveValue";
 import type { AnnotationHit } from "../../renderer/layers/AnnotationLayer";
 import { useDieViewerStore, type ToolKind } from "../../state/dieViewer";
+import { uuid } from "../../lib/uuid";
 
 /** Cell annotations carry `id: "cell:<cellId>"` and no sub-parts, so the hit's
  *  partId is exactly that. */
@@ -82,12 +83,12 @@ export function useCellTool(opts: {
     const height = Math.round(n.height);
 
     const cellType: CellType = {
-      id: crypto.randomUUID(),
+      id: uuid(),
       name: `Cell ${(annotations?.cellTypes.length ?? 0) + 1}`,
       cropRect: { x: 0, y: 0, width, height }
     };
     const cell: Cell = {
-      id: crypto.randomUUID(),
+      id: uuid(),
       cellTypeId: cellType.id,
       x,
       y

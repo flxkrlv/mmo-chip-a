@@ -120,6 +120,7 @@ import { DEFAULT_ML_CONFIG, useDieViewerStore } from "../state/dieViewer";
 import { useOverlayLayers } from "../state/overlayLayers";
 import { usePreferences } from "../state/preferences";
 import { useSession } from "../state/session";
+import { uuid } from "../lib/uuid";
 
 /** Stable empty points array so the overlay effect doesn't churn when idle. */
 const NO_DRAFT_POINTS: Point[] = [];
@@ -1068,7 +1069,7 @@ const analogDevices = useMemo(
       const width = Math.round(Math.abs(r.width));
       const height = Math.round(Math.abs(r.height));
       if (width < 1 || height < 1) return;
-      const id = crypto.randomUUID();
+      const id = uuid();
       let action: AnnotationAction;
       if (toolKind === "viaRect") {
         action = {
@@ -1386,7 +1387,7 @@ const analogDevices = useMemo(
                 void dispatcher.dispatch({
                   kind: "upsertRuler",
                   ruler: {
-                    id: crypto.randomUUID(),
+                    id: uuid(),
                     x1: origin.x,
                     y1: origin.y,
                     x2: snapped.x,
@@ -1656,7 +1657,7 @@ const analogDevices = useMemo(
               if (modifiers.alt) {
                 const copies = set.map((t) => ({
                   ...translateGuide(t, dx, dy),
-                  id: crypto.randomUUID()
+                  id: uuid()
                 }));
                 const actions: AnnotationAction[] = copies.map((guide) => ({
                   kind: "upsertGuide",
@@ -1764,7 +1765,7 @@ const analogDevices = useMemo(
         void dispatcher.dispatch({
           kind: "upsertAnnotation",
           annotation: {
-            id: crypto.randomUUID(),
+            id: uuid(),
             class: "point_via",
             geometry: { kind: "point", x: Math.round(x), y: Math.round(y) },
             source: "human"
@@ -1841,7 +1842,7 @@ const analogDevices = useMemo(
         void dispatcher.dispatch({
           kind: "addPin",
           pin: {
-            id: crypto.randomUUID(),
+            id: uuid(),
             x: Math.round(x),
             y: Math.round(y),
             pin: nextNum,

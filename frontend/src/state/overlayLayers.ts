@@ -1,9 +1,10 @@
 import { create } from "zustand";
+import { uuid } from "../lib/uuid";
 
 // ── Types ───────────────────────────────────────────────────────────
 
 export interface OverlayLayerEntry {
-  /** Unique id (crypto.randomUUID). */
+  /** Unique id (uuid). */
   id: string;
   /** Human-readable name editable in the UI. */
   name: string;
@@ -53,7 +54,7 @@ export const useOverlayLayers = create<OverlayLayersState>()((set, get) => ({
   layers: [],
 
   addLayer: (name, image, hidden = false) => {
-    const id = crypto.randomUUID();
+    const id = uuid();
     const entry: OverlayLayerEntry = {
       id,
       name,

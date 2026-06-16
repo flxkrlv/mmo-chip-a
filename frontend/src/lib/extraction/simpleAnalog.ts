@@ -41,9 +41,10 @@ function shapeBbox(s: LayerShape): Rect | null {
       case "polygon":
         return polygonBounds(s.points);
       case "line": {
-        const x1 = Math.min(s.x1, s.x2), x2 = Math.max(s.x1, s.x2);
-        const y1 = Math.min(s.y1, s.y2), y2 = Math.max(s.y1, s.y2);
-        return { x: x1, y: y1, width: x2 - x1, height: y2 - y1 };
+        const hw = (s.width as number) ?? 4;
+        const lx1 = Math.min(s.x1, s.x2), lx2 = Math.max(s.x1, s.x2);
+        const ly1 = Math.min(s.y1, s.y2), ly2 = Math.max(s.y1, s.y2);
+        return { x: lx1 - hw/2, y: ly1 - hw/2, width: (lx2 - lx1) + hw, height: (ly2 - ly1) + hw };
       }
     }
   }
@@ -57,6 +58,16 @@ function overlapArea(a: Rect, b: Rect): number {
   const oy2 = Math.min(a.y + a.height, b.y + b.height);
   if (ox >= ox2 || oy >= oy2) return 0;
   return (ox2 - ox) * (oy2 - oy);
+}
+
+/** Intersection rectangle of two bounding boxes, or null if disjoint. */
+function intersectionBbox(a: Rect, b: Rect): Rect | null {
+  const ix = Math.max(a.x, b.x);
+  const iy = Math.max(a.y, b.y);
+  const ix2 = Math.min(a.x + a.width, b.x + b.width);
+  const iy2 = Math.min(a.y + a.height, b.y + b.height);
+  if (ix >= ix2 || iy >= iy2) return null;
+  return { x: ix, y: iy, width: ix2 - ix, height: iy2 - iy };
 }
 
 function shapesInside(
@@ -227,11 +238,29 @@ export function extractMarkedDevices(
         const sources = shapesInside(layers, "source", marker.bbox);
         const bulks = shapesInside(layers, "bulk", marker.bbox);
 
-        // W/L from marker bbox: W=width of the gate area, L=height
-        const bw = marker.bbox.width * umPerPx;
-        const bh = marker.bbox.height * umPerPx;
-        const W_um = Math.max(bw, bh);
-        const L_um = Math.min(bw, bh);
+        // W/L from gate ∩ (drain ∪ source) intersection —
+        // gives real channel dimensions instead of marker bbox approximation.
+        const allDiff = [...drains, ...sources];
+        let totalIxW = 0;
+        let ixL = 0;
+        for (const gate of gates) {
+          const gb = shapeBbox(gate);
+          if (!gb) continue;
+          for (const diff of allDiff) {
+            const db = shapeBbox(diff);
+            if (!db) continue;
+            const ix = intersectionBbox(gb, db);
+            if (!ix) continue;
+            totalIxW += Math.max(ix.width, ix.height);
+            if (ixL === 0) ixL = Math.min(ix.width, ix.height);
+          }
+        }
+        const fingers = gates.length;
+        // Fallback to marker bbox if no gate/diff intersection found
+        const bboxW = Math.max(marker.bbox.width, marker.bbox.height) * umPerPx;
+        const bboxL = Math.min(marker.bbox.width, marker.bbox.height) * umPerPx;
+        const W_um = (fingers > 0 && totalIxW > 0) ? (totalIxW / fingers) * umPerPx : bboxW;
+        const L_um = (ixL > 0) ? ixL * umPerPx : bboxL;
 
         function tNet(ts: LayerShape[]): number {
           return ts.length > 0 ? nextNet() : -1;
@@ -243,9 +272,9 @@ export function extractMarkedDevices(
           geometry: {
             L_um,
             W_um,
-            fingers: 1,
+            fingers: Math.max(fingers, 1),
             multiplier: 1,
-            totalW_um: W_um,
+            totalW_um: W_um * Math.max(fingers, 1),
             mosType: "unknown",
           },
           cellTypeId,
@@ -462,11 +491,22 @@ export function detectMOSFromLayers(
         });
         if (gates.length === 0) continue;
 
+        // ── W/L from poly ∩ diffusion intersection ──────────
+        // Each gate finger overlaps the diffusion; the intersection
+        // polygon gives us the real channel dimensions.
+        let totalIxW = 0;
+        let ixL = 0;
+        for (const gate of gates) {
+          const gb = shapeBbox(gate);
+          if (!gb) continue;
+          const ix = intersectionBbox(bodyBox, gb);
+          if (!ix) continue;
+          totalIxW += Math.max(ix.width, ix.height);
+          if (ixL === 0) ixL = Math.min(ix.width, ix.height);
+        }
         const fingers = gates.length;
-        const bw = bodyBox.width * umPerPx;
-        const bh = bodyBox.height * umPerPx;
-        const W_um = Math.max(bw, bh);
-        const L_um = Math.min(bw, bh) / fingers; // shared diffusion, each gate shorter
+        const W_um = fingers > 0 ? (totalIxW / fingers) * umPerPx : 0;
+        const L_um = ixL * umPerPx;
 
         counter++;
         const devId = `mos_well_${wellLabel}_${counter}`;

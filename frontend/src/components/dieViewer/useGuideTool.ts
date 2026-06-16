@@ -4,6 +4,7 @@ import type { ActionDispatcher } from "../../api/actions";
 import type { Point } from "../../lib/geometry";
 import { isTypingTarget } from "../../lib/keyboard";
 import { useDieViewerStore, type ToolKind } from "../../state/dieViewer";
+import { uuid } from "../../lib/uuid";
 
 /** Axis-aligned end for a guide segment (90° snap from `start`). */
 export function orthoSegEnd(start: Point, world: Point): Point {
@@ -44,7 +45,7 @@ export function useGuideTool(opts: {
     (world: Point) => {
       const axis = useDieViewerStore.getState().guideAxis;
       const guide: Guide = {
-        id: crypto.randomUUID(),
+        id: uuid(),
         kind: "line",
         axis,
         pos: Math.round(axis === "x" ? world.x : world.y)
@@ -66,7 +67,7 @@ export function useGuideTool(opts: {
       void dispatcher.dispatch({
         kind: "upsertGuide",
         guide: {
-          id: crypto.randomUUID(),
+          id: uuid(),
           kind: "segment",
           x1: start.x,
           y1: start.y,

@@ -3,6 +3,7 @@ import type { ActionDispatcher } from "../../api/actions";
 import type { Point } from "../../lib/geometry";
 import { isTypingTarget } from "../../lib/keyboard";
 import { useDieViewerStore, type ToolKind } from "../../state/dieViewer";
+import { uuid } from "../../lib/uuid";
 
 export interface ViaPolyTool {
   /** Committed-so-far polygon points (drives the draft overlay). */
@@ -59,7 +60,7 @@ export function useViaPolyTool(opts: {
       void dispatcher.dispatch({
         kind: "upsertAnnotation",
         annotation: {
-          id: crypto.randomUUID(),
+          id: uuid(),
           class: "irregular_via",
           geometry: { kind: "polygon", points: pts },
           source: "human"

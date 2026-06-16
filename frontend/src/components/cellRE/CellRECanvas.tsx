@@ -59,6 +59,7 @@ import {
   type ReToolKind
 } from "../../state/cellRE";
 import type { CellExtraction, InferredCellExtraction } from "../../lib/extraction";
+import { uuid } from "../../lib/uuid";
 
 export interface CellRECanvasHandle {
   /** Re-fit the cell into the viewport. */
@@ -536,7 +537,7 @@ export const CellRECanvas = forwardRef<CellRECanvasHandle, Props>(function CellR
         // address them; the commit reinserts the originals untouched.
         const duplicateIds = e.altKey ? new Map<string, string>() : null;
         if (duplicateIds) {
-          for (const k of snap.keys()) duplicateIds.set(k, crypto.randomUUID());
+          for (const k of snap.keys()) duplicateIds.set(k, uuid());
         }
         dragRef.current = {
           kind: "move",

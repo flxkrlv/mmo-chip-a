@@ -1,5 +1,6 @@
 import type { Cell, CellType, DieAnnotations } from "shared";
 import type { AnnotationAction } from "../api/actions";
+import { uuid } from "./uuid";
 
 // ── Orientation ──────────────────────────────────────────────────────
 
@@ -167,7 +168,7 @@ export function cellTypeCropUrl(dieId: string, cellTypeId: string): string {
 
 // ── Action builders ──────────────────────────────────────────────────
 
-const newId = () => crypto.randomUUID();
+const newId = () => uuid();
 
 export interface MergePlan {
   action: AnnotationAction;

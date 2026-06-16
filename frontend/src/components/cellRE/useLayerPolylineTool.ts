@@ -4,6 +4,7 @@ import type { ActionDispatcher } from "../../api/actions";
 import type { Point } from "../../lib/geometry";
 import { useCellREStore } from "../../state/cellRE";
 import { useDieViewerStore } from "../../state/dieViewer";
+import { uuid } from "../../lib/uuid";
 
 export interface LayerPolylineTool {
   points: Point[];
@@ -62,7 +63,7 @@ export function useLayerPolylineTool(opts: {
       for (let i = 0; i < pts.length - 1; i++) {
         const a = pts[i], b = pts[i + 1];
         shapes.push({
-          id: crypto.randomUUID(),
+          id: uuid(),
           kind: "line" as const,
           x1: a.x, y1: a.y, x2: b.x, y2: b.y,
           width,

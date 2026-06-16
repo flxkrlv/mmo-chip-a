@@ -435,7 +435,7 @@ export interface DieAnnotations {
   umPerPx?: number;
   /** Ruler measurements — persistent lines with annotated pixel length. */
   rulers?: RulerMeasurement[];
-
+}
 
 export interface MLExportRequest {
   approxViaRadiusPx: number;

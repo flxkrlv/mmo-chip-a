@@ -5,6 +5,7 @@ import type {
   WireLayer
 } from "shared";
 import type { Point } from "./geometry";
+import { uuid } from "./uuid";
 
 /** Per-segment layer (null = the "unknown" default, stored as no `layer`). */
 export type SegLayer = WireLayer | null;
@@ -45,7 +46,7 @@ export function parseNetPartId(
   return { netId: body, part: "net" };
 }
 
-const newId = () => crypto.randomUUID();
+const newId = () => uuid();
 const makeNode = (p: Point): AnnotationNetNode => ({ id: newId(), x: p.x, y: p.y });
 const makeEdge = (
   from: string,
