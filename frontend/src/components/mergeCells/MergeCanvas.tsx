@@ -321,6 +321,11 @@ export const MergeCanvas = forwardRef<MergeCanvasHandle, Props>(function MergeCa
     };
   }, []);
 
+  // ── Overlay layer changes → redraw ───────────────────────────────
+  useEffect(() => {
+    return useOverlayLayers.subscribe(redraw);
+  }, [redraw]);
+
   // ── Draw ───────────────────────────────────────────────────────────
   useLayoutEffect(() => {
     const canvas = canvasRef.current;

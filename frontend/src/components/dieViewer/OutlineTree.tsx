@@ -69,6 +69,7 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
 
   const baseImageHidden = usePreferences((s) => s.baseImageHidden);
   const setBaseImageHidden = usePreferences((s) => s.setBaseImageHidden);
+  const baseGlobalVisible = useOverlayLayers((s) => s.baseImageVisible);
 
   const mlResultsHidden = usePreferences((s) => s.mlResultsHidden);
   const setMlResultsHidden = usePreferences((s) => s.setMlResultsHidden);
@@ -513,7 +514,7 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
       />
       {baseImagesOpen &&
         baseImages.map((img) => {
-          const visible = baseImageHidden[img.id] !== true;
+          const visible = baseImageHidden[img.id] !== true && baseGlobalVisible;
           return (
             <TreeRow
               key={`baseimg:${img.id}`}

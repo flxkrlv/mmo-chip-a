@@ -4,9 +4,9 @@
  * Works across Die Viewer, Merge Cells, and RE Cell.
  *
  *   Ctrl+Shift+B    — toggle base image visibility
- *   ]               — cycle / toggle next overlay
- *   [               — cycle / toggle previous overlay
- *   Ctrl+Shift+1..8 — toggle overlay layer #1..#8 directly
+ *   ]               — show only the NEXT overlay layer (N+1), hide others
+ *   [               — show only the PREVIOUS overlay layer (N-1), hide others
+ *   Ctrl+Shift+1..8 — show only overlay layer #1..#8, hide others
  */
 
 import { useEffect } from "react";
@@ -30,59 +30,54 @@ export function useOverlayHotkeys(): void {
         return;
       }
 
-      // Ctrl+Shift+1..8 → toggle overlay layer #N directly
-      if (ctrl && shift && e.key >= "1" && e.key <= "8") {
+      // Ctrl+Shift+1..8 → show only layer N, hide all others
+      if (ctrl && shift && e.code >= "Digit1" && e.code <= "Digit8") {
         e.preventDefault();
-        const idx = parseInt(e.key, 10) - 1;
-        if (idx < layers.length) {
-          const layer = layers[idx];
-          useOverlayLayers.getState().setLayerHidden(layer.id, !layer.hidden);
+        const digits = ["Digit1","Digit2","Digit3","Digit4","Digit5","Digit6","Digit7","Digit8"];
+        const idx = digits.indexOf(e.code);
+        const { layers } = useOverlayLayers.getState();
+        for (let i = 0; i < layers.length; i++) {
+          const hidden = i !== idx;
+          if (layers[i].hidden !== hidden) {
+            useOverlayLayers.getState().setLayerHidden(layers[i].id, hidden);
+          }
         }
         return;
       }
 
-      // ] → cycle to next overlay: make the next hidden layer visible,
-      //     or if all are visible, hide the first visible one (toggle off).
+      // ] → show only the next overlay (N+1), hide all others
       if (e.key === "]" && !ctrl && !shift && !e.altKey) {
         e.preventDefault();
         const { layers } = useOverlayLayers.getState();
         if (layers.length === 0) return;
-        // Find the first hidden layer and make it visible.
-        const nextHiddenIdx = layers.findIndex((l) => l.hidden);
-        if (nextHiddenIdx >= 0) {
-          useOverlayLayers.getState().setLayerHidden(
-            layers[nextHiddenIdx].id,
-            false
-          );
-        } else {
-          // All visible → hide the last one (toggle off the current layer).
-          useOverlayLayers.getState().setLayerHidden(
-            layers[layers.length - 1].id,
-            true
-          );
+        // Find current visible layer index
+        const currentIdx = layers.findIndex((l) => !l.hidden);
+        const nextIdx = currentIdx < 0
+          ? 0                          // none visible → show first
+          : (currentIdx + 1) % layers.length;  // next, wrapping
+        for (let i = 0; i < layers.length; i++) {
+          const hidden = i !== nextIdx;
+          if (layers[i].hidden !== hidden) {
+            useOverlayLayers.getState().setLayerHidden(layers[i].id, hidden);
+          }
         }
         return;
       }
 
-      // [ → cycle to previous overlay: make the first visible layer hidden,
-      //     or if all are hidden, make the last one visible (toggle on).
+      // [ → show only the previous overlay (N-1), hide all others
       if (e.key === "[" && !ctrl && !shift && !e.altKey) {
         e.preventDefault();
         const { layers } = useOverlayLayers.getState();
         if (layers.length === 0) return;
-        const firstVisibleIdx = layers.findIndex((l) => !l.hidden);
-        if (firstVisibleIdx >= 0) {
-          // Hide the first open layer (toggle off).
-          useOverlayLayers.getState().setLayerHidden(
-            layers[firstVisibleIdx].id,
-            true
-          );
-        } else {
-          // All hidden → show the last one.
-          useOverlayLayers.getState().setLayerHidden(
-            layers[layers.length - 1].id,
-            false
-          );
+        const currentIdx = layers.findIndex((l) => !l.hidden);
+        const prevIdx = currentIdx <= 0
+          ? layers.length - 1          // none or first → show last
+          : currentIdx - 1;            // previous
+        for (let i = 0; i < layers.length; i++) {
+          const hidden = i !== prevIdx;
+          if (layers[i].hidden !== hidden) {
+            useOverlayLayers.getState().setLayerHidden(layers[i].id, hidden);
+          }
         }
         return;
       }
