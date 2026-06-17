@@ -29,6 +29,9 @@ export interface OverlayLayerEntry {
 interface OverlayLayersState {
   /** Ordered list of overlay layers. Last entry paints on top. */
   layers: OverlayLayerEntry[];
+  /** When true (default), the base die image / cell crop is drawn.
+   *  Toggled by Ctrl+Shift+B. */
+  baseImageVisible: boolean;
 
   /** Add a new layer from a loaded HTMLImageElement. Returns the layer id. */
   addLayer: (name: string, image: HTMLImageElement, hidden?: boolean) => string;
@@ -46,12 +49,15 @@ interface OverlayLayersState {
   setLayerOffset: (id: string, offsetX: number, offsetY: number) => void;
   /** Clear all layers. */
   clearLayers: () => void;
+  /** Toggle base image visibility (Ctrl+Shift+B). */
+  toggleBaseImage: () => void;
 }
 
 // ── Store ───────────────────────────────────────────────────────────
 
 export const useOverlayLayers = create<OverlayLayersState>()((set, get) => ({
   layers: [],
+  baseImageVisible: true,
 
   addLayer: (name, image, hidden = false) => {
     const id = uuid();
@@ -122,5 +128,7 @@ export const useOverlayLayers = create<OverlayLayersState>()((set, get) => ({
       if (l.src.startsWith("blob:")) URL.revokeObjectURL(l.src);
     }
     set({ layers: [] });
-  }
+  },
+
+  toggleBaseImage: () => set((s) => ({ baseImageVisible: !s.baseImageVisible }))
 }));

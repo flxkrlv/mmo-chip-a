@@ -13,6 +13,7 @@ import { drawCellLayers } from "../../renderer/annotations/shapes";
 import { COLOR_VIA, COLOR_VIA_FILL } from "../../renderer/annotations/style";
 import type { TileBounds } from "../../renderer/types";
 import { orientOf } from "../../lib/mergeCells";
+import { useOverlayLayers } from "../../state/overlayLayers";
 
 export interface CellView {
   cell: Cell | null;
@@ -487,6 +488,29 @@ export const MergeCanvas = forwardRef<MergeCanvasHandle, Props>(function MergeCa
           v.zoom,
           mode === "diff" ? "difference" : "source-over"
         );
+    }
+
+    // ── Overlay images ───────────────────────────────────────────
+    // Draw non-hidden overlay images at their world offset, composited
+    // on top of the cell renders as a semi-transparent background.
+    // Only in non-sxs modes (sxs has two independent panes).
+    if (mode !== "sxs") {
+      setWorld(v, 0);
+      const overlayLayerList = useOverlayLayers.getState().layers;
+      for (const entry of overlayLayerList) {
+        if (!entry.image || entry.hidden || entry.opacity <= 0) continue;
+        const img = entry.image;
+        ctx.save();
+        ctx.globalAlpha = entry.opacity;
+        ctx.drawImage(
+          img,
+          entry.offsetX,
+          entry.offsetY,
+          img.naturalWidth,
+          img.naturalHeight
+        );
+        ctx.restore();
+      }
     }
   });
 

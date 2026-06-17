@@ -66,3 +66,10 @@ export const NAV_HOTKEYS: Record<string, number> = {
   "4": 4,  // Code
   "5": 5,  // Netlist (Analog)
 };
+
+// ── Overlay hotkeys (shared across Die viewer / Merge / RE Cell) ─
+//   Ctrl+Shift+B    — toggle base image visibility
+//   ]               — cycle to next overlay (toggle on/off)
+//   [               — cycle to previous overlay (toggle on/off)
+//   Ctrl+Shift+1..8 — toggle overlay layer #1..#8 directly
+// These are handled by the `useOverlayHotkeys()` hook.

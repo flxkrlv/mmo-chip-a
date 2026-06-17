@@ -49,6 +49,7 @@ import {
   rotateCw
 } from "../lib/mergeCells";
 import { alignVias, viasToCanonical } from "../lib/viaAlign";
+import { useOverlayHotkeys } from "../lib/useOverlayHotkeys";
 
 export function MergeCellsPage() {
   const [params] = useSearchParams();
@@ -76,6 +77,7 @@ function Merge({ dieId }: { dieId: string }) {
   const die = useDie(dieId).data;
   const annotationsQ = useAnnotations(dieId);
   useAnnotationsWebSocket(dieId);
+  useOverlayHotkeys();
   const annotations = annotationsQ.data;
   const dispatcher = useActionDispatcher(dieId);
 

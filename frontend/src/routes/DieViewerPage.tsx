@@ -96,6 +96,7 @@ import {
 } from "../components/dieViewer/shapeEdit";
 import { useSelectionDelete } from "../components/dieViewer/useSelectionDelete";
 import { useUndoRedoHotkeys } from "../components/dieViewer/useUndoRedoHotkeys";
+import { useOverlayHotkeys } from "../lib/useOverlayHotkeys";
 import type { AnnotationAction } from "../api/actions";
 import { parseNetPartId, type DrawAnchor } from "../lib/netGraph";
 import {
@@ -329,6 +330,7 @@ function DieViewer({ dieId }: { dieId: string }) {
     return [
       new DieImageLayer(die, {
         getHidden: () =>
+          !useOverlayLayers.getState().baseImageVisible ||
           usePreferences.getState().baseImageHidden[die.id] === true,
         getOpacity: () =>
           usePreferences.getState().baseImageOpacity[die.id] ?? 1
@@ -1112,6 +1114,8 @@ const analogDevices = useMemo(
   // Global ⌘Z/⌘⇧Z — routes to a tool's undo override (e.g. wire draft) when
   // one is registered, else the action dispatcher.
   useUndoRedoHotkeys(dispatcher);
+  // Overlay layer hotkeys (Ctrl+Shift+B, ], [, Ctrl+Shift+1..8).
+  useOverlayHotkeys();
 
   // ── Pointer move / leave ────────────────────────────────────────
 

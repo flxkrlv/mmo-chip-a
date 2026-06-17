@@ -60,6 +60,7 @@ import {
 } from "../../state/cellRE";
 import type { CellExtraction, InferredCellExtraction } from "../../lib/extraction";
 import { uuid } from "../../lib/uuid";
+import { useOverlayLayers } from "../../state/overlayLayers";
 
 export interface CellRECanvasHandle {
   /** Re-fit the cell into the viewport. */
@@ -1040,6 +1041,7 @@ export const CellRECanvas = forwardRef<CellRECanvasHandle, Props>(function CellR
 
     // ── Image (oriented to canonical) ─────────────────────────────────
     const img = getImage(imageUrl);
+    const baseVisible = useOverlayLayers.getState().baseImageVisible;
     const o = cell
       ? orientOf(cell)
       : { flippedH: false, flippedV: false, rotation: 0 as const };
@@ -1049,9 +1051,11 @@ export const CellRECanvas = forwardRef<CellRECanvasHandle, Props>(function CellR
     ctx.scale(o.flippedH ? -1 : 1, o.flippedV ? -1 : 1);
     ctx.translate(-box.w / 2, -box.h / 2);
     if (hovering) ctx.globalAlpha = DIM_ALPHA;
-    if (img) {
+    if (baseVisible && img) {
       ctx.imageSmoothingEnabled = v.zoom < 3;
       ctx.drawImage(img, 0, 0, box.w, box.h);
+    } else if (img) {
+      // Base image hidden via Ctrl+Shift+B — show only overlays below.
     } else {
       ctx.fillStyle = "rgba(255,255,255,0.04)";
       ctx.fillRect(0, 0, box.w, box.h);
@@ -1076,6 +1080,27 @@ export const CellRECanvas = forwardRef<CellRECanvasHandle, Props>(function CellR
       ctx.restore();
     }
     ctx.restore();
+
+    // ── Overlay images (clipped to cell area) ────────────────────────
+    // Draw each non-hidden overlay composited at its world offset,
+    // clipped to the cell's die rect so it aligns with the crop image.
+    if (cell) {
+      const overlayLayerList = useOverlayLayers.getState().layers;
+      for (const entry of overlayLayerList) {
+        if (!entry.image || entry.hidden || entry.opacity <= 0) continue;
+        const img = entry.image;
+        // Source rect within the overlay image that corresponds to
+        // this cell's position on the die.
+        const srcX = cell.x - entry.offsetX;
+        const srcY = cell.y - entry.offsetY;
+        if (srcX + box.w <= 0 || srcY + box.h <= 0 ||
+            srcX >= img.naturalWidth || srcY >= img.naturalHeight) continue;
+        ctx.save();
+        ctx.globalAlpha = entry.opacity;
+        ctx.drawImage(img, srcX, srcY, box.w, box.h, 0, 0, box.w, box.h);
+        ctx.restore();
+      }
+    }
 
     // Cell-type bounding rect (constant-screen-px stroke).
     ctx.strokeStyle = "rgba(245,214,138,0.5)";

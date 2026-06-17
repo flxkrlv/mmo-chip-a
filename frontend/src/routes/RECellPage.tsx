@@ -28,6 +28,7 @@ import { usePreferences } from "../state/preferences";
 import { fitRectViewport } from "../renderer/TiledCanvas";
 import { isTypingTarget } from "../lib/keyboard";
 import { CELL_RE_HOTKEYS } from "../lib/hotkeys";
+import { useOverlayHotkeys } from "../lib/useOverlayHotkeys";
 import {
   PASTE_OFFSET,
   resolveActiveCell,
@@ -110,6 +111,7 @@ function RE({ dieId }: { dieId: string }) {
   const die = useDie(dieId).data;
   const annotationsQ = useAnnotations(dieId);
   useAnnotationsWebSocket(dieId);
+  useOverlayHotkeys();
   const annotations = annotationsQ.data;
   const dispatcher = useActionDispatcher(dieId);
 
