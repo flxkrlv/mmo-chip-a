@@ -54,6 +54,41 @@ function rectsOverlap(ax1:number,ay1:number,ax2:number,ay2:number,
   return ax1<bx2 && ax2>bx1 && ay1<by2 && ay2>by1;
 }
 
+/** Check if a point (px,py) is inside a shape (rect/polygon/circle/point/line). */
+function pointInShape(px: number, py: number, s: LayerShape): boolean {
+  switch (s.kind) {
+    case "rect":
+      return px >= s.x && px <= s.x + s.width && py >= s.y && py <= s.y + s.height;
+    case "polygon": {
+      const pts = s.points;
+      if (pts.length < 3) return false;
+      let inside = false;
+      for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
+        const xi = pts[i].x, yi = pts[i].y;
+        const xj = pts[j].x, yj = pts[j].y;
+        if ((yi > py) !== (yj > py) && px < ((xj - xi) * (py - yi)) / (yj - yi) + xi)
+          inside = !inside;
+      }
+      return inside;
+    }
+    case "circle":
+      return (px - s.x) ** 2 + (py - s.y) ** 2 <= s.radius * s.radius;
+    case "point":
+      return Math.abs(px - s.x) <= s.size / 2 && Math.abs(py - s.y) <= s.size / 2;
+    case "line": {
+      const dx = s.x2 - s.x1, dy = s.y2 - s.y1;
+      const len2 = dx * dx + dy * dy;
+      if (len2 === 0) return (px - s.x1) ** 2 + (py - s.y1) ** 2 <= (s.width ?? 4) ** 2;
+      let t = ((px - s.x1) * dx + (py - s.y1) * dy) / len2;
+      t = Math.max(0, Math.min(1, t));
+      const cx = s.x1 + t * dx, cy = s.y1 + t * dy;
+      return (px - cx) ** 2 + (py - cy) ** 2 <= ((s.width ?? 4) / 2) ** 2;
+    }
+    default:
+      return false;
+  }
+}
+
 /** Line segment vs axis-aligned rectangle intersection test. */
 function segmentIntersectsRect(
   x1:number, y1:number, x2:number, y2:number,
@@ -216,54 +251,42 @@ export function collectDieWideAnalogDevices(
           : dev.bbox;
 
         // ── Contact labels ─────────────────────────────────
+        // For each contact, find which terminal's shape contains its center.
+        // For BJT: when a contact is inside overlapping layers (emitter embedded
+        // in base), the most specific layer wins: E > C > B.
+        const isBjt = dev.kind === "bjt_npn" || dev.kind === "bjt_pnp";
+        const bjtPri: Record<string,number> = { E:0, C:1, B:2 };
         const termPoints: Array<{x:number;y:number;name:string}> = [];
         const allContacts = (ct.layers?.contact??[]) as LayerShape[];
-        // Map each layer to which terminal indices use it (for shared-layer
-        // round-robin distribution, e.g. MOS D+S both on "diffusion").
-        const layerToTerminals = new Map<string, number[]>();
-        for (let ti=0; ti<dev.terminals.length; ti++) {
-          const layers = terminalLayersOf(dev.kind, dev.terminals[ti].name);
-          for (const ln of layers) {
-            const list = layerToTerminals.get(ln) ?? [];
-            if (!list.includes(ti)) list.push(ti);
-            layerToTerminals.set(ln, list);
-          }
-        }
-        for (let ti=0; ti<dev.terminals.length; ti++) {
-          const t = dev.terminals[ti];
-          for (const ln of terminalLayersOf(dev.kind, t.name)) {
-            const shps = ct.layers?.[ln as keyof typeof ct.layers] as LayerShape[]|undefined;
-            if (!shps) continue;
-            const sharing = layerToTerminals.get(ln) ?? [ti];
-            let contactIdx = 0;
-            for (const ts of shps) {
-              const tb = shapeBounds(ts); if (!tb) continue;
-              for (const cs of allContacts) {
-                const cb = shapeBounds(cs); if (!cb) continue;
-                if (rectsOverlap(tb.x,tb.y,tb.x+tb.width,tb.y+tb.height, cb.x,cb.y,cb.x+cb.width,cb.y+cb.height)) {
-                  const cc = centerOfShape(cs as any);
-                  if (!cc) continue;
-                  if (sharing.length > 1) {
-                    if (sharing[contactIdx % sharing.length] !== ti) {
-                      contactIdx++;
-                      continue;
-                    }
-                    contactIdx++;
+        for (const cs of allContacts) {
+          const cc = centerOfShape(cs as any);
+          if (!cc) continue;
+          const wx = cx + cc.x, wy = cy + cc.y;
+          const already = termPoints.some((p) => Math.round(p.x)===Math.round(wx) && Math.round(p.y)===Math.round(wy));
+          if (already) continue;
+          let bestTi = -1;
+          let bestPri = Infinity;
+          for (let ti=0; ti<dev.terminals.length; ti++) {
+            for (const ln of terminalLayersOf(dev.kind, dev.terminals[ti].name)) {
+              const shps = ct.layers?.[ln as keyof typeof ct.layers] as LayerShape[]|undefined;
+              if (!shps) continue;
+              for (const ts of shps) {
+                if (pointInShape(cc.x, cc.y, ts)) {
+                  if (isBjt) {
+                    const pri = bjtPri[dev.terminals[ti].name] ?? 999;
+                    if (pri < bestPri) { bestPri = pri; bestTi = ti; }
+                  } else {
+                    bestTi = ti;
                   }
-                  // Dedup: if another terminal already claimed this exact
-                  // position (e.g. B terminal on nwell overlapping same
-                  // contact as D/G/S on diffusion/poly), skip.
-                  const wx = Math.round(cx + cc.x);
-                  const wy = Math.round(cy + cc.y);
-                  const alreadyClaimed = termPoints.some(
-                    (p) => Math.round(p.x) === wx && Math.round(p.y) === wy
-                  );
-                  if (!alreadyClaimed) {
-                    termPoints.push({x:cx+cc.x, y:cy+cc.y, name:t.name});
-                  }
+                  // Found a containing shape for this layer — stop checking more shapes on this layer
+                  break;
                 }
               }
+              if (!isBjt && bestTi >= 0) break; // non-BJT: first containing layer wins
             }
+          }
+          if (bestTi >= 0) {
+            termPoints.push({x: wx, y: wy, name: dev.terminals[bestTi].name});
           }
         } // ── Wire matching by contact proximity ──────────
         // For each terminal, find unique contact centers. For simple
@@ -274,27 +297,6 @@ export function collectDieWideAnalogDevices(
         // base/emitter).
         const termContacts: Array<Array<{x:number;y:number}>> = dev.terminals.map(()=>[]);
         {
-          const cTis = new Map<string, Set<number>>();
-          const cPos = new Map<string, {x:number;y:number}>();
-          const allContacts = (ct.layers?.contact??[]) as LayerShape[];
-          for (let ti=0; ti<dev.terminals.length; ti++) {
-            for (const ln of terminalLayersOf(dev.kind, dev.terminals[ti].name)) {
-              const shps = ct.layers?.[ln as keyof typeof ct.layers] as LayerShape[]|undefined;
-              if (!shps) continue;
-              for (const ts of shps) {
-                const tb = shapeBounds(ts); if (!tb) continue;
-                for (const cs of allContacts) {
-                  const cb = shapeBounds(cs); if (!cb) continue;
-                  if (rectsOverlap(tb.x,tb.y,tb.x+tb.width,tb.y+tb.height,
-                                    cb.x,cb.y,cb.x+cb.width,cb.y+cb.height)) {
-                    const cc = centerOfShape(cs as any); if (!cc) continue;
-                    if (!cPos.has(cs.id)) cPos.set(cs.id, cc);
-                    const s = cTis.get(cs.id)??new Set(); s.add(ti); cTis.set(cs.id, s);
-                  }
-                }
-              }
-            }
-          }
           // Two strategies depending on whether all terminals share the
           // same layer set (resistor: PLUS/MINUS both "contact") or have
           // distinct layers (BJT: collector/base/emitter; MOS: drain/gate/
@@ -303,6 +305,63 @@ export function collectDieWideAnalogDevices(
             terminalLayersOf(dev.kind, t.name).join(",")
           );
           const allSameLayer = tLayers.every((l) => l === tLayers[0]);
+          const cTis = new Map<string, Set<number>>();
+          const cPos = new Map<string, {x:number;y:number}>();
+          const allContacts = (ct.layers?.contact??[]) as LayerShape[];
+          if (allSameLayer) {
+            // Simple devices (resistor, capacitor, diode) where all terminals
+            // use the SAME layer ("contact"): use bbox overlap + round-robin.
+            for (let ti=0; ti<dev.terminals.length; ti++) {
+              for (const ln of terminalLayersOf(dev.kind, dev.terminals[ti].name)) {
+                const shps = ct.layers?.[ln as keyof typeof ct.layers] as LayerShape[]|undefined;
+                if (!shps) continue;
+                for (const ts of shps) {
+                  const tb = shapeBounds(ts); if (!tb) continue;
+                  for (const cs of allContacts) {
+                    const cb = shapeBounds(cs); if (!cb) continue;
+                    if (rectsOverlap(tb.x,tb.y,tb.x+tb.width,tb.y+tb.height,
+                                      cb.x,cb.y,cb.x+cb.width,cb.y+cb.height)) {
+                      const cc = centerOfShape(cs as any); if (!cc) continue;
+                      if (!cPos.has(cs.id)) cPos.set(cs.id, cc);
+                      const s = cTis.get(cs.id)??new Set(); s.add(ti); cTis.set(cs.id, s);
+                    }
+                  }
+                }
+              }
+            }
+          } else {
+            // BJT/MOS: distinct layers per terminal. Use point-in-shape so
+            // that a contact on the emitter (embedded in base) is assigned
+            // to E, not B. For BJT, priority E > C > B resolves conflicts.
+            for (const cs of allContacts) {
+              const cc = centerOfShape(cs as any);
+              if (!cc) continue;
+              let matchTi: number | null = null;
+              let matchPri = Infinity;
+              for (let ti=0; ti<dev.terminals.length; ti++) {
+                for (const ln of terminalLayersOf(dev.kind, dev.terminals[ti].name)) {
+                  const shps = ct.layers?.[ln as keyof typeof ct.layers] as LayerShape[]|undefined;
+                  if (!shps) continue;
+                  for (const ts of shps) {
+                    if (pointInShape(cc.x, cc.y, ts)) {
+                      if (isBjt) {
+                        const pri = bjtPri[dev.terminals[ti].name] ?? 999;
+                        if (pri < matchPri) { matchPri = pri; matchTi = ti; }
+                      } else {
+                        matchTi = ti;
+                      }
+                      break;
+                    }
+                  }
+                  if (!isBjt && matchTi !== null) break;
+                }
+              }
+              if (matchTi !== null) {
+                if (!cPos.has(cs.id)) cPos.set(cs.id, cc);
+                const s = cTis.get(cs.id)??new Set(); s.add(matchTi); cTis.set(cs.id, s);
+              }
+            }
+          }
           if (allSameLayer) {
             // Resistor/capacitor/diode: same layer for all terminals.
             // Distribute unique contact positions round-robin.
