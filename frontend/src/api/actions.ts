@@ -372,11 +372,6 @@ export function useActionDispatcher(dieId: string): ActionDispatcher {
         if (previous) qc.setQueryData(key, previous);
         console.warn(`[action] ${action.kind} failed`, error);
         return false;
-      } finally {
-        // Safety net: server is authoritative. The WS notification usually
-        // beats this, but invalidating here guarantees eventual consistency
-        // even if the socket dropped.
-        void qc.invalidateQueries({ queryKey: key });
       }
     },
     [qc, dieId]
