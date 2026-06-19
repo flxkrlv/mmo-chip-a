@@ -2400,13 +2400,13 @@ const analogDevices = useMemo(
                 style={{
                   fontSize: 11, color: "var(--ink3)", letterSpacing: 1,
                   display: "flex", alignItems: "center", gap: 8,
-                  marginBottom: 3,
+                  marginBottom: 6,
                 }}
               >
                 <span className="u">ANALOG DEVICES</span>
                 <label
                   style={{
-                    marginLeft: "auto", fontSize: 9,
+                    marginLeft: "auto", fontSize: 9, minWidth: 60,
                     display: "flex", alignItems: "center", gap: 4,
                     cursor: "pointer", color: "var(--ink2)",
                   }}
@@ -2429,7 +2429,7 @@ const analogDevices = useMemo(
                 <span className="u">CELLS</span>
                 <label
                   style={{
-                    marginLeft: "auto", fontSize: 9,
+                    marginLeft: "auto", fontSize: 9, minWidth: 60,
                     display: "flex", alignItems: "center", gap: 4,
                     cursor: "pointer", color: "var(--ink2)",
                   }}
