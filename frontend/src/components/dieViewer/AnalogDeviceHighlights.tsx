@@ -352,18 +352,37 @@ function drawTerminalLabels(
     const term = dev.terminals.find((t) => t.name === pt.name);
     const netId = term?.netId;
 
-    // ── Unconnected terminal glow ──
-    // Fresh net IDs (>=2000) = no wire match → highlight
-    if (netId !== undefined && netId >= 2000) {
-      ctx.save();
-      ctx.shadowColor = "rgba(255, 40, 40, 1)";
-      ctx.shadowBlur = 18;
-      ctx.beginPath();
-      ctx.arc(sx + 5, sy, 8, 0, Math.PI * 2);
-      ctx.fillStyle = "rgba(255, 40, 40, 0.3)";
-      ctx.fill();
-      ctx.restore();
-    }
+// ── Unconnected terminal glow ──
+if (netId !== undefined && netId >= 2000) {
+  ctx.save();
+  
+  // Настройка базовой тени
+  ctx.shadowColor = "rgb(255, 0, 0)";
+  ctx.shadowOffsetX = 0;
+  ctx.shadowOffsetY = 0;
+
+  // Шаг 1: Рисуем первый слой с большим размытием (широкий ореол)
+  ctx.shadowBlur = 28;
+  ctx.beginPath();
+  ctx.arc(sx + 5, sy, 8, 0, Math.PI * 2);
+  ctx.fillStyle = "rgba(255, 0, 0, 1)";
+  ctx.fill();
+
+  // Шаг 2: Рисуем второй слой с меньшим размытием (плотное свечение у центра)
+  ctx.shadowBlur = 12;
+  ctx.beginPath();
+  ctx.arc(sx + 5, sy, 8, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Шаг 3: Рисуем само ядро (белое или светло-розовое) БЕЗ тени, чтобы оно не размывалось
+  ctx.shadowColor = "transparent"; // Отключаем тень для ядра
+  ctx.beginPath();
+  ctx.arc(sx + 5, sy, 6, 0, Math.PI * 2); // Чуть меньше радиус
+  ctx.fillStyle = "#ff000057"; // Центр
+  ctx.fill();
+
+  ctx.restore();
+}
 
     // Relabel D/S to "S/D" for display (MOS is symmetric)
     const displayName = pt.name === "D" || pt.name === "S" ? "S/D" : pt.name;
