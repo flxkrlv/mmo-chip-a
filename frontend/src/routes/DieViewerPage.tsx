@@ -2477,7 +2477,7 @@ const analogMemo = useMemo(
             </div>
             <div
               style={{
-                maxHeight: 220, overflow: "auto",
+                maxHeight: 360, overflow: "auto",
                 borderTop: "1px solid var(--l2)",
                 paddingTop: 2,
               }}

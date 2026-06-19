@@ -356,11 +356,11 @@ function drawTerminalLabels(
     // Fresh net IDs (>=2000) = no wire match → highlight
     if (netId !== undefined && netId >= 2000) {
       ctx.save();
-      ctx.shadowColor = "rgba(255, 200, 0, 0.9)";
-      ctx.shadowBlur = 14;
+      ctx.shadowColor = "rgba(255, 40, 40, 1)";
+      ctx.shadowBlur = 18;
       ctx.beginPath();
-      ctx.arc(sx + 5, sy, 7, 0, Math.PI * 2);
-      ctx.fillStyle = "rgba(255, 200, 0, 0.15)";
+      ctx.arc(sx + 5, sy, 8, 0, Math.PI * 2);
+      ctx.fillStyle = "rgba(255, 40, 40, 0.3)";
       ctx.fill();
       ctx.restore();
     }
