@@ -83,6 +83,8 @@ export function AnalogDeviceHighlights({
   // viewport subscription drives the rAF loop.
   const viewportRef = useRef(viewport);
   viewportRef.current = viewport;
+  const showNetIdsRef = useRef(showNetIds);
+  showNetIdsRef.current = showNetIds;
 
   // Draw
   useEffect(() => {
@@ -160,7 +162,7 @@ export function AnalogDeviceHighlights({
         }
 
         // Terminal labels at actual layer positions (independent of bbox area)
-        drawTerminalLabels(ctx, dev, vp, showNetIds);
+        drawTerminalLabels(ctx, dev, vp, showNetIdsRef.current);
       }
     };
 
@@ -177,7 +179,7 @@ export function AnalogDeviceHighlights({
       ro.disconnect();
       unsubVp();
     };
-  }, [devices, viewportStore]);
+  }, [devices, viewportStore, showNetIds]);
 
   // ── Click / double-click handling ───────────────────────────
   // Tracks click timing for double-click detection (300ms threshold).

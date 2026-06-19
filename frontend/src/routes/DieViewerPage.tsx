@@ -2402,28 +2402,13 @@ const analogDevices = useMemo(
                 style={{
                   fontSize: 11, color: "var(--ink3)", letterSpacing: 1,
                   display: "flex", alignItems: "center", gap: 8,
-                  marginBottom: 6,
+                  marginBottom: 5,
                 }}
               >
                 <span className="u">ANALOG DEVICES</span>
                 <label
                   style={{
-                    marginLeft: "auto", fontSize: 9,
-                    display: "flex", alignItems: "center", gap: 4,
-                    cursor: "pointer", color: "var(--ink2)",
-                  }}
-                >
-                  <input
-                    type="checkbox"
-                    checked={showTermNetIds}
-                    onChange={(e) => setShowTermNetIds(e.target.checked)}
-                    style={{ margin: 0 }}
-                  />
-                  nets
-                </label>
-                <label
-                  style={{
-                    fontSize: 9, minWidth: 50,
+                    marginLeft: "auto", fontSize: 9, minWidth: 55,
                     display: "flex", alignItems: "center", gap: 4,
                     cursor: "pointer", color: "var(--ink2)",
                   }}
@@ -2441,12 +2426,13 @@ const analogDevices = useMemo(
                 style={{
                   fontSize: 11, color: "var(--ink3)", letterSpacing: 1,
                   display: "flex", alignItems: "center", gap: 8,
+                  marginBottom: 5,
                 }}
               >
                 <span className="u">CELLS</span>
                 <label
                   style={{
-                    marginLeft: "auto", fontSize: 9, minWidth: 60,
+                    marginLeft: "auto", fontSize: 9, minWidth: 55,
                     display: "flex", alignItems: "center", gap: 4,
                     cursor: "pointer", color: "var(--ink2)",
                   }}
@@ -2458,6 +2444,29 @@ const analogDevices = useMemo(
                     style={{ margin: 0 }}
                   />
                   locked
+                </label>
+              </div>
+              <div
+                style={{
+                  fontSize: 11, color: "var(--ink3)", letterSpacing: 1,
+                  display: "flex", alignItems: "center", gap: 8,
+                }}
+              >
+                <span className="u">NET ID</span>
+                <label
+                  style={{
+                    marginLeft: "auto", fontSize: 9, minWidth: 55,
+                    display: "flex", alignItems: "center", gap: 4,
+                    cursor: "pointer", color: "var(--ink2)",
+                  }}
+                >
+                  <input
+                    type="checkbox"
+                    checked={showTermNetIds}
+                    onChange={(e) => setShowTermNetIds(e.target.checked)}
+                    style={{ margin: 0 }}
+                  />
+                  overlay
                 </label>
               </div>
             </div>
