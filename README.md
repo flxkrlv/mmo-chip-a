@@ -4,6 +4,10 @@
 Исходный проект ориентирован на цифровые CMOS Gate Array / Standard Cell чипы и извлекает логические вентили и Verilog-нетлист.  
 Этот форк расширяет его до **BJT, BiCMOS, резисторов, конденсаторов, диодов** — всей аналоговой периферии, которая не укладывается в модель стандартных ячеек.
 
+## Благодарности (ENG)
+Many thanks to the developers of the original [mmo-chip](https://github.com/openclaw/mmo-chip ).  
+Clean architecture, thoughtful modularity, and clear interfaces between the frontend, backend, and shared types are an excellent base for custom extensions, for example, for RE analog blocks and chips.
+
 Оригинальный CMOS-маршрут (стандартные ячейки, логика, Verilog) **не тронут** — аналоговая экстракция работает как надстройка. Мы старались не сломать цифровой маршрут, но это нуждается в проврерке - у нас нет опыта в цифровой логике и примеров снимков таких кристалов. 
 
 ```
@@ -227,7 +231,6 @@ W/L и количество пальцев (fingers) вычисляются ав
 - **JFET** — маркеры и geometry params в зачаточном состоянии
 - **Multi-emitter BJT с эмиттерами разного размера** — пока все считаются одинаковыми
 - **Wire matching на die-wide уровне** — потенциально нестабилен на плотных разводках
-- **Bulk net** для well-based MOS: если well tap делит контакт с diffusion — bulk теряется
 - **Редактирование polyline после размещения** — только перерисовать заново
 - **Сериализация overlay-изображений** в JSON аннотаций (пока статика)
 - **L-хоткей для polyline** — указан в тулбаре, но не зарегистрирован в центральном hotkey registry
@@ -308,7 +311,3 @@ node --import tsx --test backend/src/analog-extraction.test.ts  # только e
 
 ---
 
-## Благодарности
-
-Огромное спасибо разработчикам оригинального [mmo-chip](https://github.com/openclaw/mmo-chip).  
-Чистая архитектура, продуманная модульность, внятные интерфейсы между фронтендом, бэкендом и shared-типами — без этой базы аналоговое расширение было бы в разы сложнее. 👏
