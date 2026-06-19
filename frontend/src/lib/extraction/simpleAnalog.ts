@@ -6,9 +6,14 @@
  *
  * NPN:  npn_id + collector + base + emitter
  * MOS:  mos_id + drain + gate + source + bulk (W/L из bbox маркера)
- * RES:  res_id + contact×2
+ * RES:  res_id + body + contact×2
  * CAP:  cap_id + capacitor_bottom + capacitor_top
  * DIO:  diode_id
+ *
+ * Diode from BJT without collector:
+ *   npn_id/pnp_id + base + emitter (no collector) → diode
+ *   base = anode (PLUS), emitter = cathode (MINUS)
+ *   AE/PE from base-emitter overlap (same as BJT)
  */
 
 import type {
@@ -142,10 +147,9 @@ export function extractMarkedDevices(
     const prefix = prefixMap[marker.kind] ?? "X";
 
     switch (marker.kind) {
-      // ── BJT ──────────────────────────────────────────────────
+      // ── BJT / Diode-from-BJT ────────────────────────────────
       case "bjt_npn":
       case "bjt_pnp": {
-        // PNP: try "base" first, then "bulk" (user may have drawn base with bulk tool)
         const collectors = shapesInside(layers, "collector", marker.bbox);
         let bases = shapesInside(layers, "base", marker.bbox);
         if (bases.length === 0) bases = shapesInside(layers, "bulk", marker.bbox);
@@ -167,8 +171,57 @@ export function extractMarkedDevices(
           return nextNet(); // still give it a net even without contact
         }
 
-        // AE = overlap of emitter with base (standard BJT), or
-        // emitter area (LPnp — no separate base, the gap IS the base).
+        // ── Diode from BJT without collector ───────────────────
+        // npn_id/pnp_id + base + emitter but NO collector → diode.
+        // Anode = base (PLUS), Cathode = emitter (MINUS).
+        // AE/PE from base-emitter junction (same computation as BJT).
+        if (collectors.length === 0 && bases.length > 0 && emitters.length > 0) {
+          let totalAE = 0;
+          const emitterCount = Math.max(emitters.length, 1);
+          for (const emitS of emitters) {
+            const eb = shapeBbox(emitS);
+            if (!eb) { totalAE += 0; continue; }
+            let emitterArea = 0;
+            for (const baseS of bases) {
+              const bb = shapeBbox(baseS);
+              if (!bb) continue;
+              const a = overlapArea(bb, eb);
+              if (a > emitterArea) emitterArea = a;
+            }
+            totalAE += emitterArea;
+          }
+          const perFingerAE_um2 = totalAE / emitterCount * umPerPx * umPerPx;
+          let peUm = 0;
+          for (const emitS of emitters) {
+            const eb = shapeBbox(emitS);
+            if (!eb) continue;
+            peUm += 2 * (eb.width + eb.height) * umPerPx;
+          }
+          // Both NPN and PNP base-emitter is always a PN junction.
+          const diodeType = "pn" as const;
+
+          devices.push({
+            id: devId,
+            kind: "diode",
+            geometry: {
+              area_um2: perFingerAE_um2,
+              perimeter_um: peUm,
+              multiplier: emitterCount,
+              diodeType,
+            },
+            cellTypeId,
+            instanceName: `${prefixMap.diode}${counter}`,
+            modelName: "D_GEN",
+            terminals: [
+              { name: "PLUS", netId: terminalNet(bases) },   // anode = base
+              { name: "MINUS", netId: terminalNet(emitters) }, // cathode = emitter
+            ],
+            bbox: marker.bbox,
+          });
+          break; // done — don't fall through to BJT
+        }
+
+        // ── BJT ───────────────────────────────────────────────
         let totalAE = 0;
         const emitterCount = Math.max(emitters.length, 1);
         const isLpnp = emitters.length > 0 && bases.length === 0;
@@ -402,7 +455,7 @@ export function extractMarkedDevices(
         break;
       }
 
-      // ── Diode ────────────────────────────────────────────────
+      // ── Diode (marker-based) ─────────────────────────────────
       case "diode": {
         const area = marker.bbox.width * marker.bbox.height * umPerPx * umPerPx;
         devices.push({

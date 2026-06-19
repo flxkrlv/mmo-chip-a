@@ -61,6 +61,10 @@ interface Props {
 
 /** Minimum device bbox area (world px²) to bother drawing the label. */
 const MIN_LABEL_AREA = 200;
+/** Below this zoom level, hide terminal-point labels (G, S/D, E/C/B…). */
+const TERM_LABEL_MIN_ZOOM = 0.7;
+/** Below this zoom level, hide the parameter-hint line. */
+const PARAM_MIN_ZOOM = 0.5;
 
 export function AnalogDeviceHighlights({
   devices,
@@ -128,9 +132,11 @@ export function AnalogDeviceHighlights({
         const area = sw * sh;
         if (area >= MIN_LABEL_AREA) {
           const label = dev.instanceName ?? dev.id;
+          const typeStr = deviceTypeString(dev);
+          const labelFull = typeStr ? `${label} ${typeStr}` : label;
           ctx.font = `600 ${Math.max(10, Math.min(14, sw * 0.18))}px monospace`;
-          const textMetrics = ctx.measureText(label);
-          const labelW = textMetrics.width + 6;
+          const textMetrics = ctx.measureText(labelFull);
+          const labelW = textMetrics.width + 8;
           const labelH = 18;
           const labelBX = sx + 2;
           const labelBY = sy + 2;
@@ -139,14 +145,14 @@ export function AnalogDeviceHighlights({
           ctx.fillRect(labelBX, labelBY, labelW, labelH);
           ctx.fillStyle = color;
           ctx.textBaseline = "middle";
-          ctx.fillText(label, labelBX + 3, labelBY + labelH / 2);
+          ctx.fillText(labelFull, labelBX + 4, labelBY + labelH / 2);
 
           const paramStr = paramHint(dev);
-          if (paramStr && sw > 120) {
-            ctx.font = `400 ${Math.max(8, Math.min(11, sw * 0.13))}px monospace`;
+          if (paramStr && sw > 120 && vp.zoom >= PARAM_MIN_ZOOM) {
+            ctx.font = `400 ${Math.max(9, Math.min(13, sw * 0.14))}px monospace`;
             ctx.fillStyle = "rgba(255, 255, 255, 0.6)";
             ctx.textBaseline = "top";
-            ctx.fillText(paramStr, labelBX + 3, labelBY + labelH + 2);
+            ctx.fillText(paramStr, labelBX + 4, labelBY + labelH + 3);
           }
         }
 
@@ -230,7 +236,35 @@ export function AnalogDeviceHighlights({
   );
 }
 
-// ── Parameter hint helpers ───────────────────────────────────────
+// ── Device type labels & parameter hints ────────────────────────
+
+/** Human-readable device type for overlay label. */
+function deviceTypeString(dev: AnalogDevice): string {
+  const g = dev.geometry as any;
+  switch (dev.kind) {
+    case "mos":
+      return (g.mosType as string) === "pmos" ? "pmos" : "nmos";
+    case "bjt_npn":
+      return "npn";
+    case "bjt_pnp":
+      return "pnp";
+    case "resistor": {
+      const t = g.resistorType as string | undefined;
+      if (t === "poly") return "poly res";
+      if (t === "hsr") return "hsr res";
+      if (t === "pb") return "pb res";
+      if (t === "npl") return "npl res";
+      if (t === "film") return "film res";
+      return "res";
+    }
+    case "capacitor":
+      return "cap";
+    case "diode":
+      return "diode";
+    default:
+      return dev.kind;
+  }
+}
 
 function paramHint(dev: AnalogDevice): string {
   const g = dev.geometry;
@@ -290,6 +324,8 @@ function drawTerminalLabels(
   dev: AnalogDevice & { _termPoints?: Array<{x:number;y:number;name:string}> },
   vp: { originX: number; originY: number; zoom: number }
 ): void {
+  // Don't draw terminal labels when zoomed far out — would clutter the view.
+  if (vp.zoom < TERM_LABEL_MIN_ZOOM) return;
   const points = (dev as any)._termPoints as Array<{x:number;y:number;name:string}> | undefined;
   if (!points || points.length === 0) return;
 
