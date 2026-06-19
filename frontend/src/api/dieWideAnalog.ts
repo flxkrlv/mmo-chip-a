@@ -387,22 +387,15 @@ function matchWireToPoint(
 // ═════════════════════════════════════════════════════════════════
 // Device extraction (marker + well-based)
 // ═════════════════════════════════════════════════════════════════
+// MOS is well-based only (nwell/pwell + diffusion + polysilicon).
+// BJT, resistor, capacitor, diode are marker-based.
 
 export function extractAnalogDevicesFromCellType(
   cellType: CellType, umPerPx: number,
 ): AnalogDevice[] {
   const marker = extractMarkedDevices(cellType.layers, cellType.id, umPerPx);
   const well = detectMOSFromLayers(cellType.layers, cellType.id, umPerPx);
-  // Merge: well-based MOS + marker-based devices (dedup by removing
-  // duplicate mos devices — keep well-detected ones over markers)
-  const markedMosIds = new Set(
-    marker.filter((d) => d.kind === "mos").map((d) => d.id),
-  );
-  const merged = [
-    ...well,
-    ...marker.filter((d) => !(d.kind === "mos" && markedMosIds.has(d.id))),
-  ];
-  return merged;
+  return [...well, ...marker];
 }
 
 // ═════════════════════════════════════════════════════════════════

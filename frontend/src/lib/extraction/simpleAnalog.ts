@@ -5,7 +5,6 @@
  * Никакой Clipper2, никакой авто-детекции по геометрии.
  *
  * NPN:  npn_id + collector + base + emitter
- * MOS:  mos_id + drain + gate + source + bulk (W/L из bbox маркера)
  * RES:  res_id + body + contact×2
  * CAP:  cap_id + capacitor_bottom + capacitor_top
  * DIO:  diode_id
@@ -107,7 +106,6 @@ function findMarkers(layers: CellLayers | undefined): DeviceBox[] {
     pnp_id: "bjt_pnp",
     lpnp_id: "bjt_pnp",
     vpnp: "unknown",
-    mos_id: "mos",
     res_id: "resistor",
     cap_id: "capacitor",
     diode_id: "diode",
@@ -137,7 +135,7 @@ export function extractMarkedDevices(
   const devices: AnalogDevice[] = [];
   const markers = findMarkers(layers);
   const prefixMap: Record<string, string> = {
-    bjt_npn: "Q", bjt_pnp: "Q", mos: "M",
+    bjt_npn: "Q", bjt_pnp: "Q",
     resistor: "R", capacitor: "C", diode: "D",
   };
 
@@ -278,66 +276,6 @@ export function extractMarkedDevices(
             { name: "C", netId: terminalNet(collectors) },
             { name: "B", netId: terminalNet(bases) },
             { name: "E", netId: terminalNet(emitters) },
-          ],
-          bbox: marker.bbox,
-        });
-        break;
-      }
-
-      // ── MOS ──────────────────────────────────────────────────
-      case "mos": {
-        const drains = shapesInside(layers, "drain", marker.bbox);
-        const gates = shapesInside(layers, "gate", marker.bbox);
-        const sources = shapesInside(layers, "source", marker.bbox);
-        const bulks = shapesInside(layers, "bulk", marker.bbox);
-
-        // W/L from gate ∩ (drain ∪ source) intersection —
-        // gives real channel dimensions instead of marker bbox approximation.
-        const allDiff = [...drains, ...sources];
-        let totalIxW = 0;
-        let ixL = 0;
-        for (const gate of gates) {
-          const gb = shapeBbox(gate);
-          if (!gb) continue;
-          for (const diff of allDiff) {
-            const db = shapeBbox(diff);
-            if (!db) continue;
-            const ix = intersectionBbox(gb, db);
-            if (!ix) continue;
-            totalIxW += Math.max(ix.width, ix.height);
-            if (ixL === 0) ixL = Math.min(ix.width, ix.height);
-          }
-        }
-        const fingers = gates.length;
-        // Fallback to marker bbox if no gate/diff intersection found
-        const bboxW = Math.max(marker.bbox.width, marker.bbox.height) * umPerPx;
-        const bboxL = Math.min(marker.bbox.width, marker.bbox.height) * umPerPx;
-        const W_um = (fingers > 0 && totalIxW > 0) ? (totalIxW / fingers) * umPerPx : bboxW;
-        const L_um = (ixL > 0) ? ixL * umPerPx : bboxL;
-
-        function tNet(ts: LayerShape[]): number {
-          return ts.length > 0 ? nextNet() : -1;
-        }
-
-        devices.push({
-          id: devId,
-          kind: "mos",
-          geometry: {
-            L_um,
-            W_um,
-            fingers: Math.max(fingers, 1),
-            multiplier: 1,
-            totalW_um: W_um * Math.max(fingers, 1),
-            mosType: "unknown",
-          },
-          cellTypeId,
-          instanceName: `${prefix}${counter}`,
-          modelName: "CMOS_GEN",
-          terminals: [
-            { name: "D", netId: tNet(drains) },
-            { name: "G", netId: tNet(gates) },
-            { name: "S", netId: tNet(sources) },
-            { name: "B", netId: tNet(bulks) },
           ],
           bbox: marker.bbox,
         });

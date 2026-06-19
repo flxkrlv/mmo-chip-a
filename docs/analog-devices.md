@@ -10,35 +10,29 @@ devices; they are extracted at die-wide level and connected to die-level wires.
 
 ### MOS Transistor
 
-| Layer  | Purpose |
-|--------|---------|
-| `mos_id` | Bounding box (detects the device) |
-| `drain`  | Drain region (marker) |
-| `gate`   | Gate region (marker) |
-| `source` | Source region (marker) |
-| `bulk`   | Well/bulk contact (optional; if missing → VCC for PMOS, GND for NMOS) |
-
-**Or** rely on **well-based detection** (no markers needed):
+MOS detection is **well-based** — no markers needed.  The tool infers
+transistors from the actual layout layers:
 
 | Layer | Purpose |
 |-------|---------|
 | `nwell` | PMOS transistors are detected here |
 | `pwell` | NMOS transistors are detected here |
-| `diffusion` | Body region |
-| `polysilicon` | Gate fingers crossing diffusion |
+| `diffusion` | Body region (drain + source) |
+| `polysilicon` | Gate fingers crossing the diffusion |
 
-Well-based detection is automatic when these layers exist in the cell type.
-If both marker and well detection find the same MOS, the well-based result wins.
-
-**Geometry:** W/L computed from gate ∩ (drain ∪ source) intersection.
-Fingers = number of polysilicon stripes crossing one diffusion.
+**Geometry:** W/L computed from polysilicon ∩ diffusion intersection.
+Fingers = number of polysilicon stripes crossing one diffusion body.
 Multiplier = devices with same type and W/L are grouped.
 
-**Bulk:** A contact on nwell/pwell is the bulk terminal.  If the contact also
-touches diffusion or polysilicon, it's treated as S/D/G, not bulk.  If no
-bulk contact exists at all:
+**Bulk:** The tool looks for contacts on nwell/pwell that are NOT also on
+diffusion or polysilicon — those are bulk (well tap) contacts.  If the
+well contact also touches diffusion, it's treated as S/D, not bulk.  If
+no bulk contact exists at all:
 - PMOS → VCC (bulk = power)
 - NMOS → GND (bulk = ground)
+
+Marker-based MOS (`mos_id` + drain/gate/source/bulk) is removed —
+well-based handles everything automatically.
 
 ### BJT
 
