@@ -425,6 +425,7 @@ export const MergeCanvas = forwardRef<MergeCanvasHandle, Props>(function MergeCa
       ctx.restore();
     };
 
+    const v = viewRef.current;
     if (mode === "sxs") {
       // Two independent panes: specimen left, candidate right. Each clipped
       // to its half, each with its own pan/zoom view.
@@ -453,14 +454,12 @@ export const MergeCanvas = forwardRef<MergeCanvasHandle, Props>(function MergeCa
       };
       // Same shared view in both panes → linked pan/zoom.
       // Candidate on the left, target/specimen on the right.
-      const v = viewRef.current;
       drawPane(0, half, v, candidate, cd);
       drawPane(half, cw - half, v, specimen, sp);
     } else {
       // Stacked / single layout. overlay+diff draw both (diff with the
       // "difference" blend — black where they agree, bright where they
       // disagree); specimen / candidate draw just one.
-      const v = viewRef.current;
       setWorld(v, 0);
       const live =
         dragRef.current && dragRef.current.kind === "align"
