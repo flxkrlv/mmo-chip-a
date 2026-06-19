@@ -802,15 +802,18 @@ function DieViewer({ dieId }: { dieId: string }) {
   const setCellsLocked = usePreferences((s) => s.setCellsLocked);
   const [selectedDevice, setSelectedDevice] = useState<AnalogDevice | null>(null);
 
-const analogDevices = useMemo(
+const analogMemo = useMemo(
     () => {
-      if (!annotations) return [];
+      if (!annotations) return { devices: [], netNames: new Map<number, string>() };
       try {
-        return collectDieWideAnalogDevices(annotations as any, annotations.umPerPx ?? 1).devices;
-      } catch { return []; }
+        const r = collectDieWideAnalogDevices(annotations as any, annotations.umPerPx ?? 1);
+        return { devices: r.devices, netNames: r.namedNets };
+      } catch { return { devices: [], netNames: new Map<number, string>() }; }
     },
     [annotations]
   );
+  const analogDevices = analogMemo.devices;
+  const netNames = analogMemo.netNames;
 
   // Mirror analogDevices in a ref so callbacks passed to TiledCanvas
   // (onCanvasClick, onCanvasDoubleClick) don't get new references on
@@ -2377,6 +2380,7 @@ const analogDevices = useMemo(
               devices={analogDevices}
               viewportStore={viewportLive}
               showNetIds={showTermNetIds}
+              netNames={showTermNetIds ? netNames : undefined}
               onDeviceClick={(dev) => setSelectedDevice(dev)}
               onDeviceDoubleClick={(dev) => {
                 if (!annotations) return;

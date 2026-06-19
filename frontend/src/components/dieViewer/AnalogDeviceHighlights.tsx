@@ -59,6 +59,8 @@ interface Props {
   onDeviceDoubleClick?: (device: AnalogDevice) => void;
   /** Show net IDs next to terminal labels. */
   showNetIds?: boolean;
+  /** numeric netId → human-readable net name (e.g. "n100", "VCC"). */
+  netNames?: Map<number, string>;
 }
 
 /** Minimum device bbox area (world px²) to bother drawing the label. */
@@ -74,6 +76,7 @@ export function AnalogDeviceHighlights({
   onDeviceClick,
   onDeviceDoubleClick,
   showNetIds,
+  netNames,
 }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const viewport = useLiveValue(viewportStore);
@@ -162,7 +165,7 @@ export function AnalogDeviceHighlights({
         }
 
         // Terminal labels at actual layer positions (independent of bbox area)
-        drawTerminalLabels(ctx, dev, vp, showNetIdsRef.current);
+        drawTerminalLabels(ctx, dev, vp, showNetIdsRef.current, netNames);
       }
     };
 
@@ -328,7 +331,8 @@ function drawTerminalLabels(
   ctx: CanvasRenderingContext2D,
   dev: AnalogDevice & { _termPoints?: Array<{x:number;y:number;name:string}> },
   vp: { originX: number; originY: number; zoom: number },
-  showNetIds?: boolean
+  showNetIds?: boolean,
+  netNames?: Map<number, string>,
 ): void {
   // Don't draw terminal labels when zoomed far out — would clutter the view.
   if (vp.zoom < TERM_LABEL_MIN_ZOOM) return;
@@ -343,9 +347,23 @@ function drawTerminalLabels(
   for (const pt of points) {
     const sx = (pt.x - vp.originX) * vp.zoom;
     const sy = (pt.y - vp.originY) * vp.zoom;
-    // Resolve terminal netId by matching name
-    const term = showNetIds ? dev.terminals.find((t) => t.name === pt.name) : undefined;
-    const label = term !== undefined ? `${pt.name}:${term.netId}` : pt.name;
+    // Resolve terminal netId: for MOS "S/D" labels look up both D and S
+    let netId: number | undefined;
+    if (showNetIds) {
+      if (pt.name === "S/D") {
+        const dTerm = dev.terminals.find((t) => t.name === "D");
+        const sTerm = dev.terminals.find((t) => t.name === "S");
+        netId = dTerm?.netId ?? sTerm?.netId;
+      } else {
+        const term = dev.terminals.find((t) => t.name === pt.name);
+        netId = term?.netId;
+      }
+    }
+    // Show human-readable net name when available, fall back to numeric
+    const netLabel = netId !== undefined && netNames?.has(netId)
+      ? netNames.get(netId)!
+      : netId !== undefined ? String(netId) : undefined;
+    const label = netLabel !== undefined ? `${pt.name}:${netLabel}` : pt.name;
     const tm = ctx.measureText(label);
     const tw = tm.width + 4;
     const th = fontSize + 4;
