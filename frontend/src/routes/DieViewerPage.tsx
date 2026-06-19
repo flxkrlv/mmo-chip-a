@@ -52,6 +52,7 @@ import { InspectorPanel } from "../components/dieViewer/InspectorPanel";
 import { AnalogDiePanel } from "../components/dieViewer/AnalogDiePanel";
 import { AnalogDeviceHighlights } from "../components/dieViewer/AnalogDeviceHighlights";
 import { DeviceInspector } from "../components/dieViewer/DeviceInspector";
+import { DeviceInstancePanel } from "../components/dieViewer/DeviceInstancePanel";
 import { collectDieWideAnalogDevices } from "../api/dieWideAnalog";
 import { useMLJob, useMLStatus } from "../api/ml";
 import { WireDraftOverlay } from "../components/dieViewer/WireDraftOverlay";
@@ -2473,6 +2474,30 @@ const analogMemo = useMemo(
                   overlay
                 </label>
               </div>
+            </div>
+            <div
+              style={{
+                maxHeight: 220, overflow: "auto",
+                borderTop: "1px solid var(--l2)",
+                paddingTop: 2,
+              }}
+            >
+              <DeviceInstancePanel
+                devices={analogDevices}
+                selectedDevice={selectedDevice}
+                onSelectDevice={(dev) => {
+                  setSelectedDevice(dev);
+                  const cid = (dev as any)._cellId;
+                  if (cid) focusOnIds([`cell:${cid}`]);
+                }}
+                onDoubleClickDevice={(dev) => {
+                  const cid = (dev as any)._cellId;
+                  if (!cid) return;
+                  const cell = annotations?.cells?.find((c: any) => c.id === cid);
+                  if (!cell) return;
+                  navigate(`/re?die=${encodeURIComponent(dieId)}&type=${encodeURIComponent(cell.cellTypeId)}&cell=${encodeURIComponent(cid)}`);
+                }}
+              />
             </div>
             {selectedDevice ? (
               <DeviceInspector device={selectedDevice} onClose={() => setSelectedDevice(null)} />

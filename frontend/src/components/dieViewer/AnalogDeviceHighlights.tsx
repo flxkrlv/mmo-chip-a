@@ -347,18 +347,30 @@ function drawTerminalLabels(
   for (const pt of points) {
     const sx = (pt.x - vp.originX) * vp.zoom;
     const sy = (pt.y - vp.originY) * vp.zoom;
-    // Resolve terminal netId using the real terminal name (D or S, not S/D)
-    let netId: number | undefined;
-    if (showNetIds) {
-      const term = dev.terminals.find((t) => t.name === pt.name);
-      netId = term?.netId;
+
+    // Resolve terminal netId (always — needed for unconnected glow)
+    const term = dev.terminals.find((t) => t.name === pt.name);
+    const netId = term?.netId;
+
+    // ── Unconnected terminal glow ──
+    // Fresh net IDs (>=2000) = no wire match → highlight
+    if (netId !== undefined && netId >= 2000) {
+      ctx.save();
+      ctx.shadowColor = "rgba(255, 200, 0, 0.9)";
+      ctx.shadowBlur = 14;
+      ctx.beginPath();
+      ctx.arc(sx + 5, sy, 7, 0, Math.PI * 2);
+      ctx.fillStyle = "rgba(255, 200, 0, 0.15)";
+      ctx.fill();
+      ctx.restore();
     }
+
     // Relabel D/S to "S/D" for display (MOS is symmetric)
     const displayName = pt.name === "D" || pt.name === "S" ? "S/D" : pt.name;
-    // Show human-readable net name when available, fall back to numeric
-    const netLabel = netId !== undefined && netNames?.has(netId)
+    // Build label: optionally show net name
+    const netLabel = showNetIds && netId !== undefined && netNames?.has(netId)
       ? netNames.get(netId)!
-      : netId !== undefined ? String(netId) : undefined;
+      : showNetIds && netId !== undefined ? String(netId) : undefined;
     const label = netLabel !== undefined ? `${displayName}:${netLabel}` : displayName;
     const tm = ctx.measureText(label);
     const tw = tm.width + 4;
