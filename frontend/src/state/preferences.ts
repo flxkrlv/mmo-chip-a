@@ -34,6 +34,8 @@ interface PreferencesState {
   guidesHidden: boolean;
   /** Guides locked — not selectable / movable (still visible). */
   guidesLocked: boolean;
+  /** Cells locked — can't be dragged/repositioned. */
+  cellsLocked: boolean;
   /** Classes a newly-drawn ML ROI fully labels (schema §1 — load-bearing).
    *  Editable in the ROI tool options; each new ROI is stamped with this. */
   roiClasses: AnnotationClass[];
@@ -111,6 +113,7 @@ interface PreferencesActions {
   setCellSnapToGuides: (snap: boolean) => void;
   setGuidesHidden: (hidden: boolean) => void;
   setGuidesLocked: (locked: boolean) => void;
+  setCellsLocked: (locked: boolean) => void;
   setBaseImageHidden: (id: string, hidden: boolean) => void;
   setBaseImageOpacity: (id: string, opacity: number) => void;
   setMergeMode: (
@@ -159,6 +162,7 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
         cellSnapToGuides: false,
         guidesHidden: false,
         guidesLocked: false,
+        cellsLocked: false,
         baseImageHidden: {},
         baseImageOpacity: {},
         roiClasses: ["point_via", "irregular_via"],
@@ -196,6 +200,7 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
         setCellSnapToGuides: (snap) => set({ cellSnapToGuides: snap }),
         setGuidesHidden: (hidden) => set({ guidesHidden: hidden }),
         setGuidesLocked: (locked) => set({ guidesLocked: locked }),
+        setCellsLocked: (locked) => set({ cellsLocked: locked }),
         setBaseImageHidden: (id, hidden) =>
           set((state) => ({
             baseImageHidden: { ...state.baseImageHidden, [id]: hidden }
@@ -291,6 +296,7 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
           cellSnapToGuides: state.cellSnapToGuides,
           guidesHidden: state.guidesHidden,
           guidesLocked: state.guidesLocked,
+          cellsLocked: state.cellsLocked,
           baseImageHidden: state.baseImageHidden,
           baseImageOpacity: state.baseImageOpacity,
           roiClasses: state.roiClasses,

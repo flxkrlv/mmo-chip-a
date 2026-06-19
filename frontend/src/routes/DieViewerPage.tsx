@@ -797,6 +797,8 @@ function DieViewer({ dieId }: { dieId: string }) {
 
   // ── Device highlighting toggle ───────────────────────────────
   const [deviceOverlayOn, setDeviceOverlayOn] = useState(true);
+  const cellsLocked = usePreferences((s) => s.cellsLocked);
+  const setCellsLocked = usePreferences((s) => s.setCellsLocked);
   const [selectedDevice, setSelectedDevice] = useState<AnalogDevice | null>(null);
 
 const analogDevices = useMemo(
@@ -1488,6 +1490,14 @@ const analogDevices = useMemo(
         // up scheme as the net-vertex drag above.
         const cellHit = cell.cellFromHit(hit);
         if (cellHit) {
+          if (usePreferences.getState().cellsLocked) {
+            const handler: DragHandler = {
+              onPointerUp: ({ modifiers }) => {
+                selectFromHit(hit, modifiers.shift);
+              }
+            };
+            return handler;
+          }
           const { cell: original, cellType } = cellHit;
           // Shift locks the move to the dominant axis (re-evaluated live, so
           // tapping Shift mid-drag snaps it straight without restarting).
@@ -2407,6 +2417,21 @@ const analogDevices = useMemo(
                   style={{ margin: 0 }}
                 />
                 overlay
+              </label>
+              <label
+                style={{
+                  fontSize: 8,
+                  display: "flex", alignItems: "center", gap: 3,
+                  cursor: "pointer", color: "var(--ink2)",
+                }}
+              >
+                <input
+                  type="checkbox"
+                  checked={cellsLocked}
+                  onChange={(e) => setCellsLocked(e.target.checked)}
+                  style={{ margin: 0 }}
+                />
+                lock cells
               </label>
             </div>
             {selectedDevice ? (
