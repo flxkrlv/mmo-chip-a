@@ -2395,44 +2395,54 @@ const analogDevices = useMemo(
             mlViasLayer={mlViasLayer}
           />
           <div style={{ borderTop: "2px solid var(--l2)" }}>
-            <div
-              style={{
-                padding: "5px 10px",
-                fontSize: 10, color: "var(--ink3)", letterSpacing: 1,
-                display: "flex", alignItems: "center", gap: 8,
-              }}
-            >
-              <span className="u">ANALOG DEVICES</span>
-              <label
+            <div style={{ padding: "6px 10px 4px" }}>
+              <div
                 style={{
-                  marginLeft: "auto", fontSize: 8,
-                  display: "flex", alignItems: "center", gap: 3,
-                  cursor: "pointer", color: "var(--ink2)",
+                  fontSize: 11, color: "var(--ink3)", letterSpacing: 1,
+                  display: "flex", alignItems: "center", gap: 8,
+                  marginBottom: 3,
                 }}
               >
-                <input
-                  type="checkbox"
-                  checked={deviceOverlayOn}
-                  onChange={(e) => setDeviceOverlayOn(e.target.checked)}
-                  style={{ margin: 0 }}
-                />
-                overlay
-              </label>
-              <label
+                <span className="u">ANALOG DEVICES</span>
+                <label
+                  style={{
+                    marginLeft: "auto", fontSize: 9,
+                    display: "flex", alignItems: "center", gap: 4,
+                    cursor: "pointer", color: "var(--ink2)",
+                  }}
+                >
+                  <input
+                    type="checkbox"
+                    checked={deviceOverlayOn}
+                    onChange={(e) => setDeviceOverlayOn(e.target.checked)}
+                    style={{ margin: 0 }}
+                  />
+                  overlay
+                </label>
+              </div>
+              <div
                 style={{
-                  fontSize: 8,
-                  display: "flex", alignItems: "center", gap: 3,
-                  cursor: "pointer", color: "var(--ink2)",
+                  fontSize: 11, color: "var(--ink3)", letterSpacing: 1,
+                  display: "flex", alignItems: "center", gap: 8,
                 }}
               >
-                <input
-                  type="checkbox"
-                  checked={cellsLocked}
-                  onChange={(e) => setCellsLocked(e.target.checked)}
-                  style={{ margin: 0 }}
-                />
-                lock cells
-              </label>
+                <span className="u">CELLS</span>
+                <label
+                  style={{
+                    marginLeft: "auto", fontSize: 9,
+                    display: "flex", alignItems: "center", gap: 4,
+                    cursor: "pointer", color: "var(--ink2)",
+                  }}
+                >
+                  <input
+                    type="checkbox"
+                    checked={cellsLocked}
+                    onChange={(e) => setCellsLocked(e.target.checked)}
+                    style={{ margin: 0 }}
+                  />
+                  locked
+                </label>
+              </div>
             </div>
             {selectedDevice ? (
               <DeviceInspector device={selectedDevice} onClose={() => setSelectedDevice(null)} />
