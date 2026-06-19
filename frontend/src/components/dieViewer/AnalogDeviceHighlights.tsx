@@ -347,23 +347,19 @@ function drawTerminalLabels(
   for (const pt of points) {
     const sx = (pt.x - vp.originX) * vp.zoom;
     const sy = (pt.y - vp.originY) * vp.zoom;
-    // Resolve terminal netId: for MOS "S/D" labels look up both D and S
+    // Resolve terminal netId using the real terminal name (D or S, not S/D)
     let netId: number | undefined;
     if (showNetIds) {
-      if (pt.name === "S/D") {
-        const dTerm = dev.terminals.find((t) => t.name === "D");
-        const sTerm = dev.terminals.find((t) => t.name === "S");
-        netId = dTerm?.netId ?? sTerm?.netId;
-      } else {
-        const term = dev.terminals.find((t) => t.name === pt.name);
-        netId = term?.netId;
-      }
+      const term = dev.terminals.find((t) => t.name === pt.name);
+      netId = term?.netId;
     }
+    // Relabel D/S to "S/D" for display (MOS is symmetric)
+    const displayName = pt.name === "D" || pt.name === "S" ? "S/D" : pt.name;
     // Show human-readable net name when available, fall back to numeric
     const netLabel = netId !== undefined && netNames?.has(netId)
       ? netNames.get(netId)!
       : netId !== undefined ? String(netId) : undefined;
-    const label = netLabel !== undefined ? `${pt.name}:${netLabel}` : pt.name;
+    const label = netLabel !== undefined ? `${displayName}:${netLabel}` : displayName;
     const tm = ctx.measureText(label);
     const tw = tm.width + 4;
     const th = fontSize + 4;

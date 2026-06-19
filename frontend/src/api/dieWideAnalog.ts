@@ -494,14 +494,10 @@ export function collectDieWideAnalogDevices(
           return {...t, netId: fresh};
         });
 
-        // ── MOS: relabel D/S termPoints to "S/D" (symmetric) ─
-        // MOSFET is electrically symmetric; the overlay shows both as "S/D"
-        // to avoid implying a distinction that isn't geometrically resolved.
-        if (dev.kind === "mos") {
-          for (const pt of termPoints) {
-            if (pt.name === "D" || pt.name === "S") pt.name = "S/D";
-          }
-        }
+        // ── MOS: D/S termPoints keep their original names for net lookup ─
+        // The overlay relabels "D"/"S" to "S/D" at draw time.
+        // Storing as-is preserves the terminal distinction for correct
+        // netId resolution per contact.
 
         allDevices.push({
           ...dev,
