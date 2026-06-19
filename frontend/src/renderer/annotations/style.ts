@@ -55,11 +55,7 @@ export const COLOR_LAYER: Record<LayerType, string> = {
   diode_id: "#ff6666",
   // BJT terminal
   collector: "#88ccff",
-  // MOS marker + terminals
-  mos_id: "#4488ff",
-  drain: "#ff6666",
-  gate: "#66ff66",
-  source: "#6666ff",
+  // Bulk/well
   bulk: "#ffaa44",
 };
 
@@ -105,11 +101,7 @@ export const LAYER_FILL_OPACITY: Record<LayerType, number> = {
   diode_id: 0.25,
   // BJT terminal
   collector: 0.3,
-  // MOS
-  mos_id: 0.25,
-  drain: 0.3,
-  gate: 0.3,
-  source: 0.3,
+  // Bulk/well
   bulk: 0.3,
 };
 

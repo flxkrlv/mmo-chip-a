@@ -51,14 +51,10 @@ export const LAYER_DRAW_ORDER: LayerType[] = [
   "pnp_id",
   "lpnp_id",
   "vpnp",
-  "mos_id",
   "res_id",
   "cap_id",
   "diode_id",
   "collector",
-  "drain",
-  "gate",
-  "source",
   "bulk"
 ];
 

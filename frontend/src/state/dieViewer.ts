@@ -21,7 +21,7 @@ export type AnalogLayerId =
   | "resistor_body"
   | "capacitor_bottom" | "capacitor_top"
   | "npn_id" | "pnp_id" | "lpnp_id" | "vpnp" | "res_id" | "cap_id" | "diode_id"
-  | "mos_id" | "collector" | "drain" | "gate" | "source" | "bulk"
+  | "collector" | "bulk"
   | "metal3" | "metal4" | "metal5" | "metal6";
 
 export type ToolKind =

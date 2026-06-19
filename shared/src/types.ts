@@ -118,11 +118,7 @@ export type LayerType =
   | "diode_id"
   // BJT terminal layers
   | "collector"
-  // MOS marker + terminal layers
-  | "mos_id"
-  | "drain"
-  | "gate"
-  | "source"
+  // Bulk/well marker (used in BJT + MOS terminal defs)
   | "bulk";
 
 /**

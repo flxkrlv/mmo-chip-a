@@ -91,8 +91,8 @@ export const useCellREStore = create<CellREState & CellREActions>()((set, get) =
 }));
 
 export const TOOL_LAYERS: Record<"rect" | "polygon" | "point" | "polyline", LayerType[]> = {
-  rect: ["diffusion","polysilicon","metal1","metal2","nwell","pwell","base","emitter","resistor_body","hsr","film","capacitor_bottom","capacitor_top","metal3","metal4","metal5","metal6","npn_id","pnp_id","lpnp_id","vpnp","mos_id","res_id","cap_id","diode_id","collector","drain","gate","source","bulk","wire_hitbox"],
-  polygon: ["diffusion","polysilicon","metal1","metal2","nwell","pwell","base","emitter","resistor_body","hsr","film","capacitor_bottom","capacitor_top","metal3","metal4","metal5","metal6","npn_id","pnp_id","lpnp_id","vpnp","mos_id","res_id","cap_id","diode_id","collector","drain","gate","source","bulk","wire_hitbox"],
+  rect: ["diffusion","polysilicon","metal1","metal2","nwell","pwell","base","emitter","resistor_body","hsr","film","capacitor_bottom","capacitor_top","metal3","metal4","metal5","metal6","npn_id","pnp_id","lpnp_id","vpnp","res_id","cap_id","diode_id","collector","bulk","wire_hitbox"],
+  polygon: ["diffusion","polysilicon","metal1","metal2","nwell","pwell","base","emitter","resistor_body","hsr","film","capacitor_bottom","capacitor_top","metal3","metal4","metal5","metal6","npn_id","pnp_id","lpnp_id","vpnp","res_id","cap_id","diode_id","collector","bulk","wire_hitbox"],
   point: ["contact","via1"],
   polyline: ["resistor_body","polysilicon","base","emitter","hsr","film"],
 };
@@ -103,7 +103,7 @@ export const LAYER_LABEL: Record<LayerType, string> = {
   jfet_gate:"jgate",jfet_channel:"jchan",resistor_body:"R",hsr:"HSR",film:"Film",capacitor_bottom:"capB",capacitor_top:"capT",
   metal3:"m3",metal4:"m4",metal5:"m5",metal6:"m6",device_box:"dbox",
   npn_id:"NPN",pnp_id:"PNP",lpnp_id:"LPNP",vpnp:"VPNP",res_id:"RES",cap_id:"CAP",diode_id:"DIO",collector:"COLL",
-  mos_id:"MOS",drain:"D",gate:"G",source:"S",bulk:"B",
+  bulk:"B",
 };
 
 export const LAYER_LONG: Record<LayerType, string> = {
@@ -112,5 +112,5 @@ export const LAYER_LONG: Record<LayerType, string> = {
   jfet_gate:"JFET Gate",jfet_channel:"JFET Channel",resistor_body:"Resistor Body",hsr:"High-Sheet-R",film:"Thin Film",capacitor_bottom:"Capacitor Bottom",capacitor_top:"Capacitor Top",
   metal3:"Metal 3",metal4:"Metal 4",metal5:"Metal 5",metal6:"Metal 6",device_box:"Device Box",
   npn_id:"NPN Marker",pnp_id:"PNP Marker",lpnp_id:"LPNP Marker",vpnp:"VPNP (vertical, WIP)",res_id:"Resistor Marker",cap_id:"Capacitor Marker",diode_id:"Diode Marker",collector:"Collector",
-  mos_id:"MOS Marker",drain:"Drain",gate:"Gate",source:"Source",bulk:"Bulk",
+  bulk:"Bulk",
 };
