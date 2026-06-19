@@ -797,6 +797,7 @@ function DieViewer({ dieId }: { dieId: string }) {
 
   // ── Device highlighting toggle ───────────────────────────────
   const [deviceOverlayOn, setDeviceOverlayOn] = useState(true);
+  const [showTermNetIds, setShowTermNetIds] = useState(false);
   const cellsLocked = usePreferences((s) => s.cellsLocked);
   const setCellsLocked = usePreferences((s) => s.setCellsLocked);
   const [selectedDevice, setSelectedDevice] = useState<AnalogDevice | null>(null);
@@ -2375,6 +2376,7 @@ const analogDevices = useMemo(
             <AnalogDeviceHighlights
               devices={analogDevices}
               viewportStore={viewportLive}
+              showNetIds={showTermNetIds}
               onDeviceClick={(dev) => setSelectedDevice(dev)}
               onDeviceDoubleClick={(dev) => {
                 if (!annotations) return;
@@ -2406,7 +2408,22 @@ const analogDevices = useMemo(
                 <span className="u">ANALOG DEVICES</span>
                 <label
                   style={{
-                    marginLeft: "auto", fontSize: 9, minWidth: 60,
+                    marginLeft: "auto", fontSize: 9,
+                    display: "flex", alignItems: "center", gap: 4,
+                    cursor: "pointer", color: "var(--ink2)",
+                  }}
+                >
+                  <input
+                    type="checkbox"
+                    checked={showTermNetIds}
+                    onChange={(e) => setShowTermNetIds(e.target.checked)}
+                    style={{ margin: 0 }}
+                  />
+                  nets
+                </label>
+                <label
+                  style={{
+                    fontSize: 9, minWidth: 50,
                     display: "flex", alignItems: "center", gap: 4,
                     cursor: "pointer", color: "var(--ink2)",
                   }}

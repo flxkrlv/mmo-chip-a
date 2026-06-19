@@ -57,6 +57,8 @@ interface Props {
   onDeviceClick?: (device: AnalogDevice) => void;
   /** Called when the user double-clicks a device (e.g. to open in RE Cell). */
   onDeviceDoubleClick?: (device: AnalogDevice) => void;
+  /** Show net IDs next to terminal labels. */
+  showNetIds?: boolean;
 }
 
 /** Minimum device bbox area (world px²) to bother drawing the label. */
@@ -71,6 +73,7 @@ export function AnalogDeviceHighlights({
   viewportStore,
   onDeviceClick,
   onDeviceDoubleClick,
+  showNetIds,
 }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const viewport = useLiveValue(viewportStore);
@@ -157,7 +160,7 @@ export function AnalogDeviceHighlights({
         }
 
         // Terminal labels at actual layer positions (independent of bbox area)
-        drawTerminalLabels(ctx, dev, vp);
+        drawTerminalLabels(ctx, dev, vp, showNetIds);
       }
     };
 
@@ -322,7 +325,8 @@ function paramHint(dev: AnalogDevice): string {
 function drawTerminalLabels(
   ctx: CanvasRenderingContext2D,
   dev: AnalogDevice & { _termPoints?: Array<{x:number;y:number;name:string}> },
-  vp: { originX: number; originY: number; zoom: number }
+  vp: { originX: number; originY: number; zoom: number },
+  showNetIds?: boolean
 ): void {
   // Don't draw terminal labels when zoomed far out — would clutter the view.
   if (vp.zoom < TERM_LABEL_MIN_ZOOM) return;
@@ -337,14 +341,16 @@ function drawTerminalLabels(
   for (const pt of points) {
     const sx = (pt.x - vp.originX) * vp.zoom;
     const sy = (pt.y - vp.originY) * vp.zoom;
-    const shortName = pt.name;
-    const tm = ctx.measureText(shortName);
+    // Resolve terminal netId by matching name
+    const term = showNetIds ? dev.terminals.find((t) => t.name === pt.name) : undefined;
+    const label = term !== undefined ? `${pt.name}:${term.netId}` : pt.name;
+    const tm = ctx.measureText(label);
     const tw = tm.width + 4;
     const th = fontSize + 4;
 
     ctx.fillStyle = "rgba(0, 0, 0, 0.7)";
     ctx.fillRect(sx + 4, sy - th / 2, tw, th);
     ctx.fillStyle = color;
-    ctx.fillText(shortName, sx + 6, sy);
+    ctx.fillText(label, sx + 6, sy);
   }
 }
