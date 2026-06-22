@@ -2,6 +2,7 @@ import { useCallback, useMemo, useRef, useState } from "react";
 import type { DieAnnotations } from "shared";
 import { Ic } from "../../icons";
 import { useOverlayLayers } from "../../state/overlayLayers";
+import { useSession } from "../../state/session";
 import {
   CELL_COLOR_OPTIONS,
   NET_COLOR_OPTIONS,
@@ -113,15 +114,16 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
     [addLayer]
   );
 
+  const dieId = useSession((s) => s.dieId);
   const [loadingTestImages, setLoadingTestImages] = useState(false);
   const onLoadFromServer = useCallback(() => {
-    if (loadingTestImages) return;
+    if (!dieId || loadingTestImages) return;
     setLoadingTestImages(true);
     import("../../api/overlayImages")
       .then(async (mod) => {
-        const list = await mod.fetchOverlayImageList();
+        const list = await mod.fetchOverlayImageList(dieId);
         const results = await Promise.allSettled(
-          list.images.map((img) => mod.loadOverlayImageFromServer(img.name))
+          list.images.map((img) => mod.loadOverlayImageFromServer(dieId, img.name))
         );
         for (const result of results) {
           if (result.status === "fulfilled") {
@@ -131,7 +133,7 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
         setLoadingTestImages(false);
       })
       .catch(() => setLoadingTestImages(false));
-  }, [addLayer, loadingTestImages]);
+  }, [addLayer, dieId, loadingTestImages]);
 
   const cellsByType = useMemo(() => groupCellsByType(annotations), [annotations]);
   const viaTotals = useMemo(() => viaCounts(annotations), [annotations]);
@@ -588,9 +590,9 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
               lineHeight: 1.4
             }}
           >
-            <strong>Server path:</strong> copy files to
+            <strong>Server path:</strong> copy files to the current die's folder
             <code style={{ display: "block", marginTop: 2, padding: "2px 4px", background: "var(--bg)", borderRadius: 2 }}>
-              data/overlay-images/
+              data/overlay-images/{dieId}/
             </code>
             then click <strong>Load from Server</strong> to add. Images persist
             across page reloads. Upload via Add from File → server upload.

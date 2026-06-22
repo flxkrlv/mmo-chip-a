@@ -5,7 +5,7 @@ import {
   type UseQueryOptions
 } from "@tanstack/react-query";
 import type { DieMetadata, DieSummary, ImportJob } from "shared";
-import { apiDelete, apiGet, apiUpload } from "./client";
+import { apiDelete, apiGet, apiPost, apiPut, apiUpload } from "./client";
 import { importJobKeys } from "./importJobs";
 import { usePreferences } from "../state/preferences";
 
@@ -79,6 +79,133 @@ export function useDeleteDie() {
       void qc.invalidateQueries({ queryKey: dieKeys.list() });
       // Drop any saved viewport so its localStorage entry doesn't leak.
       usePreferences.getState().clearSavedViewport(dieId);
+    }
+  });
+}
+
+// ─── Rename ─────────────────────────────────────────────────────────
+
+export async function renameDie(dieId: string, name: string): Promise<{ ok: true; name: string }> {
+  return apiPut(`/api/dies/${dieId}/rename`, { name });
+}
+
+export function useRenameDie() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ dieId, name }: { dieId: string; name: string }) => renameDie(dieId, name),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: dieKeys.list() });
+    }
+  });
+}
+
+// ─── Project export / import ────────────────────────────────────────
+
+export interface ExportProjectResult {
+  blob: Blob;
+  filename: string;
+}
+
+/**
+ * Export a die project as a ZIP bundle.
+ * mode: "light" | "full"
+ * includePreferences: if true, reads mmo-chip-preferences from localStorage and embeds it
+ */
+export async function exportProject(
+  dieId: string,
+  mode: "light" | "full",
+  includePreferences: boolean,
+  signal?: AbortSignal
+): Promise<ExportProjectResult> {
+  const preferences =
+    includePreferences ? localStorage.getItem("mmo-chip-preferences") : null;
+
+  const response = await fetch(`/api/dies/${dieId}/export-project`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ mode, preferences }),
+    signal
+  });
+
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({ error: response.statusText }));
+    throw new Error(err.error || "Export failed");
+  }
+
+  const blob = await response.blob();
+  let filename = `mmochip-${dieId}.zip`;
+  const disposition = response.headers.get("Content-Disposition");
+  if (disposition) {
+    const match = disposition.match(/filename="([^"]+)"/);
+    if (match) filename = match[1];
+  }
+
+  return { blob, filename };
+}
+
+export interface ImportProjectResult {
+  ok: boolean;
+  dieId: string;
+  preferences: string | null;
+}
+
+/**
+ * Import a project ZIP bundle.
+ * Returns { ok, dieId, preferences }.
+ * On conflict (409) the error object has { error: "die_already_exists", dieId, name }.
+ * Pass ?name=xxx to import as a copy on conflict. Also available as second arg.
+ */
+export async function importProject(
+  file: File,
+  renameTo?: string
+): Promise<ImportProjectResult> {
+  const form = new FormData();
+  form.append("file", file);
+
+  let url = "/api/dies/import-project";
+  if (renameTo) url += `?name=${encodeURIComponent(renameTo)}`;
+
+  return apiUpload<ImportProjectResult>(url, form);
+}
+
+export function useExportProject() {
+  return useMutation({
+    mutationFn: async ({
+      dieId,
+      mode,
+      includePreferences
+    }: {
+      dieId: string;
+      mode: "light" | "full";
+      includePreferences: boolean;
+    }) => {
+      return exportProject(dieId, mode, includePreferences);
+    }
+  });
+}
+
+export function useImportProject() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async ({
+      file,
+      renameTo
+    }: {
+      file: File;
+      renameTo?: string;
+    }) => {
+      return importProject(file, renameTo);
+    },
+    onSuccess: (result) => {
+      void qc.invalidateQueries({ queryKey: dieKeys.list() });
+      // If preferences were embedded in the bundle, restore them.
+      if (result.preferences) {
+        try {
+          localStorage.setItem("mmo-chip-preferences", result.preferences);
+        } catch {
+          // localStorage might be full — silently ignore
+        }
+      }
     }
   });
 }

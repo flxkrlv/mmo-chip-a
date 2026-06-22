@@ -9,6 +9,7 @@ import { createMLRouter } from "./api/ml.js";
 import { createOverlayImagesRouter } from "./api/overlayImages.js";
 import { createMLExportRouter } from "./api/mlExport.js";
 import { createAnalogExportRouter } from "./api/analogExport.js";
+import { createProjectIORouter } from "./api/projectIO.js";
 import { createTilesRouter } from "./api/tiles.js";
 import { listDieRecords } from "./store.js";
 import { createTileScheduler } from "./tileScheduler.js";
@@ -72,6 +73,7 @@ export function createApp(config: {
     mlPredictPad: config.mlPredictPad,
     broadcaster: config.broadcaster
   }));
+  app.use(createProjectIORouter({ dataRoot: config.dataRoot }));
 
   app.use(
     (

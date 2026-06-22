@@ -472,18 +472,18 @@ function DieViewer({ dieId }: { dieId: string }) {
   }, []);
 
   // Auto-load overlay images from server on first mount (survives F5).
-  // Guard against double-run (React StrictMode / HMR).
+  // Auto-load overlay images for this die from server.
   const autoLoadRef = useRef(false);
   useEffect(() => {
-    if (autoLoadRef.current) return;
+    if (!dieId || autoLoadRef.current) return;
     autoLoadRef.current = true;
     const addLayer = useOverlayLayers.getState().addLayer;
     const layers = useOverlayLayers.getState().layers;
     const existing = new Set(layers.map((l) => l.name));
     import("../api/overlayImages").then((mod) =>
-      mod.fetchOverlayImageList().then((list) =>
+      mod.fetchOverlayImageList(dieId).then((list) =>
         Promise.allSettled(
-          list.images.map((img) => mod.loadOverlayImageFromServer(img.name))
+          list.images.map((img) => mod.loadOverlayImageFromServer(dieId, img.name))
         ).then((results) => {
           for (const r of results) {
             if (r.status === "fulfilled" && !existing.has(r.value.name)) {
@@ -493,7 +493,7 @@ function DieViewer({ dieId }: { dieId: string }) {
         })
       )
     );
-  }, []);
+  }, [dieId]);
 
   // Seed the (mockup, client-side) ML config from the die's annotations once
   // per die — `resetDieViewer` already restored defaults on the die change.

@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
 import type { DieSummary, ImportJob, MLInferenceJob } from "shared";
-import { useDeleteDie } from "../../api/dies";
+import { useDeleteDie, useExportProject, useRenameDie } from "../../api/dies";
 import { Menu, type MenuItemDef } from "../Menu";
 import { formatPercent, formatPixels, formatTileProgress } from "../../lib/format";
 
@@ -108,18 +108,85 @@ export function ThumbCard(props: Props) {
 
 function DieCardActions({ die }: { die: DieSummary }) {
   const deleteMutation = useDeleteDie();
-  const [pending, setPending] = useState(false);
+  const exportMutation = useExportProject();
+  const renameMutation = useRenameDie();
+  const [pending, setPending] = useState<string | null>(null);
+
+  function doExport(mode: "light" | "full") {
+    if (pending) return;
+    setPending(`Preparing ${mode} export… (this may take a while for large images)`);
+    const includePreferences = window.confirm(
+      `Include browser preferences (net colors, viewport, …)?\n\n` +
+      `Cancel = export project data only.\nOK = include preferences too.`
+    );
+    exportMutation.mutate(
+      {
+        dieId: die.id,
+        mode,
+        includePreferences
+      },
+      {
+        onSuccess: ({ blob, filename }) => {
+          setPending(null);
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement("a");
+          a.href = url;
+          a.download = filename;
+          a.click();
+          URL.revokeObjectURL(url);
+        },
+        onError: (err) => {
+          setPending(null);
+          alert(`Export failed: ${err.message}`);
+        }
+      }
+    );
+  }
+
+  function doRename() {
+    if (pending) return;
+    const newName = window.prompt(`Rename "${die.name}" to:`, die.name);
+    if (!newName || newName.trim() === die.name) return;
+    setPending("renaming…");
+    renameMutation.mutate(
+      { dieId: die.id, name: newName.trim() },
+      {
+        onSuccess: () => setPending(null),
+        onError: (err) => {
+          setPending(null);
+          alert(`Rename failed: ${err.message}`);
+        }
+      }
+    );
+  }
+
+  const isBusy = pending !== null;
 
   const items: MenuItemDef[] = [
     {
-      label: pending ? "deleting…" : "Delete",
+      label: isBusy ? pending! : "Rename",
+      disabled: isBusy,
+      onSelect: doRename
+    },
+    {
+      label: isBusy ? "" : "Export (light)",
+      disabled: isBusy,
+      onSelect: () => doExport("light")
+    },
+    {
+      label: isBusy ? "" : "Export (full)",
+      disabled: isBusy,
+      onSelect: () => doExport("full")
+    },
+    {
+      label: pending === "deleting…" ? "deleting…" : "Delete",
       danger: true,
-      disabled: pending,
+      disabled: isBusy,
       onSelect: () => {
         if (!window.confirm(`Delete "${die.name}"? This cannot be undone.`)) return;
-        setPending(true);
+        setPending("deleting…");
         deleteMutation.mutate(die.id, {
-          onSettled: () => setPending(false)
+          onSettled: () => setPending(null)
         });
       }
     }

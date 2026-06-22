@@ -1,5 +1,6 @@
-import { useMemo, useRef, useState } from "react";
-import { useImportDie } from "../api/dies";
+import { useCallback, useMemo, useRef, useState } from "react";
+import { useNavigate } from "react-router-dom";
+import { useImportDie, useImportProject } from "../api/dies";
 import { useLibraryItems, type LibraryItem } from "../api/library";
 import { AppShell } from "../components/shell/AppShell";
 import { StatusBar } from "../components/shell/StatusBar";
@@ -9,7 +10,10 @@ import { Ic } from "../icons";
 export function LibraryPage() {
   const { items, isLoading, error, refetch } = useLibraryItems();
   const importMutation = useImportDie();
+  const importProjectMutation = useImportProject();
+  const navigate = useNavigate();
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const projectFileInputRef = useRef<HTMLInputElement>(null);
   const [filter, setFilter] = useState("");
 
   const filtered = useMemo(() => filterItems(items, filter), [items, filter]);
@@ -38,6 +42,44 @@ export function LibraryPage() {
       // toast/error UI will be wired later — for now keep mutation.error visible
     }
   }
+
+  const handleProjectFileChange = useCallback(
+    async (event: React.ChangeEvent<HTMLInputElement>) => {
+      const file = event.target.files?.[0];
+      event.target.value = "";
+      if (!file) return;
+
+      try {
+        const result = await importProjectMutation.mutateAsync({ file });
+        navigate(`/die/${result.dieId}`);
+      } catch (err: unknown) {
+        // Check for 409 conflict
+        const apiErr = err as { status?: number; body?: { error?: string; dieId?: string; name?: string } };
+        if (apiErr?.status === 409 && apiErr.body) {
+          const b = apiErr.body;
+          const action = window.prompt(
+            `Die "${b.name}" already exists (ID: ${b.dieId}).` +
+            `\nEnter a new name to import as a copy, or leave empty to cancel.` +
+            `\n\n(To overwrite, first delete the existing die and retry.)`
+          );
+          if (action && action.trim()) {
+            try {
+              const result2 = await importProjectMutation.mutateAsync({
+                file,
+                renameTo: action.trim()
+              });
+              navigate(`/die/${result2.dieId}`);
+            } catch (err2: unknown) {
+              alert(`Import failed: ${(err2 as Error).message}`);
+            }
+          }
+        } else {
+          alert(`Import failed: ${(err as Error).message}`);
+        }
+      }
+    },
+    [importProjectMutation, navigate]
+  );
 
   return (
     <AppShell>
@@ -78,6 +120,20 @@ export function LibraryPage() {
           accept="image/*"
           style={{ display: "none" }}
           onChange={handleFileChange}
+        />
+        <button
+          className="btn"
+          onClick={() => projectFileInputRef.current?.click()}
+          disabled={importProjectMutation.isPending}
+        >
+          {importProjectMutation.isPending ? "importing…" : "Import Project"}
+        </button>
+        <input
+          ref={projectFileInputRef}
+          type="file"
+          accept=".zip"
+          style={{ display: "none" }}
+          onChange={handleProjectFileChange}
         />
       </div>
 
