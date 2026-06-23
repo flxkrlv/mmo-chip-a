@@ -1,6 +1,7 @@
 import { Fragment, type ReactNode } from "react";
 import { Ic } from "../../icons";
 import { useDieViewerStore, type ToolKind } from "../../state/dieViewer";
+import { useFloorplanStore } from "../../state/floorplan";
 import { usePreferences } from "../../state/preferences";
 import { ToolDivider } from "../shell/SubBar";
 import { AnnotationClassSelect } from "./AnnotationClassSelect";
@@ -64,7 +65,8 @@ const TOOL_GROUPS: ToolGroup[] = [
     label: "tools",
     items: [
       { kind: "measure", icon: Ic.ruler, label: "Ruler — drag to measure distance" },
-      { kind: "comment", icon: Ic.comment, label: "Comment — click to add a comment pin" }
+      { kind: "comment", icon: Ic.comment, label: "Comment — click to add a comment pin" },
+      { kind: "floorplan", icon: Ic.floorplan, label: "Floorplan — draw functional block outlines" }
     ]
   }
 ];
@@ -143,6 +145,7 @@ function toolOptions(tool: ToolKind, multiWireHint?: string): ReactNode {
   if (tool === "roi") return <RoiOptions />;
   if (tool === "cellGuideLine") return <GuideLineOptions />;
   if (tool === "measure") return <MeasureOptions />;
+  if (tool === "floorplan") return <FloorplanOptions />;
   // others (incl. cellGuideSeg) have no options.
   return null;
 }
@@ -205,6 +208,36 @@ function GuideLineOptions() {
             {label}
           </button>
         ))}
+      </span>
+    </>
+  );
+}
+
+function FloorplanOptions() {
+  const toolMode = useFloorplanStore((s) => s.toolMode);
+  const setToolMode = useFloorplanStore((s) => s.setToolMode);
+  return (
+    <>
+      <span className="u" style={{ fontSize: 10 }}>
+        Mode
+      </span>
+      <span className="row" style={{ gap: 4 }}>
+        <button
+          type="button"
+          className={"chip" + (toolMode === "rect" || toolMode === "idle" ? " on" : "")}
+          style={{ cursor: "pointer" }}
+          onClick={() => setToolMode("rect")}
+        >
+          Rect
+        </button>
+        <button
+          type="button"
+          className={"chip" + (toolMode === "poly" ? " on" : "")}
+          style={{ cursor: "pointer" }}
+          onClick={() => setToolMode("poly")}
+        >
+          Poly
+        </button>
       </span>
     </>
   );

@@ -12,6 +12,7 @@ import type { DieAnnotations, SpiceConfig, SpiceDialect } from "shared";
 import {
   assignInstanceNames,
   generateSpiceNetlist,
+  generateHierarchicalNetlist,
   type SpiceNetlist,
 } from "../lib/export/spice";
 import { collectDieWideAnalogDevices } from "./dieWideAnalog";
@@ -141,11 +142,16 @@ function buildOutline(
 
 // ── Synchronous build ─────────────────────────────────────────────
 
+interface BuildOptions {
+  hierarchical?: boolean;
+}
+
 function buildAnalogNetlist(
   annotations: DieAnnotations,
   moduleName: string,
   dialect: SpiceDialect = "cdl",
   spiceConfig?: SpiceConfig,
+  options?: BuildOptions,
 ): AnalogNetlistResult {
   const { devices, namedNets } = collectDieWideAnalogDevices(
     annotations,
@@ -157,13 +163,24 @@ function buildAnalogNetlist(
 
   const config: SpiceConfig = spiceConfig ?? {};
 
-  const result: SpiceNetlist = generateSpiceNetlist(
-    named,
-    moduleName,
-    config,
-    dialect,
-    namedNets,
-  );
+  const isHierarchical = options?.hierarchical ?? false;
+
+  const result: SpiceNetlist = isHierarchical
+    ? generateHierarchicalNetlist(
+        named,
+        moduleName,
+        config,
+        dialect,
+        namedNets,
+        annotations.floorplanRegions,
+      )
+    : generateSpiceNetlist(
+        named,
+        moduleName,
+        config,
+        dialect,
+        namedNets,
+      );
 
   // Build line index + outline
   const lineIndex = buildLineIndex(result.text, named);
@@ -203,16 +220,17 @@ export function useAnalogNetlist(
   moduleName: string,
   dialect: SpiceDialect = "cdl",
   spiceConfig?: SpiceConfig,
+  hierarchical: boolean = false,
 ): UseAnalogNetlist {
   const data = useMemo<AnalogNetlistResult | null>(() => {
     if (!annotations) return null;
     try {
-      return buildAnalogNetlist(annotations, moduleName, dialect, spiceConfig);
+      return buildAnalogNetlist(annotations, moduleName, dialect, spiceConfig, { hierarchical });
     } catch (e) {
       // Surface the error; the page will show it.
       throw e;
     }
-  }, [annotations, moduleName, dialect, spiceConfig]);
+  }, [annotations, moduleName, dialect, spiceConfig, hierarchical]);
 
   return {
     data,

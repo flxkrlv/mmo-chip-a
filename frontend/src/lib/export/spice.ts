@@ -27,6 +27,7 @@ import type {
   SpiceConfig,
   SpiceDialect,
   ResistorType,
+  FloorplanRegion,
 } from "shared";
 import { effectiveSheetR } from "./resistorDefaults";
 
@@ -723,4 +724,369 @@ export function detectAndExport(
   namedNets?: Map<number, string>,
 ): SpiceNetlist {
   return generateSpiceNetlist(devices, moduleName, config, dialect, namedNets);
+}
+
+// ═════════════════════════════════════════════════════════════════
+// Hierarchical netlist (Phase 2.1 B1)
+// ═════════════════════════════════════════════════════════════════
+
+/**
+ * Point-in-polygon test (ray casting).
+ */
+function pointInPoly(
+  px: number,
+  py: number,
+  poly: ReadonlyArray<{ x: number; y: number }>,
+): boolean {
+  let inside = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const xi = poly[i].x, yi = poly[i].y;
+    const xj = poly[j].x, yj = poly[j].y;
+    if ((yi > py) !== (yj > py) &&
+        px < ((xj - xi) * (py - yi)) / (yj - yi) + xi) {
+      inside = !inside;
+    }
+  }
+  return inside;
+}
+
+/**
+ * Compute the centre of a device bbox or outline.
+ */
+function deviceCenter(d: AnalogDevice): { x: number; y: number } | null {
+  if (d.bbox) {
+    return {
+      x: d.bbox.x + d.bbox.width / 2,
+      y: d.bbox.y + d.bbox.height / 2,
+    };
+  }
+  if (d.outline && d.outline.length > 0) {
+    const cx = d.outline.reduce((s, p) => s + p.x, 0) / d.outline.length;
+    const cy = d.outline.reduce((s, p) => s + p.y, 0) / d.outline.length;
+    return { x: cx, y: cy };
+  }
+  return null;
+}
+
+/**
+ * Check if the centre of a device falls inside a region polygon.
+ * For rect regions, we compute the bbox from the 2 corner points.
+ */
+function deviceInRegion(
+  d: AnalogDevice,
+  region: FloorplanRegion,
+): boolean {
+  const center = deviceCenter(d);
+  if (!center) return false;
+
+  const poly =
+    region.kind === "rect" && region.geometry.length >= 2
+      ? [
+          { x: Math.min(region.geometry[0].x, region.geometry[1].x), y: Math.min(region.geometry[0].y, region.geometry[1].y) },
+          { x: Math.max(region.geometry[0].x, region.geometry[1].x), y: Math.min(region.geometry[0].y, region.geometry[1].y) },
+          { x: Math.max(region.geometry[0].x, region.geometry[1].x), y: Math.max(region.geometry[0].y, region.geometry[1].y) },
+          { x: Math.min(region.geometry[0].x, region.geometry[1].x), y: Math.max(region.geometry[0].y, region.geometry[1].y) },
+        ]
+      : region.geometry;
+
+  return pointInPoly(center.x, center.y, poly);
+}
+
+/**
+ * Detect boundary nets for a set of devices inside a region.
+ * A net is a boundary net if it connects to at least one device inside AND
+ * at least one device outside the region.
+ *
+ * @returns Set of netIds that are boundary nets for this region.
+ */
+function detectBoundaryNets(
+  insideDevices: AnalogDevice[],
+  allDevices: AnalogDevice[],
+): Set<number> {
+  const insideNets = new Set<number>();
+  const outsideNets = new Set<number>();
+
+  // Use instanceName for uniqueness (device.id may be duplicated across instances)
+  const insideKeys = new Set(insideDevices.map((d) => d.instanceName ?? d.id));
+
+  for (const d of allDevices) {
+    for (const t of d.terminals) {
+      if (t.netId >= 0) {
+        if (insideKeys.has(d.instanceName ?? d.id)) {
+          insideNets.add(t.netId);
+        } else {
+          outsideNets.add(t.netId);
+        }
+      }
+    }
+  }
+
+  const boundary = new Set<number>();
+  for (const n of insideNets) {
+    if (outsideNets.has(n)) {
+      boundary.add(n);
+    }
+  }
+  return boundary;
+}
+
+/**
+ * Generate a hierarchical SPICE netlist with region-based subcircuits.
+ *
+ * Devices are partitioned by floorplan region. Each region gets its own
+ * .SUBCKT with auto-detected boundary nets as ports. The top-level
+ * instantiates each region and includes any devices not assigned to
+ * any region.
+ *
+ * Devices that don't fall inside any region are included flat in the
+ * top-level netlist (default behaviour for un-regioned areas).
+ *
+ * Port names use region.portAliases when available, otherwise fall back
+ * to resolved net names. Annotated VDD/GND nets are NOT promoted to ports
+ * (they remain global).
+ */
+export function generateHierarchicalNetlist(
+  devices: AnalogDevice[],
+  moduleName: string,
+  config: SpiceConfig,
+  dialect: SpiceDialect = "cdl",
+  netLookup?: Map<number, string>,
+  floorplanRegions?: FloorplanRegion[],
+): SpiceNetlist {
+  const warnings: string[] = [];
+  const nl = buildNetNameMap(devices, netLookup ?? new Map());
+  const vdd = config.vdd ?? "VDD";
+  const gnd = config.gnd ?? "GND";
+
+  // ── Partition devices by region ────────────────────────────
+  const regionDevices = new Map<string, AnalogDevice[]>();
+  const assignedKeys = new Set<string>();
+
+  const regions = floorplanRegions ?? [];
+
+  for (const region of regions) {
+    const inside: AnalogDevice[] = [];
+    for (const d of devices) {
+      const key = d.instanceName ?? d.id; // instanceName is unique; id may be duplicated across instances
+      if (assignedKeys.has(key)) continue;
+      if (deviceInRegion(d, region)) {
+        inside.push(d);
+        assignedKeys.add(key);
+      }
+    }
+    if (inside.length > 0) {
+      regionDevices.set(region.id, inside);
+    }
+  }
+
+  // Devices not in any region
+  const unassigned = devices.filter((d) => { const k = d.instanceName ?? d.id; return !assignedKeys.has(k); });
+
+  // ── Generate each region subcircuit ────────────────────────
+  const lines: string[] = [];
+  const indent = "  ";
+
+  const header = dialect === "spectre"
+    ? `// Spectre hierarchical netlist generated by mmo-chip\n// Source: ${moduleName}\n// Date: ${new Date().toISOString().split("T")[0]}`
+    : `* SPICE hierarchical netlist generated by mmo-chip\n* Source: ${moduleName}\n* Date: ${new Date().toISOString().split("T")[0]}`;
+
+  lines.push(header);
+  if (dialect !== "spectre") {
+    lines.push(`.GLOBAL ${vdd} ${gnd}`);
+  }
+  lines.push("");
+
+  // We need to write the subcircuit definitions first, so build them.
+  // Each subcircuit gets its own local instance numbering.
+  interface RegionSubckt {
+    region: FloorplanRegion;
+    devices: AnalogDevice[];
+    // netId → port name for this region
+    portMap: Map<number, string>;
+    portOrder: string[]; // sorted port net names
+  }
+
+  const subckts: RegionSubckt[] = [];
+
+  for (const [regionId, insideDevices] of regionDevices) {
+    const region = regions.find((r) => r.id === regionId);
+    if (!region) continue;
+
+    // Detect boundary nets → ports
+    const boundaryNets = detectBoundaryNets(insideDevices, devices);
+
+    // Also include any net that connects the region to unassigned devices
+    const allNetsNeeded = new Set<number>();
+    // Filter to only non-global, non-GND boundary nets
+    const portMap = new Map<number, string>();
+    const portOrder: string[] = [];
+
+    for (const netId of boundaryNets) {
+      const netName = sanitizeSpiceName(nl.get(netId) ?? `n${netId}`);
+      // Skip global VDD/GND — they stay global
+      if (netName === vdd || netName === gnd) continue;
+      if (netId === 0) continue; // SPICE GND
+
+      // Use portAlias if defined
+      const alias = region.portAliases?.[netId];
+      const portName = alias ? sanitizeSpiceName(alias) : netName;
+      portMap.set(netId, portName);
+      portOrder.push(portName);
+    }
+
+    // Sort ports deterministically
+    portOrder.sort();
+
+    if (insideDevices.length === 0) continue;
+
+    subckts.push({
+      region,
+      devices: insideDevices,
+      portMap,
+      portOrder,
+    });
+  }
+
+  // ── Write the subcircuit bodies ────────────────────────────
+  const deviceCounter = { v: 1 };
+  const regionInstanceNames = new Map<string, string>();
+
+  if (subckts.length === 0 && unassigned.length === 0) {
+    // Nothing to generate
+    return {
+      text: `${header}\n\n* No devices found\n`,
+      byKind: {},
+      totalDevices: 0,
+      warnings: [],
+    };
+  }
+
+  for (const s of subckts) {
+    const subName = sanitizeSpiceName(s.region.name || `Region_${s.region.id.slice(0, 8)}`);
+    regionInstanceNames.set(s.region.id, subName);
+
+    // Local instance numbering for this subcircuit
+    const norm = normalizeBJTM(s.devices);
+    const localNamed = assignInstanceNames(norm);
+
+    const portList = [...s.portOrder, vdd, gnd].filter(Boolean);
+
+    if (dialect === "spectre") {
+      lines.push(`subckt ${subName} (${portList.join(" ")})`);
+    } else {
+      lines.push(`.SUBCKT ${subName} ${portList.join(" ")}`);
+    }
+
+    for (const d of localNamed) {
+      // We need to replace netIds in devices with port net names where applicable
+      // For internal nets, compute a local name
+      lines.push(deviceLine(d, nl, vdd, gnd, dialect, indent, config));
+    }
+
+    if (dialect === "spectre") {
+      lines.push(`ends ${subName}`);
+    } else {
+      lines.push(`.ENDS ${subName}`);
+    }
+    lines.push("");
+  }
+
+  // ── Top-level subcircuit ───────────────────────────────────
+  const topLevelName = sanitizeSpiceName(moduleName);
+
+  // Collect top-level ports: boundary net names from all subckts + unassigned
+  const topPortNames = new Set<string>();
+  for (const s of subckts) {
+    for (const portName of s.portOrder) {
+      topPortNames.add(portName);
+    }
+  }
+  // Unassigned device nets become top-level ports too
+  for (const d of unassigned) {
+    for (const t of d.terminals) {
+      if (t.netId >= 0) {
+        const rawName = nl.get(t.netId) ?? `n${t.netId}`;
+        const netName = sanitizeSpiceName(rawName);
+        if (netName !== vdd && netName !== gnd && netName !== "0") {
+          topPortNames.add(netName);
+        }
+      }
+    }
+  }
+  const topPorts = [...topPortNames].sort();
+
+  if (dialect === "spectre") {
+    lines.push(`subckt ${topLevelName} (${topPorts.join(" ")} ${vdd} ${gnd})`);
+  } else {
+    lines.push(`.SUBCKT ${topLevelName} ${topPorts.join(" ")} ${vdd} ${gnd}`);
+  }
+
+  // Instantiate region subcircuits
+  let instCounter = 0;
+  for (const s of subckts) {
+    instCounter++;
+    const subName = regionInstanceNames.get(s.region.id) ?? `X_${s.region.id.slice(0, 8)}`;
+    const portConnections: string[] = [];
+
+    // Map portNames → net names: for each port in order, use the mapped net
+    const allPortNames = [...s.portOrder, vdd, gnd];
+    for (const portName of s.portOrder) {
+      // Find the netId that maps to this portName
+      let foundNet = portName;
+      for (const [netId, pn] of s.portMap) {
+        if (pn === portName) {
+          foundNet = nl.get(netId) ?? `n${netId}`;
+          break;
+        }
+      }
+      portConnections.push(foundNet);
+    }
+    portConnections.push(vdd, gnd);
+
+    const instName = `X${instCounter}`;
+    if (dialect === "spectre") {
+      lines.push(`${indent}${instName} (${portConnections.join(" ")}) ${subName}`);
+    } else {
+      lines.push(`${indent}${instName} ${portConnections.join(" ")} ${subName}`);
+    }
+  }
+
+  // Unassigned devices (flat in top-level)
+  if (unassigned.length > 0) {
+    const norm = normalizeBJTM(unassigned);
+    const flatNamed = assignInstanceNames(norm);
+    for (const d of flatNamed) {
+      lines.push(deviceLine(d, nl, vdd, gnd, dialect, indent, config));
+    }
+  }
+
+  if (dialect === "spectre") {
+    lines.push(`ends ${topLevelName}`);
+  } else {
+    lines.push(`.ENDS ${topLevelName}`);
+  }
+
+  // ── Count by kind ──────────────────────────────────────────
+  const byKind: Record<string, number> = {};
+  for (const d of devices) {
+    byKind[d.kind] = (byKind[d.kind] ?? 0) + 1;
+  }
+
+  // ── Warnings ───────────────────────────────────────────────
+  for (const d of devices) {
+    for (const t of d.terminals) {
+      if (t.netId < 0) {
+        warnings.push(
+          `${d.instanceName ?? d.id}: terminal "${t.name}" is unconnected`,
+        );
+      }
+    }
+  }
+
+  return {
+    text: lines.join("\n"),
+    byKind,
+    totalDevices: devices.length,
+    warnings,
+  };
 }

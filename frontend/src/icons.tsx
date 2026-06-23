@@ -302,6 +302,13 @@ export const Ic = {
       <path d="M12 8.5l2-2 2 2" stroke="currentColor" />
     </>
   ),
+  floorplan: Icon(
+    <>
+      <rect x="2.5" y="2.5" width="11" height="11" strokeDasharray="2 1.8" rx="2" />
+      <path d="M5.5 8h5M8 5.5v5" opacity=".7" />
+    </>,
+    { sw: 1.2 }
+  ),
   comment: Icon(
     <>
       <path d="M2.5 3h11a1 1 0 011 1v7a1 1 0 01-1 1H8l-3 2.5V12H2.5a1 1 0 01-1-1V4a1 1 0 011-1z" />

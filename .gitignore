@@ -8,4 +8,5 @@ data/tmp/
 data
 
 test_dies_gitignore/
+docs/hier_netlist_example_spectre.txt
 memory/.dreams/

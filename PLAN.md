@@ -125,28 +125,63 @@
 
 ### 2.1 Floorplan — rect/polygon с подписями + резервация
 
-**Требование:** "WIP by @user" — предупреждение (1 раз), не блокировка. Можно забрать "брошенный" блок.
+**Требование (2026-06-23):**
+- Полигоны **без заливки** (`fill: none`), только обводка — не закрывают канвас
+- Резервация опциональна: `reservedBy` может быть null, в соло-режиме не используется
+- Иерархический нетлист (post-MVP): регион → `.SUBCKT` с автодетекцией портов по boundary nets.
+  Имя порта — wire-имя из DieAnnotations. Flat netlist остаётся по умолчанию (чекбокс "Hierarchical").
+- **A5 (user feedback, 2026-06-23):**
+  - Видимый переключатель rect/poly (сейчас может не отображаться)
+  - Drag-based drawing: rect — rubber-band, poly — live line от последней вершины к курсору
+  - Толщина stroke 2-3px, размер текста 14-16px
+  - Показывать автора (createdBy) и резервацию (reservedBy) в popover
+  - Кнопка Reserve/Release в popover (для мультиплеера)
 
-#### Backend
+#### Backend (A1–A2)
 
 | Задача | Описание | Время |
 |---|---|---|
-| Коллекция `floorplanRegions[]` в DieAnnotations | Новое поле: `{ id, kind: "rect"|"polygon", geometry, label, color, reservedBy: userId|null, reservedAt: string|null }` | 0.25 дня |
-| API-роуты (как `registerOptionalCollectionRoutes`) | `PUT/DELETE /api/dies/:dieId/floorplan/:id` — upsert/delete региона | 0.25 дня |
-| WS-широковещание | При мутации floorplan — broadcast изменений (можно через существующий `emitAnnotationChange`) | — |
+| Тип `FloorplanRegion` в `shared/types.ts` | `{ id, name, kind: "rect"|"polygon", geometry: Point[], color, reservedBy, reservedAt, portAliases? }` | ✅ A1 |
+| `floorplanRegions?` в `DieAnnotations` | Опциональное поле | ✅ A1 |
+| API-роуты через `registerOptionalCollectionRoutes` | `PUT/DELETE /api/dies/:dieId/floorplan/:id` + WS broadcast | ✅ A2 |
 
-#### Frontend
+**Итого A1–A2:** **0.5 дня**
 
-| Задача | Описание | Время |
+#### Frontend (A3–A4) — ✅ Done
+
+| Задача | Описание | Статус |
 |---|---|---|
-| Zustand store для floorplan | Выбранные регионы, draft-инструмент | 0.25 дня |
-| Инструмент "Floorplan" в тулбаре | Иконка, режимы рисования (rect / polygon) | 1 день |
-| Render-слой (или в AnnotationLayer) | Полупрозрачная заливка + обводка + текст label. Цвет по желанию | 0.5 дня |
-| Popover при клике на регион | Показать label, reservedBy, кнопки: "Reserve", "Release", "Edit label", "Delete" | 1 день |
-| Логика резервации | Reserve → `reservedBy = currentUserId`. Если reservedBy !== null и !== currentUser → предупреждение "WIP by @user (since ...)" (один раз, не блокирует). Release — только если reservedBy === currentUser (или owner) | 0.5 дня |
-| Polygon drawing (клик-to-add-vertex) | Аналогично существующему `useViaPolyTool`, но для полигона-региона | 0.5 дня |
+| Zustand store для floorplan | `FloorplanState: { regions, selectedRegionId, activeTool }` | ✅ A3 |
+| Инструмент "Floorplan" в тулбаре | Иконка (rect/poly), хоткей `H`, переключение режимов rect/poly | ✅ A3 |
+| Рендер-слой (без заливки) | `fill: none`, `stroke: color`, пунктир. Поверх всего, не мешает | ✅ A4 |
+| Popover при клике на регион | Имя (редактируемое), цвет, кнопки Delete. Позже: Reserve/Release, порты | ✅ A4 |
+| Polygon drawing | Клик-to-add-vertex, double-click/Enter завершает | ✅ A4 |
 
-**Итого Phase 2.1:** **~4 дня**
+#### Frontend (A5) — QA + user feedback — ✅ Done
+
+| Задача | Описание | Статус |
+|---|---|---|
+| Tool mode selector | Видимый переключатель rect/poly | ✅ |
+| Drag-based drawing | Rect — rubber-band drag preview; poly — live line | ✅ |
+| Polygon drag preview | При клике-to-add-vertex показывать live line от последней вершины к курсору | ✅ |
+| Толщина/размер текста | `strokeWidth: 2-3`, `fontSize: 14-16` | ✅ |
+| Author/reservation info | `createdBy`, `reservedBy` в popover; кнопка Reserve/Release | ✅ |
+| QA — dev server | Проверить тулбар, клик, поповер, сохранение, WS broadcast | ✅ |
+
+**Итого A5:** **~1 день ✅**
+
+#### B1–B4 — Hierarchical netlist + Ports — ✅ Done
+
+| Задача | Описание | Статус |
+|---|---|---|
+| `generateHierarchicalNetlist()` | Расширение `frontend/src/lib/export/spice.ts` — регион → .SUBCKT, автодетекция портов по boundary nets | ✅ B1 |
+| UI чекбокс "Hierarchical" | Чекбокс в панели экспорта AnalogNetlistPage, по умолчанию flat (не ломает существующий экспорт) | ✅ B2 |
+| Port naming в popover | Auto-detected boundary nets с editable alias'ами в FloorplanRegionPopover | ✅ B3 |
+| Визуализация портов | Цветные кружки + label на die viewer при выделении региона | ✅ B4 |
+
+**Итого B1–B4:** **~4-5 дней ✅**
+
+**Phase 2.1 total:** **~3 дня (+ ~5 дней B-фаза = 8 дней общий)**
 
 ---
 
@@ -236,9 +271,19 @@ Phase 1 (8-9 дней) — ✅ 1.1 + 1.3 сделано
 ├── 1.2 Production build (Express.static)  ░░░░░░░░░░░░░░  → Phase 3
 └── 1.3 "Кто онлайн" + статус         ████████████████████  ✅
 
-Phase 2 (7-8 дней) — текущий приоритет
-├── 2.1 Floorplan (rect/poly + резервация)  ░░░░░░░░░░░░░░  4д
-└── 2.2 Комментарии на топологии      ░░░░░░░░░░░░░░░░░░░  3д
+Phase 2 (текущий приоритет)
+├── 2.2 Комментарии на топологии      ████████████████████  ✅ (3д)
+├── 2.1 Floorplan                      ████████████████████  3д (≈0д ост.)  ← NEARLY DONE
+│   ├── A1 Data model                 ████████████████████  ✅
+│   ├── A2 Backend CRUD               ████████████████████  ✅
+│   ├── A3 Zustand store + toolbar    ████████████████████  ✅
+│   ├── A4 Overlay + popover          ████████████████████  ✅
+│   ├── A5 Dev-server QA + fixes      ████████████████████  ✅
+│   ├── B1 Hierarchical netlist       ██████░░░░░░░░░░░░░░  ~2д  ← IN PROGRESS
+│   ├── B2 UI чекбокс "Hierarchical"  ████████████████████  ✅ (~0.5д)
+│   ├── B3 Port naming в popover      ████████████████████  ✅ (~1д)
+│   └── B4 Визуализация портов        ████████████████████  ✅ (~1д)
+└── 2.3 Чат внутри die                ❌ (вычеркнут — дублирует 2.2)
 
 Phase 3 (4-6 дней) — когда понадобится удалёнка
 ├── Caddy + HTTPS + Docker            ░░░░░░░░░░░░░░░░░░░  2-3д

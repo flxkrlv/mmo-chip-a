@@ -75,12 +75,15 @@ function AnalogNetlist({ dieId }: { dieId: string }) {
     [die?.name, dieId],
   );
 
+  // Hierarchical netlist toggle
+  const [hierarchical, setHierarchical] = useState(false);
+
   const spiceConfig: SpiceConfig = useMemo(
     () => ({ resistorFormat }),
     [resistorFormat],
   );
 
-  const netlist = useAnalogNetlist(annotations, moduleName, dialect, spiceConfig);
+  const netlist = useAnalogNetlist(annotations, moduleName, dialect, spiceConfig, hierarchical);
 
   // ── UI state ────────────────────────────────────────────────────
   const [rightView, setRightView] = useState<"code" | "graph">("code");
@@ -215,6 +218,28 @@ function AnalogNetlist({ dieId }: { dieId: string }) {
                 Graph
               </button>
             </div>
+            {/* Hierarchical toggle */}
+            {rightView === "code" && (
+              <label
+                className="row"
+                style={{
+                  gap: 4,
+                  alignItems: "center",
+                  fontSize: 10,
+                  color: "var(--ink2)",
+                  cursor: "pointer",
+                  userSelect: "none",
+                }}
+                title="Partition by floorplan regions → .SUBCKT per region"
+              >
+                <input
+                  type="checkbox"
+                  checked={hierarchical}
+                  onChange={(e) => setHierarchical(e.target.checked)}
+                />
+                Hierarchical
+              </label>
+            )}
             <ToolDivider />
             {/* Dialect picker (only shown in code view) */}
             {rightView === "code" && (

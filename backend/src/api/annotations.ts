@@ -14,6 +14,7 @@ import type {
   CellLayers,
   CellType,
   DieAnnotations,
+  FloorplanRegion,
   GridDefinition,
   Guide,
   HumanAnnotation,
@@ -85,6 +86,7 @@ export function createAnnotationsRouter(config: AnnotationsRouterConfig) {
   registerOptionalCollectionRoutes<Guide>(router, config, notify, "guides", "guides");
   registerOptionalCollectionRoutes<RulerMeasurement>(router, config, notify, "rulers", "rulers");
   registerOptionalCollectionRoutes<CommentAnnotation>(router, config, notify, "comments", "comments");
+  registerOptionalCollectionRoutes<FloorplanRegion>(router, config, notify, "floorplan", "floorplanRegions");
 
   // ─── Net sub-entities ─────────────────────────────────────────────
 
@@ -387,7 +389,7 @@ function registerOptionalCollectionRoutes<T extends { id: string }>(
   config: { dataRoot: string },
   notify: (dieId: string, rev: number) => void,
   pathName: string,
-  field: "pins" | "annotations" | "rois" | "ignores" | "guides" | "rulers" | "comments"
+  field: "pins" | "annotations" | "rois" | "ignores" | "guides" | "rulers" | "comments" | "floorplanRegions"
 ) {
   router.put(`/api/dies/:dieId/${pathName}/:id`, async (request, response, next) => {
     const { dieId, id } = request.params;

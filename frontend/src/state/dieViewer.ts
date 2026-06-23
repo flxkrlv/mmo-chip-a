@@ -39,7 +39,8 @@ export type ToolKind =
   | "roi"
   | "ignore"
   | "measure"
-  | "comment";
+  | "comment"
+  | "floorplan";
 
 /**
  * Modes for `select`:

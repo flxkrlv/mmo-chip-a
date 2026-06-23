@@ -391,6 +391,31 @@ export interface DieMLConfig {
 
 /** A ruler/measurement line drawn on the die image. Stores raw pixel start/end
  *  plus the μm length computed at draw time (cached so it survives zoom). */
+// ── Floorplan Regions (Phase 2.1) ────────────────────────────────
+
+export interface FloorplanRegion {
+  id: string;
+  /** User-assigned name, e.g. "VCC_UVLO" */
+  name: string;
+  kind: "rect" | "polygon";
+  /** 2 points for rect, N points for polygon */
+  geometry: { x: number; y: number }[];
+  /** Stroke color */
+  color: string;
+  /** Who created this region (userId) */
+  createdBy: string | null;
+  /** Human-readable name of the creator */
+  createdByName: string | null;
+  createdAt: string | null;
+  /** Optional: who reserved this region (userId) */
+  reservedBy: string | null;
+  /** Human-readable name of who reserved it */
+  reservedByName: string | null;
+  reservedAt: string | null;
+  /** User-visible port name overrides: netId → alias */
+  portAliases?: Record<number, string>;
+}
+
 // ── Comments (Phase 2.2) ────────────────────────────────────────
 
 export interface CommentReply {
@@ -454,6 +479,8 @@ export interface DieAnnotations {
   rulers?: RulerMeasurement[];
   /** User comments pinned to locations on the die (Phase 2.2). */
   comments?: CommentAnnotation[];
+  /** Floorplan regions — functional block outlines (Phase 2.1). */
+  floorplanRegions?: FloorplanRegion[];
 }
 
 export interface MLExportRequest {

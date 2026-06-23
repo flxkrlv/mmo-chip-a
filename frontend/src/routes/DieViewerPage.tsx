@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
+import { useQueryClient } from "@tanstack/react-query";
 import type { AnalogDevice, AnnotationNet } from "shared";
-import { useAnnotations } from "../api/annotations";
+import { annotationKeys, useAnnotations } from "../api/annotations";
 import { useAnnotationsWebSocket } from "../api/annotationsWebSocket";
 import { netChangesToAction, useActionDispatcher } from "../api/actions";
 import { useDie } from "../api/dies";
@@ -78,6 +79,10 @@ import {
 } from "../components/dieViewer/useMultiWireTool";
 import { MultiWireOverlay } from "../components/dieViewer/MultiWireOverlay";
 import { CommentOverlay } from "../components/dieViewer/CommentOverlay";
+import { FloorplanOverlay } from "../components/dieViewer/FloorplanOverlay";
+import { useFloorplanStore, type FloorplanDraft } from "../state/floorplan";
+import { apiPut } from "../api/client";
+import { useAuth } from "../state/auth";
 import { useGuideTool } from "../components/dieViewer/useGuideTool";
 
 import {
@@ -165,6 +170,7 @@ function DieViewer({ dieId }: { dieId: string }) {
   // Always-fresh annotations for the (stable) pointer router's shape editing.
   const annotationsRef = useRef(annotations);
   annotationsRef.current = annotations;
+  const queryClient = useQueryClient();
   const canvasHandle = useRef<TiledCanvasHandle>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -243,6 +249,16 @@ function DieViewer({ dieId }: { dieId: string }) {
     x: number;
     y: number;
   } | null>(null);
+
+  // Sync floorplan regions from annotations
+  const setFloorplanRegions = useFloorplanStore((s) => s.setRegions);
+  useEffect(() => {
+    if (annotations?.floorplanRegions) {
+      setFloorplanRegions(annotations.floorplanRegions);
+    } else {
+      setFloorplanRegions([]);
+    }
+  }, [annotations?.floorplanRegions, setFloorplanRegions]);
 
   // Hold-Space momentary pan. The ref is read by the (stable) pointer-down
   // router without re-binding; the state only drives the cursor.
@@ -1326,6 +1342,71 @@ const analogMemo = useMemo(
         return drawRect;
       }
 
+      // Floorplan rect: rubber-band a rectangle, commit on release
+      if (tool === "floorplan") {
+        const fs = useFloorplanStore.getState();
+        if (fs.toolMode === "rect" || fs.toolMode === "idle") {
+          // Drag-based rect drawing
+          const originPt = { x: Math.round(e.worldPoint.x), y: Math.round(e.worldPoint.y) };
+          const floorplanDrag: DragHandler = {
+            onDragStart: ({ worldPoint }) => {
+              const p = { x: Math.round(worldPoint.x), y: Math.round(worldPoint.y) };
+              useFloorplanStore.getState().setDraft({
+                kind: "rect",
+                points: [originPt, p],
+                active: true,
+              });
+            },
+            onDragMove: ({ worldPoint }) => {
+              const draft = useFloorplanStore.getState().draft;
+              if (draft && draft.points.length >= 1) {
+                const p = { x: Math.round(worldPoint.x), y: Math.round(worldPoint.y) };
+                useFloorplanStore.getState().setDraft({
+                  ...draft,
+                  points: [draft.points[0], p],
+                });
+              }
+            },
+            onPointerUp: ({ worldPoint, dragged }) => {
+              useFloorplanStore.getState().setDraft(null);
+              if (!dragged) return;
+              const p = { x: Math.round(worldPoint.x), y: Math.round(worldPoint.y) };
+              const minX = Math.min(originPt.x, p.x);
+              const minY = Math.min(originPt.y, p.y);
+              const maxX = Math.max(originPt.x, p.x);
+              const maxY = Math.max(originPt.y, p.y);
+              const au = useAuth.getState();
+              const region: import("shared").FloorplanRegion = {
+                id: uuid(),
+                name: "",
+                kind: "rect",
+                geometry: [
+                  { x: minX, y: minY },
+                  { x: maxX, y: maxY },
+                ],
+                color: "#4dabf7",
+                createdBy: au.userId ?? null,
+                createdByName: au.username ?? null,
+                createdAt: new Date().toISOString(),
+                reservedBy: null,
+                reservedByName: null,
+                reservedAt: null,
+              };
+              apiPut(`/api/dies/${dieId}/floorplan/${region.id}`, region).catch(console.error);
+              useFloorplanStore.getState().upsertRegion(region);
+              useFloorplanStore.getState().selectRegion(region.id);
+              queryClient.invalidateQueries({ queryKey: annotationKeys.forDie(dieId) });
+            },
+            onCancel: () => {
+              useFloorplanStore.getState().setDraft(null);
+            },
+          };
+          return floorplanDrag;
+        }
+        // Poly mode — no drag, defer to onCanvasClick
+        return "pan";
+      }
+
       // Via-rect / ROI / ignore: rubber-band a rectangle, commit on release
       // (no Enter). Shares `shapeRectLive` + a generic overlay.
       if (tool === "viaRect" || tool === "roi" || tool === "ignore") {
@@ -1443,7 +1524,8 @@ const analogMemo = useMemo(
         tool === "cellGuideLine" ||
         tool === "cellGuideSeg" ||
         tool === "ioPoint" ||
-        tool === "comment"
+        tool === "comment" ||
+        tool === "floorplan"
       ) {
         return "pan";
       }
@@ -1809,6 +1891,25 @@ const analogMemo = useMemo(
         setPendingNewComment({ x: Math.round(x), y: Math.round(y) });
         return;
       }
+      if (tool === "floorplan") {
+        // Poly mode: click to add vertex (rect mode uses drag, handled in onCanvasPointerDown)
+        const fs = useFloorplanStore.getState();
+        if (fs.toolMode === "poly") {
+          const draft = fs.draft;
+          if (draft && draft.active) {
+            draft.points.push({ x: Math.round(x), y: Math.round(y) });
+            useFloorplanStore.getState().setDraft({ ...draft });
+          } else {
+            useFloorplanStore.getState().setDraft({
+              kind: "poly",
+              points: [{ x: Math.round(x), y: Math.round(y) }],
+              active: true,
+            });
+          }
+        }
+        // Rect mode is drag-based — nothing to do on click
+        return;
+      }
       if (tool === "viaPoly") {
         viaPoly.addPoint({ x, y });
         return;
@@ -2015,6 +2116,33 @@ const analogMemo = useMemo(
       const tool = useDieViewerStore.getState().activeTool;
       if (tool === "wire") {
         wire.commitWire({ dropLast: true });
+        return;
+      }
+      // Floorplan poly: double-click to finish polygon
+      if (tool === "floorplan") {
+        const fs = useFloorplanStore.getState();
+        if (fs.toolMode === "poly" && fs.draft && fs.draft.active && fs.draft.points.length >= 3) {
+          const pts = fs.draft.points;
+          const au = useAuth.getState();
+          const region: import("shared").FloorplanRegion = {
+            id: uuid(),
+            name: "",
+            kind: "polygon",
+            geometry: pts,
+            color: "#4dabf7",
+            createdBy: au.userId ?? null,
+            createdByName: au.username ?? null,
+            createdAt: new Date().toISOString(),
+            reservedBy: null,
+            reservedByName: null,
+            reservedAt: null,
+          };
+          apiPut(`/api/dies/${dieId}/floorplan/${region.id}`, region).catch(console.error);
+          useFloorplanStore.getState().upsertRegion(region);
+          useFloorplanStore.getState().setDraft(null);
+          useFloorplanStore.getState().selectRegion(region.id);
+          queryClient.invalidateQueries({ queryKey: annotationKeys.forDie(dieId) });
+        }
         return;
       }
       // Measure tool double-click → prompt for known size to set scale.
@@ -2304,7 +2432,7 @@ const analogMemo = useMemo(
           onPointerLeave={onPointerLeave}
           onContextMenu={onCanvasContextMenu}
           onDoubleClick={onCanvasDoubleClick}
-          style={{ background: "var(--canvas-bg)", minWidth: 0, position: "relative" }}
+          style={{ background: "var(--canvas-bg)", minWidth: 0, position: "relative", overflow: "hidden" }}
         >
           {error && (
             <CenteredStatus>failed to load die · {error.message}</CenteredStatus>
@@ -2415,6 +2543,12 @@ const analogMemo = useMemo(
             dieId={dieId}
             pendingNewComment={pendingNewComment}
             onConsumePendingComment={() => setPendingNewComment(null)}
+            onAnnotationChange={() => canvasHandle.current?.invalidate()}
+          />
+          <FloorplanOverlay
+            annotations={annotations}
+            viewportStore={viewportLive}
+            dieId={dieId}
             onAnnotationChange={() => canvasHandle.current?.invalidate()}
           />
         </section>
