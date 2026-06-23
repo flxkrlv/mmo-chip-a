@@ -1,11 +1,11 @@
 # mmo-chip — analog-re-wip
 
-**Форк [mmo-chip](https://github.com/openclaw/mmo-chip) для реверс-инжиниринга аналоговых и mixed-signal ИС.**  
+**Форк [mmo-chip](https://github.com/giulioz/mmo-chip) для реверс-инжиниринга аналоговых и mixed-signal ИС.**  
 Исходный проект ориентирован на цифровые CMOS Gate Array / Standard Cell чипы и извлекает логические вентили и Verilog-нетлист.  
 Этот форк расширяет его до **BJT, BiCMOS, резисторов, конденсаторов, диодов** — всей аналоговой периферии, которая не укладывается в модель стандартных ячеек.
 
 ## Благодарности (ENG)
-Many thanks to the developers of the original [mmo-chip](https://github.com/openclaw/mmo-chip ).  
+Many thanks to the developers of the original [mmo-chip](https://github.com/giulioz/mmo-chip).  
 Clean architecture, thoughtful modularity, and clear interfaces between the frontend, backend, and shared types are an excellent base for custom extensions, for example, for RE analog blocks and chips.
 
 Оригинальный CMOS-маршрут (стандартные ячейки, логика, Verilog) **не тронут** — аналоговая экстракция работает как надстройка. Мы старались не сломать цифровой маршрут, но это нуждается в проврерке - у нас нет опыта в цифровой логике и примеров снимков таких кристалов. 
