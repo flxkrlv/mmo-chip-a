@@ -103,6 +103,7 @@ export function FloorplanRegionPopover({
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [saveWarnings, setSaveWarnings] = useState<string[]>([]);
   const upsertRegion = useFloorplanStore((s) => s.upsertRegion);
   const removeRegion = useFloorplanStore((s) => s.removeRegion);
   const selectRegion = useFloorplanStore((s) => s.selectRegion);
@@ -117,6 +118,7 @@ export function FloorplanRegionPopover({
   const updatePortAlias = useCallback((netKey: string, value: string) => {
     setPortAliases((prev) => ({ ...prev, [netKey]: value }));
     setDirty(true);
+    setSaveWarnings([]); // clear warnings when user edits
   }, []);
 
   const buildPortAliasesForSave = useCallback((): Record<number, string> => {
@@ -128,6 +130,11 @@ export function FloorplanRegionPopover({
     }
     return result;
   }, [portAliases]);
+
+  // Clear warnings when region changes
+  useEffect(() => {
+    setSaveWarnings([]);
+  }, [region.id]);
 
   // Click outside → close
   useEffect(() => {
@@ -185,15 +192,73 @@ export function FloorplanRegionPopover({
             revMap.set(numericId, uuid);
           }
 
+          // ── Collision detection before renaming on the die ──
+          // Collect aliases from OTHER regions already committed to the die.
+          const committedAliasToNet = new Map<string, number>();
+          const otherRegions = (annotations?.floorplanRegions ?? [])
+            .filter((reg) => reg.id !== region.id);
+          for (const reg of otherRegions) {
+            if (!reg.portAliases) continue;
+            for (const [nidStr, alias] of Object.entries(reg.portAliases)) {
+              const nid = Number(nidStr);
+              // Only register as committed if the alias is non-empty
+              if (alias.trim()) committedAliasToNet.set(alias.trim(), nid);
+            }
+          }
+
+          // Build map of current annotation net names on the die
+          const dieNetNameToNetId = new Map<string, number>();
+          for (const [uuid, numericId] of r.netIdMap) {
+            const annNet = annotations.nets?.find((n) => n.id === uuid);
+            if (annNet?.name) dieNetNameToNetId.set(annNet.name, numericId);
+          }
+
+          // Resolve collisions: if two different netIds want the same alias,
+          // auto-suffix (_1, _2, …) for the second (and subsequent) one.
+          const resolvedNewAliases: Record<number, string> = {};
+          const usedNames = new Set(committedAliasToNet.keys());
+          // Also pre-populate with existing die net names not from committed aliases
+          for (const [name] of dieNetNameToNetId) {
+            usedNames.add(name);
+          }
+          // Remove our OWN netIds from usedNames — we can rename ourselves
+          for (const nidStr of Object.keys(newAliases)) {
+            const nid = Number(nidStr);
+            const committedAlias = [...committedAliasToNet.entries()]
+              .find(([, id]) => id === nid);
+            if (committedAlias) usedNames.delete(committedAlias[0]);
+            // Also remove our own net from die names (we'll rename it)
+            for (const [name, id] of dieNetNameToNetId) {
+              if (id === nid) usedNames.delete(name);
+            }
+          }
+
+          for (const [netIdStr, alias] of Object.entries(newAliases)) {
+            const nid = Number(netIdStr);
+            let resolved = alias;
+            if (usedNames.has(resolved)) {
+              // Someone else already has this name — suffix it
+              let suffix = 1;
+              while (usedNames.has(`${alias}_${suffix}`)) suffix++;
+              resolved = `${alias}_${suffix}`;
+              setSaveWarnings((prev) => [
+                ...prev,
+                `"${alias}" → "${resolved}" (конфликт имени)`
+              ]);
+            }
+            usedNames.add(resolved);
+            resolvedNewAliases[nid] = resolved;
+          }
+
           // Collect nets to rename: added aliases + changed aliases
           const toRename: Array<{ uuid: string; newName: string }> = [];
-          for (const [netId, newAlias] of Object.entries(newAliases)) {
+          for (const [netId, resolvedAlias] of Object.entries(resolvedNewAliases)) {
             const nid = Number(netId);
             const oldAlias = oldAliases[nid];
             // Only rename if the alias actually changed
-            if (oldAlias !== newAlias) {
+            if (oldAlias !== resolvedAlias) {
               const uuid = revMap.get(nid);
-              if (uuid) toRename.push({ uuid, newName: newAlias });
+              if (uuid) toRename.push({ uuid, newName: resolvedAlias });
             }
           }
 
@@ -201,7 +266,7 @@ export function FloorplanRegionPopover({
           const toRevert: Array<{ uuid: string; originalName: string }> = [];
           for (const [netIdStr] of Object.entries(oldAliases)) {
             const netId = Number(netIdStr);
-            if (newAliases[netId] === undefined) {
+            if (resolvedNewAliases[netId] === undefined) {
               // Alias was cleared — revert to original if we have it
               const origName = originalNetNamesRef.current?.get(netId);
               if (origName) {
@@ -239,12 +304,35 @@ export function FloorplanRegionPopover({
           if (renamePromises.length > 0) {
             await Promise.all(renamePromises);
           }
+
+          // Use resolved aliases (with suffixed collisions) for the region save
+          // so the server data matches what's on the die
+          const finalAliases = Object.fromEntries(
+            Object.entries(resolvedNewAliases).filter(([, v]) => v.trim())
+          );
+          // Override newAliases for the save below
+          const updated: FloorplanRegion = {
+            ...region,
+            name,
+            color,
+            createdByName: region.createdByName ?? null,
+            reservedByName: region.reservedByName ?? null,
+            portAliases: Object.keys(finalAliases).length > 0 ? finalAliases : undefined,
+          };
+          await apiPut(`/api/dies/${dieId}/floorplan/${region.id}`, updated);
+          upsertRegion(updated);
+          setDirty(false);
+          // Reset original names ref so it picks up new state on next save
+          originalNetNamesRef.current = null;
+          onSaved?.();
+          return; // ← early return, we already saved the region
         } catch (e) {
           console.error("Failed to rename annotation nets:", e);
+          // Fall through to the regular save below
         }
       }
 
-      // ── Save the region with aliases ─────────────────────────
+      // ── Save the region with aliases (no die rename needed) ──
       const updated: FloorplanRegion = {
         ...region,
         name,
@@ -268,6 +356,7 @@ export function FloorplanRegionPopover({
 
   const handleDelete = useCallback(async () => {
     if (deleting) return;
+    setSaveWarnings([]);
     setDeleting(true);
     try {
       await apiDelete(`/api/dies/${dieId}/floorplan/${region.id}`);
@@ -324,6 +413,7 @@ export function FloorplanRegionPopover({
           onChange={(e) => {
             setName(e.target.value);
             setDirty(true);
+            setSaveWarnings([]);
           }}
           placeholder="e.g. VCC_UVLO"
           style={{ width: "100%", boxSizing: "border-box" }}
@@ -372,6 +462,7 @@ export function FloorplanRegionPopover({
               onClick={() => {
                 setColor(c);
                 setDirty(true);
+                setSaveWarnings([]);
               }}
               style={{
                 width: 20,
@@ -435,6 +526,26 @@ export function FloorplanRegionPopover({
           <span style={{ fontSize: 10, color: "#666", marginLeft: 6 }}>
             Optional — WIP indicator
           </span>
+        </div>
+      )}
+
+      {/* Save warnings */}
+      {saveWarnings.length > 0 && (
+        <div
+          style={{
+            background: "#3a3100",
+            border: "1px solid #665500",
+            borderRadius: 6,
+            padding: "6px 10px",
+            marginBottom: 10,
+            fontSize: 11,
+            color: "#ffd43b",
+          }}
+        >
+          <div style={{ fontWeight: 600, marginBottom: 3 }}>⚠️ Conflicts</div>
+          {saveWarnings.map((w, i) => (
+            <div key={i}>{w}</div>
+          ))}
         </div>
       )}
 

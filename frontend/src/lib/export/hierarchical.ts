@@ -165,15 +165,30 @@ export function regionBoundaryInfo(
  * Collision rules:
  *   - Same name for two different netIds → auto-suffix (_1, _2, …)
  *   - Same netId aliased differently → last wins (warn logged)
+ *   - Alias matches an existing die-wide net name for a different netId → auto-suffix
  *
+ * @param floorplanRegions - Regions with portAliases
+ * @param existingNetNames - Die-wide net names (netId → name), used to detect
+ *   collisions between aliases and pre-existing annotation net names.
  * @returns {aliases, warnings} — the resolved alias map + any collision warnings
  */
 export function resolveGlobalPortAliases(
   floorplanRegions: FloorplanRegion[] | undefined,
+  existingNetNames?: Map<number, string>,
 ): { aliases: Map<number, string>; warnings: string[] } {
   const warnings: string[] = [];
   const netToAlias = new Map<number, string>(); // final alias per netId
   const aliasToNet = new Map<string, number>();  // reverse lookup for collision check
+
+  // Build reverse map from existing net names for early collision detection.
+  // This catches aliases that happen to match annotation net names already on the die.
+  const existingNameToNet = new Map<string, number>();
+  if (existingNetNames) {
+    for (const [nid, name] of existingNetNames) {
+      const clean = name.replace(/[^A-Za-z0-9_]/g, "_");
+      if (clean) existingNameToNet.set(clean, nid);
+    }
+  }
 
   if (!floorplanRegions) return { aliases: netToAlias, warnings };
 
@@ -187,12 +202,33 @@ export function resolveGlobalPortAliases(
       const cleanAlias = alias.trim().replace(/[^A-Za-z0-9_]/g, "_");
       if (!cleanAlias) continue;
 
-      // Collision: same name already used for a different netId
+      // ── Check collision with existing die-wide net names ───────
+      // If the alias matches an existing net name for a DIFFERENT netId,
+      // auto-suffix to avoid a naming conflict on the die.
+      const existingNetForName = existingNameToNet.get(cleanAlias);
+      if (existingNetForName !== undefined && existingNetForName !== netId) {
+        let suffix = 1;
+        let deduped = `${cleanAlias}_${suffix}`;
+        while (aliasToNet.has(deduped) || existingNameToNet.has(deduped)) {
+          suffix++;
+          deduped = `${cleanAlias}_${suffix}`;
+        }
+        warnings.push(
+          `Port alias "${cleanAlias}" collides with existing die net (net ${existingNetForName})` +
+          ` — renamed to "${deduped}" for net ${netId}`
+        );
+        aliasToNet.set(deduped, netId);
+        netToAlias.set(netId, deduped);
+        continue;
+      }
+
+      // ── Check collision with alias from another region ────────
+      // Same alias already used for a different netId in another region.
       const existingNet = aliasToNet.get(cleanAlias);
       if (existingNet !== undefined && existingNet !== netId) {
         let suffix = 1;
         let deduped = `${cleanAlias}_${suffix}`;
-        while (aliasToNet.has(deduped)) {
+        while (aliasToNet.has(deduped) || existingNameToNet.has(deduped)) {
           suffix++;
           deduped = `${cleanAlias}_${suffix}`;
         }
@@ -205,7 +241,7 @@ export function resolveGlobalPortAliases(
         continue;
       }
 
-      // Same netId already has a different alias — last wins
+      // ── Same netId, different alias — last wins ──────────────
       const existingAlias = [...aliasToNet.entries()].find(([, n]) => n === netId);
       if (existingAlias && existingAlias[0] !== cleanAlias) {
         warnings.push(
