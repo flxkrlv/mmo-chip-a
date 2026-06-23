@@ -801,7 +801,7 @@ export function generateHierarchicalNetlist(
   // BEFORE generating anything.  This means aliases appear everywhere:
   // subcircuit ports, top-level nets, and device terminals.
   const { aliases: globalAliases, warnings: aliasWarnings } =
-    resolveGlobalPortAliases(floorplanRegions, nl);
+    resolveGlobalPortAliases(floorplanRegions);
   warnings.push(...aliasWarnings);
 
   for (const [netId, alias] of globalAliases) {
