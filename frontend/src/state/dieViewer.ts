@@ -38,7 +38,8 @@ export type ToolKind =
   | "ioPoint"
   | "roi"
   | "ignore"
-  | "measure";
+  | "measure"
+  | "comment";
 
 /**
  * Modes for `select`:

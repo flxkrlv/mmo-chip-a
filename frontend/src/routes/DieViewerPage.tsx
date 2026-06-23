@@ -77,6 +77,7 @@ import {
   useMultiWireTool
 } from "../components/dieViewer/useMultiWireTool";
 import { MultiWireOverlay } from "../components/dieViewer/MultiWireOverlay";
+import { CommentOverlay } from "../components/dieViewer/CommentOverlay";
 import { useGuideTool } from "../components/dieViewer/useGuideTool";
 
 import {
@@ -122,6 +123,7 @@ import { DEFAULT_ML_CONFIG, useDieViewerStore } from "../state/dieViewer";
 import { useOverlayLayers } from "../state/overlayLayers";
 import { usePreferences } from "../state/preferences";
 import { useSession } from "../state/session";
+import { useUserStatus } from "../lib/useUserStatus";
 import { uuid } from "../lib/uuid";
 
 /** Stable empty points array so the overlay effect doesn't churn when idle. */
@@ -168,6 +170,9 @@ function DieViewer({ dieId }: { dieId: string }) {
 
   const activeTool = useDieViewerStore((s) => s.activeTool);
   const setActiveTool = useDieViewerStore((s) => s.setActiveTool);
+
+  // Broadcast status to other users
+  useUserStatus(dieId, activeTool);
   const navigate = useNavigate();
   const dispatcher = useActionDispatcher(dieId);
 
@@ -232,6 +237,12 @@ function DieViewer({ dieId }: { dieId: string }) {
   const [contextMenu, setContextMenu] = useState<DieContextMenuState | null>(
     null
   );
+  // When the comment tool is active and the user clicks the canvas,
+  // this coordinate triggers CommentOverlay to create a new comment.
+  const [pendingNewComment, setPendingNewComment] = useState<{
+    x: number;
+    y: number;
+  } | null>(null);
 
   // Hold-Space momentary pan. The ref is read by the (stable) pointer-down
   // router without re-binding; the state only drives the cursor.
@@ -1431,7 +1442,8 @@ const analogMemo = useMemo(
         tool === "viaPoly" ||
         tool === "cellGuideLine" ||
         tool === "cellGuideSeg" ||
-        tool === "ioPoint"
+        tool === "ioPoint" ||
+        tool === "comment"
       ) {
         return "pan";
       }
@@ -1791,6 +1803,10 @@ const analogMemo = useMemo(
           },
           prevAnnotation: null
         });
+        return;
+      }
+      if (tool === "comment") {
+        setPendingNewComment({ x: Math.round(x), y: Math.round(y) });
         return;
       }
       if (tool === "viaPoly") {
@@ -2393,6 +2409,14 @@ const analogMemo = useMemo(
               }}
             />
           )}
+          <CommentOverlay
+            annotations={annotations}
+            viewportStore={viewportLive}
+            dieId={dieId}
+            pendingNewComment={pendingNewComment}
+            onConsumePendingComment={() => setPendingNewComment(null)}
+            onAnnotationChange={() => canvasHandle.current?.invalidate()}
+          />
         </section>
         <aside style={panelStyle}>
           <InspectorPanel

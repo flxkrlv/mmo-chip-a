@@ -2,6 +2,8 @@ import { useEffect } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import type { MLInferenceJob } from "shared";
 import { annotationKeys } from "./annotations";
+import { getAuthToken } from "../state/auth";
+import { useOnlineUsers, type OnlineUser } from "../state/onlineUsers";
 
 // ── Connection (shared singleton) ────────────────────────────────────
 //
@@ -12,6 +14,10 @@ import { annotationKeys } from "./annotations";
 export type DieSocketMessage =
   | { type: "annotations"; dieId: string; rev: number }
   | { type: "mlJob"; dieId: string; job: MLInferenceJob }
+  | { type: "user/list"; users: Array<{ userId: string; username: string; dieId: string | null; tool: string | null }> }
+  | { type: "user/online"; userId: string; username: string; dieId: string | null; tool: string | null }
+  | { type: "user/offline"; userId: string }
+  | { type: "user/status"; userId: string; dieId: string | null; tool: string | null }
   | { type: "pong" };
 
 type MessageHandler = (msg: DieSocketMessage) => void;
@@ -31,6 +37,10 @@ let reconnectTimer: number | null = null;
 
 function buildUrl(): string {
   const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
+  const token = getAuthToken();
+  if (token) {
+    return `${proto}//${window.location.host}/api/ws?token=${encodeURIComponent(token)}`;
+  }
   return `${proto}//${window.location.host}/api/ws`;
 }
 
@@ -164,4 +174,71 @@ export function useAnnotationsWebSocket(dieId: string | undefined): void {
       void qc.invalidateQueries({ queryKey: annotationKeys.forDie(dieId) });
     });
   }, [dieId, qc]);
+}
+
+/**
+ * Subscribe to ALL WebSocket messages (not filtered by die). Returns an
+ * unsubscribe function. Used for global messages (presence, etc.).
+ */
+export function subscribeGlobal(
+  handler: (msg: DieSocketMessage) => void
+): () => void {
+  const conn = ensureConnection();
+  conn.refcount += 1;
+  conn.subscribers.add(handler);
+
+  return () => {
+    conn.subscribers.delete(handler);
+    conn.refcount -= 1;
+    if (conn.refcount === 0 && active === conn) {
+      try {
+        conn.socket.close();
+      } catch {
+        // ignore
+      }
+      active = null;
+    }
+  };
+}
+
+/** Send a status update to the server (what die/tool the user is on). */
+export function sendStatus(dieId: string | null, tool: string | null): void {
+  const conn = active;
+  if (!conn) return;
+  sendJson(conn, { type: "status", dieId, tool });
+}
+
+/**
+ * Subscribe to user presence events (online/offline/status) on the shared
+ * WebSocket. Returns an unsubscribe function. Call once at app init.
+ */
+export function subscribePresence(): () => void {
+  return subscribeGlobal((msg) => {
+    if (msg.type === "user/list") {
+      const users: OnlineUser[] = msg.users.map((u) => ({
+        userId: u.userId,
+        username: u.username,
+        dieId: u.dieId,
+        tool: u.tool
+      }));
+      useOnlineUsers.getState().setUsers(users);
+    } else if (msg.type === "user/online") {
+      const user: OnlineUser = {
+        userId: msg.userId,
+        username: msg.username,
+        dieId: msg.dieId,
+        tool: msg.tool
+      };
+      useOnlineUsers.getState().addUser(user);
+    } else if (msg.type === "user/offline") {
+      useOnlineUsers.getState().removeUser(msg.userId);
+    } else if (msg.type === "user/status") {
+      useOnlineUsers.getState().updateUser(msg.userId, msg.dieId, msg.tool);
+    }
+  });
+}
+
+/** React hook version of subscribePresence. */
+export function usePresenceWebSocket(): void {
+  useEffect(() => subscribePresence(), []);
 }

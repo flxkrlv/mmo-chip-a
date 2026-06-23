@@ -1,10 +1,34 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import type { MLInferenceJob } from "shared";
-import type { DieAnnotations, DieIndex, DieRecord, ImportJobIndex, ImportJobRecord } from "./types.js";
+import type { DieAnnotations, DieIndex, DieRecord, ImportJobIndex, ImportJobRecord, UserRecord } from "./types.js";
 
 const EMPTY_DIE_INDEX: DieIndex = { dies: [] };
 const EMPTY_JOB_INDEX: ImportJobIndex = { jobs: [] };
+
+// ─── User CRUD ────────────────────────────────────────────────
+
+export async function listUsers(dataRoot: string): Promise<UserRecord[]> {
+  return readJson<UserRecord[]>(path.join(dataRoot, "users.json"), []);
+}
+
+export async function findUserByUsername(dataRoot: string, username: string): Promise<UserRecord | null> {
+  const users = await listUsers(dataRoot);
+  return users.find((u) => u.username === username) ?? null;
+}
+
+export async function findUserById(dataRoot: string, userId: string): Promise<UserRecord | null> {
+  const users = await listUsers(dataRoot);
+  return users.find((u) => u.id === userId) ?? null;
+}
+
+export async function createUser(dataRoot: string, record: UserRecord): Promise<void> {
+  const users = await listUsers(dataRoot);
+  users.push(record);
+  await fs.writeFile(path.join(dataRoot, "users.json"), JSON.stringify(users, null, 2) + "\n", "utf8");
+}
+
+// ─── Die CRUD ─────────────────────────────────────────────────
 
 export async function ensureDataStore(dataRoot: string) {
   await fs.mkdir(path.join(dataRoot, "dies"), { recursive: true });
@@ -12,6 +36,7 @@ export async function ensureDataStore(dataRoot: string) {
   await fs.mkdir(path.join(dataRoot, "ml-jobs"), { recursive: true });
   await writeJsonIfMissing(path.join(dataRoot, "index.json"), EMPTY_DIE_INDEX);
   await writeJsonIfMissing(path.join(dataRoot, "jobs", "index.json"), EMPTY_JOB_INDEX);
+  await writeJsonIfMissing(path.join(dataRoot, "users.json"), []);
 }
 
 export async function listDieRecords(dataRoot: string): Promise<DieRecord[]> {

@@ -10,16 +10,20 @@
     "import-svg-wires": "tsx src/svgImport/importSvgWiresCli.ts"
   },
   "dependencies": {
-    "shared": "*",
+    "bcryptjs": "^2.4.3",
     "cors": "^2.8.5",
     "express": "^5.1.0",
+    "jsonwebtoken": "^9.0.2",
     "multer": "^2.0.1",
+    "shared": "*",
     "sharp": "^0.34.2",
     "ws": "^8.18.0"
   },
   "devDependencies": {
+    "@types/bcryptjs": "^2.4.6",
     "@types/cors": "^2.8.17",
     "@types/express": "^5.0.1",
+    "@types/jsonwebtoken": "^9.0.10",
     "@types/multer": "^2.0.0",
     "@types/node": "^22.14.0",
     "@types/ws": "^8.5.13",

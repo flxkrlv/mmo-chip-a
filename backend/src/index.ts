@@ -10,11 +10,13 @@ async function main() {
   const { config } = await import("./config.js");
   const { ensureDataStore } = await import("./store.js");
   const { attachWebSocketBroadcaster } = await import("./ws.js");
+  const { verifyToken, isAuthEnabled } = await import("./auth/middleware.js");
   const { createServer } = await import("node:http");
 
   await ensureDataStore(config.dataRoot);
   const httpServer = createServer();
-  const broadcaster = attachWebSocketBroadcaster(httpServer);
+  const authEnabled = isAuthEnabled();
+  const broadcaster = attachWebSocketBroadcaster(httpServer, verifyToken, authEnabled);
   const app = createApp({ ...config, broadcaster });
   httpServer.on("request", app);
   httpServer.listen(config.port, () => {

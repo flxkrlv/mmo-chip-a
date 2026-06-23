@@ -1,6 +1,9 @@
-import { NavLink } from "react-router-dom";
+import { useCallback, useState } from "react";
+import { NavLink, useNavigate } from "react-router-dom";
 import { BrandMark, Ic } from "../../icons";
+import { useAuth } from "../../state/auth";
 import { useSession } from "../../state/session";
+import { OnlineUsersPanel } from "./OnlineUsersPanel";
 
 // `die` controls how the active die is carried into the tab's URL:
 //   "none"  — never (Library is the chooser)
@@ -37,6 +40,16 @@ type Props = {
 export function TopBar({ breadcrumb, meta, savedAgo, onUndo, onRedo, canUndo, canRedo }: Props) {
   const showHistory = !!(onUndo || onRedo);
   const dieId = useSession((s) => s.dieId);
+  const { username, clearAuth } = useAuth();
+  const navigate = useNavigate();
+  const [showUserMenu, setShowUserMenu] = useState(false);
+
+  const handleLogout = useCallback(() => {
+    clearAuth();
+    setShowUserMenu(false);
+    navigate("/login", { replace: true });
+  }, [clearAuth, navigate]);
+
   return (
     <div
       style={{
@@ -120,6 +133,74 @@ export function TopBar({ breadcrumb, meta, savedAgo, onUndo, onRedo, canUndo, ca
             {savedAgo}
           </span>
         </>
+      )}
+
+      {/* Online users */}
+      <OnlineUsersPanel />
+
+      {/* User menu */}
+      {username && (
+        <div style={{ position: "relative" }}>
+          <button
+            className="btn ghost"
+            onClick={() => setShowUserMenu((v) => !v)}
+            style={{ fontSize: 11, fontWeight: 500, gap: 4, display: "flex", alignItems: "center" }}
+            title={`Signed in as ${username}`}
+          >
+            <span style={{
+              display: "inline-flex",
+              alignItems: "center",
+              justifyContent: "center",
+              width: 18,
+              height: 18,
+              borderRadius: "50%",
+              background: "var(--accent)",
+              color: "#fff",
+              fontSize: 9,
+              fontWeight: 700
+            }}>
+              {username[0].toUpperCase()}
+            </span>
+            <span>{username}</span>
+          </button>
+
+          {showUserMenu && (
+            <>
+              <div
+                style={{ position: "fixed", inset: 0, zIndex: 99 }}
+                onClick={() => setShowUserMenu(false)}
+              />
+              <div
+                style={{
+                  position: "absolute",
+                  right: 0,
+                  top: "100%",
+                  marginTop: 4,
+                  background: "var(--card)",
+                  border: "1px solid var(--l2)",
+                  borderRadius: 6,
+                  boxShadow: "0 4px 12px rgba(0,0,0,0.3)",
+                  zIndex: 100,
+                  minWidth: 120,
+                  overflow: "hidden"
+                }}
+              >
+                <div
+                  onClick={handleLogout}
+                  style={{
+                    padding: "6px 12px",
+                    fontSize: 11.5,
+                    cursor: "pointer",
+                    color: "var(--bad)"
+                  }}
+                  className="hover-bg"
+                >
+                  Sign out
+                </div>
+              </div>
+            </>
+          )}
+        </div>
       )}
     </div>
   );

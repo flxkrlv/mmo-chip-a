@@ -5,6 +5,7 @@ import {
   withDieLock,
   writeAnnotations
 } from "../store.js";
+import type { CommentAnnotation } from "../types.js";
 import type {
   AnnotationNet,
   AnnotationNetEdge,
@@ -83,6 +84,7 @@ export function createAnnotationsRouter(config: AnnotationsRouterConfig) {
   registerOptionalCollectionRoutes<IgnoreRect>(router, config, notify, "ignores", "ignores");
   registerOptionalCollectionRoutes<Guide>(router, config, notify, "guides", "guides");
   registerOptionalCollectionRoutes<RulerMeasurement>(router, config, notify, "rulers", "rulers");
+  registerOptionalCollectionRoutes<CommentAnnotation>(router, config, notify, "comments", "comments");
 
   // ─── Net sub-entities ─────────────────────────────────────────────
 
@@ -385,7 +387,7 @@ function registerOptionalCollectionRoutes<T extends { id: string }>(
   config: { dataRoot: string },
   notify: (dieId: string, rev: number) => void,
   pathName: string,
-  field: "pins" | "annotations" | "rois" | "ignores" | "guides" | "rulers"
+  field: "pins" | "annotations" | "rois" | "ignores" | "guides" | "rulers" | "comments"
 ) {
   router.put(`/api/dies/:dieId/${pathName}/:id`, async (request, response, next) => {
     const { dieId, id } = request.params;

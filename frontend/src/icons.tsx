@@ -302,6 +302,13 @@ export const Ic = {
       <path d="M12 8.5l2-2 2 2" stroke="currentColor" />
     </>
   ),
+  comment: Icon(
+    <>
+      <path d="M2.5 3h11a1 1 0 011 1v7a1 1 0 01-1 1H8l-3 2.5V12H2.5a1 1 0 01-1-1V4a1 1 0 011-1z" />
+      <path d="M5.5 7h5M5.5 9h3" />
+    </>,
+    { sw: 1.2 }
+  ),
 };
 
 export function BrandMark(props: SVGProps<SVGSVGElement>) {

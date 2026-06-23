@@ -47,7 +47,7 @@ export interface AnnotationNetNode {
 }
 
 /** Conductor layer of a wire segment. Absent ⇒ "unknown" (the default).
- *  RE/verilog metadata only — ML trace derivation ignores material. */
+ *  RE/verilog metadata only - ML trace derivation ignores material. */
 export type WireLayer =
   | "poly"
   | "metal1" | "metal2" | "metal3" | "metal4" | "metal5" | "metal6";
@@ -129,7 +129,7 @@ export type LayerType =
  * exist as a manual escape hatch for cells the bridge-rule classifies wrong
  * (pass-transistor logic, transmission gates, unusual cells).
  *
- * NOT used on diffusion. Diffusion uses `forcedType` instead — historically
+ * NOT used on diffusion. Diffusion uses `forcedType` instead - historically
  * we conflated the two by reading `label === "vcc" / "gnd"` on diffusion as
  * a P/N override, but that confused the net-propagation step into shorting
  * the diffusion's whole sub-region net to a power rail.
@@ -221,7 +221,7 @@ export interface CellType {
   layers?: CellLayers;
   /** True once promoted to a real, human-confirmed type via the merge-cells
    *  tool. Absent/false ⇒ an auto-created singleton placeholder (a cell that
-   *  has only been labelled, not yet classified) — grouped under "Unmatched". */
+   *  has only been labelled, not yet classified) - grouped under "Unmatched". */
   matched?: boolean;
 }
 
@@ -325,7 +325,7 @@ export interface ClassDef {
   sizeSource: "pointViaSize" | "traceWidth" | null;
 }
 
-/** The shared contract. Both ends import this — never hardcode channel
+/** The shared contract. Both ends import this - never hardcode channel
  *  indices or class→geometry rules anywhere else. */
 export const CLASS_REGISTRY: Record<AnnotationClass, ClassDef> = {
   point_via: {
@@ -390,7 +390,28 @@ export interface DieMLConfig {
 }
 
 /** A ruler/measurement line drawn on the die image. Stores raw pixel start/end
- *  plus the µm length computed at draw time (cached so it survives zoom). */
+ *  plus the μm length computed at draw time (cached so it survives zoom). */
+// ── Comments (Phase 2.2) ────────────────────────────────────────
+
+export interface CommentReply {
+  id: string;
+  text: string;
+  authorId: string;
+  authorName: string;
+  createdAt: string;
+}
+
+export interface CommentAnnotation {
+  id: string;
+  x: number;
+  y: number;
+  text: string;
+  authorId: string;
+  authorName: string;
+  createdAt: string;
+  replies: CommentReply[];
+}
+
 export interface RulerMeasurement {
   id: string;
   name?: string;
@@ -400,7 +421,7 @@ export interface RulerMeasurement {
   y2: number;
   /** Pixel length at the time of drawing (cached). */
   lengthPx: number;
-  /** µm length computed from umPerPx at draw time (cached). */
+  /** μm length computed from umPerPx at draw time (cached). */
   lengthUm: number;
 }
 
@@ -427,10 +448,12 @@ export interface DieAnnotations {
   analogLayers?: CellLayers;
   /** Scale factor: micrometres per source-image pixel. Populated by the ruler
    *  tool's "Set scale" workflow. When set, measurements and device geometry
-   *  calculations can report physical (µm) dimensions. */
+   *  calculations can report physical (μm) dimensions. */
   umPerPx?: number;
-  /** Ruler measurements — persistent lines with annotated pixel length. */
+  /** Ruler measurements - persistent lines with annotated pixel length. */
   rulers?: RulerMeasurement[];
+  /** User comments pinned to locations on the die (Phase 2.2). */
+  comments?: CommentAnnotation[];
 }
 
 export interface MLExportRequest {
@@ -468,7 +491,7 @@ export interface MLPrediction {
   pointVias: MLVia[];
   irregularVias: MLRegion[];
   traces: MLTracePolyline[];
-  /** [x0, y0, x1, y1] in source-image pixels — the region this covers. */
+  /** [x0, y0, x1, y1] in source-image pixels - the region this covers. */
   bbox: [number, number, number, number];
   /** Checkpoint the prediction came from; changes invalidate caches. */
   checkpointHash: string | null;
@@ -557,7 +580,7 @@ export interface MLInferenceJob {
   totalTiles: number;
   /** Tiles whose prediction JSON is cached on disk for `checkpointHash`. */
   completedTiles: number;
-  /** 0–100, completedTiles / totalTiles. */
+  /** 0-100, completedTiles / totalTiles. */
   percentage: number;
   /** Checkpoint hash the cached predictions belong to. */
   checkpointHash: string | null;
@@ -631,7 +654,7 @@ export interface ImportJobProgress {
 }
 
 // ════════════════════════════════════════════════════════════════
-// Analog / Mixed-Signal Extension (Phase 1 — MM0-CHIP fork)
+// Analog / Mixed-Signal Extension (Phase 1 - MM0-CHIP fork)
 // ════════════════════════════════════════════════════════════════
 
 // ── Device kind ─────────────────────────────────────────────────
@@ -659,7 +682,7 @@ export interface DeviceGeometryMOS {
   W_um: number;
   /** Number of parallel gate fingers */
   fingers: number;
-  /** Multiplier — number of cell repeats */
+  /** Multiplier - number of cell repeats */
   multiplier: number;
   /** Effective total width = W × fingers × multiplier [μm] */
   totalW_um: number;
@@ -668,13 +691,13 @@ export interface DeviceGeometryMOS {
 }
 
 export interface DeviceGeometryBJT {
-  /** Emitter area [μm²] */
+  /** Emitter area [μm2] */
   AE_um2: number;
   /** Emitter perimeter [μm] */
   PE_um: number;
   /** Multiplier */
   multiplier: number;
-  /** Total AE = AE × multiplier [μm²] */
+  /** Total AE = AE × multiplier [μm2] */
   totalAE_um2: number;
   /** Number of emitter stripes */
   emitterFingers: number;
@@ -695,7 +718,7 @@ export interface DeviceGeometryJFET {
   jfetType: "njf" | "pjf" | "unknown";
 }
 
-/** Resistor material type — determines default sheetR. */
+/** Resistor material type - determines default sheetR. */
 export type ResistorType = "poly" | "hsr" | "pb" | "npl" | "film";
 
 export interface DeviceGeometryResistor {
@@ -720,11 +743,11 @@ export interface DeviceGeometryResistor {
 }
 
 export interface DeviceGeometryCapacitor {
-  /** Plate overlap area [μm²] */
+  /** Plate overlap area [μm2] */
   area_um2: number;
   /** Perimeter of bottom plate [μm] */
   perimeter_um: number;
-  /** User-supplied capacitance density [fF/μm²] */
+  /** User-supplied capacitance density [fF/μm2] */
   capDensity_fF?: number;
   /** Capacitance = area × capDensity [fF] */
   capacitance_fF?: number;
@@ -735,7 +758,7 @@ export interface DeviceGeometryCapacitor {
 }
 
 export interface DeviceGeometryDiode {
-  /** Junction area [μm²] */
+  /** Junction area [μm2] */
   area_um2: number;
   /** Junction perimeter [μm] */
   perimeter_um: number;
@@ -793,7 +816,7 @@ export interface SpiceConfig {
   technology?: string;
   /** Sheet resistance per layer [Ω/□] */
   sheetR_ohms?: Record<string, number>;
-  /** Capacitance density per layer pair [fF/μm²] */
+  /** Capacitance density per layer pair [fF/μm2] */
   capDensity_fF?: Record<string, number>;
   /** SPICE model definitions (modelName → .MODEL card) */
   models?: Record<string, string>;
@@ -801,7 +824,7 @@ export interface SpiceConfig {
   vdd?: string;
   /** Default GND net name */
   gnd?: string;
-  /** Scale factor — μm per pixel */
+  /** Scale factor - μm per pixel */
   umPerPx?: number;
   /** Resistor value format.
    *  - "ohms":  r=2500       (resolved resistance)

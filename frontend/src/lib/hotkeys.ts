@@ -22,7 +22,8 @@ export type DieViewerToolId =
   | "roi"
   | "ignore"
   | "measure"
-  | "pan";
+  | "pan"
+  | "comment";
 
 export const DIE_VIEWER_HOTKEYS: Record<string, DieViewerToolId> = {
   "s": "select",
@@ -33,6 +34,7 @@ export const DIE_VIEWER_HOTKEYS: Record<string, DieViewerToolId> = {
   "r": "addCell",
   "p": "ioPoint",
   "f": "pan",       // f = fit is handled separately; pan is fallback
+  "c": "comment",
 };
 
 // ── Cell RE hotkeys ───────────────────────────────────────────

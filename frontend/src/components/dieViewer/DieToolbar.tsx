@@ -63,7 +63,8 @@ const TOOL_GROUPS: ToolGroup[] = [
   {
     label: "tools",
     items: [
-      { kind: "measure", icon: Ic.ruler, label: "Ruler — drag to measure distance" }
+      { kind: "measure", icon: Ic.ruler, label: "Ruler — drag to measure distance" },
+      { kind: "comment", icon: Ic.comment, label: "Comment — click to add a comment pin" }
     ]
   }
 ];

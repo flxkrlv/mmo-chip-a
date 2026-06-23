@@ -6,9 +6,11 @@ import { AppShell } from "../components/shell/AppShell";
 import { StatusBar } from "../components/shell/StatusBar";
 import { ThumbCard } from "../components/library/ThumbCard";
 import { Ic } from "../icons";
+import { usePageStatus } from "../lib/useUserStatus";
 
 export function LibraryPage() {
   const { items, isLoading, error, refetch } = useLibraryItems();
+  usePageStatus(null);
   const importMutation = useImportDie();
   const importProjectMutation = useImportProject();
   const navigate = useNavigate();

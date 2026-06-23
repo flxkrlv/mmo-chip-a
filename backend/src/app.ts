@@ -9,11 +9,13 @@ import { createMLRouter } from "./api/ml.js";
 import { createOverlayImagesRouter } from "./api/overlayImages.js";
 import { createMLExportRouter } from "./api/mlExport.js";
 import { createAnalogExportRouter } from "./api/analogExport.js";
+import { createAuthRouter } from "./api/auth.js";
 import { createProjectIORouter } from "./api/projectIO.js";
 import { createTilesRouter } from "./api/tiles.js";
 import { listDieRecords } from "./store.js";
 import { createTileScheduler } from "./tileScheduler.js";
 import type { AnnotationBroadcaster } from "./ws.js";
+import { requireAuth, isAuthEnabled } from "./auth/middleware.js";
 
 export function createApp(config: {
   dataRoot: string;
@@ -47,7 +49,33 @@ export function createApp(config: {
   app.use(cors() as unknown as express.RequestHandler);
   app.use(express.json({ limit: "50mb" }));
 
+  // Auth middleware (applied to all /api/* except public paths)
+  app.use("/api", (request, response, next) => {
+    const path = request.path;
+    const method = request.method;
+    // Public GET paths — loaded via <img> tags that can't carry auth headers
+    if (method === "GET") {
+      if (
+        path.startsWith("/auth/") ||
+        path.startsWith("/health/") ||
+        path.startsWith("/dies/") // tile images, original image, overlays loaded via <img>
+      ) {
+        return next();
+      }
+    } else {
+      // Non-GET: only auth and health are public
+      if (path.startsWith("/auth/") || path.startsWith("/health/")) {
+        return next();
+      }
+    }
+    return requireAuth(request, response, next);
+  });
+
+  // Public routes
   app.use(createHealthRouter());
+  app.use(createAuthRouter({ dataRoot: config.dataRoot }));
+
+  // Protected routes
   app.use(createJobsRouter({ dataRoot: config.dataRoot }));
   app.use(
     createDiesRouter({

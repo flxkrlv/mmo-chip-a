@@ -6,6 +6,8 @@ export type {
   AnnotationRect,
   Cell,
   CellType,
+  CommentAnnotation,
+  CommentReply,
   DieAnnotations,
   DieLevelMetadata,
   DieMetadata,
@@ -16,6 +18,18 @@ export type {
 } from "shared";
 
 // --- Backend-only types ---
+
+export interface UserRecord {
+  id: string;
+  username: string;
+  passwordHash: string;
+  createdAt: string;
+}
+
+export interface AuthPayload {
+  userId: string;
+  username: string;
+}
 
 export interface DieRecord {
   id: string;
