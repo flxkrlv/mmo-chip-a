@@ -7,14 +7,10 @@
  */
 
 import { useCallback, useMemo } from "react";
-import type { AnalogDevice, DieAnnotations, FloorplanRegion } from "shared";
+import type { DieAnnotations, FloorplanRegion } from "shared";
 import type { LiveValue } from "../../lib/liveValue";
 import { useLiveValue } from "../../lib/liveValue";
 import { useFloorplanStore } from "../../state/floorplan";
-import {
-  deviceInRegion,
-  detectBoundaryNets,
-} from "../../lib/export/hierarchical";
 import type { Viewport } from "../../renderer/types";
 import { FloorplanRegionPopover } from "./FloorplanRegionPopover";
 
@@ -22,9 +18,7 @@ interface Props {
   annotations: DieAnnotations | undefined;
   viewportStore: LiveValue<Viewport | null>;
   dieId: string;
-  /** Analog devices for port detection */
-  analogDevices?: AnalogDevice[];
-  /** When true, show boundary net port labels on region blocks */
+  /** When true, show port dot markers on all region blocks */
   showIO?: boolean;
   /** Called when annotations have changed (to trigger a refetch). */
   onAnnotationChange?: () => void;
@@ -43,7 +37,6 @@ export function FloorplanOverlay({
   annotations,
   viewportStore,
   dieId,
-  analogDevices,
   showIO,
   onAnnotationChange,
 }: Props) {
@@ -123,50 +116,68 @@ export function FloorplanOverlay({
     ? regions.find((r) => r.id === selectedRegionId) ?? null
     : null;
 
-  // ── Port visualization (B4) ─────────────────────────────
+  // ── Port visualization ──────────────────────────────────
+  // Shows port dots on region blocks.
+  //   — Always shows dots for the selected (popover) region
+  //   — When showIO is enabled, shows dots for ALL regions
+  //   — When showIO is off and no region selected, nothing shows
+  // Uses annotation-node proximity detection (find first node inside region polygon).
   const portDots = useMemo(() => {
-    if (!selectedRegion || !annotations || !viewport) return null;
+    if (!annotations || !viewport) return null;
+
+    const regionsToRender: FloorplanRegion[] = [];
+    if (showIO) {
+      regionsToRender.push(...regions);
+    } else if (selectedRegion) {
+      regionsToRender.push(selectedRegion);
+    }
+    if (regionsToRender.length === 0) return null;
+
     const nets = annotations.nets ?? [];
+    const result: { x: number; y: number; color: string; label: string; key: string }[] = [];
 
-    const poly =
-      selectedRegion.kind === "rect" && selectedRegion.geometry.length >= 2
-        ? [
-            { x: Math.min(selectedRegion.geometry[0].x, selectedRegion.geometry[1].x), y: Math.min(selectedRegion.geometry[0].y, selectedRegion.geometry[1].y) },
-            { x: Math.max(selectedRegion.geometry[0].x, selectedRegion.geometry[1].x), y: Math.min(selectedRegion.geometry[0].y, selectedRegion.geometry[1].y) },
-            { x: Math.max(selectedRegion.geometry[0].x, selectedRegion.geometry[1].x), y: Math.max(selectedRegion.geometry[0].y, selectedRegion.geometry[1].y) },
-            { x: Math.min(selectedRegion.geometry[0].x, selectedRegion.geometry[1].x), y: Math.max(selectedRegion.geometry[0].y, selectedRegion.geometry[1].y) },
-          ]
-        : selectedRegion.geometry;
+    for (const region of regionsToRender) {
+      const poly =
+        region.kind === "rect" && region.geometry.length >= 2
+          ? [
+              { x: Math.min(region.geometry[0].x, region.geometry[1].x), y: Math.min(region.geometry[0].y, region.geometry[1].y) },
+              { x: Math.max(region.geometry[0].x, region.geometry[1].x), y: Math.min(region.geometry[0].y, region.geometry[1].y) },
+              { x: Math.max(region.geometry[0].x, region.geometry[1].x), y: Math.max(region.geometry[0].y, region.geometry[1].y) },
+              { x: Math.min(region.geometry[0].x, region.geometry[1].x), y: Math.max(region.geometry[0].y, region.geometry[1].y) },
+            ]
+          : region.geometry;
 
-    const pointInPoly = (px: number, py: number) => {
-      let inside = false;
-      for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
-        const xi = poly[i].x, yi = poly[i].y;
-        const xj = poly[j].x, yj = poly[j].y;
-        if ((yi > py) !== (yj > py) &&
-            px < ((xj - xi) * (py - yi)) / (yj - yi) + xi) {
-          inside = !inside;
+      const pointInPoly = (px: number, py: number) => {
+        let inside = false;
+        for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+          const xi = poly[i].x, yi = poly[i].y;
+          const xj = poly[j].x, yj = poly[j].y;
+          if ((yi > py) !== (yj > py) &&
+              px < ((xj - xi) * (py - yi)) / (yj - yi) + xi) {
+            inside = !inside;
+          }
+        }
+        return inside;
+      };
+
+      const color = region.color || "#4dabf7";
+
+      for (const net of nets) {
+        if (!net.name || net.name === "vcc" || net.name === "gnd" ||
+            net.name === "VDD" || net.name === "GND" || net.name === "VSS") continue;
+        const firstInsideNode = net.nodes.find((n) => pointInPoly(n.x, n.y));
+        if (firstInsideNode) {
+          // Dedup: same (region, net, position) should not repeat
+          const key = `${region.id}_${net.id}_${firstInsideNode.x.toFixed(1)}_${firstInsideNode.y.toFixed(1)}`;
+          if (!result.some((d) => d.key === key)) {
+            result.push({ x: firstInsideNode.x, y: firstInsideNode.y, color, label: net.name, key });
+          }
         }
       }
-      return inside;
-    };
-
-    const dots: { x: number; y: number; color: string; label: string }[] = [];
-    for (const net of nets) {
-      if (!net.name || net.name === "vcc" || net.name === "gnd" ||
-          net.name === "VDD" || net.name === "GND" || net.name === "VSS") continue;
-      const firstInsideNode = net.nodes.find((n) => pointInPoly(n.x, n.y));
-      if (firstInsideNode) {
-        dots.push({
-          x: firstInsideNode.x,
-          y: firstInsideNode.y,
-          color: selectedRegion.color || "#4dabf7",
-          label: net.name,
-        });
-      }
     }
-    return dots;
-  }, [selectedRegion, annotations, viewport]);
+
+    return result.length > 0 ? result : null;
+  }, [selectedRegion, annotations, viewport, showIO, regions]);
 
   return (
     <>
@@ -323,8 +334,8 @@ export function FloorplanOverlay({
         />
       )}
 
-      {/* Port dots (B4) */}
-      {portDots && portDots.length > 0 && viewport && (
+      {/* Port dots */}
+      {portDots && viewport && (
         <svg
           style={{
             position: "absolute",
@@ -336,8 +347,8 @@ export function FloorplanOverlay({
             zIndex: 9,
           }}
         >
-          {portDots.map((dot, i) => (
-            <g key={i}>
+          {portDots.map((dot) => (
+            <g key={dot.key}>
               <circle
                 cx={(dot.x - viewport.originX) * viewport.zoom}
                 cy={(dot.y - viewport.originY) * viewport.zoom}
@@ -350,8 +361,8 @@ export function FloorplanOverlay({
               <text
                 x={(dot.x - viewport.originX) * viewport.zoom + 8}
                 y={(dot.y - viewport.originY) * viewport.zoom + 4}
-                fill="#fff"
-                fontSize={Math.max(10, 12 * viewport.zoom / 1000)}
+                fill={dot.color}
+                fontSize={Math.max(10, 13 * viewport.zoom / 1000)}
                 fontWeight="600"
                 style={{ textShadow: "0 0 4px rgba(0,0,0,0.9)" }}
               >
@@ -359,69 +370,6 @@ export function FloorplanOverlay({
               </text>
             </g>
           ))}
-        </svg>
-      )}
-
-      {/* Floorplan IO port labels — device-based boundary net names */}
-      {showIO && analogDevices && analogDevices.length > 0 && viewport && regions.length > 0 && (
-        <svg
-          style={{
-            position: "absolute",
-            top: 0,
-            left: 0,
-            width: "100%",
-            height: "100%",
-            pointerEvents: "none",
-            zIndex: 9,
-          }}
-        >
-          {regions.map((region) => {
-            const insideDevices = analogDevices.filter((d) => deviceInRegion(d, region));
-            if (insideDevices.length === 0) return null;
-            const boundaryNets = detectBoundaryNets(insideDevices, analogDevices);
-
-            const portNames: string[] = [];
-            for (const netId of boundaryNets) {
-              const alias = region.portAliases?.[netId];
-              const name = alias
-                ? alias.replace(/[^A-Za-z0-9_]/g, "_")
-                : `n${netId}`;
-              portNames.push(name);
-            }
-            if (portNames.length === 0) return null;
-            portNames.sort();
-
-            // Position below the name label (top-left of region)
-            const pts = region.geometry;
-            const minX = Math.min(...pts.map((p) => p.x));
-            const minY = Math.min(...pts.map((p) => p.y));
-            const cssX = (minX - viewport.originX) * viewport.zoom + 8;
-            const cssY = (minY - viewport.originY) * viewport.zoom;
-
-            let fontSize = Math.max(13, 15 * viewport.zoom / 1000);
-            fontSize = Math.min(fontSize, 48);
-
-            const color = region.color || "#4dabf7";
-            const nameOffset = region.name ? 22 : 4;
-
-            return (
-              <g key={region.id}>
-                {portNames.map((name, i) => (
-                  <text
-                    key={name}
-                    x={cssX}
-                    y={cssY + nameOffset + (i + 1) * (fontSize + 4)}
-                    fill={color}
-                    fontSize={fontSize}
-                    fontWeight="600"
-                    style={{ textShadow: "0 0 5px rgba(0,0,0,0.9)" }}
-                  >
-                    {name}
-                  </text>
-                ))}
-              </g>
-            );
-          })}
         </svg>
       )}
     </>

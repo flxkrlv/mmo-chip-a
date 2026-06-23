@@ -2552,7 +2552,6 @@ const analogMemo = useMemo(
               annotations={annotations}
               viewportStore={viewportLive}
               dieId={dieId}
-              analogDevices={analogDevices}
               showIO={showFloorplanIO}
               onAnnotationChange={() => canvasHandle.current?.invalidate()}
             />

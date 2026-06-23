@@ -203,6 +203,111 @@ W/L и количество пальцев (fingers) вычисляются ав
 
 ---
 
+## Экспорт / Импорт проекта
+
+Проект можно выгрузить с сервера и импортировать на другой инстанс.
+
+- **`POST /api/dies/:dieId/export-project`** — экспорт в JSON (light: только аннотации / full: + изображения)
+- **`POST /api/dies/import-project`** — импорт с обработкой конфликтов (перезапись / пропуск)
+- **`POST /api/dies/:dieId/rename`** — переименование кристалла
+- Экспорт preferences из localStorage
+
+Full-экспорт сохраняет оригинальное изображение + overlay-изображения, так что сторонние проекты восстанавливаются полностью (с изображениями).
+
+---
+
+## Floorplan регионы (v0.2)
+
+Инструмент для выделения аналоговых блоков на топологии кристалла. Прямоугольные и полигональные регионы.
+
+### Возможности
+- **Рисование:** rect (drag-based) или polygon (вершины по клику, двойной клик / Enter завершает)
+- **Popover:** редактирование имени, цвета, алиасов портов, резервация
+- **Резервация:** опционально — показать, кто работает над блоком (для мультиплеера)
+- **Port aliases:** назначение человекочитаемых имён для граничных портов блока
+- **Global rename:** алиасы переименовывают нет на die (через `PUT /api/dies/:dieId/nets/:uuid`)
+  При снятии алиаса — исходное имя восстанавливается
+  При коллизии (одинаковый алиас у двух разных netId) — авто-суффикс `_1`, `_2`
+- **Port dots:** цветные кружки с именами портов на die-вьювере
+  При выделении блока — на его портах; галочка "FP IO" — на всех блоках сразу
+- **Layer:** дисплей поверх всего, обводка без заливки, клик проходится насквозь до канваса
+
+### Горячие клавиши
+
+| Клавиша | Действие |
+|---|---|
+| `H` | Активировать инструмент "Floorplan" |
+| `Ctrl+Shift+H` | Показать/скрыть overlay регионов |
+
+---
+
+## Иерархический SPICE-нетлист
+
+При создании floorplan регионов появляется возможность генерировать **иерархический** (а не плоский) нетлист.
+
+- **Плоский (flat):** все устройства и соединения на одном уровне — поведение по умолчанию
+- **Иерархический:** каждое устройство попадает в .SUBCKT своего региона (по центру). 
+  Порт региона = net, который соединяет устройства внутри и снаружи (boundary net).
+  Порты автоматически детектятся по соединениям устройств.
+
+### Переключатель "Hierarchical"
+На вкладке Analog Netlist (таб `5`) — чекбокс в панели экспорта. 
+По умолчанию Off (сохраняется старый плоский нетлист).
+
+### Формат
+
+```spice
+// Spectre hierarchical netlist
+// Source: lmv341
+
+subckt fp1 (fp2in1 VDD GND)
+  M1 (net2030 fp2in1 net2032 net2033) PMOS W=28.655u L=7.905u
+ends fp1
+
+subckt lmv341 (Net_20 fp2in1 fp3in1 fp3in2 fp3out1 VDD GND)
+  X1 (fp2in1 VDD GND) fp1
+  X2 (fp2in1 fp3out1 VDD GND) fp2
+  M1 (Net_20 fp3in2 fp3in1 Net_20) PMOS W=54.674u L=4.611u
+ends lmv341
+```
+
+---
+
+## Комментарии на топологии
+
+Аннотации в виде кликабельных иконок на die-вьювере. Позволяют оставлять заметки на физической топологии.
+
+- **Добавление:** инструмент "Comment" (пин) в тулбаре — клик в нужной точке
+- **Popover:** текст, автор, дата, список ответов
+- **WS:** новые комментарии приходят всем, кто открыл die, в реальном времени
+- **Данные:** хранятся как опциональное поле `comments[]` в DieAnnotations — обратно совместимо
+
+---
+
+## Net ID overlay
+
+Отображает человекочитаемые имена нетов на die viewer — те же имена, что в SPICE-нетлисте.
+
+- Переключается галочкой в боковой панели
+- Имена вычисляются из `netNameMap` (коллектор die-широких устройств)
+- VDD/GND/VSS/0 не подписываются (избыточно)
+
+---
+
+## Управление слоями (Cell RE)
+
+В Cell RE доступны слои для рисования аналоговых устройств:
+
+| Слой | Группа |
+|---|---|
+| `diffusion` / `polysilicon` / `nwell` / `pwell` | MOS |
+| `collector` / `base` / `emitter` | BJT |
+| `hsr` / `film` | Резисторы (high-sheet / thin film) |
+| `npn_id` / `pnp_id` / `res_id` / `cap_id` | Маркеры |
+| `metal1` / `contact` | Металлизация |
+
+---
+
 ## Ключевые изменения относительно оригинального mmo-chip (main)
 
 - **Well-based MOS** — единственный путь для MOS. 
@@ -220,6 +325,13 @@ W/L и количество пальцев (fingers) вычисляются ав
 - **Per-net color override** — цвета выводов сохраняются в preferences.
 - **uuid polyfill** — `crypto.randomUUID()` не работает через Network IP; заменён на `uuid()` с fallback Math.random() для v4.
 - **Overlay-изображения на Merge Canvas + RE Cell Canvas** — с clipping по cell area и глобальными hotkeys.
+- **Floorplan regions** — rect/polygon регионы с цветом, именем, резервацией, алиасами портов
+- **Hierarchical SPICE netlist** — генерация .SUBCKT на каждый регион с автодетекцией boundary nets
+- **Global port rename** — алиасы портов переименовывают annotation net на die через API
+- **Port dots overlay** — визуализация граничных портов на die viewer (выделенный блок / все блоки)
+- **Comment annotations** — кликабельные иконки с текстом, автором, ответами на die viewer
+- **Net ID overlay** — человекочитаемые имена нетов на die viewer
+- **Project export/import** — light/full экспорт + импорт с обработкой конфликтов
 
 ---
 
@@ -235,6 +347,10 @@ W/L и количество пальцев (fingers) вычисляются ав
 - **Сериализация overlay-изображений** в JSON аннотаций (пока статика)
 - **L-хоткей для polyline** — указан в тулбаре, но не зарегистрирован в центральном hotkey registry
 - **Cell RE hotkeys: select (V) и pan** — документированы в тулбаре, но не все могут быть зарегистрированы
+- **Hierarchical netlist + floorplan:** базовый функционал готов, но требуется тестирование на реальных кейсах
+  - Alias collision: проверить при чистом старте (нет старых алиасов с неправильными netId)
+  - Global rename: проверка revert при снятии алиаса
+  - Скорость rename: множественные `PUT /api/dies/:dieId/nets/:uuid` при большом количестве алиасов
 
 ---
 
@@ -272,9 +388,12 @@ frontend/src/
   lib/extraction/
     simpleAnalog.ts               ← extractMarkedDevices, detectMOSFromLayers
     analogDevices.ts              ← computeMOSParams, computeBJTParams, etc.
-  lib/export/spice.ts             ← netlist generation (CDL/Spectre/HSPICE)
+  lib/export/hierarchical.ts      ← floorplan geometry, port detection, alias collision resolver
+  lib/export/spice.ts             ← netlist generation (CDL/Spectre/HSPICE + hierarchical)
   components/dieViewer/
     AnalogDeviceHighlights.tsx    ← canvas overlay
+    FloorplanOverlay.tsx           ← floorplan region rendering + port dots
+    FloorplanRegionPopover.tsx     ← popover for region edit + port aliases
   components/cellRE/
     CellREToolbar.tsx             ← инструменты Cell RE
     useLayerPolylineTool.ts       ← polyline (резистор-меандр)

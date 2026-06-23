@@ -170,16 +170,20 @@
 
 **Итого A5:** **~1 день ✅**
 
-#### B1–B4 — Hierarchical netlist + Ports — ✅ Done
+#### B1–B5 — Hierarchical netlist + Ports + Overlay — ✅ Done
 
 | Задача | Описание | Статус |
 |---|---|---|
 | `generateHierarchicalNetlist()` | Расширение `frontend/src/lib/export/spice.ts` — регион → .SUBCKT, автодетекция портов по boundary nets | ✅ B1 |
 | UI чекбокс "Hierarchical" | Чекбокс в панели экспорта AnalogNetlistPage, по умолчанию flat (не ломает существующий экспорт) | ✅ B2 |
-| Port naming в popover | Auto-detected boundary nets с editable alias'ами в FloorplanRegionPopover | ✅ B3 |
-| Визуализация портов | Цветные кружки + label на die viewer при выделении региона | ✅ B4 |
+| Port naming в popover | Device-based boundary nets с editable alias'ами в FloorplanRegionPopover | ✅ B3 |
+| Port dots (выделенный блок) | Цветные кружки + label на die viewer при выделении региона | ✅ B4 |
+| Port dots (все блоки) | Галочка FP IO — подсвечивает пины-точки на ВСЕХ блоках сразу | ✅ B5 |
+| Global rename (Option B) | Алиасы портов переименовывают нет на die через API (`PUT /api/dies/:dieId/nets/:uuid`) | ✅ B6 |
+| Collision detection | Авто-суффикс (`_1`, `_2`) при совпадении алиасов у разных netId | ✅ B7 |
+| Shared utility module | `frontend/src/lib/export/hierarchical.ts` — `resolveGlobalPortAliases`, `detectBoundaryNets`, `deviceInRegion` | ✅ |
 
-**Итого B1–B4:** **~4-5 дней ✅**
+**Итого B1–B7:** **~6-7 дней ✅**
 
 **Phase 2.1 total:** **~3 дня (+ ~5 дней B-фаза = 8 дней общий)**
 
@@ -273,16 +277,16 @@ Phase 1 (8-9 дней) — ✅ 1.1 + 1.3 сделано
 
 Phase 2 (текущий приоритет)
 ├── 2.2 Комментарии на топологии      ████████████████████  ✅ (3д)
-├── 2.1 Floorplan                      ████████████████████  3д (≈0д ост.)  ← NEARLY DONE
+├── 2.1 Floorplan                      ████████████████████  ✅
 │   ├── A1 Data model                 ████████████████████  ✅
 │   ├── A2 Backend CRUD               ████████████████████  ✅
 │   ├── A3 Zustand store + toolbar    ████████████████████  ✅
 │   ├── A4 Overlay + popover          ████████████████████  ✅
 │   ├── A5 Dev-server QA + fixes      ████████████████████  ✅
-│   ├── B1 Hierarchical netlist       ██████░░░░░░░░░░░░░░  ~2д  ← IN PROGRESS
-│   ├── B2 UI чекбокс "Hierarchical"  ████████████████████  ✅ (~0.5д)
-│   ├── B3 Port naming в popover      ████████████████████  ✅ (~1д)
-│   └── B4 Визуализация портов        ████████████████████  ✅ (~1д)
+│   ├── B1 Hierarchical netlist       ████████████████████  ✅
+│   ├── B2 UI чекбокс "Hierarchical"  ████████████████████  ✅
+│   ├── B3 Port naming в popover      ████████████████████  ✅
+│   └── B4 Port dots on die           ████████████████████  ✅
 └── 2.3 Чат внутри die                ❌ (вычеркнут — дублирует 2.2)
 
 Phase 3 (4-6 дней) — когда понадобится удалёнка
