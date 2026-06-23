@@ -180,12 +180,12 @@
 | Port dots (выделенный блок) | Цветные кружки + label на die viewer при выделении региона | ✅ B4 |
 | Port dots (все блоки) | Галочка FP IO — подсвечивает пины-точки на ВСЕХ блоках сразу | ✅ B5 |
 | Global rename (Option B) | Алиасы портов переименовывают нет на die через API (`PUT /api/dies/:dieId/nets/:uuid`) | ✅ B6 |
-| Collision detection | Авто-суффикс (`_1`, `_2`) при совпадении алиасов у разных netId | ✅ B7 |
+| Collision detection | Авто-суффикс (`_1`, `_2`) при совпадении алиасов у разных netId + warn UI в поповере | ✅ B7 |
 | Shared utility module | `frontend/src/lib/export/hierarchical.ts` — `resolveGlobalPortAliases`, `detectBoundaryNets`, `deviceInRegion` | ✅ |
 
 **Итого B1–B7:** **~6-7 дней ✅**
 
-**Phase 2.1 total:** **~3 дня (+ ~5 дней B-фаза = 8 дней общий)**
+**Phase 2.1 total:** **~3 дня (+ ~5 дней B-фаза = 8 дней общий) ✅**
 
 ---
 
@@ -286,7 +286,10 @@ Phase 2 (текущий приоритет)
 │   ├── B1 Hierarchical netlist       ████████████████████  ✅
 │   ├── B2 UI чекбокс "Hierarchical"  ████████████████████  ✅
 │   ├── B3 Port naming в popover      ████████████████████  ✅
-│   └── B4 Port dots on die           ████████████████████  ✅
+│   ├── B4 Port dots on die           ████████████████████  ✅
+│   ├── B5 FP IO dots (все блоки)     ████████████████████  ✅
+│   ├── B6 Global rename (на die)     ████████████████████  ✅
+│   └── B7 Collision + warn UI        ████████████████████  ✅
 └── 2.3 Чат внутри die                ❌ (вычеркнут — дублирует 2.2)
 
 Phase 3 (4-6 дней) — когда понадобится удалёнка
