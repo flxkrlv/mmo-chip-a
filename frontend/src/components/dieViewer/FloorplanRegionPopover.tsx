@@ -8,8 +8,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { DieAnnotations, FloorplanRegion } from "shared";
 import { apiPut, apiDelete } from "../../api/client";
+import { collectDieWideAnalogDevices } from "../../api/dieWideAnalog";
 import { useAuth } from "../../state/auth";
 import { useFloorplanStore } from "../../state/floorplan";
+import {
+  deviceInRegion,
+  detectBoundaryNets,
+  resolveGlobalPortAliases,
+} from "../../lib/export/hierarchical";
 import type { Viewport } from "../../renderer/types";
 
 interface Props {
@@ -33,52 +39,45 @@ const COLORS = [
 ];
 
 /**
- * Detect which annotation nets have nodes inside the region polygon.
- * Used to suggest port names for the hierarchical netlist.
+ * Detect which nets are boundary nets for the region, based on
+ * analog device terminals — same logic as the hierarchical netlist
+ * generator.  This guarantees the popover shows exactly the ports
+ * that will appear in the netlist.
  */
 function detectRegionPorts(
   region: FloorplanRegion,
   annotations: DieAnnotations | undefined,
 ): { netName: string; netId: number }[] {
   if (!annotations) return [];
-  const nets = annotations.nets ?? [];
 
-  const poly =
-    region.kind === "rect" && region.geometry.length >= 2
-      ? (() => {
-          const x1 = Math.min(region.geometry[0].x, region.geometry[1].x);
-          const y1 = Math.min(region.geometry[0].y, region.geometry[1].y);
-          const x2 = Math.max(region.geometry[0].x, region.geometry[1].x);
-          const y2 = Math.max(region.geometry[0].y, region.geometry[1].y);
-          return [
-            { x: x1, y: y1 }, { x: x2, y: y1 },
-            { x: x2, y: y2 }, { x: x1, y: y2 },
-          ];
-        })()
-      : region.geometry;
-
-  const pointInPoly = (px: number, py: number) => {
-    let inside = false;
-    for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
-      const xi = poly[i].x, yi = poly[i].y;
-      const xj = poly[j].x, yj = poly[j].y;
-      if ((yi > py) !== (yj > py) &&
-          px < ((xj - xi) * (py - yi)) / (yj - yi) + xi) {
-        inside = !inside;
-      }
-    }
-    return inside;
-  };
-
-  const result: { netName: string; netId: number }[] = [];
-  for (const net of nets) {
-    if (!net.name || net.name === "vcc" || net.name === "gnd" ||
-        net.name === "VDD" || net.name === "GND" || net.name === "VSS") continue;
-    const hasNodeInside = net.nodes.some((n) => pointInPoly(n.x, n.y));
-    if (hasNodeInside) {
-      result.push({ netName: net.name, netId: parseInt(net.id, 10) || 0 });
-    }
+  // Compute analog devices from annotations (same as DieViewerPage)
+  let devices = [];
+  let namedNets = new Map<number, string>();
+  try {
+    const r = collectDieWideAnalogDevices(annotations as any, annotations.umPerPx ?? 1);
+    devices = r.devices;
+    namedNets = r.namedNets;
+  } catch {
+    return [];
   }
+
+  // Find devices inside this region
+  const insideDevices = devices.filter((d: any) => deviceInRegion(d, region));
+  if (insideDevices.length === 0) return [];
+
+  // Detect boundary nets
+  const boundaryNets = detectBoundaryNets(insideDevices, devices);
+
+  // Resolve net names, exclude VDD/GND
+  const result: { netName: string; netId: number }[] = [];
+  for (const netId of boundaryNets) {
+    const rawName = namedNets.get(netId) ?? `n${netId}`;
+    if (rawName === "vcc" || rawName === "gnd" ||
+        rawName === "VDD" || rawName === "GND" || rawName === "VSS" ||
+        rawName === "0") continue;
+    result.push({ netName: rawName, netId });
+  }
+
   return result;
 }
 

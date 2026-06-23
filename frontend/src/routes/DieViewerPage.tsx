@@ -823,9 +823,11 @@ function DieViewer({ dieId }: { dieId: string }) {
     [cellTerminals]
   );
 
-  // ── Device highlighting toggle ───────────────────────────────
+  // ── Overlay toggles ─────────────────────────────────────────
   const [deviceOverlayOn, setDeviceOverlayOn] = useState(true);
   const [showTermNetIds, setShowTermNetIds] = useState(false);
+  const [floorplanOverlayOn, setFloorplanOverlayOn] = useState(true);
+  const [showFloorplanIO, setShowFloorplanIO] = useState(false);
   const cellsLocked = usePreferences((s) => s.cellsLocked);
   const setCellsLocked = usePreferences((s) => s.setCellsLocked);
   const [selectedDevice, setSelectedDevice] = useState<AnalogDevice | null>(null);
@@ -2545,12 +2547,16 @@ const analogMemo = useMemo(
             onConsumePendingComment={() => setPendingNewComment(null)}
             onAnnotationChange={() => canvasHandle.current?.invalidate()}
           />
-          <FloorplanOverlay
-            annotations={annotations}
-            viewportStore={viewportLive}
-            dieId={dieId}
-            onAnnotationChange={() => canvasHandle.current?.invalidate()}
-          />
+          {floorplanOverlayOn && (
+            <FloorplanOverlay
+              annotations={annotations}
+              viewportStore={viewportLive}
+              dieId={dieId}
+              analogDevices={analogDevices}
+              showIO={showFloorplanIO}
+              onAnnotationChange={() => canvasHandle.current?.invalidate()}
+            />
+          )}
         </section>
         <aside style={panelStyle}>
           <InspectorPanel
@@ -2627,6 +2633,53 @@ const analogMemo = useMemo(
                     type="checkbox"
                     checked={showTermNetIds}
                     onChange={(e) => setShowTermNetIds(e.target.checked)}
+                    style={{ margin: 0 }}
+                  />
+                  overlay
+                </label>
+              </div>
+              <div
+                style={{
+                  fontSize: 11, color: "var(--ink3)", letterSpacing: 1,
+                  display: "flex", alignItems: "center", gap: 8,
+                  marginTop: 4,
+                }}
+              >
+                <span className="u">FLOORPLAN</span>
+                <label
+                  style={{
+                    marginLeft: "auto", fontSize: 9, minWidth: 55,
+                    display: "flex", alignItems: "center", gap: 4,
+                    cursor: "pointer", color: "var(--ink2)",
+                  }}
+                >
+                  <input
+                    type="checkbox"
+                    checked={floorplanOverlayOn}
+                    onChange={(e) => setFloorplanOverlayOn(e.target.checked)}
+                    style={{ margin: 0 }}
+                  />
+                  overlay
+                </label>
+              </div>
+              <div
+                style={{
+                  fontSize: 11, color: "var(--ink3)", letterSpacing: 1,
+                  display: "flex", alignItems: "center", gap: 8,
+                }}
+              >
+                <span className="u">FP IO</span>
+                <label
+                  style={{
+                    marginLeft: "auto", fontSize: 9, minWidth: 55,
+                    display: "flex", alignItems: "center", gap: 4,
+                    cursor: "pointer", color: "var(--ink2)",
+                  }}
+                >
+                  <input
+                    type="checkbox"
+                    checked={showFloorplanIO}
+                    onChange={(e) => setShowFloorplanIO(e.target.checked)}
                     style={{ margin: 0 }}
                   />
                   overlay

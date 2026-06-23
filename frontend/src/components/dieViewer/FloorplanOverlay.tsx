@@ -7,10 +7,14 @@
  */
 
 import { useCallback, useMemo } from "react";
-import type { DieAnnotations, FloorplanRegion } from "shared";
+import type { AnalogDevice, DieAnnotations, FloorplanRegion } from "shared";
 import type { LiveValue } from "../../lib/liveValue";
 import { useLiveValue } from "../../lib/liveValue";
 import { useFloorplanStore } from "../../state/floorplan";
+import {
+  deviceInRegion,
+  detectBoundaryNets,
+} from "../../lib/export/hierarchical";
 import type { Viewport } from "../../renderer/types";
 import { FloorplanRegionPopover } from "./FloorplanRegionPopover";
 
@@ -18,6 +22,10 @@ interface Props {
   annotations: DieAnnotations | undefined;
   viewportStore: LiveValue<Viewport | null>;
   dieId: string;
+  /** Analog devices for port detection */
+  analogDevices?: AnalogDevice[];
+  /** When true, show boundary net port labels on region blocks */
+  showIO?: boolean;
   /** Called when annotations have changed (to trigger a refetch). */
   onAnnotationChange?: () => void;
 }
@@ -35,6 +43,8 @@ export function FloorplanOverlay({
   annotations,
   viewportStore,
   dieId,
+  analogDevices,
+  showIO,
   onAnnotationChange,
 }: Props) {
   const viewport = useLiveValue(viewportStore);
@@ -349,6 +359,70 @@ export function FloorplanOverlay({
               </text>
             </g>
           ))}
+        </svg>
+      )}
+
+      {/* Floorplan IO port labels (B3/B4) — device-based boundary net names */}
+      {showIO && analogDevices && analogDevices.length > 0 && viewport && regions.length > 0 && (
+        <svg
+          style={{
+            position: "absolute",
+            top: 0,
+            left: 0,
+            width: "100%",
+            height: "100%",
+            pointerEvents: "none",
+            zIndex: 9,
+          }}
+        >
+          {regions.map((region) => {
+            // Compute boundary nets for this region (device-based)
+            const insideDevices = analogDevices.filter((d) => deviceInRegion(d, region));
+            if (insideDevices.length === 0) return null;
+            const boundaryNets = detectBoundaryNets(insideDevices, analogDevices);
+
+            // Resolve net names (with port aliases)
+            const portNames: string[] = [];
+            for (const netId of boundaryNets) {
+              // Check for user-defined port alias
+              const alias = region.portAliases?.[netId];
+              const name = alias
+                ? alias.replace(/[^A-Za-z0-9_]/g, "_")
+                : `n${netId}`;
+              portNames.push(name);
+            }
+            if (portNames.length === 0) return null;
+            portNames.sort();
+
+            // Position the label at the top-right of the region
+            const pts = region.geometry;
+            const maxX = Math.max(...pts.map((p) => p.x));
+            const minY = Math.min(...pts.map((p) => p.y));
+            const cssX = (maxX - viewport.originX) * viewport.zoom;
+            const cssY = (minY - viewport.originY) * viewport.zoom;
+
+            const fontSize = Math.max(11, 13 * viewport.zoom / 1000);
+            const color = region.color || "#4dabf7";
+
+            return (
+              <g key={region.id}>
+                {portNames.map((name, i) => (
+                  <text
+                    key={i}
+                    x={cssX - 8}
+                    y={cssY + (i + 1) * (fontSize + 2)}
+                    fill={color}
+                    fontSize={fontSize}
+                    fontWeight="600"
+                    textAnchor="end"
+                    style={{ textShadow: "0 0 4px rgba(0,0,0,0.8)" }}
+                  >
+                    {name}
+                  </text>
+                ))}
+              </g>
+            );
+          })}
         </svg>
       )}
     </>
