@@ -2595,7 +2595,7 @@ const analogMemo = useMemo(
                 style={{
                   fontSize: 11, color: "var(--ink3)", letterSpacing: 1,
                   display: "flex", alignItems: "center", gap: 8,
-                  marginBottom: 5,
+                  marginBottom: 6,
                 }}
               >
                 <span className="u">CELLS</span>
@@ -2619,6 +2619,7 @@ const analogMemo = useMemo(
                 style={{
                   fontSize: 11, color: "var(--ink3)", letterSpacing: 1,
                   display: "flex", alignItems: "center", gap: 8,
+                  marginBottom: 6,
                 }}
               >
                 <span className="u">NET ID</span>
@@ -2642,7 +2643,7 @@ const analogMemo = useMemo(
                 style={{
                   fontSize: 11, color: "var(--ink3)", letterSpacing: 1,
                   display: "flex", alignItems: "center", gap: 8,
-                  marginTop: 4,
+                  marginBottom: 6,
                 }}
               >
                 <span className="u">FLOORPLAN</span>
@@ -2666,6 +2667,7 @@ const analogMemo = useMemo(
                 style={{
                   fontSize: 11, color: "var(--ink3)", letterSpacing: 1,
                   display: "flex", alignItems: "center", gap: 8,
+                  marginBottom: 6,
                 }}
               >
                 <span className="u">FP IO</span>

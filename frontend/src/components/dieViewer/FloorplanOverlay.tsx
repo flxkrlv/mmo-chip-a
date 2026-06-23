@@ -362,7 +362,7 @@ export function FloorplanOverlay({
         </svg>
       )}
 
-      {/* Floorplan IO port labels (B3/B4) — device-based boundary net names */}
+      {/* Floorplan IO port labels — device-based boundary net names */}
       {showIO && analogDevices && analogDevices.length > 0 && viewport && regions.length > 0 && (
         <svg
           style={{
@@ -376,15 +376,12 @@ export function FloorplanOverlay({
           }}
         >
           {regions.map((region) => {
-            // Compute boundary nets for this region (device-based)
             const insideDevices = analogDevices.filter((d) => deviceInRegion(d, region));
             if (insideDevices.length === 0) return null;
             const boundaryNets = detectBoundaryNets(insideDevices, analogDevices);
 
-            // Resolve net names (with port aliases)
             const portNames: string[] = [];
             for (const netId of boundaryNets) {
-              // Check for user-defined port alias
               const alias = region.portAliases?.[netId];
               const name = alias
                 ? alias.replace(/[^A-Za-z0-9_]/g, "_")
@@ -394,28 +391,30 @@ export function FloorplanOverlay({
             if (portNames.length === 0) return null;
             portNames.sort();
 
-            // Position the label at the top-right of the region
+            // Position below the name label (top-left of region)
             const pts = region.geometry;
-            const maxX = Math.max(...pts.map((p) => p.x));
+            const minX = Math.min(...pts.map((p) => p.x));
             const minY = Math.min(...pts.map((p) => p.y));
-            const cssX = (maxX - viewport.originX) * viewport.zoom;
+            const cssX = (minX - viewport.originX) * viewport.zoom + 8;
             const cssY = (minY - viewport.originY) * viewport.zoom;
 
-            const fontSize = Math.max(11, 13 * viewport.zoom / 1000);
+            let fontSize = Math.max(13, 15 * viewport.zoom / 1000);
+            fontSize = Math.min(fontSize, 48);
+
             const color = region.color || "#4dabf7";
+            const nameOffset = region.name ? 22 : 4;
 
             return (
               <g key={region.id}>
                 {portNames.map((name, i) => (
                   <text
-                    key={i}
-                    x={cssX - 8}
-                    y={cssY + (i + 1) * (fontSize + 2)}
+                    key={name}
+                    x={cssX}
+                    y={cssY + nameOffset + (i + 1) * (fontSize + 4)}
                     fill={color}
                     fontSize={fontSize}
                     fontWeight="600"
-                    textAnchor="end"
-                    style={{ textShadow: "0 0 4px rgba(0,0,0,0.8)" }}
+                    style={{ textShadow: "0 0 5px rgba(0,0,0,0.9)" }}
                   >
                     {name}
                   </text>

@@ -143,30 +143,128 @@ export function FloorplanRegionPopover({
     };
   }, [onClose]);
 
+  // Store original annotation net names when first loading, so we can
+  // revert when the user clears an alias.
+  const originalNetNamesRef = useRef<Map<number, string> | null>(null);
+  if (originalNetNamesRef.current === null && annotations) {
+    const map = new Map<number, string>();
+    try {
+      const r = collectDieWideAnalogDevices(annotations as any, annotations.umPerPx ?? 1);
+      // Reverse map: numerical netId → annotation UUID
+      const revMap = new Map<number, string>();
+      for (const [uuid, numericId] of r.netIdMap) {
+        revMap.set(numericId, uuid);
+      }
+      // Store original net names for any netId that has a port alias
+      for (const netIdStr of Object.keys(region.portAliases ?? {})) {
+        const netId = Number(netIdStr);
+        const uuid = revMap.get(netId);
+        if (uuid) {
+          const annNet = annotations.nets?.find((n) => n.id === uuid);
+          if (annNet) map.set(netId, annNet.name ?? `n${netId}`);
+        }
+      }
+    } catch {}
+    originalNetNamesRef.current = map;
+  }
+
   const handleSave = useCallback(async () => {
     if (saving) return;
     setSaving(true);
     try {
+      const newAliases = buildPortAliasesForSave();
+      const oldAliases = region.portAliases ?? {};
+
+      // ── Rename annotation nets on the die (global rename) ────
+      // Build reverse map: numerical netId → annotation UUID
+      if (annotations && (Object.keys(newAliases).length > 0 || Object.keys(oldAliases).length > 0)) {
+        try {
+          const r = collectDieWideAnalogDevices(annotations as any, annotations.umPerPx ?? 1);
+          const revMap = new Map<number, string>();
+          for (const [uuid, numericId] of r.netIdMap) {
+            revMap.set(numericId, uuid);
+          }
+
+          // Collect nets to rename: added aliases + changed aliases
+          const toRename: Array<{ uuid: string; newName: string }> = [];
+          for (const [netId, newAlias] of Object.entries(newAliases)) {
+            const nid = Number(netId);
+            const oldAlias = oldAliases[nid];
+            // Only rename if the alias actually changed
+            if (oldAlias !== newAlias) {
+              const uuid = revMap.get(nid);
+              if (uuid) toRename.push({ uuid, newName: newAlias });
+            }
+          }
+
+          // Collect nets to revert: removed aliases
+          const toRevert: Array<{ uuid: string; originalName: string }> = [];
+          for (const [netIdStr] of Object.entries(oldAliases)) {
+            const netId = Number(netIdStr);
+            if (newAliases[netId] === undefined) {
+              // Alias was cleared — revert to original if we have it
+              const origName = originalNetNamesRef.current?.get(netId);
+              if (origName) {
+                const uuid = revMap.get(netId);
+                if (uuid) toRevert.push({ uuid, originalName: origName });
+              }
+            }
+          }
+
+          // Execute renames and reverts
+          const renamePromises: Promise<void>[] = [];
+          for (const { uuid, newName } of toRename) {
+            const annNet = annotations.nets?.find((n) => n.id === uuid);
+            if (annNet) {
+              const renamed = { ...annNet, name: newName };
+              renamePromises.push(
+                apiPut(`/api/dies/${dieId}/nets/${uuid}`, renamed)
+                  .then(() => {})
+                  .catch((e) => console.error(`Failed to rename net ${uuid}:`, e))
+              );
+            }
+          }
+          for (const { uuid, originalName } of toRevert) {
+            const annNet = annotations.nets?.find((n) => n.id === uuid);
+            if (annNet) {
+              const reverted = { ...annNet, name: originalName };
+              renamePromises.push(
+                apiPut(`/api/dies/${dieId}/nets/${uuid}`, reverted)
+                  .then(() => {})
+                  .catch((e) => console.error(`Failed to revert net ${uuid}:`, e))
+              );
+            }
+          }
+
+          if (renamePromises.length > 0) {
+            await Promise.all(renamePromises);
+          }
+        } catch (e) {
+          console.error("Failed to rename annotation nets:", e);
+        }
+      }
+
+      // ── Save the region with aliases ─────────────────────────
       const updated: FloorplanRegion = {
         ...region,
         name,
         color,
         createdByName: region.createdByName ?? null,
         reservedByName: region.reservedByName ?? null,
-        portAliases: Object.keys(buildPortAliasesForSave()).length > 0
-          ? buildPortAliasesForSave()
-          : undefined,
+        portAliases: Object.keys(newAliases).length > 0 ? newAliases : undefined,
       };
       await apiPut(`/api/dies/${dieId}/floorplan/${region.id}`, updated);
       upsertRegion(updated);
       setDirty(false);
+      // Reset original names ref so it picks up new state on next save
+      originalNetNamesRef.current = null;
       onSaved?.();
     } catch (err) {
       console.error("Failed to save floorplan region:", err);
     } finally {
       setSaving(false);
     }
-  }, [region, dieId, name, color, saving, upsertRegion, onSaved, buildPortAliasesForSave]);
+  }, [region, dieId, name, color, saving, upsertRegion, onSaved, buildPortAliasesForSave, annotations]);
 
   const handleDelete = useCallback(async () => {
     if (deleting) return;
