@@ -31,6 +31,7 @@
 import type {
   AnalogDevice, CellLayers, DeviceGeometry,
   DeviceGeometryMOS, DeviceKind, DeviceTerminal, LayerShape,
+  ResistorType,
 } from "shared";
 import { polygonBounds } from "../geometry";
 import type { Point, Rect } from "../geometry";
@@ -43,6 +44,7 @@ import {
   ringSignedArea,
 } from "./clipper";
 import { shapeToPolygon } from "./common";
+import { effectiveSheetR } from "../export/resistorDefaults";
 
 /**
  * Module-level cache: device ID → synthetic segment LayerShapes created by
@@ -389,7 +391,7 @@ export function extractMarkedDevices(
             L_um,
             W_um,
             squares,
-            resistance_ohms: squares * 50,
+            resistance_ohms: squares * effectiveSheetR(resistorType as ResistorType, undefined),
             fingers: 1,
             multiplier: 1,
             shape: lines.length > 0 ? "meander" : "straight",
