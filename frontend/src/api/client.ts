@@ -33,7 +33,7 @@ function safeJson(text: string): unknown {
   }
 }
 
-function authHeaders(): Record<string, string> {
+export function authHeaders(): Record<string, string> {
   const token = getAuthToken();
   if (token) {
     return { Authorization: `Bearer ${token}` };

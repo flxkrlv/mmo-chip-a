@@ -5,7 +5,7 @@ import {
   type UseQueryOptions
 } from "@tanstack/react-query";
 import type { DieMetadata, DieSummary, ImportJob } from "shared";
-import { apiDelete, apiGet, apiPost, apiPut, apiUpload } from "./client";
+import { apiDelete, apiGet, apiPost, apiPut, apiUpload, authHeaders } from "./client";
 import { importJobKeys } from "./importJobs";
 import { usePreferences } from "../state/preferences";
 
@@ -122,7 +122,7 @@ export async function exportProject(
 
   const response = await fetch(`/api/dies/${dieId}/export-project`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...authHeaders() },
     body: JSON.stringify({ mode, preferences }),
     signal
   });
