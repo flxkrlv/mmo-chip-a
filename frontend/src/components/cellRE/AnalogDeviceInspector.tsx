@@ -54,7 +54,7 @@ interface ParamEntry {
 }
 
 function deviceParams(device: AnalogDevice): ParamEntry[] {
-  const g = device.geometry as Record<string, unknown>;
+  const g = device.geometry as unknown as Record<string, unknown>;
   const entries: ParamEntry[] = [];
 
   switch (device.kind) {

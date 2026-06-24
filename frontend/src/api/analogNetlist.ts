@@ -8,7 +8,8 @@
  */
 
 import { useMemo } from "react";
-import type { DieAnnotations, SpiceConfig, SpiceDialect } from "shared";
+import type { AnalogDevice, DieAnnotations, SpiceConfig, SpiceDialect } from "shared";
+import { apiGet, apiPost } from "./client";
 import {
   assignInstanceNames,
   generateSpiceNetlist,
@@ -45,6 +46,12 @@ export interface AnalogNetlistResult {
   byKind: Record<string, number>;
   /** instanceName → cellId lookup for cross-tab navigation. */
   deviceCellMap: Map<string, string>;
+  /** Number of device terminals that have no wire connection (netId >= 2000). */
+  unconnectedCount: number;
+  /** Total cell instances on the die. */
+  totalCells: number;
+  /** Total annotation nets on the die. */
+  totalNets: number;
 }
 
 // ── Helpers ───────────────────────────────────────────────────────
@@ -78,7 +85,8 @@ function kindTitle(kind: string): string {
 function buildLineIndex(
   text: string,
   devices: Array<{ instanceName: string; kind: string }>,
-): Map<string, number> {
+    // instanceName guaranteed by assignInstanceNames()
+): Map<string, number> { // eslint-disable-line
   const map = new Map<string, number>();
   // Known instance prefixes in SPICE: M Q J R C D L X
   const prefixSet = new Set(["M", "Q", "J", "R", "C", "D", "L", "X"]);
@@ -106,8 +114,9 @@ function buildLineIndex(
  */
 function buildOutline(
   devices: Array<{ instanceName: string; kind: string; modelName?: string; _cellId?: string }>,
+    // instanceName guaranteed by assignInstanceNames()
   lineIndex: Map<string, number>,
-): AnalogNetlistGroup[] {
+): AnalogNetlistGroup[] { // eslint-disable-line
   const groups = new Map<string, AnalogNetlistGroup>();
   for (const d of devices) {
     let g = groups.get(d.kind);
@@ -183,15 +192,24 @@ function buildAnalogNetlist(
         namedNets,
       );
 
-  // Build line index + outline
-  const lineIndex = buildLineIndex(result.text, named);
-  const outline = buildOutline(named, lineIndex);
+  // Build line index + outline (assignInstanceNames guarantees instanceName)
+  const namedSafe = named as Array<AnalogDevice & { instanceName: string }>;
+  const lineIndex = buildLineIndex(result.text, namedSafe);
+  const outline = buildOutline(namedSafe, lineIndex);
 
   // instanceName → cellId lookup
   const deviceCellMap = new Map<string, string>();
   for (const d of named) {
-    if (d._cellId) deviceCellMap.set(d.instanceName, d._cellId);
+    const cellId = (d as any)._cellId as string | undefined;
+    if (cellId && d.instanceName) deviceCellMap.set(d.instanceName, cellId);
   }
+
+  // Count unconnected terminals (netId >= 2000 = fresh IDs when wire matching failed)
+  const unconnectedCount = named.reduce((sum, d) => {
+    return sum + d.terminals.filter((t) => t.netId >= 2000).length;
+  }, 0);
+  const totalCells = annotations.cells?.length ?? 0;
+  const totalNets = annotations.nets?.length ?? 0;
 
   return {
     source: result.text,
@@ -202,6 +220,9 @@ function buildAnalogNetlist(
     totalDevices: result.totalDevices,
     byKind: result.byKind,
     deviceCellMap,
+    unconnectedCount,
+    totalCells,
+    totalNets,
   };
 }
 
@@ -239,3 +260,33 @@ export function useAnalogNetlist(
     error: null,
   };
 }
+
+// ── SpiceConfig persistence ────────────────────────────────────────
+
+/**
+ * Load saved SpiceConfig from the backend.
+ */
+export async function loadSpiceConfig(dieId: string): Promise<SpiceConfig> {
+  try {
+    const result = await apiGet<SpiceConfig | null>(
+      `/api/dies/${encodeURIComponent(dieId)}/spice-config`,
+    );
+    return result ?? {};
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * Save SpiceConfig to the backend.
+ */
+export async function saveSpiceConfigToBackend(
+  dieId: string,
+  config: SpiceConfig,
+): Promise<void> {
+  await apiPost(
+    `/api/dies/${encodeURIComponent(dieId)}/spice-config`,
+    config,
+  );
+}
+

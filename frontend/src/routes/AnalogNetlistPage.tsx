@@ -21,7 +21,12 @@ import { useDie } from "../api/dies";
 import { useAnnotations } from "../api/annotations";
 import { useAnnotationsWebSocket } from "../api/annotationsWebSocket";
 import { useSession } from "../state/session";
-import { useAnalogNetlist } from "../api/analogNetlist";
+import {
+  useAnalogNetlist,
+  loadSpiceConfig,
+  saveSpiceConfigToBackend,
+} from "../api/analogNetlist";
+import { loadClipper } from "../lib/extraction";
 import { Ic } from "../icons";
 import { exportLayout, renderLayoutCsv } from "../lib/export/layoutExport";
 
@@ -68,6 +73,9 @@ function AnalogNetlist({ dieId }: { dieId: string }) {
   const [dialect, setDialect] = useState<SpiceDialect>("cdl");
   // Resistor format: ohms (resolved value) vs sqRs (squares × sheetR)
   const [resistorFormat, setResistorFormat] = useState<"ohms" | "sqRs">("ohms");
+  // Global supply net names
+  const [vddNet, setVddNet] = useState("VDD");
+  const [gndNet, setGndNet] = useState("GND");
 
   // Module name: same convention as the Code page.
   const moduleName = useMemo(
@@ -79,9 +87,53 @@ function AnalogNetlist({ dieId }: { dieId: string }) {
   const [hierarchical, setHierarchical] = useState(false);
 
   const spiceConfig: SpiceConfig = useMemo(
-    () => ({ resistorFormat }),
-    [resistorFormat],
+    () => ({ resistorFormat, vdd: vddNet, gnd: gndNet }),
+    [resistorFormat, vddNet, gndNet],
   );
+
+  // ══ Ensure Clipper2 WASM is loaded for multi-finger MOS splitting ═
+  useEffect(() => {
+    loadClipper()
+      .then(() => console.log("[analog] Clipper2 loaded"))
+      .catch((e) => console.warn("[analog] Clipper2 load failed:", e));
+  }, []);
+
+  // ══ SpiceConfig persistence (load on mount, auto-save) ════════
+  const lastConfigRef = useRef<SpiceConfig>({});
+
+  // Load saved config on mount
+  useEffect(() => {
+    let cancelled = false;
+    loadSpiceConfig(dieId).then((cfg) => {
+      if (cancelled) return;
+      lastConfigRef.current = cfg;
+      if (cfg.vdd && cfg.vdd !== "VDD") setVddNet(cfg.vdd);
+      if (cfg.gnd && cfg.gnd !== "GND") setGndNet(cfg.gnd);
+      if (cfg.resistorFormat) setResistorFormat(cfg.resistorFormat);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [dieId]);
+
+  // Auto-save with 500ms debounce
+  useEffect(() => {
+    const timer = setTimeout(async () => {
+      const merged: SpiceConfig = {
+        ...lastConfigRef.current,
+        vdd: vddNet,
+        gnd: gndNet,
+        resistorFormat,
+      };
+      try {
+        await saveSpiceConfigToBackend(dieId, merged);
+        lastConfigRef.current = merged;
+      } catch {
+        // Silent — user can re-save on next edit
+      }
+    }, 500);
+    return () => clearTimeout(timer);
+  }, [vddNet, gndNet, resistorFormat, dieId]);
 
   const netlist = useAnalogNetlist(annotations, moduleName, dialect, spiceConfig, hierarchical);
 
@@ -164,17 +216,23 @@ function AnalogNetlist({ dieId }: { dieId: string }) {
     if (!netlist.data) {
       return [die?.name ?? dieId, netlist.loading ? "generating…" : "—"];
     }
-    const { totalDevices, byKind } = netlist.data;
+    const { totalDevices, byKind, totalCells, totalNets, unconnectedCount } = netlist.data;
     const kindSummary = Object.entries(byKind)
       .map(([k, n]) => `${n}×${k}`)
       .join(" · ");
-    return [
+    const parts = [
       die?.name ?? dieId,
       `${totalDevices} device${totalDevices === 1 ? "" : "s"}`,
       kindSummary,
-      selectedLine ? `L${selectedLine}` : "—",
-      dialect.toUpperCase(),
     ];
+    if (totalCells > 0 || totalNets > 0) {
+      parts.push(`${totalCells}c ${totalNets}n`);
+    }
+    if (unconnectedCount > 0) {
+      parts.push(`${unconnectedCount} unconn`);
+    }
+    parts.push(selectedLine ? `L${selectedLine}` : "—", dialect.toUpperCase());
+    return parts;
   }, [netlist.data, netlist.loading, die?.name, dieId, selectedLine, dialect]);
 
   // ── Warning count for the header chip ───────────────────────────
@@ -257,6 +315,44 @@ function AnalogNetlist({ dieId }: { dieId: string }) {
                 ))}
               </div>
             )}
+            <ToolDivider />
+            {/* VDD/GND net names */}
+            <div className="row" style={{ gap: 4, alignItems: "center" }}>
+              <span style={{ fontSize: 9, color: "var(--ink3)" }}>G:</span>
+              <input
+                type="text"
+                value={vddNet}
+                onChange={(e) => setVddNet(e.target.value)}
+                style={{
+                  width: 48,
+                  fontSize: 10,
+                  padding: "1px 4px",
+                  border: "1px solid var(--l2)",
+                  borderRadius: 3,
+                  background: "var(--card)",
+                  color: "var(--fg)",
+                  outline: "none",
+                }}
+                title="Global VDD net name"
+              />
+              <span style={{ fontSize: 9, color: "var(--ink3)" }}>GND:</span>
+              <input
+                type="text"
+                value={gndNet}
+                onChange={(e) => setGndNet(e.target.value)}
+                style={{
+                  width: 48,
+                  fontSize: 10,
+                  padding: "1px 4px",
+                  border: "1px solid var(--l2)",
+                  borderRadius: 3,
+                  background: "var(--card)",
+                  color: "var(--fg)",
+                  outline: "none",
+                }}
+                title="Global GND net name"
+              />
+            </div>
             <ToolDivider />
             {/* Resistor format toggle */}
             <div className="row" style={{ gap: 2, background: "var(--l1)", borderRadius: 4, padding: 2 }}>

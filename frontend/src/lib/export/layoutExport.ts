@@ -57,7 +57,7 @@ export function exportLayout(
     const y_um = bbox?.y != null ? bbox.y * umPerPx : 0;
 
     // Parameter string for the SKILL script
-    const g = d.geometry as Record<string, unknown>;
+    const g = d.geometry as unknown as Record<string, unknown>;
     let params = "";
     switch (d.kind) {
       case "mos":

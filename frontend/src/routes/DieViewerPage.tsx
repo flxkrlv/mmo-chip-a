@@ -55,6 +55,7 @@ import { AnalogDeviceHighlights } from "../components/dieViewer/AnalogDeviceHigh
 import { DeviceInspector } from "../components/dieViewer/DeviceInspector";
 import { DeviceInstancePanel } from "../components/dieViewer/DeviceInstancePanel";
 import { collectDieWideAnalogDevices } from "../api/dieWideAnalog";
+import { loadClipper } from "../lib/extraction";
 import { useMLJob, useMLStatus } from "../api/ml";
 import { WireDraftOverlay } from "../components/dieViewer/WireDraftOverlay";
 import { RectDraftOverlay } from "../components/dieViewer/RectDraftOverlay";
@@ -831,19 +832,38 @@ function DieViewer({ dieId }: { dieId: string }) {
   const cellsLocked = usePreferences((s) => s.cellsLocked);
   const setCellsLocked = usePreferences((s) => s.setCellsLocked);
   const [selectedDevice, setSelectedDevice] = useState<AnalogDevice | null>(null);
+  // Track Clipper2 WASM readiness so useMemo re-runs after it loads
+  // (multi-finger MOS splitting depends on Clipper).
+  const [clipperTick, setClipperTick] = useState(0);
+  useEffect(() => {
+    console.log("[analog] DieViewerPage: loadClipper start");
+    loadClipper().then(() => {
+      console.log("[analog] DieViewerPage: Clipper ready, bumping tick");
+      setClipperTick((s) => s + 1);
+    });
+  }, []);
 
 const analogMemo = useMemo(
     () => {
-      if (!annotations) return { devices: [], netNames: new Map<number, string>() };
+      if (!annotations) return { devices: [], netNames: new Map<number, string>(), unconnectedCount: 0 };
       try {
+        console.log(`[analog] DieViewerPage: computing analog devices (clipperTick=${clipperTick})`);
         const r = collectDieWideAnalogDevices(annotations as any, annotations.umPerPx ?? 1);
-        return { devices: r.devices, netNames: r.namedNets };
-      } catch { return { devices: [], netNames: new Map<number, string>() }; }
+        const unconnectedCount = r.devices.reduce(
+          (sum, d) => sum + d.terminals.filter((t) => t.netId >= 2000).length, 0,
+        );
+        console.log(`[analog] DieViewerPage: devices=${r.devices.length} unconnected=${unconnectedCount}`);
+        for (const d of r.devices) {
+          console.log(`[analog]   dev=${d.instanceName ?? d.id} cid=${(d as any)._cellId} bbox=${JSON.stringify(d.bbox)}`);
+        }
+        return { devices: r.devices, netNames: r.namedNets, unconnectedCount };
+      } catch { return { devices: [], netNames: new Map<number, string>(), unconnectedCount: 0 }; }
     },
-    [annotations]
+    [annotations, clipperTick]
   );
   const analogDevices = analogMemo.devices;
   const netNames = analogMemo.netNames;
+  const unconnectedCount = analogMemo.unconnectedCount;
 
   // Mirror analogDevices in a ref so callbacks passed to TiledCanvas
   // (onCanvasClick, onCanvasDoubleClick) don't get new references on
@@ -851,7 +871,22 @@ const analogMemo = useMemo(
   const analogDevicesRef = useRef(analogDevices);
   analogDevicesRef.current = analogDevices;
 
-  const deviceLabels = useMemo(() => { const m = new Map<string,string>(); for(const d of analogDevices){ const cid = (d as any)._cellId; if(cid) m.set(cid, d.instanceName??d.id); } return m; }, [analogDevices]);
+  // Build device labels per cell instance. Multi-finger MOS is split into
+  // separate devices sharing one cellId — concatenate instance names.
+  const deviceLabels = useMemo(() => {
+    const m = new Map<string,string>();
+    for(const d of analogDevices){
+      const cid = (d as any)._cellId;
+      if(!cid) continue;
+      const name = d.instanceName??d.id;
+      const existing = m.get(cid);
+      const newLabel = existing ? `${existing} ${name}` : name;
+      m.set(cid, newLabel);
+      console.log(`[analog] deviceLabels: cid=${cid} name=${name} label=${newLabel}`);
+    }
+    console.log(`[analog] deviceLabels final:`, [...m.entries()].map(([k,v])=>`${k}=${v}`).join(", "));
+    return m;
+  }, [analogDevices]);
 
   const wire = useWireTool({
     dispatcher,
@@ -1527,7 +1562,8 @@ const analogMemo = useMemo(
         tool === "cellGuideSeg" ||
         tool === "ioPoint" ||
         tool === "comment" ||
-        tool === "floorplan"
+        tool === "analogRect" ||
+        tool === "analogPoly"
       ) {
         return "pan";
       }
@@ -2727,6 +2763,9 @@ const analogMemo = useMemo(
           annotations ? annotationsSummary(annotations) : null,
           annotations?.umPerPx != null
             ? `scale: ${annotations.umPerPx.toFixed(3)} µm/px`
+            : null,
+          unconnectedCount > 0 && analogDevices.length > 0
+            ? `${unconnectedCount} unconn`
             : null,
           activeTool === "measure"
             ? "📏 drag to measure — double-click a ruler to set scale"

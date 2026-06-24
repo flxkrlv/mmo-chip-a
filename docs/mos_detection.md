@@ -13,8 +13,8 @@ nwell слой (или pwell)
         nwell = PMOS (p-type diffusion в nwell)
         pwell = NMOS (n-type diffusion в pwell)
   └── определяет bulk (подложку):
-        есть contact + metal1 на well → bulk = net этого metal1
-        нет контакта → bulk = VCC (nwell/PMOS) или GND (pwell/NMOS)
+        есть contact на well (НЕ на diffusion, НЕ на poly) → positive netId
+        нет контакта на well → sentinel -2 → VDD (PMOS) / GND (NMOS)
 ```
 
 ### Какие слои используются
@@ -24,33 +24,59 @@ nwell слой (или pwell)
 | `nwell` / `pwell` | Определяет PMOS/NMOS + bulk terminal |
 | `diffusion` | Тело транзистора (должна быть внутри well) |
 | `polysilicon` | Затвор (gate) — должен пересекать diffusion |
-| `contact` | Контакты на diffusion → S/D; на well → bulk |
-| `metal1` | Соединяет контакты в die-wide сеть |
+| `contact` | Контакты на diffusion → S/D; на well (без diff/poly) → bulk |
 
-### Геометрия (W/L/fingers/multiplier)
+### Multi-finger MOS (fingers > 1) — Clipper2
 
-- **W**: ширина diffusion вдоль poly gate
-- **L**: длина poly gate поперёк diffusion (делится на fingers)
+Для multi-finger транзисторов diffusion **физически разрезается** между
+затворами с помощью Clipper2 `polygonDifference()`:
+
+```
+    gate[0]   gate[1]   gate[2]
+  ┌────┼────┼────┼────┼────┼────┐
+  │  S │ D=S│ D=S│ D=S│ D  │    │  diffusion
+  └────┼────┼────┼────┼────┼────┘
+       │    │    │    │    │
+  seg[0] seg[1] seg[2] seg[3]
+```
+
+- N gate fingers → N+1 сегментов diffusion
+- Каждый gate → отдельный MOS с `id = mos_well_${well}_${n}_finger${i}`
+- Shared сегмент `seg[i+1]` = D для gate[i] и S для gate[i+1]
+- Shared сегменты → одинаковый netId при wire matching
+- Сегменты кешируются в `_segmentShapesCache` под per-gate device ID
+
+### W/L/fingers/multiplier
+
+- **W**: ширина diffusion вдоль poly gate (bbox intersection)
+- **L**: длина poly gate поперёк diffusion
 - **Fingers**: число poly-затворов, пересекающих одну diffusion
-- **Multiplier**: число diffusion с одинаковой W/L в одном well
+- **Multiplier**: группировка устройств по `type + W + L`; если в одном well
+  несколько diffusion с одинаковыми параметрами → multiplier > 1
 
-### S/D (исток/сток)
+### Well tap — LVS layer exclusion
 
-MOSFET электрически симметричен — в SPICE D и S взаимозаменяемы.
-При выводе на overlay оба подписываются "S/D".
+Контакт считается well tap ТОЛЬКО если:
+1. Лежит внутри bbox well-а
+2. НЕ лежит на diffusion (иначе это S/D контакт)
+3. НЕ лежит на polysilicon (иначе это gate контакт)
 
-### Что НЕ требуется (в отличие от маркерного подхода)
+Это классический Calibre LVS-подход: контакт принадлежит самому специфичному слою.
 
-- `mos_id` — не нужен, well определяет тип
-- `drain` / `source` / `gate` / `bulk` слои — не нужны
-- `device_box` — не нужен
+### Gate marker → well-based
 
-### Если well не нарисован
+Раньше существовал marker-based подход (`mos_id` + `drain`/`gate`/`source`/`bulk`).
+Он удалён — well-based детекция покрывает все случаи.
 
-Детекция не сработает — транзистор не будет найден.
-В этом случае используй маркерный метод:
-- Нарисуй `mos_id` (прямоугольник вокруг транзистора)
-- Внутри: `drain`, `gate`, `source`, `bulk` слои
+### Edge cases
+
+- **well есть, diffusion есть → всегда транзистор**, даже без poly-затвора
+  (в этом случае gates.length = 0 → устройство не создаётся)
+- **well contact есть, но нет metal1**: contact → positive netId (уникальный
+  внутренний net, не VDD/GND). Это корректно — пользователь явно поставил
+  well tap, даже если он никуда не подключён.
+- **well contact совпадает с S/D контактом**: исключается LVS правилом —
+  контакт на diffusion → S/D, не bulk.
 
 ### Интеграция
 

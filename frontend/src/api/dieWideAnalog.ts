@@ -29,7 +29,7 @@ import type {
   DeviceGeometryMOS, DeviceKind, DieAnnotations, IOPin,
   LayerShape, SpiceConfig,
 } from "shared";
-import { extractMarkedDevices, detectMOSFromLayers } from "../lib/extraction/simpleAnalog";
+import { extractMarkedDevices, detectMOSFromLayers, consumeSegmentShapes } from "../lib/extraction/simpleAnalog";
 import { generateSpiceNetlist } from "../lib/export/spice";
 
 // ═════════════════════════════════════════════════════════════════
@@ -68,6 +68,14 @@ const DEFAULT_2T_DEFS: TerminalDef[] = [
   { name: "MINUS", layers: ["contact"] },
 ];
 
+const DIODE_DEFS: TerminalDef[] = [
+  // Diode anode (PLUS) = base/well, cathode (MINUS) = emitter.
+  // Emitter is embedded in base → emitter gets higher priority
+  // (lower number) so contacts on the emitter junction go to MINUS.
+  { name: "PLUS", layers: ["base", "bulk"], priority: 1 },
+  { name: "MINUS", layers: ["emitter"], priority: 0 },
+];
+
 // Record<DeviceKind, TerminalDef[]> but we use string-keyed for ergonomics
 const DEVICE_TERMINAL_DEFS: Record<string, TerminalDef[]> = {
   bjt_npn: BJT_DEFS,
@@ -75,7 +83,7 @@ const DEVICE_TERMINAL_DEFS: Record<string, TerminalDef[]> = {
   mos: MOS_DEFS,
   resistor: DEFAULT_2T_DEFS,
   capacitor: DEFAULT_2T_DEFS,
-  diode: DEFAULT_2T_DEFS,
+  diode: DIODE_DEFS,
   jfet_n: DEFAULT_2T_DEFS,
   jfet_p: DEFAULT_2T_DEFS,
   zener: DEFAULT_2T_DEFS,
@@ -262,7 +270,11 @@ function resolveDeviceContacts(
           const termShapeIds = dev.terminals[ti].shapeIds;
           if (termShapeIds && termShapeIds.length > 0 && !termShapeIds.includes(shape.id)) continue;
 
-          if (pointInShape(cc.x, cc.y, shape)) {
+          const isInside = pointInShape(cc.x, cc.y, shape);
+          if (shape.id.startsWith("mos_well") || shape.id.includes("_seg")) {
+            console.log(`[analog] resolveContact dev=${dev.instanceName??dev.id} term=${termName} shape=${shape.id.slice(0,30)} (${shape.kind}) pt=(${cc.x.toFixed(1)},${cc.y.toFixed(1)}) => ${isInside ? "INSIDE" : "OUTSIDE"} shapeIds=${JSON.stringify(dev.terminals[ti].shapeIds)}`);
+          }
+          if (isInside) {
             // MOS B (bulk): contact must be EXCLUSIVELY on well layers —
             // if also on diffusion or polysilicon, it's an S/D/G contact.
             if (dev.kind === "mos" && termDef.name === "B") {
@@ -275,6 +287,10 @@ function resolveDeviceContacts(
             candidates.push({ ti, pri: termDef.priority ?? 999 });
             matched = true;
             break;
+          } else {
+            if (shape.id.startsWith("mos_well") || shape.id.includes("_seg")) {
+              console.log(`[analog]   OUTSIDE for term ${termName}`);
+            }
           }
         }
         if (matched) break; // one match per layer = enough for this terminal
@@ -468,13 +484,32 @@ export function collectDieWideAnalogDevices(
           ? { ...dev.bbox, x: dev.bbox.x+cx, y: dev.bbox.y+cy }
           : dev.bbox;
 
+        // ── Inject synthetic segment shapes (multi-finger MOS) ──
+        // When detectMOSFromLayers splits a diffusion via Clipper2,
+        // it caches synthetic polygon shapes. Inject them into
+        // ctLayers so resolveDeviceContacts can find the correct
+        // segment polygons for D/S contact matching.
+        const segShapes = consumeSegmentShapes(dev.id);
+        if (segShapes.length > 0) {
+          console.log(`[analog] injecting ${segShapes.length} segment shapes for ${dev.instanceName ?? dev.id}`);
+        }
+        const layersWithSegs = segShapes.length > 0
+          ? {
+              ...ct.layers,
+              diffusion: [
+                ...((ct.layers as Record<string, LayerShape[] | undefined>).diffusion ?? []),
+                ...segShapes,
+              ],
+            } as Record<string, LayerShape[] | undefined>
+          : (ct.layers as Record<string, LayerShape[] | undefined>);
+
         // ── Resolve which contacts belong to which terminals ──
         // Uses the unified resolveDeviceContacts() which handles all
         // device types (BJT priority E>C>B, MOS shared D/S, bulk
         // exclusion, name-based terminal-to-def resolution).
         const { termPoints, termContacts } = resolveDeviceContacts(
           dev,
-          ct.layers as Record<string, LayerShape[] | undefined>,
+          layersWithSegs,
           cx, cy,
         );
 
@@ -525,9 +560,16 @@ export function collectDieWideAnalogDevices(
               return {...t, netId: foundNetId};
             }
 
-            // 3) No net found → create a fresh one with configured name
-            const freshId = nextNetId.v++;
-            netIdMap.set(`_global_${supplyName}`, freshId);
+            // 3) No net found → use or create a global supply net.
+            // Dedup: all devices without a well contact share the same
+            // global supply net (_global_VDD or _global_GND) so their
+            // bulk terminals are shorted together (correct: they are in
+            // the same well diffusion region conceptually).
+            let freshId = netIdMap.get(`_global_${supplyName}`);
+            if (freshId == null) {
+              freshId = nextNetId.v++;
+              netIdMap.set(`_global_${supplyName}`, freshId);
+            }
             warnings.push(
               `${instName} (${mosType.toUpperCase()}): bulk has no well contact — auto-connected to global ${supplyName}`
             );

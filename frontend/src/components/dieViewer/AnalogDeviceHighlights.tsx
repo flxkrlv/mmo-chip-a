@@ -114,7 +114,19 @@ export function AnalogDeviceHighlights({
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
       ctx.clearRect(0, 0, rect.width, rect.height);
 
+      // Group devices by bbox to handle multi-finger MOS (M4, M5 share bbox)
+      const groups = new Map<string, AnalogDevice[]>();
       for (const dev of devices) {
+        const b = dev.bbox;
+        if (!b) continue;
+        const key = `${Math.round(b.x)},${Math.round(b.y)},${Math.round(b.width)},${Math.round(b.height)}`;
+        const list = groups.get(key) ?? [];
+        list.push(dev);
+        groups.set(key, list);
+      }
+
+      for (const [, group] of groups) {
+        const dev = group[0]; // primary device (first in group)
         const bbox = dev.bbox;
         if (!bbox) continue;
 
@@ -136,12 +148,12 @@ export function AnalogDeviceHighlights({
         ctx.strokeRect(sx, sy, sw, sh);
         ctx.fillRect(sx, sy, sw, sh);
 
-        // Label
+        // Label — combine all instance names for devices sharing the bbox
         const area = sw * sh;
         if (area >= MIN_LABEL_AREA) {
-          const label = dev.instanceName ?? dev.id;
+          const names = group.map((d) => d.instanceName ?? d.id).join(" ");
           const typeStr = deviceTypeString(dev);
-          const labelFull = typeStr ? `${label} ${typeStr}` : label;
+          const labelFull = typeStr ? `${names} ${typeStr}` : names;
           ctx.font = `600 ${Math.max(10, Math.min(14, sw * 0.18))}px monospace`;
           const textMetrics = ctx.measureText(labelFull);
           const labelW = textMetrics.width + 8;
@@ -155,6 +167,7 @@ export function AnalogDeviceHighlights({
           ctx.textBaseline = "middle";
           ctx.fillText(labelFull, labelBX + 4, labelBY + labelH / 2);
 
+          // Parameter hint from first device
           const paramStr = paramHint(dev);
           if (paramStr && sw > 120 && vp.zoom >= PARAM_MIN_ZOOM) {
             ctx.font = `400 ${Math.max(9, Math.min(13, sw * 0.14))}px monospace`;
@@ -164,8 +177,11 @@ export function AnalogDeviceHighlights({
           }
         }
 
-        // Terminal labels at actual layer positions (independent of bbox area)
-        drawTerminalLabels(ctx, dev, vp, showNetIdsRef.current, netNames);
+        // Terminal labels for ALL devices in this group (each per-gate MOS
+        // has its own _termPoints with distinct netIds).
+        for (const d of group) {
+          drawTerminalLabels(ctx, d, vp, showNetIdsRef.current, netNames);
+        }
       }
     };
 

@@ -34,10 +34,10 @@ Clean architecture, thoughtful modularity, and clear interfaces between the fron
 
 | Устройство | Детекция | Параметры |
 |---|---|---|
-| **NMOS / PMOS** (3-/4-терминальные) | **Well-based**: nwell→PMOS, pwell→NMOS. Без маркеров — автоматически по пересечению diffusion + polysilicon | W, L, fingers (M). Bulk: контакт на nwell/pwell вне diffusion/poly. Если нет — PMOS=VCC, NMOS=GND |
+| **NMOS / PMOS** (3-/4-терминальные) | **Well-based**: nwell→PMOS, pwell→NMOS. Без маркеров — автоматически по пересечению diffusion + polysilicon. Multi-finger (fingers>1): Clipper2 разрезает diffusion между затворами — один MOS на gate | W, L, fingers. Bulk: контакт на nwell/pwell вне diffusion/poly → positive netId. Если нет → sentinel -2 → VDD/GND (настраиваемые имена) |
 | **NPN** | Маркер `npn_id` с collector + base + emitter | AE (overlap base∩emitter), multiplier M |
 | **PNP / LPnp** (латеральный PNP) | Маркер `pnp_id` | AE, PE (периметр эмиттера), multiplier M |
-| **Диод** | Маркер `diode_id` **или** NPN/PNP без коллектора — base=анод(+), emitter=катод(-) | Площадь (AE из base-emitter overlap) |
+| **Диод** | Маркер `diode_id` **или** NPN/PNP без коллектора — base=анод(+), emitter=катод(-). Терминалы: PLUS через `["base","bulk"]`, MINUS через `["emitter"]` с приоритетами (emitter 0 > base 1) | Площадь (AE из base-emitter overlap) |
 | **Резистор** | Маркер `res_id` + body-слой (poly/base/emitter/hsr/film). Можно рисовать polyline-меандр (пока несколько кривая отрисовка и редактирование) | Ω или squares×Rₛ. Поддерживаются body-слои: poly-R, p-base (pb), n+ (npl), HSR (high-sheet), thin film |
 | **Конденсатор** | Маркер `cap_id` — ёмкость из overlap-области | fF = площадь × плотность (1 fF/µm² по умолчанию) - проверить |
 
@@ -58,10 +58,11 @@ MOS детектируется **автоматически** по пересе�
 
 1. Нарисуйте `nwell` (для PMOS) или `pwell` (для NMOS) на Cell RE.
 2. Внутри well нарисуйте `diffusion` — это область истока и стока.
-3. Нарисуйте `polysilicon` поперёк diffusion — это затвор.
-4. **Bulk:** нарисуйте `cont` (contact) на nwell/pwell **вне** diffusion и polysilicon. Если контакт попадает и на diffusion — он считается S/D, не bulk. Если bulk-контакта нет — PMOS будет подтянут к VCC, NMOS к GND.
-5. **Металлизация:** соедините diffusion-области через контакты («via») и metal1 с остальной схемой. 
-W/L и количество пальцев (fingers) вычисляются автоматически.
+3. Нарисуйте `polysilicon` поперёк diffusion — это затвор(ы).
+4. **Bulk:** нарисуйте `cont` (contact) на nwell/pwell **вне** diffusion и polysilicon. Если контакт попадает и на diffusion — он считается S/D, не bulk. Если bulk-контакта нет — sentinel -2 → VDD (PMOS) / GND (NMOS). Имена VDD/GND настраиваются в Analog Netlist → SubBar.
+5. **Металлизация:** соедините diffusion-области через контакты и metal1 с остальной схемой.
+6. **Multi-finger (несколько затворов на одной diffusion):** Clipper2 (`polygonDifference()`) разрезает diffusion между затворами. Каждый gate finger → отдельный MOS. Shared сегмент между затворами — D для левого и S для правого (одинаковый netId при wire matching).
+W/L, fingers, сегменты вычисляются автоматически.
 
 
 #### Пример (N-канальный) - позже добавим изображение-пример:
@@ -310,8 +311,8 @@ ends lmv341
 
 ## Ключевые изменения относительно оригинального mmo-chip (main)
 
-- **Well-based MOS** — единственный путь для MOS. 
-- **Diode из BJT** — рисование NPN/PNP без коллектора автоматически даёт диод. Base = PLUS, Emitter = MINUS.
+- **Well-based MOS** — единственный путь для MOS. Multi-finger: Clipper2 разрезает diffusion между затворами, создавая отдельный MOS на каждый gate finger. Shared сегменты между gate (D gate[i] = S gate[i+1]) получают одинаковый netId.
+- **Diode из BJT** — рисование NPN/PNP без коллектора автоматически даёт диод. PLUS через слои `["base","bulk"]`, MINUS через `["emitter"]`. Приоритет: emitter(0) > base(1) для разрешения коллизий.
 - **BJT с multiple emitter** — AE суммируется, multiplier M = количество эмиттеров (надо проверять)
 - **Polyline Tool** — рисование резисторов-меандров с 90° ортогональным snap, редактируемой шириной.
 - **Ruler Tool** (клавиша `K`) — измерение расстояний на кристалле. Режимы: free, horizontal, vertical, orthogonal, diagonal (45°). Double-click → ввод размера в µm → umPerPx сохраняется.
@@ -319,6 +320,7 @@ ends lmv341
 - **Analog overlay на die viewer** — каждый обнаруженный прибор: цветной прямоугольник с подписью (`M1 pmos`, `Q3 npn`, `R5 poly res`...) и параметрами. Терминальные метки (G, S/D, C, B, E) при зуме >0.7×, параметры >0.5×.
 - **SPICE/CDL/Spectre экспорт** — корректный Spectre-формат. MOS: w/l/m без AS/AD/PS/PD. BJT: AE, PE, M. Резисторы: r=Ω. Диоды: are a=AREA. Три диалекта. (надо проверять совместимость - не тестировалось)
 - **BJT normalisation** — поиск минимального AE (NPN) / PE (PNP) → это m=1, остальные масштабируются.
+- **VDD/GND config persistence** — имена supply net-ов настраиваются в SubBar, сохраняются на backend с debounced auto-save.
 - **Cell RE device review** — force override W/L, AE, R, fingers через GUI. (надо проверять)
 - **Layout CSV + SKILL шаблон** для импорта в Cadence.
 - **Net Graph** (Cytoscape.js) — force-directed граф соединений приборов. Режимы: пока только D2D (device-to-device) 
@@ -377,23 +379,30 @@ frontend/     Vite + React + TypeScript — die viewer, cell RE, analog netlist,
 backend/      Node + TypeScript API — import, tiling, JSON persistence, WebSocket
 shared/       Shared TypeScript types (annotation schema + analog device types)
 ml/           Python U-Net (опционально, для assisted annotation)
-docs/         Документация (analog-devices.md — полное описание детекции и API)
+docs/
+  analog-devices.md              ← актуальное описание детекции аналоговых приборов
+  mos_detection.md               ← MOS detection pipeline
+  reference/
+    analogDevices.ts             ← legacy auto-detection (reference), см. docs/reference/README.md
 ```
 
 Ключевые файлы аналоговой экстракции:
 
 ```
 frontend/src/
-  api/dieWideAnalog.ts           ← DEVICE_TERMINAL_DEFS, resolveDeviceContacts, collectDieWideAnalogDevices
+  api/
+    dieWideAnalog.ts              ← DEVICE_TERMINAL_DEFS / DIODE_DEFS, resolveDeviceContacts, collectDieWideAnalogDevices
+    analogNetlist.ts              ← loadSpiceConfig / saveSpiceConfigToBackend, SPICE netlist generation
   lib/extraction/
-    simpleAnalog.ts               ← extractMarkedDevices, detectMOSFromLayers
-    analogDevices.ts              ← computeMOSParams, computeBJTParams, etc.
+    simpleAnalog.ts               ← extractMarkedDevices, detectMOSFromLayers, splitDiffusionAtGates (Clipper2)
+    clipper.ts                    ← Clipper2 WASM wrapper (polygonDifference, polygonIntersection)
+    common.ts                     ← shapeToPolygon, polygonBounds, SpatialIndex
   lib/export/hierarchical.ts      ← floorplan geometry, port detection, alias collision resolver
   lib/export/spice.ts             ← netlist generation (CDL/Spectre/HSPICE + hierarchical)
   components/dieViewer/
     AnalogDeviceHighlights.tsx    ← canvas overlay
-    FloorplanOverlay.tsx           ← floorplan region rendering + port dots
-    FloorplanRegionPopover.tsx     ← popover for region edit + port aliases
+    FloorplanOverlay.tsx          ← floorplan region rendering + port dots
+    FloorplanRegionPopover.tsx    ← popover for region edit + port aliases
   components/cellRE/
     CellREToolbar.tsx             ← инструменты Cell RE
     useLayerPolylineTool.ts       ← polyline (резистор-меандр)
@@ -401,8 +410,14 @@ frontend/src/
   lib/hotkeys.ts                  ← центральный registry горячих клавиш
   lib/useOverlayHotkeys.ts        ← overlay-хоткеи
   routes/
-    AnalogNetlistPage.tsx          ← Analog Netlist вкладка
-    RECellPage.tsx                 ← RE Cell страница
+    AnalogNetlistPage.tsx         ← Analog Netlist вкладка
+    RECellPage.tsx                ← RE Cell страница
+
+docs/
+  analog-devices.md               ← полное описание детекции и API (актуально)
+  mos_detection.md                ← MOS detection pipeline
+  reference/
+    analogDevices.ts              ← legacy Phase 1 auto-detection (reference only)
 ```
 
 ---

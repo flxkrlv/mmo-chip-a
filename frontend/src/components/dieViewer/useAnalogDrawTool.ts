@@ -58,7 +58,7 @@ export function useAnalogDrawTool(opts: {
     };
 
     // Update React Query cache immediately (optimistic)
-    queryClient.setQueryData(annotationKeys.detail(dieId), (old: DieAnnotations | undefined) => {
+    queryClient.setQueryData(annotationKeys.forDie(dieId), (old: DieAnnotations | undefined) => {
       if (!old) return old;
       return { ...old, analogLayers: next };
     });

@@ -189,8 +189,7 @@ export function useWireTool(opts: {
     snapToViasEnabled,
     autoEndOnViaEnabled,
     getViaSizeWorld,
-    findNearestTerminal,
-    autoEndOnContactEnabled
+    findNearestTerminal
   };
 
   /** Try the via-snap path: return the snapped point if the pref is on and
@@ -506,7 +505,7 @@ export function useWireTool(opts: {
       // Terminal snap: when auto-end-on-contact is on, snap the endpoint
       // to the terminal centre and commit. Otherwise fall through to
       // via/vertex/free placement.
-      if (snapRef.current.autoEndOnContactEnabled?.()) {
+      if (snapRef.current.autoEndOnViaEnabled?.()) {
         const terminal = resolveTerminalSnap(world, vp.zoom);
         if (terminal) {
           const point = { x: terminal.x, y: terminal.y };

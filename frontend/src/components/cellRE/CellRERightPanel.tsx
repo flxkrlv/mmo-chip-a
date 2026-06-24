@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import type { CellType, LayerType } from "shared";
+import type { CellType, LayerShape, LayerType, ResistorType } from "shared";
 import { Ic } from "../../icons";
 import type {
   CellExtraction,
@@ -1570,7 +1570,7 @@ interface AnalogDeviceRowProps {
 
 function AnalogDeviceRow({ device, cellTypeId, onOverride }: AnalogDeviceRowProps) {
   const color = DEVICE_COLORS[device.kind] ?? "#888";
-  const g = device.geometry as Record<string, unknown>;
+  const g = device.geometry as unknown as Record<string, unknown>;
   const overrides = usePreferences((s) =>
     (s as any).analogOverrides?.[cellTypeId]?.[device.id] ?? NO_OVERRIDES
   ) as Record<string, number>;

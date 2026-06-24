@@ -35,7 +35,7 @@ const DEVICE_COLORS: Record<DeviceKind, string> = {
 
 /** Label for the param string (W/L, AE, R, etc.) */
 function paramLabel(device: AnalogDevice): string {
-  const g = device.geometry as Record<string, unknown>;
+  const g = device.geometry as unknown as Record<string, unknown>;
   switch (device.kind) {
     case "mos":
       return `W=${(g.W_um as number)?.toFixed(1)} L=${(g.L_um as number)?.toFixed(2)}` +

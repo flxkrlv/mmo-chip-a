@@ -224,9 +224,9 @@ function buildElements(ctx: BuildCtx): ElementDefinition[] {
 // bg = background-color, bc = border-color, w = width, h = height
 // sh = shape, fs = font-size, fw = font-weight
 
-type ES = cytoscape.Stylesheet;
+type ES = cytoscape.StylesheetCSS;
 const BASE: ES[] = [
-  { selector: "node", style: {
+  { selector: "node", css: {
     "font-family": "monospace", color: "#e8e8e8",
     "text-valign": "center", "text-halign": "center",
     "min-zoomed-font-size": 5, "border-width": 3,
@@ -234,20 +234,20 @@ const BASE: ES[] = [
     label: "data(label)", width: 52, height: 52, shape: "ellipse",
     "font-size": 8.5,
   }},
-  { selector: "edge", style: {
-    width: 1.5, "line-color": "#444", "curve-style": "bezier",
-    "font-size": 8, "font-family": "monospace",
+  { selector: "edge", css: {
+    width: "1.5", "line-color": "#444", "curve-style": "bezier",
+    "font-size": "8", "font-family": "monospace",
     color: "#e8e8e8",
     "text-background-color": "#333",
     "text-background-opacity": 0.85,
-    "text-background-padding": 2,
+    "text-background-padding": "2",
     "text-border-color": "#555",
     "text-border-width": 0.5,
     label: "data(label)",
     "text-valign": "center", "text-halign": "center",
-    "min-zoomed-font-size": 4,
+    "min-zoomed-font-size": "4",
   }},
-  { selector: "node:active", style: { "border-opacity": 0.7 }},
+  { selector: "node:active", css: { "border-opacity": 0.7 }},
 ];
 
 // ═════════════════════════════════════════════════════════════════

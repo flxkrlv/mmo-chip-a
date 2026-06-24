@@ -3,6 +3,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import type {
   AnnotationNet,
   Cell,
+  CellLayers,
   CellType,
   DieAnnotations,
   Guide,
@@ -151,6 +152,8 @@ export function inverseOf(action: AnnotationAction): AnnotationAction {
       return { kind: "upsertRuler", ruler: action.ruler, prevRuler: null };
     case "batch":
       return { kind: "batch", actions: [...action.actions].reverse().map(inverseOf) };
+    case "upsertAnalogLayers":
+      return { kind: "upsertAnalogLayers", layers: action.prevLayers!, prevLayers: action.layers };
   }
 }
 
@@ -256,6 +259,8 @@ export function applyAction(annotations: DieAnnotations, action: AnnotationActio
       };
     case "batch":
       return action.actions.reduce(applyAction, annotations);
+    case "upsertAnalogLayers":
+      return { ...annotations, analogLayers: action.layers };
   }
 }
 
@@ -322,6 +327,8 @@ export async function requestAction(
       for (const sub of action.actions) result = await requestAction(dieId, sub);
       return result;
     }
+    case "upsertAnalogLayers":
+      return apiPut(`/api/dies/${dieId}/analog-layers`, action.layers);
   }
 }
 

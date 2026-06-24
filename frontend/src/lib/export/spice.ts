@@ -347,7 +347,8 @@ function paramString(d: AnalogDevice, dialect: "cdl" | "spectre" | "hspice", con
     case "jfet_n":
     case "jfet_p": {
       const jg = g as DeviceGeometryJFET;
-      return [fmtW({ ...jg, mosType: "nmos" } as DeviceGeometryMOS), fmtL({ ...jg, mosType: "nmos" } as DeviceGeometryMOS), fmtM({ multiplier: jg.multiplier })]
+      const mosLike = { ...jg, mosType: "nmos" as const, totalW_um: (jg.W_um ?? 0) * (jg.fingers ?? 1) * (jg.multiplier ?? 1) };
+      return [fmtW(mosLike as DeviceGeometryMOS), fmtL(mosLike as DeviceGeometryMOS), fmtM({ multiplier: jg.multiplier })]
         .filter((s) => s)
         .join(" ");
     }

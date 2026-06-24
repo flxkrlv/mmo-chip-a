@@ -2,16 +2,17 @@
 
 ## For users: how to draw devices
 
-Device detection uses **marker layers** — you draw named shapes on specific layers
-to tell the tool where each device is and what it is.
+Device detection uses **marker layers** (for BJT, diode, resistor, capacitor)
+and **well-based inference** (for MOS). The detection runs on a **cell type**
+basis — a cell type can contain multiple devices; they are extracted at
+die-wide level and connected to die-level wires.
 
-The detection runs on a **cell type** basis.  A cell type can contain multiple
-devices; they are extracted at die-wide level and connected to die-level wires.
+---
 
-### MOS Transistor
+### MOS Transistor — well-based (no markers)
 
-MOS detection is **well-based** — no markers needed.  The tool infers
-transistors from the actual layout layers:
+MOS detection is fully automatic — no markers needed. The tool infers
+transistors from actual layout layers:
 
 | Layer | Purpose |
 |-------|---------|
@@ -19,20 +20,32 @@ transistors from the actual layout layers:
 | `pwell` | NMOS transistors are detected here |
 | `diffusion` | Body region (drain + source) |
 | `polysilicon` | Gate fingers crossing the diffusion |
+| `contact` | S/D contacts on diffusion; well tap contacts on well |
 
-**Geometry:** W/L computed from polysilicon ∩ diffusion intersection.
-Fingers = number of polysilicon stripes crossing one diffusion body.
-Multiplier = devices with same type and W/L are grouped.
+**Geometry:** W/L computed from poly ∩ diffusion intersection.  
+**Fingers** = number of poly stripes crossing one diffusion body → multi-finger
+MOS uses **Clipper2** (`polygonDifference()`) to physically cut the diffusion
+into N+1 segments, creating one MOS device per gate finger.  
+**Multiplier** = devices with same type and W/L in the same well are grouped.
 
-**Bulk:** The tool looks for contacts on nwell/pwell that are NOT also on
-diffusion or polysilicon — those are bulk (well tap) contacts.  If the
-well contact also touches diffusion, it's treated as S/D, not bulk.  If
-no bulk contact exists at all:
-- PMOS → VCC (bulk = power)
-- NMOS → GND (bulk = ground)
+**Bulk (well tap) detection:** A contact IS a well tap ONLY if:
+1. It is inside the well bounding box
+2. It is NOT on any diffusion (would be S/D contact)
+3. It is NOT on any polysilicon (would be gate contact)
 
-Marker-based MOS (`mos_id` + drain/gate/source/bulk) is removed —
-well-based handles everything automatically.
+This is the classic Calibre LVS layer-exclusion pattern (contact belongs to the
+most specific layer set).
+
+**Bulk fallback:**
+- Well contact exists → positive internal net (2000+ if not connected to supply)
+- No well contact at all → sentinel -2 → resolved to VDD/GND at die level
+
+**Multi-finger split (Clipper2):** For `fingers > 1`, the diffusion is cut at
+each gate poly using Clipper2 `polygonDifference()`. This creates N+1 diffusion
+segments. Adjacent segments between gates are shared: segment[i+1] is both D of
+gate[i] and S of gate[i+1] — they get the same net ID during wire matching.
+
+---
 
 ### BJT
 
@@ -44,22 +57,27 @@ well-based handles everything automatically.
 | `base` | Base region (fallback: `bulk` layer) |
 | `emitter` | Emitter region |
 
-**Geometry:** AE = overlap(base, emitter).  PE = emitter perimeter (for LPNP).
+**Geometry:** AE = overlap(base, emitter) in pixels² × umPerPx².  
+PE = emitter perimeter (important for LPNP).  
 Multiplier = number of emitter fingers.
+
+---
 
 ### Diode
 
 Two ways to draw:
 
-1. **Marker `diode_id`** — diode detected from bbox. Rough area/perimeter.
+1. **Marker `diode_id`** — diode from bbox. Rough area/perimeter.
 
 2. **As NPN/PNP without collector** — draw `npn_id` (or `pnp_id`) with
-   `base` + `emitter` layers but **no** `collector` layer.  The tool
+   `base` + `emitter` layers but **no** `collector` layer. The tool
    automatically detects this as a diode:
-   - Base = anode (PLUS)
-   - Emitter = cathode (MINUS)
-   - area_um2 = AE (base-emitter overlap, same calculation as BJT)
-   - perimeter_um = PE
+   - **Anode (PLUS)** = base layer (via `DIODE_DEFS` - layers `["base", "bulk"]`)
+   - **Cathode (MINUS)** = emitter layer (via `DIODE_DEFS` - layer `["emitter"]`)
+   - Priority: emitter=0 > base=1 (if a point falls in both, emitter wins)
+   - Area = base-emitter overlap (same as BJT AE)
+
+---
 
 ### Resistor
 
@@ -73,8 +91,11 @@ Two ways to draw:
 | `film` | Body (thin film) |
 | `contact` | Terminal contacts (at least 2) |
 
-**Geometry:** Squares = length / width. Resistance = squares × sheet R₀.
-If body is drawn as a polyline, segments are summed (meander mode).
+**Geometry:** If body is drawn as polyline segments → summed length + corner counting
+(meander mode). Otherwise → bbox dimensions. Squares = L / W.
+Resistance = squares × 50 (default sheet R).
+
+---
 
 ### Capacitor
 
@@ -82,8 +103,7 @@ If body is drawn as a polyline, segments are summed (meander mode).
 |-------|---------|
 | `cap_id` | Bounding box (overlap area = capacitance) |
 
-Capacitance = area × density (1 fF/µm² default).
-Terminals: PLUS, MINUS — both on `contact` layer.
+Capacitance = area × 1 fF/µm² (default). Terminals: PLUS, MINUS.
 
 ---
 
@@ -92,16 +112,29 @@ Terminals: PLUS, MINUS — both on `contact` layer.
 ### Code layout
 
 ```
-frontend/src/api/dieWideAnalog.ts       ← die-wide collection, terminal contact
-                                          resolution, wire matching
+frontend/src/api/
+  dieWideAnalog.ts            ← Die-wide collection, terminal contact
+                                resolution, wire matching, VDD/GND config
+  analogNetlist.ts             ← SPICE netlist generation, SpiceConfig API
+  dies.ts                      ← Die-level device queries
+
 frontend/src/lib/extraction/
-  simpleAnalog.ts                       ← marker-based device extraction
-  (detectMOSFromLayers() — well-based MOS)
-  analogDevices.ts                      ← geometric parameter computation
-  (computeMOSParams, computeBJTParams, …)
-frontend/src/lib/export/spice.ts        ← CDL/Spectre/HSPICE netlist generation
+  simpleAnalog.ts             ← Marker-based + well-based device extraction
+                                (extractMarkedDevices, detectMOSFromLayers)
+  clipper.ts                  ← Clipper2 WASM wrapper for polygon booleans
+  common.ts                   ← shapeToPolygon, polygonBounds, etc.
+
+docs/
+  analog-devices.md           ← This file
+  mos_detection.md            ← MOS detection specifics
+  reference/
+    analogDevices.ts          ← Legacy Phase 1 auto-detection (reference only)
+
+frontend/src/lib/export/
+  spice.ts                    ← CDL/Spectre/HSPICE netlist generation
+
 frontend/src/components/dieViewer/
-  AnalogDeviceHighlights.tsx            ← Canvas overlay with labels
+  AnalogDeviceHighlights.tsx  ← Canvas overlay with labels and colors
 ```
 
 ### Pipeline
@@ -109,27 +142,28 @@ frontend/src/components/dieViewer/
 ```
 CellType layers
     │
-    ├── extractMarkedDevices()     ← marker layers (npn_id, mos_id, …)
+    ├── extractMarkedDevices()      // marker layers (npn_id, pnp_id, …)
     │     │                             returns AnalogDevice[]
-    │     └─ shapesInside()        ← find shapes inside a marker bbox
+    │     └─ shapesInside()         // find shapes inside a marker bbox
     │
-    ├── detectMOSFromLayers()      ← nwell/pwell + diffusion + polysilicon
-    │                                   returns AnalogDevice[] (MOS only)
+    ├── detectMOSFromLayers()       // well-based: wells → diff → poly → contacts
+    │     │                             returns AnalogDevice[] (MOS only)
+    │     └─ splitDiffusionAtGates()// Clipper2 polygonDifference() for multi-finger
+    │                                    creates N devices (one per gate)
     │
-    └── merge: well-detected MOS replaces marker-detected MOS
-              (dedup by device id)
+    └── merge: all devices from both paths
     │
     ▼
   collectDieWideAnalogDevices()
     │
+    ├── consumeSegmentShapes()      // inject Clipper2-generated segment shapes
     ├── For each device instance:
-    │     resolveDeviceContacts()  ← match contacts to terminals
-    │         │                        returns termPoints + termContacts
-    │         └── DEVICE_TERMINAL_DEFS table
+    │     resolveDeviceContacts()   // match contacts to terminals
+    │         │                         returns termPoints + termContacts
+    │         └── DEVICE_TERMINAL_DEFS / DIODE_DEFS table
     │
-    ├── matchWireToPoint()        ← find die-level wires by proximity
-    │
-    └── generateSpiceNetlist()    ← CDL/Spectre/HSPICE output
+    ├── matchWireToPoint()          // find die-level wires by proximity
+    └── generateSpiceNetlist()      // CDL/Spectre/HSPICE with VDD/GND config
 ```
 
 ### The terminal definition table
@@ -141,7 +175,7 @@ Each device kind declares:
 interface TerminalDef {
   name: string;          // Terminal name (D, G, S, B, E, C, PLUS, MINUS…)
   layers: string[];      // Layout layer names to check for this terminal
-  priority?: number;     // Lower = wins (for overlapping layers, e.g. BJT)
+  priority?: number;     // Lower = wins (for overlapping layers)
 }
 
 const MOS_DEFS: TerminalDef[] = [
@@ -150,88 +184,67 @@ const MOS_DEFS: TerminalDef[] = [
   { name: "S", layers: ["diffusion"] },
   { name: "B", layers: ["bulk", "nwell", "pwell"] },
 ];
+
+// Special case: diode-from-BJT has its own definitions using base/emitter
+// layers instead of "contact":
+const DIODE_DEFS: TerminalDef[] = [
+  { name: "PLUS",  layers: ["base", "bulk"], priority: 1 },
+  { name: "MINUS", layers: ["emitter"],      priority: 0 },
+];
 ```
-
-### Adding a new device type
-
-1. **Define terminal layers** in `DEVICE_TERMINAL_DEFS`:
-   ```typescript
-   // in dieWideAnalog.ts
-   const INDUCTOR_DEFS: TerminalDef[] = [
-     { name: "PLUS",  layers: ["contact"] },
-     { name: "MINUS", layers: ["contact"] },
-   ];
-   // Add to the dictionary:
-   DEVICE_TERMINAL_DEFS["inductor"] = INDUCTOR_DEFS;
-   ```
-
-2. **Add marker extraction** in `extractMarkedDevices()` (`simpleAnalog.ts`):
-   - Add to `markerMap` and `prefixMap`
-   - Add a `case "inductor":` block that reads marker shapes and
-     returns an `AnalogDevice` with proper terminals and geometry
-
-3. **Add netlist format** in `spice.ts`:
-   - Add to `termOrder()` (terminal pin order for SPICE)
-   - Add to `paramString()` (geometry parameters output)
-   - Add to `modelLine()` (model definition)
-   - Add to prefix tables if needed
-
-4. **Add overlay colour** in `AnalogDeviceHighlights.tsx`:
-   - Add to `DEVICE_COLORS` and `DEVICE_FILL`
-   - Add to `deviceTypeString()` if you want a custom label
 
 ### How `resolveDeviceContacts` works
 
-This function matches contact-shapes to device terminals using these rules:
-
-1. **Collect all contacts** from `ctLayers.contact` (no bbox filter — all contacts
-   in the cell type are candidates; false positives for bulk are prevented by
-   the exclusion rule).
+1. **Collect all contacts** from `ctLayers.contact` (all contacts in the cell
+   type are candidates; bulk exclusion prevents false positives).
 
 2. **For each contact**, iterate over `dev.terminals` and look up the terminal's
-   definition by **name** (not index — this is critical for devices where
-   terminal order differs from the definition table).
+   definition by **name** (not index).
 
 3. **point-in-shape**: a contact matches a terminal if its center falls inside
-   any shape on the terminal's declared layers.  Supports rect, polygon (ray
-   casting), circle, point, and line shapes.
+   any shape on the terminal's declared layers (rect, polygon via ray casting,
+   circle, point, line).
 
-4. **Priority resolution** (BJT): if a contact falls inside multiple terminal
-   layers (e.g. emitter ⊂ base), the terminal with the lowest `priority`
-   number wins.  E(0) beats B(2).
+4. **Priority resolution** (BJT/diode): if a contact falls inside multiple
+   terminal layers, the terminal with the lowest `priority` wins. E(0) beats
+   B(2), emitter(0) beats base(1).
 
 5. **Shared-layer round-robin** (MOS D+S, 2T PLUS+MINUS): if no terminal has a
-   priority, all matching terminals are kept as candidates.  The `bySig`
-   grouping collects contacts by signature ("D,S" or "PLUS,MINUS") and
-   distributes them via round-robin.
+   priority, all matching terminals are candidates. `bySig` groups contacts
+   by signature ("D,S") and distributes via round-robin.
 
-6. **Bulk exclusion** (MOS): a contact on nwell/pwell is B (bulk) **only if**
-   it is NOT also inside a diffusion or polysilicon shape.  This prevents
-   drain/source contacts from being mislabelled as bulk.
+6. **Bulk exclusion** (MOS): a contact on nwell/pwell is B only if it is NOT
+   inside a diffusion or polysilicon shape (LVS layer exclusion).
 
-7. **Output**: `termPoints` (one display label per contact, post-round-robin)
-   and `termContacts` (contacts per terminal index for wire matching).
+7. **Output**: `termPoints` (display labels) + `termContacts` (contacts per
+   terminal index for wire matching).
 
-### Well-based MOS detection
+### Well contact rule
 
-`detectMOSFromLayers()` in `simpleAnalog.ts` works without markers:
+- Physical well contact shape exists → bulk gets positive `nextNet()` ID
+  (regardless of metal1/via connectivity). Only if NO well contact at all →
+  sentinel -2 → resolved to VDD/GND at die level.
 
-- Iterates nwell (PMOS) and pwell (NMOS) shapes
-- For each well, finds overlapping diffusion → that's the body
-- Finds polysilicon crossing the body → those are gates
-- W/L = intersection dimensions, fingers = gate count
-- Bulk net: well contact → via → metal1.  If missing → -2 (sentinel:
-  resolved to VCC/GND in die-wide pipeline)
-- S/D nets: dummy IDs from contacts on diffusion; die-wide wire matching
-  resolves real connections
+### VDD/GND config persistence
+
+- `AnalogNetlistPage.tsx`: VDD and GND name fields in SubBar
+- `SpiceConfig` loaded on mount from backend, auto-saved with 500ms debounce
+- Merges with existing config (preserves technology, models, etc.)
+- `@globalpowernet@` / `@globalgroundnet@` placeholders in SPICE netlist
+
+### Adding a new device type
+
+1. **Define terminal layers** in `DEVICE_TERMINAL_DEFS` (`dieWideAnalog.ts`)
+2. **Add marker extraction** in `extractMarkedDevices()` (`simpleAnalog.ts`):
+   marker map, prefix map, case block
+3. **Add netlist format** in `spice.ts`: term order, params, model, prefix
+4. **Add overlay colour** in `AnalogDeviceHighlights.tsx`: color, fill, label
 
 ### Overlay rendering
 
-`AnalogDeviceHighlights` in `AnalogDeviceHighlights.tsx`:
-
-- Each device: filled coloured bbox + label (`M1 pmos`, `Q3 npn`, …)
-- Label shows instance name + device type (from `deviceTypeString()`)
-- Below label: parameter hints (W/L, AE, squares, …) — slightly larger font
-- Terminal points: individual labels at contact positions (G, S/D, B, …)
-- Zoom-based hiding: terminal labels vanish below 0.7× zoom, params below 0.5×
-- Click/double-click: hit-tests bbox, click → inspect, double-click → open in RE Cell
+`AnalogDeviceHighlights` component:
+- Filled coloured bbox + label (`M1 pmos`, `Q3 npn`, …)
+- Parameters below label (W/L, AE, squares)
+- Terminal points at contact positions (G, S/D, B, …)
+- Zoom-based hiding: terminal labels fade below 0.7×, params below 0.5×
+- Devices sharing a cellId concatenate instance names ("M4 M5")

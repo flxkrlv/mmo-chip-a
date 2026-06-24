@@ -40,7 +40,9 @@ export type ToolKind =
   | "ignore"
   | "measure"
   | "comment"
-  | "floorplan";
+  | "floorplan"
+  | "analogRect"
+  | "analogPoly";
 
 /**
  * Modes for `select`:

@@ -1,8 +1,17 @@
 /**
- * simpleAnalog.ts — Маркерная аналоговая детекция.
+ * simpleAnalog.ts — Маркерная + well-based аналоговая детекция.
  *
- * Пользователь явно рисует слои-маркеры устройств.
- * Никакой Clipper2, никакой авто-детекции по геометрии.
+ * Два режима работы:
+ *
+ * 1. extractMarkedDevices() — маркерная детекция.
+ *    Пользователь явно рисует слои-маркеры устройств
+ *    (npn_id, pnp_id, res_id, cap_id, diode_id).
+ *    Детекция смотрит на слои внутри bbox маркера.
+ *
+ * 2. detectMOSFromLayers() — well-based MOS детекция.
+ *    Автоматически находит MOS по nwell/pwell + diffusion + polysilicon.
+ *    Для multi-finger (fingers > 1) использует Clipper2 polygonDifference()
+ *    для разрезания диффузии между затворами (splitDiffusionAtGates).
  *
  * NPN:  npn_id + collector + base + emitter
  * RES:  res_id + body + contact×2
@@ -13,6 +22,10 @@
  *   npn_id/pnp_id + base + emitter (no collector) → diode
  *   base = anode (PLUS), emitter = cathode (MINUS)
  *   AE/PE from base-emitter overlap (same as BJT)
+ *
+ * MOS:  nwell/pwell + diffusion + polysilicon + contact (well tap)
+ *   single-finger:  one device per diffusion
+ *   multi-finger:   Clipper2 diff split → N devices (one per gate)
  */
 
 import type {
@@ -20,7 +33,31 @@ import type {
   DeviceGeometryMOS, DeviceKind, DeviceTerminal, LayerShape,
 } from "shared";
 import { polygonBounds } from "../geometry";
-import type { Rect } from "../geometry";
+import type { Point, Rect } from "../geometry";
+import {
+  getClipper,
+  isClipperLoaded,
+  polygonDifference,
+  polygonInflate,
+  polygonIntersection,
+  ringSignedArea,
+} from "./clipper";
+import { shapeToPolygon } from "./common";
+
+/**
+ * Module-level cache: device ID → synthetic segment LayerShapes created by
+ * Clipper2 diffusion splitting for multi-finger MOS. The die-level pipeline
+ * (dieWideAnalog.ts) reads these shapes and injects them into ctLayers so
+ * resolveDeviceContacts can find the correct segment polygons.
+ */
+const _segmentShapesCache = new Map<string, LayerShape[]>();
+export function consumeSegmentShapes(
+  deviceId: string,
+): LayerShape[] {
+  const shapes = _segmentShapesCache.get(deviceId) ?? [];
+  _segmentShapesCache.delete(deviceId);
+  return shapes;
+}
 
 // ── Net ID generation ────────────────────────────────────────────
 // Each call to extractMarkedDevices gets fresh unique net IDs.
@@ -343,6 +380,8 @@ export function extractMarkedDevices(
           squares = (W_um > 0 && L_um > 0) ? Math.max(L_um, W_um) / Math.min(L_um, W_um) : 0;
         }
 
+        const contactIds = contacts.map(c => c.id);
+
         devices.push({
           id: devId,
           kind: "resistor",
@@ -360,8 +399,8 @@ export function extractMarkedDevices(
           instanceName: `${prefix}${counter}`,
           modelName: "RES_GEN",
           terminals: [
-            { name: "PLUS", netId: contacts.length > 0 ? nextNet() : -1 },
-            { name: "MINUS", netId: contacts.length > 1 ? nextNet() : -1 },
+            { name: "PLUS", netId: contacts.length > 0 ? nextNet() : -1, shapeIds: contactIds },
+            { name: "MINUS", netId: contacts.length > 1 ? nextNet() : -1, shapeIds: contactIds },
           ],
           bbox: marker.bbox,
         });
@@ -371,6 +410,8 @@ export function extractMarkedDevices(
       // ── Capacitor ────────────────────────────────────────────
       case "capacitor": {
         const area = marker.bbox.width * marker.bbox.height * umPerPx * umPerPx;
+        const capContacts = shapesInside(layers, "contact", marker.bbox);
+        const capContactIds = capContacts.map(c => c.id);
         devices.push({
           id: devId,
           kind: "capacitor",
@@ -385,8 +426,8 @@ export function extractMarkedDevices(
           instanceName: `${prefix}${counter}`,
           modelName: "CAP_GEN",
           terminals: [
-            { name: "PLUS", netId: nextNet() },
-            { name: "MINUS", netId: nextNet() },
+            { name: "PLUS", netId: nextNet(), shapeIds: capContactIds },
+            { name: "MINUS", netId: nextNet(), shapeIds: capContactIds },
           ],
           bbox: marker.bbox,
         });
@@ -396,6 +437,10 @@ export function extractMarkedDevices(
       // ── Diode (marker-based) ─────────────────────────────────
       case "diode": {
         const area = marker.bbox.width * marker.bbox.height * umPerPx * umPerPx;
+        // Restrict contacts to those inside this marker's bbox so that
+        // multiple diodes/resistors in the same cell don't share contacts.
+        const diodeContacts = shapesInside(layers, "contact", marker.bbox);
+        const diodeContactIds = diodeContacts.map(c => c.id);
         devices.push({
           id: devId,
           kind: "diode",
@@ -409,8 +454,8 @@ export function extractMarkedDevices(
           instanceName: `${prefix}${counter}`,
           modelName: "D_GEN",
           terminals: [
-            { name: "PLUS", netId: nextNet() },
-            { name: "MINUS", netId: nextNet() },
+            { name: "PLUS", netId: nextNet(), shapeIds: diodeContactIds },
+            { name: "MINUS", netId: nextNet(), shapeIds: diodeContactIds },
           ],
           bbox: marker.bbox,
         });
@@ -421,6 +466,132 @@ export function extractMarkedDevices(
   return devices;
 }
 
+// ── Diffusion splitting helpers (multi-finger MOS) ────────────────
+
+/** Point → `key` for dedup. */
+function ptKey(p: { x: number; y: number }): string {
+  return `${p.x.toFixed(1)},${p.y.toFixed(1)}`;
+}
+
+/**
+ * Split a diffusion polygon at gate polygons using Clipper2.
+ *
+ * Returns:
+ *   - segments: N+1 polygon rings (Point[]) in left→right (or top→bottom)
+ *     order along the diffusion's dominant axis
+ *   - shapes: synthetic LayerPolygon shapes corresponding to each segment
+ *
+ * If Clipper2 is not loaded, returns null (caller falls back to old code).
+ */
+function splitDiffusionAtGates(
+  bodyShape: LayerShape,
+  gateShapes: LayerShape[],
+  devId: string,
+): { segments: Point[][]; shapes: LayerShape[] } | null {
+  if (!isClipperLoaded()) {
+    console.log(`[analog] splitDiffusionAtGates: Clipper NOT loaded, skip`);
+    return null;
+  }
+  getClipper(); // safe after isClipperLoaded()
+  console.log(`[analog] splitDiffusionAtGates: ${gateShapes.length} gates for ${devId}`);
+
+  const diffPoly = shapeToPolygon(bodyShape);
+  console.log(`[analog]  diffPoly pts=${diffPoly.length}, bbox=${JSON.stringify(polygonBounds(diffPoly))}`);
+  if (diffPoly.length < 3) return null;
+
+  // Sort gates by position along the diffusion's dominant axis.
+  // Determine axis: the dimension with larger span among gate centroids.
+  const gCentroids = gateShapes.map((g) => {
+    const gp = shapeToPolygon(g);
+    let sx = 0, sy = 0;
+    for (const pt of gp) {
+      sx += pt.x;
+      sy += pt.y;
+    }
+    const n = gp.length;
+    return { poly: gp, cx: sx / n, cy: sy / n };
+  });
+
+  const xs = gCentroids.map((c) => c.cx);
+  const ys = gCentroids.map((c) => c.cy);
+  const xSpan = Math.max(...xs) - Math.min(...xs);
+  const ySpan = Math.max(...ys) - Math.min(...ys);
+  const sortByX = xSpan >= ySpan;
+
+  const sortedGatePolys = [...gCentroids].sort((a, b) =>
+    sortByX ? a.cx - b.cx : a.cy - b.cy,
+  );
+  console.log(`[analog]  sorted gates: ${sortedGatePolys.map((g,i) => `${i}:(${g.cx.toFixed(1)},${g.cy.toFixed(1)})`).join(", ")}`);
+
+  // Iteratively cut: start with full diffusion, cut at each gate poly.
+  // This gives deterministic ordering of pieces.
+  console.log(`[analog]  starting diffPoly pts=${diffPoly.length}, area=${ringSignedArea(diffPoly).toFixed(2)}`);
+  let pieces: Point[][] = [diffPoly];
+  for (const gp of sortedGatePolys) {
+    const nextPieces: Point[][] = [];
+    for (const piece of pieces) {
+      // Check bbox-level overlap first to avoid unnecessary Clipper calls.
+      const pb = polygonBounds(piece);
+      const gb = polygonBounds(gp.poly);
+      if (
+        !pb ||
+        !gb ||
+        pb.x >= gb.x + gb.width ||
+        pb.x + pb.width <= gb.x ||
+        pb.y >= gb.y + gb.height ||
+        pb.y + pb.height <= gb.y
+      ) {
+        nextPieces.push(piece);
+        continue;
+      }
+      console.log(`[analog]   piece bbox=${JSON.stringify(pb)}, gate bbox=${JSON.stringify(gb)}`);
+      const diff = polygonDifference(piece, [gp.poly]);
+      const before = nextPieces.length;
+      for (const ring of diff) {
+        const ringArea = ringSignedArea(ring);
+        console.log(`[analog]   diff ring area=${ringArea.toFixed(2)}, pts=${ring.length}`);
+        if (Math.abs(ringArea) < 1.0) continue; // discard noise (Clipper CW rings → negative area)
+        nextPieces.push(ring);
+      }
+      console.log(`[analog]   => ${nextPieces.length - before} pieces kept of ${diff.length} diff rings`);
+    }
+    pieces = nextPieces;
+    console.log(`[analog]   after gate: ${pieces.length} pieces`);
+  }
+
+  if (pieces.length < 2) {
+    console.log(`[analog] splitDiffusionAtGates: got ${pieces.length} pieces, need >=2`);
+    return null; // shouldn't happen for fingers>1
+  }
+
+  // Sort pieces by centroid along the dominant axis.
+  const withCentroid = pieces.map((poly, i) => {
+    let sx = 0, sy = 0;
+    for (const pt of poly) {
+      sx += pt.x;
+      sy += pt.y;
+    }
+    const n = poly.length;
+    return { poly, cx: sx / n, cy: sy / n, idx: i };
+  });
+  withCentroid.sort((a, b) =>
+    sortByX ? a.cx - b.cx : a.cy - b.cy,
+  );
+
+  // Build synthetic LayerShape polygons for each segment.
+  const shapes: LayerShape[] = withCentroid.map((seg, i) => ({
+    id: `${devId}_seg${i}`,
+    kind: "polygon" as const,
+    points: seg.poly.map((p) => ({ x: Math.round(p.x * 100) / 100, y: Math.round(p.y * 100) / 100 })),
+  }));
+
+  console.log(`[analog] splitDiffusionAtGates: ${shapes.length} segments created`);
+  return {
+    segments: withCentroid.map((s) => s.poly),
+    shapes,
+  };
+}
+
 /**
  * Well-based MOS detection — alternative to device_box + drain/gate/source/bulk
  * markers.  Infers PMOS/NMOS, bulk terminal, and geometry from:
@@ -428,8 +599,8 @@ export function extractMarkedDevices(
  *   1. nwell/pwell layers → determines transistor type (P/N) and bulk well
  *   2. diffusion overlapping the well → body region
  *   3. polysilicon crossing the diffusion → gate + S/D sub-regions
- *   4. contacts on the well → bulk net (if no contact, bulk = VCC for nwell,
- *      GND for pwell)
+ *   4. contacts on the well → bulk net (positive netId); if no contact,
+ *      bulk = -2 sentinel (die-wide pipeline falls back to VDD/GND)
  *   5. finger count = number of polys crossing one diffusion
  *   6. multiplier = number of separate diffusions with same well + poly pattern
  *
@@ -450,8 +621,7 @@ export function detectMOSFromLayers(
   const diffusions = allLayers["diffusion"] ?? [];
   const polys = allLayers["polysilicon"] ?? [];
   const contacts = allLayers["contact"] ?? [];
-  const vias = allLayers["via1"] ?? [];
-  const metals1 = allLayers["metal1"] ?? [];
+
 
   const WELLS: Array<{ shapes: LayerShape[]; type: "pmos" | "nmos"; wellLabel: string }> = [
     { shapes: nwells, type: "pmos", wellLabel: "nwell" },
@@ -503,84 +673,186 @@ export function detectMOSFromLayers(
         const devId = `mos_well_${wellLabel}_${counter}`;
 
         // ── Bulk net from well contact ────────────────────────
-        // Check if any well shape overlaps a contact → follow to metal1.
+        // If a contact shape exists on the well, the user drew a well tap.
+        // Assign a positive netId (internal net).  If the die-level pipeline
+        // finds no VDD/GND wire connected to this contact, it becomes a
+        // unique 2000+ internal net — correct, because the user explicitly
+        // placed a well tap and it's not tied to any supply.
+        //
+        // If NO contact on the well, the user omitted the well tap → sentinel
+        // -2, which instructs the die-level pipeline to fall back to VDD/GND.
         let bulkNetId = -1;
-        const wellContact = contacts.find((c) => {
+        // A well tap contact must be INSIDE the well region but NOT
+        // on any diffusion (S/D contact) and NOT on any polysilicon
+        // (gate contact).  This is the classic LVS layer-exclusion
+        // pattern: a contact belongs to the most specific layer set.
+        const tapContacts = contacts.filter((c) => {
           const cb = shapeBbox(c);
-          return cb && overlapArea(wellBox, cb) > 0;
+          if (!cb || !overlapArea(wellBox, cb)) return false;
+          // Reject if on diffusion — that's an S/D contact.
+          if (bodyDiffs.some((d) => {
+            const db = shapeBbox(d);
+            return db && overlapArea(cb, db) > 0;
+          })) return false;
+          // Reject if on polysilicon — that's a gate contact.
+          if (polys.some((p) => {
+            const pb = shapeBbox(p);
+            return pb && overlapArea(cb, pb) > 0;
+          })) return false;
+          return true; // contact on well only → well tap
         });
+        const wellContact = tapContacts[0];
         if (wellContact) {
-          const wcBox = shapeBbox(wellContact);
-          // Check if well contact connects to metal1 (bulk net).
-          const metalOverlap = metals1.find((m) => {
-            const mb = shapeBbox(m);
-            return mb && wcBox && overlapArea(mb, wcBox) > 0;
-          });
-          bulkNetId = metalOverlap ? nextNet() : -1;
-          // Also check via1 (if contact → via → metal1)
-          if (bulkNetId < 0) {
-            const viaOverlap = vias.find((v) => {
-              const vb = shapeBbox(v);
-              return vb && wcBox && overlapArea(vb, wcBox) > 0;
-            });
-            if (viaOverlap) {
-              const vmOverlap = metals1.find((m) => {
-                const mb = shapeBbox(m);
-                const vb = viaOverlap ? shapeBbox(viaOverlap) : null;
-                return mb && vb && overlapArea(mb, vb) > 0;
-              });
-              if (vmOverlap) bulkNetId = nextNet();
-            }
-          }
+          bulkNetId = nextNet(); // user drew a well tap — internal net
         }
-        // No well contact → default to VCC (nwell) or GND (pwell)
         if (bulkNetId < 0) {
-          bulkNetId = -2; // sentinel: resolves to VCC/GND in wire matching
+          bulkNetId = -2; // no well tap → sentinel: resolve to VDD/GND at die level
         }
 
-        // ── S/D terminals ─────────────────────────────────────
-        // We can't precisely split diffusion sub-regions here (that needs
-        // Clipper2 in cell.ts). Instead use two dummy nets from contacts
-        // on the diffusion — the die-wide wire matching will resolve them.
-        const diffContacts = contacts.filter((c) => {
-          const cb = shapeBbox(c);
-          return cb && overlapArea(bodyBox, cb) > 0;
-        });
-        const sNet = diffContacts.length > 0 ? nextNet() : -1;
-        const dNet = diffContacts.length > 1 ? nextNet() : -1;
-        const gNet = nextNet();
+        // ── Multi-finger split (fingers > 1) ─────────────────
+        // Use Clipper2 to physically cut the diffusion at gate polys,
+        // creating N+1 segments. Each segment becomes S/D for the
+        // adjacent gate; shared segments between gates are assigned to
+        // both D of the left gate and S of the right gate.
+        if (fingers > 1) {
+          console.log(`[analog] detectMOSFromLayers: ${fingers} fingers for ${devId}, body=${body.id}`);
+          const split = splitDiffusionAtGates(body, gates, devId);
+          if (split && split.segments.length === fingers + 1) {
+            const wellId = well.id;
 
-        // gateIds: all poly gates crossing this diffusion
-        const gateIds = gates.map(g => g.id);
-        const bodyId = body.id;
-        const wellId = well.id;
+            // Create one MOS per gate. Adjacent gates share a diffusion
+            // segment: seg[i] = S for gate[i], seg[i+1] = D for gate[i].
+            // This means seg[i+1] is BOTH D of gate[i] AND S of gate[i+1]
+            // (shared diffusion region between two gates).
+            // Cache segment shapes under each per-gate device's id so the
+            // dieWideAnalog.ts pipeline can inject them into ctLayers.
+            for (let gi = 0; gi < gates.length; gi++) {
+              const gate = gates[gi];
+              const gCounter = counter;
+              const subDevId = `${devId}_finger${gi}`;
+              _segmentShapesCache.set(subDevId, split.shapes);
+              const segS = split.shapes[gi];      // S-side segment
+              const segD = split.shapes[gi + 1];   // D-side segment
 
-        const terminals: DeviceTerminal[] = [
-          { name: "D", netId: dNet, shapeIds: [bodyId] },
-          { name: "G", netId: gNet, shapeIds: gateIds },
-          { name: "S", netId: sNet, shapeIds: [bodyId] },
-          { name: "B", netId: bulkNetId, shapeIds: [wellId] },
-        ];
+              const sN = nextNet();
+              const dN = nextNet();
+              const gN = nextNet();
 
-        const geometry: DeviceGeometryMOS = {
-          L_um,
-          W_um,
-          fingers,
-          multiplier: 1, // updated below
-          totalW_um: W_um * fingers,
-          mosType,
-        };
+              const terminals: DeviceTerminal[] = [
+                { name: "D", netId: dN, shapeIds: [segD.id] },
+                { name: "G", netId: gN, shapeIds: [gate.id] },
+                { name: "S", netId: sN, shapeIds: [segS.id] },
+                { name: "B", netId: bulkNetId, shapeIds: [wellId] },
+              ];
 
-        devices.push({
-          id: devId,
-          kind: "mos",
-          geometry,
-          cellTypeId,
-          instanceName: `M_${counter}`,
-          modelName: mosType === "pmos" ? "PMOS" : "NMOS",
-          terminals,
-          bbox: bodyBox,
-        });
+              const geometry: DeviceGeometryMOS = {
+                L_um,
+                W_um,
+                fingers: 1,
+                multiplier: 1,
+                totalW_um: W_um,
+                mosType,
+              };
+
+              devices.push({
+                id: subDevId,
+                kind: "mos",
+                geometry,
+                cellTypeId,
+                instanceName: `M_${gCounter}`,
+                modelName: mosType === "pmos" ? "PMOS" : "NMOS",
+                terminals,
+                bbox: bodyBox,
+              });
+            }
+            counter++; // advance counter once for all sub-devices
+          } else {
+            console.log(`[analog] detectMOSFromLayers: Clipper split failed (got ${split?.segments.length ?? 0} segments, expected ${fingers + 1}), fallback to single device`);
+            // Clipper split failed (not loaded or unexpected result) →
+            // fall through to single-device fallback below.
+            // ── S/D terminals (single-device fallback) ─────────────
+            const diffContacts = contacts.filter((c) => {
+              const cb = shapeBbox(c);
+              return cb && overlapArea(bodyBox, cb) > 0;
+            });
+            const sNet = diffContacts.length > 0 ? nextNet() : -1;
+            const dNet = diffContacts.length > 1 ? nextNet() : -1;
+            const gNet = nextNet();
+
+            const gateIds = gates.map(g => g.id);
+            const bodyId = body.id;
+            const wellId = well.id;
+
+            const terminals: DeviceTerminal[] = [
+              { name: "D", netId: dNet, shapeIds: [bodyId] },
+              { name: "G", netId: gNet, shapeIds: gateIds },
+              { name: "S", netId: sNet, shapeIds: [bodyId] },
+              { name: "B", netId: bulkNetId, shapeIds: [wellId] },
+            ];
+
+            const geometry: DeviceGeometryMOS = {
+              L_um,
+              W_um,
+              fingers,
+              multiplier: 1,
+              totalW_um: W_um * fingers,
+              mosType,
+            };
+
+            devices.push({
+              id: devId,
+              kind: "mos",
+              geometry,
+              cellTypeId,
+              instanceName: `M_${counter}`,
+              modelName: mosType === "pmos" ? "PMOS" : "NMOS",
+              terminals,
+              bbox: bodyBox,
+            });
+            counter++;
+          }
+        } else {
+          // ── S/D terminals (single-finger MOS) ────────────────
+          const diffContacts = contacts.filter((c) => {
+            const cb = shapeBbox(c);
+            return cb && overlapArea(bodyBox, cb) > 0;
+          });
+          const sNet = diffContacts.length > 0 ? nextNet() : -1;
+          const dNet = diffContacts.length > 1 ? nextNet() : -1;
+          const gNet = nextNet();
+
+          const gateIds = gates.map(g => g.id);
+          const bodyId = body.id;
+          const wellId = well.id;
+
+          const terminals: DeviceTerminal[] = [
+            { name: "D", netId: dNet, shapeIds: [bodyId] },
+            { name: "G", netId: gNet, shapeIds: gateIds },
+            { name: "S", netId: sNet, shapeIds: [bodyId] },
+            { name: "B", netId: bulkNetId, shapeIds: [wellId] },
+          ];
+
+          const geometry: DeviceGeometryMOS = {
+            L_um,
+            W_um,
+            fingers,
+            multiplier: 1,
+            totalW_um: W_um * fingers,
+            mosType,
+          };
+
+          devices.push({
+            id: devId,
+            kind: "mos",
+            geometry,
+            cellTypeId,
+            instanceName: `M_${counter}`,
+            modelName: mosType === "pmos" ? "PMOS" : "NMOS",
+            terminals,
+            bbox: bodyBox,
+          });
+          counter++;
+        }
       }
     }
   }
