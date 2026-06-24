@@ -16,6 +16,7 @@ import {
   generateHierarchicalNetlist,
   type SpiceNetlist,
 } from "../lib/export/spice";
+import { matchGeometry } from "../lib/export/matching";
 import { collectDieWideAnalogDevices } from "./dieWideAnalog";
 
 // ── Public shapes ─────────────────────────────────────────────────
@@ -171,6 +172,9 @@ function buildAnalogNetlist(
   // Assign instance names (M1, Q1, R1, …)
   const named = assignInstanceNames(devices);
 
+  // Optional geometry matching (averaging similar devices)
+  const matchWarnings = matchGeometry(named as (AnalogDevice & { instanceName: string })[], spiceConfig ?? {}, namedNets);
+
   const config: SpiceConfig = spiceConfig ?? {};
 
   const isHierarchical = options?.hierarchical ?? false;
@@ -216,7 +220,7 @@ function buildAnalogNetlist(
     moduleName,
     fileName: `${moduleName}.${dialect === "cdl" ? "cdl" : dialect === "spectre" ? "scs" : "sp"}`,
     outline,
-    warnings: [...deviceWarnings, ...result.warnings],
+    warnings: [...deviceWarnings, ...result.warnings, ...matchWarnings.map(w => w.text)],
     totalDevices: result.totalDevices,
     byKind: result.byKind,
     deviceCellMap,

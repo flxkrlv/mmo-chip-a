@@ -14,6 +14,15 @@ export const DEFAULT_SHEET_R: Record<ResistorType, number> = {
   film: 500,   // thin film
 };
 
+/** SPICE parameter name for each resistor type (used in sqRs format). */
+export const RESISTOR_PARAM_NAMES: Record<ResistorType, string> = {
+  poly: "Rp",
+  hsr:  "Rhsr",
+  pb:   "Rbase",
+  npl:  "Rnpl",
+  film: "Rfilm",
+};
+
 /** Human-readable labels for each type. */
 export const RESISTOR_TYPE_LABELS: Record<ResistorType, string> = {
   poly: "Poly Si",

@@ -20,6 +20,7 @@ import { TreeRow, TreeSep } from "../components/tree/TreeRow";
 import { useDie } from "../api/dies";
 import { useAnnotations } from "../api/annotations";
 import { useAnnotationsWebSocket } from "../api/annotationsWebSocket";
+import { usePreferences } from "../state/preferences";
 import { useSession } from "../state/session";
 import {
   useAnalogNetlist,
@@ -73,6 +74,8 @@ function AnalogNetlist({ dieId }: { dieId: string }) {
   const [dialect, setDialect] = useState<SpiceDialect>("cdl");
   // Resistor format: ohms (resolved value) vs sqRs (squares × sheetR)
   const [resistorFormat, setResistorFormat] = useState<"ohms" | "sqRs">("ohms");
+  const [matchEnabled, setMatchEnabled] = useState(false);
+  const [matchTolerance, setMatchTolerance] = useState(10);
   // Global supply net names
   const [vddNet, setVddNet] = useState("VDD");
   const [gndNet, setGndNet] = useState("GND");
@@ -86,9 +89,17 @@ function AnalogNetlist({ dieId }: { dieId: string }) {
   // Hierarchical netlist toggle
   const [hierarchical, setHierarchical] = useState(false);
 
+  // Reactive sheetR from preferences (set in Die Viewer → AnalogDiePanel → SheetRConfigPanel)
+  const sheetRPrefs = usePreferences((s) => (s as any).sheetR ?? {});
+
   const spiceConfig: SpiceConfig = useMemo(
-    () => ({ resistorFormat, vdd: vddNet, gnd: gndNet }),
-    [resistorFormat, vddNet, gndNet],
+    () => ({
+      resistorFormat,
+      vdd: vddNet, gnd: gndNet,
+      sheetR_ohms: sheetRPrefs,
+      matchTolerancePercent: matchEnabled ? matchTolerance : 0,
+    }),
+    [resistorFormat, vddNet, gndNet, sheetRPrefs, matchEnabled, matchTolerance],
   );
 
   // ══ Ensure Clipper2 WASM is loaded for multi-finger MOS splitting ═
@@ -110,6 +121,21 @@ function AnalogNetlist({ dieId }: { dieId: string }) {
       if (cfg.vdd && cfg.vdd !== "VDD") setVddNet(cfg.vdd);
       if (cfg.gnd && cfg.gnd !== "GND") setGndNet(cfg.gnd);
       if (cfg.resistorFormat) setResistorFormat(cfg.resistorFormat);
+      if (cfg.matchTolerancePercent != null) {
+        setMatchEnabled(cfg.matchTolerancePercent > 0);
+        if (cfg.matchTolerancePercent > 0) setMatchTolerance(cfg.matchTolerancePercent);
+      }
+      // Restore sheetR to preferences if saved in backend
+      if (cfg.sheetR_ohms && Object.keys(cfg.sheetR_ohms).length > 0) {
+        const prefs = usePreferences.getState() as any;
+        const prefsSheetR = prefs.sheetR ?? {};
+        // Only set values that aren't already in preferences
+        let changed = false;
+        for (const [k, v] of Object.entries(cfg.sheetR_ohms)) {
+          if (prefsSheetR[k] == null) { prefsSheetR[k] = v; changed = true; }
+        }
+        if (changed) usePreferences.setState({ sheetR: prefsSheetR });
+      }
     });
     return () => {
       cancelled = true;
@@ -119,11 +145,14 @@ function AnalogNetlist({ dieId }: { dieId: string }) {
   // Auto-save with 500ms debounce
   useEffect(() => {
     const timer = setTimeout(async () => {
+      const prefs = usePreferences.getState() as any;
       const merged: SpiceConfig = {
         ...lastConfigRef.current,
         vdd: vddNet,
         gnd: gndNet,
         resistorFormat,
+        sheetR_ohms: { ...(prefs.sheetR ?? {}) },
+        matchTolerancePercent: matchEnabled ? matchTolerance : 0,
       };
       try {
         await saveSpiceConfigToBackend(dieId, merged);
@@ -374,6 +403,35 @@ function AnalogNetlist({ dieId }: { dieId: string }) {
               >
                 R=sq·Rs
               </button>
+            </div>
+            <ToolDivider />
+            {/* Device matching toggle */}
+            <div className="row" style={{ gap: 4, alignItems: "center" }}>
+              <button
+                type="button"
+                className={"btn sm" + (matchEnabled ? " on" : "")}
+                onClick={() => setMatchEnabled((v) => !v)}
+                style={{ fontSize: 10, fontWeight: 600 }}
+                title="Match & average similar device geometry"
+              >
+                Match
+              </button>
+              {matchEnabled && (
+                <div className="row" style={{ gap: 2, alignItems: "center" }}>
+                  <input
+                    type="range"
+                    min={1}
+                    max={25}
+                    value={matchTolerance}
+                    onChange={(e) => setMatchTolerance(parseInt(e.target.value, 10))}
+                    style={{ width: 48, height: 12, margin: 0 }}
+                    title="Tolerance %"
+                  />
+                  <span style={{ fontSize: 9, color: "var(--ink3)", minWidth: 20 }}>
+                    {matchTolerance}%
+                  </span>
+                </div>
+              )}
             </div>
             <ToolDivider />
             <button

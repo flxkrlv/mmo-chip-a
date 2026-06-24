@@ -865,6 +865,13 @@ export interface SpiceConfig {
    *  - "sqRs":  r=10*250     (squares × sheetR, as expression)
    *  Default: "ohms". */
   resistorFormat?: "ohms" | "sqRs";
+  /**
+   * Device geometry matching tolerance in percent.
+   * Devices with similar W/L/AE/PE within this tolerance get their
+   * geometry averaged to produce consistent instance parameters.
+   * 0 = disabled (default).
+   */
+  matchTolerancePercent?: number;
 }
 
 // ── Export request / response ───────────────────────────────────

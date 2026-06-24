@@ -29,7 +29,7 @@ import type {
   ResistorType,
   FloorplanRegion,
 } from "shared";
-import { effectiveSheetR } from "./resistorDefaults";
+import { effectiveSheetR, RESISTOR_PARAM_NAMES } from "./resistorDefaults";
 import {
   deviceInRegion,
   detectBoundaryNets,
@@ -118,19 +118,25 @@ function fmtL(geom: DeviceGeometryMOS): string {
 function fmtM(geom: { multiplier?: number }): string {
   return geom.multiplier && geom.multiplier > 1 ? `m=${geom.multiplier}` : "";
 }
-/** Resistor: r=<Ω> or r=<sq>*<Rs> depending on config.resistorFormat.
- *  "ohms" (default) → resolved value, e.g. r=2500.
- *  "sqRs"           → expression, e.g. r=10*250  (squares × sheetR). */
+/**
+ * Resistor format string.
+ *
+ * "ohms" (default) — resolved value, e.g. r=2500.
+ * "sqRs"           — symbolic expression, e.g. r=10*Rbase (squares × param).
+ *
+ * The numeric Rsq is always computed from effectiveSheetR() for consistency;
+ * in "sqRs" mode the variable name replaces the literal value.
+ */
 function fmtRes(geom: DeviceGeometryResistor, config: SpiceConfig): string {
   const rType = (geom.resistorType ?? "poly") as ResistorType;
   const sr = effectiveSheetR(rType, config.sheetR_ohms);
   const sq = geom.squares;
+  const sqFmt = sq === Math.round(sq) ? sq.toFixed(0) : sq.toFixed(1);
   if (config.resistorFormat === "sqRs") {
-    const srInt = Math.round(sr);
-    const sqFmt = sq === Math.round(sq) ? sq.toFixed(0) : sq.toFixed(1);
-    return `r=${sqFmt}*${srInt}`;
+    const paramName = RESISTOR_PARAM_NAMES[rType];
+    return paramName ? `r=${sqFmt}*${paramName}` : `r=${sqFmt}*${Math.round(sr)}`;
   }
-  // default "ohms"
+  // default "ohms" - resolved numeric value
   const rOhms = Math.round(sq * sr);
   return `r=${rOhms}`;
 }
@@ -358,8 +364,10 @@ function paramString(d: AnalogDevice, dialect: "cdl" | "spectre" | "hspice", con
       return fmtCap(g as DeviceGeometryCapacitor);
     case "diode":
     case "zener":
-    case "schottky":
-      return "";
+    case "schottky": {
+      const dg = g as DeviceGeometryDiode;
+      return dg.multiplier > 1 ? `m=${dg.multiplier}` : "";
+    }
     default:
       return "";
   }
@@ -434,12 +442,14 @@ function normalizeBJTM(devices: AnalogDevice[]): AnalogDevice[] {
   return devices.map((d) => {
     if (d.kind === "bjt_npn" && minNpnAE > 0 && isFinite(minNpnAE)) {
       const bg = { ...d.geometry } as DeviceGeometryBJT;
-      const m = Math.max(1, Math.round(bg.AE_um2 / minNpnAE));
+      const raw = bg.AE_um2 / minNpnAE;
+      const m = Math.max(1, Math.round(raw * 100) / 100);
       return { ...d, geometry: { ...bg, multiplier: m } };
     }
     if (d.kind === "bjt_pnp" && minPnpPE > 0 && isFinite(minPnpPE)) {
       const bg = { ...d.geometry } as DeviceGeometryBJT;
-      const m = Math.max(1, Math.round(bg.PE_um / minPnpPE));
+      const raw = bg.PE_um / minPnpPE;
+      const m = Math.max(1, Math.round(raw * 100) / 100);
       return { ...d, geometry: { ...bg, multiplier: m } };
     }
     return d;
@@ -513,6 +523,38 @@ export function generateSpiceNetlist(
 }
 
 // ═════════════════════════════════════════════════════════════════
+// Resistor parameter helpers
+// ═════════════════════════════════════════════════════════════════
+
+interface ResistorParam {
+  name: string;  // e.g. "Rbase"
+  value: number; // e.g. 200
+}
+
+/**
+ * Collect unique resistor type → param name/value pairs used in the device list.
+ * Only includes types that have a known parameter name.
+ */
+function collectResistorParams(
+  devices: AnalogDevice[],
+  config: SpiceConfig,
+): ResistorParam[] {
+  const seen = new Set<string>();
+  const params: ResistorParam[] = [];
+  for (const d of devices) {
+    if (d.kind !== "resistor") continue;
+    const rType = ((d.geometry as DeviceGeometryResistor).resistorType ?? "poly") as ResistorType;
+    const paramName = RESISTOR_PARAM_NAMES[rType];
+    if (!paramName || seen.has(paramName)) continue;
+    seen.add(paramName);
+    const value = effectiveSheetR(rType, config.sheetR_ohms);
+    // Round to integer for clean output
+    params.push({ name: paramName, value: Math.round(value) });
+  }
+  return params;
+}
+
+// ═════════════════════════════════════════════════════════════════
 // CDL generator
 // ═════════════════════════════════════════════════════════════════
 
@@ -553,7 +595,15 @@ function generateCDL(
   // Subcircuit declaration — CDL format:
   // .SUBCKT NAME net1 net2 net3 VDD GND
   lines.push(`.SUBCKT ${sanitizeSpiceName(moduleName)} ${ports.join(" ")} ${vdd} ${gnd}`);
-  lines.push("");
+
+  // Resistor sheet-R parameters (only when sqRs format is selected)
+  if (config.resistorFormat === "sqRs") {
+    const rParams = collectResistorParams(devices, config);
+    for (const p of rParams) {
+      lines.push(`.PARAM ${p.name}=${p.value}`);
+    }
+    if (rParams.length > 0) lines.push("");
+  }
 
   // Device instances
   for (const d of devices) {
@@ -614,6 +664,14 @@ function generateSpectre(
 
   // Subcircuit — Spectre format: subckt NAME (p1 p2 ...) (vdd gnd)
   lines.push(`subckt ${sanitizeSpiceName(moduleName)} (${ports.join(" ")} ${vdd} ${gnd})`);
+
+  // Resistor sheet-R parameters (only when sqRs format is selected)
+  if (config.resistorFormat === "sqRs") {
+    const rParams = collectResistorParams(devices, config);
+    if (rParams.length > 0) {
+      lines.push(`  parameters ${rParams.map(p => `${p.name}=${p.value}`).join(" ")}`);
+    }
+  }
 
   // Device instances
   for (const d of devices) {
@@ -696,6 +754,15 @@ function generateHSPICE(
   const ports = [...portNets].sort();
 
   lines.push(`.SUBCKT ${sanitizeSpiceName(moduleName)} ${ports.join(" ")} ${vdd} ${gnd}`);
+
+  // Resistor sheet-R parameters (only when sqRs format is selected)
+  if (config.resistorFormat === "sqRs") {
+    const rParams = collectResistorParams(devices, config);
+    for (const p of rParams) {
+      lines.push(`.PARAM ${p.name}=${p.value}`);
+    }
+    if (rParams.length > 0) lines.push("");
+  }
 
   for (const d of devices) {
     lines.push(deviceLine(d, netLookup, vdd, gnd, "hspice", "", config));
@@ -870,6 +937,18 @@ export function generateHierarchicalNetlist(
       lines.push(`.SUBCKT ${subName} ${portList.join(" ")}`);
     }
 
+    // Resistor sheet-R parameters (only when sqRs format is selected)
+    if (config.resistorFormat === "sqRs") {
+      const rParams = collectResistorParams(insideDevices, config);
+      if (rParams.length > 0) {
+        if (dialect === "spectre") {
+          lines.push(`${indent}parameters ${rParams.map(p => `${p.name}=${p.value}`).join(" ")}`);
+        } else {
+          for (const p of rParams) lines.push(`  .PARAM ${p.name}=${p.value}`);
+        }
+      }
+    }
+
     for (const d of localNamed) {
       lines.push(deviceLine(d, nl, vdd, gnd, dialect, indent, config));
     }
@@ -916,6 +995,18 @@ export function generateHierarchicalNetlist(
     lines.push(`subckt ${topLevelName} (${topPorts.join(" ")} ${vdd} ${gnd})`);
   } else {
     lines.push(`.SUBCKT ${topLevelName} ${topPorts.join(" ")} ${vdd} ${gnd}`);
+  }
+
+  // Resistor sheet-R parameters (only when sqRs format is selected)
+  if (config.resistorFormat === "sqRs") {
+    const rParams = collectResistorParams(devices, config);
+    if (rParams.length > 0) {
+      if (dialect === "spectre") {
+        lines.push(`  parameters ${rParams.map(p => `${p.name}=${p.value}`).join(" ")}`);
+      } else {
+        for (const p of rParams) lines.push(`  .PARAM ${p.name}=${p.value}`);
+      }
+    }
   }
 
   // Instantiate region subcircuits
