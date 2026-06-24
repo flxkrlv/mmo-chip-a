@@ -153,9 +153,10 @@ function buildAnalogNetlist(
   spiceConfig?: SpiceConfig,
   options?: BuildOptions,
 ): AnalogNetlistResult {
-  const { devices, namedNets } = collectDieWideAnalogDevices(
+  const { devices, namedNets, warnings: deviceWarnings } = collectDieWideAnalogDevices(
     annotations,
     spiceConfig?.umPerPx ?? annotations.umPerPx ?? 1.0,
+    spiceConfig,
   );
 
   // Assign instance names (M1, Q1, R1, …)
@@ -197,7 +198,7 @@ function buildAnalogNetlist(
     moduleName,
     fileName: `${moduleName}.${dialect === "cdl" ? "cdl" : dialect === "spectre" ? "scs" : "sp"}`,
     outline,
-    warnings: result.warnings,
+    warnings: [...deviceWarnings, ...result.warnings],
     totalDevices: result.totalDevices,
     byKind: result.byKind,
     deviceCellMap,
