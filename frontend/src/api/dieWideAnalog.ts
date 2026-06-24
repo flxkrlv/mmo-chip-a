@@ -255,6 +255,13 @@ function resolveDeviceContacts(
         if (!shapes) continue;
 
         for (const shape of shapes) {
+          // If the terminal knows which shapes belong to it, only
+          // match contacts that land inside THOSE shapes.  This prevents
+          // contacts from a different device in the same cell type from
+          // leaking into this device's terminal resolution.
+          const termShapeIds = dev.terminals[ti].shapeIds;
+          if (termShapeIds && termShapeIds.length > 0 && !termShapeIds.includes(shape.id)) continue;
+
           if (pointInShape(cc.x, cc.y, shape)) {
             // MOS B (bulk): contact must be EXCLUSIVELY on well layers —
             // if also on diffusion or polysilicon, it's an S/D/G contact.
@@ -408,6 +415,8 @@ export interface DieWideAnalogResult {
   namedNets: Map<number, string>;
   /** Annotation-net UUID → numerical netId used in devices' terminals. */
   netIdMap: Map<string, number>;
+  /** Warnings (unconnected terminals, auto-connected bulk, etc.) */
+  warnings: string[];
 }
 
 export function collectDieWideAnalogDevices(
@@ -427,6 +436,7 @@ export function collectDieWideAnalogDevices(
     instancesByCt.set(cell.cellTypeId, list);
   }
 
+  const warnings: string[] = [];
   const netIdMap = new Map<string, number>();
   const nextNetId = { v: 100 };
 
@@ -471,12 +481,57 @@ export function collectDieWideAnalogDevices(
         // ── Wire matching by contact proximity (10px) ────────
         const matchedTerms = dev.terminals.map((t,ti)=>{
           if (t.netId < 0 && dev.kind === "mos" && t.name === "B") {
-            // No well contact (or not resolved) → bulk = VCC (PMOS) / GND (NMOS)
+            // No well contact (or not resolved) → bulk = global supply
             const mosType = (dev.geometry as DeviceGeometryMOS)?.mosType;
-            const vccNet = nets.find((n) => n.name === "vcc" || n.name === "VDD" || n.name === "VCC");
-            const gndNet = nets.find((n) => n.name === "gnd" || n.name === "GND" || n.name === "VSS");
-            const fallback = mosType === "pmos" ? (vccNet?.id ?? 0) : (gndNet?.id ?? 0);
-            return {...t, netId: fallback};
+            const vddNames = [
+              _spiceConfig?.vdd ?? "VDD",
+              "VCC", "vcc", "VDD", "vdd",
+            ];
+            const gndNames = [
+              _spiceConfig?.gnd ?? "GND",
+              "VSS", "vss", "GND", "gnd",
+            ];
+            const targetNames = mosType === "pmos" ? vddNames : gndNames;
+            const supplyName = targetNames[0];
+
+            // 1) Check annotated net names
+            let foundNetId: number | null = null;
+            for (const n of nets) {
+              if (n.name && targetNames.includes(n.name)) {
+                if (!netIdMap.has(n.id)) netIdMap.set(n.id, nextNetId.v++);
+                foundNetId = netIdMap.get(n.id)!;
+                break;
+              }
+            }
+
+            // 2) Check IO pin names
+            if (foundNetId == null) {
+              const pins = ann.pins ?? [];
+              for (const pin of pins) {
+                if (targetNames.includes(pin.name)) {
+                  const pinNetId = matchWireToPoint(nets, pin.x, pin.y, 10, netIdMap, nextNetId);
+                  if (pinNetId != null) {
+                    foundNetId = pinNetId;
+                    break;
+                  }
+                }
+              }
+            }
+
+            if (foundNetId != null) {
+              warnings.push(
+                `${instName} (${mosType.toUpperCase()}): bulk has no well contact — auto-connected to global ${supplyName}`
+              );
+              return {...t, netId: foundNetId};
+            }
+
+            // 3) No net found → create a fresh one with configured name
+            const freshId = nextNetId.v++;
+            netIdMap.set(`_global_${supplyName}`, freshId);
+            warnings.push(
+              `${instName} (${mosType.toUpperCase()}): bulk has no well contact — auto-connected to global ${supplyName}`
+            );
+            return {...t, netId: freshId};
           }
           if (t.netId < 0) {
             const fresh = 2000 + allDevices.length*10 + ti;
@@ -525,7 +580,15 @@ export function collectDieWideAnalogDevices(
     }
   }
 
-  return { devices: allDevices, namedNets, netIdMap };
+  // Register fresh global supply nets (_global_VDD, _global_GND) as named nets
+  for (const [key, id] of netIdMap) {
+    if (key.startsWith("_global_")) {
+      const name = key.slice("_global_".length);
+      if (!namedNets.has(id)) namedNets.set(id, name);
+    }
+  }
+
+  return { devices: allDevices, namedNets, netIdMap, warnings };
 }
 
 // ═════════════════════════════════════════════════════════════════
@@ -538,7 +601,7 @@ export function detectAndExportDieWide(
   dialect: "cdl"|"spectre"|"hspice" = "cdl",
   spiceConfig?: SpiceConfig,
 ) {
-  const { devices, namedNets } = collectDieWideAnalogDevices(annotations, spiceConfig?.umPerPx??1.0, spiceConfig);
+  const { devices, namedNets, warnings: deviceWarnings } = collectDieWideAnalogDevices(annotations, spiceConfig?.umPerPx??1.0, spiceConfig);
   const result = generateSpiceNetlist(devices, moduleName, spiceConfig??{}, dialect, namedNets);
-  return { devices, text: result.text, byKind: result.byKind, totalDevices: result.totalDevices, warnings: result.warnings };
+  return { devices, text: result.text, byKind: result.byKind, totalDevices: result.totalDevices, warnings: [...deviceWarnings, ...result.warnings] };
 }

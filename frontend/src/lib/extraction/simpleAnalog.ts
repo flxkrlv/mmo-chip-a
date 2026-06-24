@@ -211,8 +211,8 @@ export function extractMarkedDevices(
             instanceName: `${prefixMap.diode}${counter}`,
             modelName: "D_GEN",
             terminals: [
-              { name: "PLUS", netId: terminalNet(bases) },   // anode = base
-              { name: "MINUS", netId: terminalNet(emitters) }, // cathode = emitter
+              { name: "PLUS", netId: terminalNet(bases), shapeIds: bases.map(s => s.id) },
+              { name: "MINUS", netId: terminalNet(emitters), shapeIds: emitters.map(s => s.id) },
             ],
             bbox: marker.bbox,
           });
@@ -273,9 +273,9 @@ export function extractMarkedDevices(
           instanceName: `${prefix}${counter}`,
           modelName: marker.kind === "bjt_npn" ? "NPN_GEN" : "PNP_GEN",
           terminals: [
-            { name: "C", netId: terminalNet(collectors) },
-            { name: "B", netId: terminalNet(bases) },
-            { name: "E", netId: terminalNet(emitters) },
+            { name: "C", netId: terminalNet(collectors), shapeIds: collectors.map(s => s.id) },
+            { name: "B", netId: terminalNet(bases), shapeIds: bases.map(s => s.id) },
+            { name: "E", netId: terminalNet(emitters), shapeIds: emitters.map(s => s.id) },
           ],
           bbox: marker.bbox,
         });
@@ -550,11 +550,16 @@ export function detectMOSFromLayers(
         const dNet = diffContacts.length > 1 ? nextNet() : -1;
         const gNet = nextNet();
 
+        // gateIds: all poly gates crossing this diffusion
+        const gateIds = gates.map(g => g.id);
+        const bodyId = body.id;
+        const wellId = well.id;
+
         const terminals: DeviceTerminal[] = [
-          { name: "D", netId: dNet },
-          { name: "G", netId: gNet },
-          { name: "S", netId: sNet },
-          { name: "B", netId: bulkNetId },
+          { name: "D", netId: dNet, shapeIds: [bodyId] },
+          { name: "G", netId: gNet, shapeIds: gateIds },
+          { name: "S", netId: sNet, shapeIds: [bodyId] },
+          { name: "B", netId: bulkNetId, shapeIds: [wellId] },
         ];
 
         const geometry: DeviceGeometryMOS = {

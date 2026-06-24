@@ -810,6 +810,13 @@ export interface DeviceTerminal {
   name: string;
   /** Die-level net id this terminal connects to */
   netId: number;
+  /**
+   * IDs of cell-type layer shapes that belong to this terminal.
+   * Used by resolveDeviceContacts to only match contacts that physically
+   * sit inside this device's shapes, not another device's shapes in the
+   * same cell type.
+   */
+  shapeIds?: string[];
 }
 
 // ── Analog device ───────────────────────────────────────────────
