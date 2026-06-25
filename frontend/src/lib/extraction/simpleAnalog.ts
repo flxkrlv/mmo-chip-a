@@ -383,7 +383,91 @@ export function extractMarkedDevices(
           squares = (W_um > 0 && L_um > 0) ? Math.max(L_um, W_um) / Math.min(L_um, W_um) : 0;
         }
 
-        const contactIds = contacts.map(c => c.id);
+        // ── Split contacts by body-INTERACT-ME1-INTERACT-contact ──
+        // Contacts don't physically overlap the body polyline — they
+        // connect via ME1 which overlaps the body.  Find ME1 shapes
+        // intersecting the body, then find contacts inside those ME1
+        // shapes.  Group contacts by UF-connected ME1 components.
+        let plusContactIds: string[] = [];
+        let minusContactIds: string[] = [];
+        console.log(`[analog] resistor ${marker.id}: ${contacts.length} contacts, ${bodyShapes.length} body (${lines.length} lines)`);
+        if (contacts.length >= 2 && bodyShapes.length > 0) {
+          const bodyPolys = bodyShapes.map((s) => shapeToPolygon(s));
+          const allMe1 = (layers as Record<string, LayerShape[] | undefined>)?.metal1 ?? [];
+          // Find ME1 polygons intersecting the resistor body.
+          const me1Hits: Array<{ idx: number; poly: Point[]; ctIds: Set<string> }> = [];
+          for (let mi = 0; mi < allMe1.length; mi++) {
+            const me1Poly = shapeToPolygon(allMe1[mi]);
+            const hitsBody = bodyPolys.some((bp) => polygonsIntersect(bp, me1Poly));
+            if (!hitsBody) continue;
+            const ctIds = new Set(
+              contacts
+                .filter((c) => polygonsIntersect(me1Poly, shapeToPolygon(c)))
+                .map((c) => c.id),
+            );
+            console.log(`[analog]   ME1[${mi}] ${allMe1[mi].id}: hits body, ctIds=[${[...ctIds].join(",")}]`);
+            me1Hits.push({ idx: mi, poly: me1Poly, ctIds });
+          }
+          // Union-find: ME1 shapes that overlap each other are connected.
+          const uf = new UnionFind(me1Hits.length);
+          for (let i = 0; i < me1Hits.length; i++) {
+            for (let j = i + 1; j < me1Hits.length; j++) {
+              if (polygonsIntersect(me1Hits[i].poly, me1Hits[j].poly)) {
+                uf.union(i, j);
+              }
+            }
+          }
+          // Group contact IDs by UF component.
+          const compCts = new Map<number, Set<string>>();
+          for (let i = 0; i < me1Hits.length; i++) {
+            const r = uf.find(i);
+            const set = compCts.get(r) ?? new Set();
+            for (const id of me1Hits[i].ctIds) set.add(id);
+            compCts.set(r, set);
+          }
+          const groups = [...compCts.values()].filter((s) => s.size > 0);
+          console.log(`[analog]   ME1 groups: ${groups.length}`);
+          if (groups.length >= 2) {
+            // Compute body bbox once for axis determination.
+            let bbox: Rect | null = null;
+            for (const s of bodyShapes) {
+              const b = shapeBbox(s);
+              if (!b) continue;
+              if (!bbox) { bbox = { ...b }; continue; }
+              const x2 = Math.max(bbox.x + bbox.width, b.x + b.width);
+              const y2 = Math.max(bbox.y + bbox.height, b.y + b.height);
+              bbox.x = Math.min(bbox.x, b.x);
+              bbox.y = Math.min(bbox.y, b.y);
+              bbox.width = x2 - bbox.x;
+              bbox.height = y2 - bbox.y;
+            }
+            if (bbox) {
+              const sortByX = bbox.width >= bbox.height;
+              groups.sort((a, b) => {
+                // Position by first contact's centroid.
+                const firstA = contacts.find((c) => a.has(c.id));
+                const firstB = contacts.find((c) => b.has(c.id));
+                const ba = firstA ? shapeBbox(firstA) : null;
+                const bb = firstB ? shapeBbox(firstB) : null;
+                if (!ba || !bb) return 0;
+                return sortByX
+                  ? ba.x + ba.width / 2 - (bb.x + bb.width / 2)
+                  : ba.y + ba.height / 2 - (bb.y + bb.height / 2);
+              });
+              plusContactIds = [...groups[0]];
+              minusContactIds = [...groups[1]];
+              console.log(`[analog]   split OK: PLUS=${plusContactIds.join(",")}  MINUS=${minusContactIds.join(",")}`);
+            }
+          }
+        }
+        if (plusContactIds.length === 0) {
+          plusContactIds = contacts.map((c) => c.id);
+          console.log(`[analog]   FALLBACK: all ${contacts.length} contacts → PLUS`);
+        }
+        if (minusContactIds.length === 0) {
+          minusContactIds = contacts.map((c) => c.id);
+          console.log(`[analog]   FALLBACK: all ${contacts.length} contacts → MINUS`);
+        }
 
         devices.push({
           id: devId,
@@ -402,8 +486,8 @@ export function extractMarkedDevices(
           instanceName: `${prefix}${counter}`,
           modelName: "RES_GEN",
           terminals: [
-            { name: "PLUS", netId: contacts.length > 0 ? nextNet() : -1, shapeIds: contactIds },
-            { name: "MINUS", netId: contacts.length > 1 ? nextNet() : -1, shapeIds: contactIds },
+            { name: "PLUS", netId: plusContactIds.length > 0 ? nextNet() : -1, shapeIds: plusContactIds },
+            { name: "MINUS", netId: minusContactIds.length > 0 ? nextNet() : -1, shapeIds: minusContactIds },
           ],
           bbox: marker.bbox,
         });
@@ -605,7 +689,7 @@ function splitDiffusionAtGates(
  * Does NOT affect gate terminals (already handled by polyGateNetMap) or
  * bulk terminals (handled separately with -2 sentinel).
  */
-function mergeMetalConnectedTerminals(
+export function mergeMetalConnectedTerminals(
   devices: AnalogDevice[],
   allLayers: Record<string, LayerShape[]>,
 ): void {
@@ -694,13 +778,18 @@ function mergeMetalConnectedTerminals(
     }
   }
 
-  // ── For each D/S terminal, collect overlapping contacts' UF roots ─
+  // ── For each candidate terminal, collect overlapping contacts' UF roots ─
   // Terminal → set of UF roots (contacts overlapping this terminal).
+  // Only MOS D/S and resistor PLUS/MINUS are processed.
+  // Other devices (BJT, cap, diode-marker) are resolved at die level.
   const termRoots = new Map<string, Set<number>>();
   for (const dev of devices) {
-    if (dev.kind !== "mos") continue;
+    // MOS: merge D and S terminals (gate handled by polyGateNetMap, bulk by -2)
+    // Resistor: merge PLUS and MINUS (shapeIds now split spatially)
+    if (dev.kind !== "mos" && dev.kind !== "resistor") continue;
     for (const term of dev.terminals) {
-      if (term.name !== "D" && term.name !== "S") continue;
+      if (dev.kind === "mos" && term.name !== "D" && term.name !== "S") continue;
+      if (dev.kind === "resistor" && term.name !== "PLUS" && term.name !== "MINUS") continue;
 
       // Find the terminal's source LayerShape by first shapeId.
       if (!term.shapeIds || term.shapeIds.length === 0) continue;
@@ -1115,10 +1204,9 @@ export function detectMOSFromLayers(
     }
   }
 
-  // ── Metal-connected D/S terminal merging ─────────────────────
-  // Post-process: drain/source terminals that touch the same metal
-  // component (ME1/ME2 + via) inside the cell get a shared netId.
-  mergeMetalConnectedTerminals(devices, allLayers);
+  // Metal-connected D/S (MOS) and PLUS/MINUS (resistor) terminal
+  // merging is handled in extractAnalogDevicesFromCellType (dieWideAnalog.ts)
+  // on all devices together so inter-device connections work.
 
   // Debug: итоговые device gate nets
   console.log(`[analog] detectMOSFromLayers: ${devices.length} devices total`);

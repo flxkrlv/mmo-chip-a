@@ -29,7 +29,7 @@ import type {
   DeviceGeometryMOS, DeviceKind, DieAnnotations, IOPin,
   LayerShape, SpiceConfig,
 } from "shared";
-import { extractMarkedDevices, detectMOSFromLayers, consumeSegmentShapes } from "../lib/extraction/simpleAnalog";
+import { extractMarkedDevices, detectMOSFromLayers, consumeSegmentShapes, mergeMetalConnectedTerminals } from "../lib/extraction/simpleAnalog";
 import { isClipperLoaded } from "../lib/extraction/clipper";
 import { generateSpiceNetlist } from "../lib/export/spice";
 
@@ -419,7 +419,13 @@ export function extractAnalogDevicesFromCellType(
 ): AnalogDevice[] {
   const marker = extractMarkedDevices(cellType.layers, cellType.id, umPerPx);
   const well = detectMOSFromLayers(cellType.layers, cellType.id, umPerPx);
-  return [...well, ...marker];
+  const all = [...well, ...marker];
+  // Metal-connected terminal merging:
+  // - MOS: D/S terminals sharing an ME1/ME2+via1 component get one netId
+  // - Resistor: PLUS/MINUS contacts now split by INTERACT with body
+  //   (different shapeIds → no shapeKey dedup collision)
+  mergeMetalConnectedTerminals(all, cellType.layers as Record<string, LayerShape[]>);
+  return all;
 }
 
 // ═════════════════════════════════════════════════════════════════

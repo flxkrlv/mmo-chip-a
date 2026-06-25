@@ -12,6 +12,7 @@ import type { CellLayers, LayerRect } from "../../shared/src/types.js";
 import {
   detectMOSFromLayers,
   resetDummyNets,
+  mergeMetalConnectedTerminals,
 } from "../../frontend/src/lib/extraction/simpleAnalog.js";
 import { loadClipperWithBinary } from "../../frontend/src/lib/extraction/clipper.js";
 
@@ -186,6 +187,7 @@ test("mergeMetalConnectedTerminals: two devices with D/S connected via ME1 → s
     ],
   };
   const devices = detectMOSFromLayers(layers, "test_cell", 1);
+  mergeMetalConnectedTerminals(devices, layers as any);
   // Two single-finger devices (one per diffusion)
   assert.equal(devices.length, 2, "expected 2 MOS devices");
 
@@ -239,6 +241,7 @@ test("mergeMetalConnectedTerminals: two separate ME1 strips → two separate S/D
     ],
   };
   const devices = detectMOSFromLayers(layers, "test_cell", 1);
+  mergeMetalConnectedTerminals(devices, layers as any);
   assert.equal(devices.length, 2, "expected 2 MOS devices");
 
   const sNets = devices.map((d) => d.terminals.find((t) => t.name === "S")!.netId);
