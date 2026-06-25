@@ -30,6 +30,7 @@ import type {
   LayerShape, SpiceConfig,
 } from "shared";
 import { extractMarkedDevices, detectMOSFromLayers, consumeSegmentShapes } from "../lib/extraction/simpleAnalog";
+import { isClipperLoaded } from "../lib/extraction/clipper";
 import { generateSpiceNetlist } from "../lib/export/spice";
 
 // ═════════════════════════════════════════════════════════════════
@@ -453,8 +454,23 @@ export function collectDieWideAnalogDevices(
   }
 
   const warnings: string[] = [];
+
+  // Warn when Clipper2 is not loaded — poly gate grouping falls back
+  // to shapeId-only dedup, which may miss connected poly shapes.
+  if (!isClipperLoaded()) {
+    warnings.push(
+      "Clipper2 is not loaded — polysilicon gate net grouping uses shapeId-only " +
+      "fallback. Connected poly shapes may not share a gate net. " +
+      "Reload the page if Clipper was expected to be available."
+    );
+  }
+
   const netIdMap = new Map<string, number>();
   const nextNetId = { v: 100 };
+  // Cache: cell instance + cell-level netId → die-level netId.
+  // Ensures multiple devices in the same cell instance sharing the same
+  // gate poly (e.g., G=1000 from polyGateNetMap) get one die-level net.
+  const cellNetCache = new Map<string, number>();
 
   const counters: Record<string,number> = {};
   const pref: Record<string,string> = {
@@ -579,15 +595,26 @@ export function collectDieWideAnalogDevices(
             const fresh = 2000 + allDevices.length*10 + ti;
             return {...t, netId: fresh};
           }
+          // ── Cell-level net dedup cache ────────────────────────
+          // Devices in the same cell instance sharing a cell-level netId
+          // (e.g. G=1000 from polyGateNetMap) must map to one die-level net.
+          const cacheKey = `${instCell.id}:${t.netId}`;
+          const cachedDieNet = cellNetCache.get(cacheKey);
+          if (cachedDieNet !== undefined) {
+            console.log(`[analog] cellNetCache HIT inst=${instCell.id} cellNet=${t.netId} → dieNet=${cachedDieNet} for ${instName}.${dev.terminals[ti].name}`);
+            return {...t, netId: cachedDieNet};
+          }
           const contacts = termContacts[ti];
           // contacts.length === 0 — no contact centers
           for (const cp of contacts) {
             const wid = matchWireToPoint(nets, cp.x, cp.y, 10, netIdMap, nextNetId);
             if (wid!=null) {
+              cellNetCache.set(cacheKey, wid);
               return {...t, netId: wid};
             }
           }
           const fresh = 2000 + allDevices.length*10 + ti;
+          cellNetCache.set(cacheKey, fresh);
           return {...t, netId: fresh};
         });
 

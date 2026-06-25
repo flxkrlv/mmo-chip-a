@@ -33,7 +33,7 @@ import type {
   DeviceGeometryMOS, DeviceKind, DeviceTerminal, LayerShape,
   ResistorType,
 } from "shared";
-import { polygonBounds } from "../geometry";
+import { polygonBounds, rectsIntersect } from "../geometry";
 import type { Point, Rect } from "../geometry";
 import {
   getClipper,
@@ -41,9 +41,10 @@ import {
   polygonDifference,
   polygonInflate,
   polygonIntersection,
+  polygonsIntersect,
   ringSignedArea,
 } from "./clipper";
-import { shapeToPolygon } from "./common";
+import { shapeToPolygon, UnionFind } from "./common";
 import { effectiveSheetR } from "../export/resistorDefaults";
 
 /**
@@ -490,11 +491,7 @@ function splitDiffusionAtGates(
   gateShapes: LayerShape[],
   devId: string,
 ): { segments: Point[][]; shapes: LayerShape[] } | null {
-  if (!isClipperLoaded()) {
-    console.log(`[analog] splitDiffusionAtGates: Clipper NOT loaded, skip`);
-    return null;
-  }
-  getClipper(); // safe after isClipperLoaded()
+  getClipper(); // ensure Clipper2 is initialized before use
   console.log(`[analog] splitDiffusionAtGates: ${gateShapes.length} gates for ${devId}`);
 
   const diffPoly = shapeToPolygon(bodyShape);
@@ -595,6 +592,176 @@ function splitDiffusionAtGates(
 }
 
 /**
+ * Post-process: merge drain/source netIds across devices when they are
+ * connected by metal (ME1 / ME2 + via1) inside the cell.
+ *
+ * Builds a union-find connectivity graph over metal shapes (ME1, ME2, via1,
+ * contact) — the same pattern used by cell.ts Step 2 for digital extraction.
+ * Each MOS device's D/S terminal is then matched to its overlapping contacts;
+ * terminals whose contacts belong to the same metal component receive one
+ * shared cell-level netId. The die-level pipeline (cellNetCache in
+ * dieWideAnalog.ts) then resolves those to a single SPICE net.
+ *
+ * Does NOT affect gate terminals (already handled by polyGateNetMap) or
+ * bulk terminals (handled separately with -2 sentinel).
+ */
+function mergeMetalConnectedTerminals(
+  devices: AnalogDevice[],
+  allLayers: Record<string, LayerShape[]>,
+): void {
+  const me1   = allLayers["metal1"] ?? [];
+  const me2   = allLayers["metal2"] ?? [];
+  const via1  = allLayers["via1"] ?? [];
+  const cts   = allLayers["contact"] ?? [];
+
+  const metalShapes = [...me1, ...me2, ...via1, ...cts];
+  if (metalShapes.length === 0) return;
+
+  // Build polygon + bbox for every shape.
+  const polyData = metalShapes.map((s) => ({
+    id: s.id,
+    poly: shapeToPolygon(s),
+    bbox: polygonBounds(shapeToPolygon(s))!,
+  }));
+
+  // Index ranges for each layer within `metalShapes` (for bucket iteration).
+  const ranges = [
+    { start: 0, end: me1.length },                              // ME1
+    { start: me1.length, end: me1.length + me2.length },         // ME2
+    { start: me1.length + me2.length, end: me1.length + me2.length + via1.length }, // via1
+    { start: me1.length + me2.length + via1.length, end: metalShapes.length }, // contact
+  ];
+
+  // ── Union-find: same-layer intersection ────────────────────────
+  const uf = new UnionFind(metalShapes.length);
+  for (const { start, end } of ranges) {
+    for (let i = start; i < end; i++) {
+      for (let j = i + 1; j < end; j++) {
+        if (!rectsIntersect(polyData[i].bbox, polyData[j].bbox)) continue;
+        if (polygonsIntersect(polyData[i].poly, polyData[j].poly)) {
+          uf.union(i, j);
+        }
+      }
+    }
+  }
+
+  // Contact ↔ ME1 bridge: contact overlaps ME1.
+  const me1Start = 0, me1End = me1.length;
+  const ctStart = ranges[3].start, ctEnd = ranges[3].end;
+  for (let ci = ctStart; ci < ctEnd; ci++) {
+    for (let mi = me1Start; mi < me1End; mi++) {
+      if (!rectsIntersect(polyData[ci].bbox, polyData[mi].bbox)) continue;
+      if (polygonsIntersect(polyData[ci].poly, polyData[mi].poly)) {
+        uf.union(ci, mi);
+      }
+    }
+  }
+
+  // Via1 ↔ ME1 + Via1 ↔ ME2: via overlaps both metal layers.
+  const me2Start = ranges[1].start, me2End = ranges[1].end;
+  const viaStart = ranges[2].start, viaEnd = ranges[2].end;
+  for (let vi = viaStart; vi < viaEnd; vi++) {
+    for (let mi = me1Start; mi < me1End; mi++) {
+      if (!rectsIntersect(polyData[vi].bbox, polyData[mi].bbox)) continue;
+      if (polygonsIntersect(polyData[vi].poly, polyData[mi].poly)) {
+        uf.union(vi, mi);
+      }
+    }
+    for (let mi = me2Start; mi < me2End; mi++) {
+      if (!rectsIntersect(polyData[vi].bbox, polyData[mi].bbox)) continue;
+      if (polygonsIntersect(polyData[vi].poly, polyData[mi].poly)) {
+        uf.union(vi, mi);
+      }
+    }
+  }
+
+  // Map: contact id → UF root.
+  const contactRoot = new Map<string, number>();
+  for (let i = ctStart; i < ctEnd; i++) {
+    contactRoot.set(metalShapes[i].id, uf.find(i));
+  }
+
+  // ── Build shapeId → polygon lookup (layers + segment shapes) ──
+  const shapePoly = new Map<string, Point[]>();
+  for (const [, shapes] of Object.entries(allLayers)) {
+    for (const s of shapes) {
+      shapePoly.set(s.id, shapeToPolygon(s));
+    }
+  }
+  for (const [, segShapes] of _segmentShapesCache) {
+    for (const s of segShapes) {
+      shapePoly.set(s.id, shapeToPolygon(s));
+    }
+  }
+
+  // ── For each D/S terminal, collect overlapping contacts' UF roots ─
+  // Terminal → set of UF roots (contacts overlapping this terminal).
+  const termRoots = new Map<string, Set<number>>();
+  for (const dev of devices) {
+    if (dev.kind !== "mos") continue;
+    for (const term of dev.terminals) {
+      if (term.name !== "D" && term.name !== "S") continue;
+
+      // Find the terminal's source LayerShape by first shapeId.
+      if (!term.shapeIds || term.shapeIds.length === 0) continue;
+      const sId = term.shapeIds[0];
+      if (!sId) continue;
+      const tPoly = shapePoly.get(sId);
+      if (!tPoly) continue;
+      const tBbox = polygonBounds(tPoly);
+      if (!tBbox) continue;
+
+      const roots = new Set<number>();
+      for (const ct of cts) {
+        const ctPoly = shapePoly.get(ct.id);
+        if (!ctPoly) continue;
+        const ctB = polygonBounds(ctPoly);
+        if (!ctB || !rectsIntersect(tBbox, ctB)) continue;
+        if (!polygonsIntersect(tPoly, ctPoly)) continue;
+        const root = contactRoot.get(ct.id);
+        if (root !== undefined) roots.add(root);
+      }
+
+      if (roots.size > 0) {
+        termRoots.set(`${dev.id}:${term.name}`, roots);
+      }
+    }
+  }
+
+  // ── Group terminals by UF component root ───────────────────────
+  // If a terminal touches multiple components (unusual), its contacts
+  // are electrically shorted → any of the roots works.
+  // Map: root → list of (devId, termName).
+  const rootToTerms = new Map<number, Array<{ devId: string; termName: string }>>();
+  for (const [key, roots] of termRoots) {
+    const root = [...roots][0]; // pick first root
+    const sep = key.indexOf(":");
+    const devId = key.slice(0, sep);
+    const termName = key.slice(sep + 1);
+    let arr = rootToTerms.get(root);
+    if (!arr) { arr = []; rootToTerms.set(root, arr); }
+    arr.push({ devId, termName });
+  }
+
+  console.log(`[analog] mergeMetalConnectedTerminals: ${rootToTerms.size} metal component(s)`);
+
+  // ── Assign a common netId to each component's terminals ────────
+  const compNetId = new Map<number, number>();
+  for (const [root, terms] of rootToTerms) {
+    const netId = nextNet();
+    compNetId.set(root, netId);
+    for (const { devId, termName } of terms) {
+      const dev = devices.find((d) => d.id === devId);
+      if (!dev) continue;
+      const term = dev.terminals.find((t) => t.name === termName);
+      if (!term) continue;
+      term.netId = netId;
+      console.log(`[analog]  merge: ${devId}.${termName} → net=${netId}`);
+    }
+  }
+}
+
+/**
  * Well-based MOS detection — alternative to device_box + drain/gate/source/bulk
  * markers.  Infers PMOS/NMOS, bulk terminal, and geometry from:
  *
@@ -624,6 +791,70 @@ export function detectMOSFromLayers(
   const polys = allLayers["polysilicon"] ?? [];
   const contacts = allLayers["contact"] ?? [];
 
+  // ═══ Poly gate net grouping ═══
+  // Polysilicon shapes that physically connect (same shape or overlapping
+  // polygons) should share one gate netId across all MOS devices they
+  // gate. This matches real topology where a single poly polygon crosses
+  // multiple diffusions — without the old hack of inventing fake contacts
+  // and die-level wires to share the gate net.
+  const polyGateNetMap = new Map<string, number>();
+
+  console.log(`[analog] polyGateNetMap: ${polys.length} polys, clipperLoaded=${isClipperLoaded()}`);
+
+  if (polys.length > 0) {
+    // Connected components via Clipper2 overlap test.
+    // Poly shapes that physically intersect share one gate netId.
+      const pp = polys.map((p) => ({ id: p.id, poly: shapeToPolygon(p) }));
+      pp.forEach((p, i) => {
+        const b = polygonBounds(p.poly)!;
+        console.log(`[analog]  poly[${i}] id=${p.id} bbox=(${b.x.toFixed(1)},${b.y.toFixed(1)},${b.width.toFixed(1)},${b.height.toFixed(1)})`);
+      });
+      const uf = new UnionFind(pp.length);
+      let mergeCount = 0;
+      for (let i = 0; i < pp.length; i++) {
+        const bi = polygonBounds(pp[i].poly)!;
+        for (let j = i + 1; j < pp.length; j++) {
+          const bj = polygonBounds(pp[j].poly)!;
+          if (!rectsIntersect(bi, bj)) continue;
+          if (polygonsIntersect(pp[i].poly, pp[j].poly)) {
+            console.log(`[analog]  MERGE poly[${i}](${pp[i].id}) ↔ poly[${j}](${pp[j].id})`);
+            uf.union(i, j);
+            mergeCount++;
+          }
+        }
+      }
+      console.log(`[analog]  merged ${mergeCount} pairs into ${new Set(Array.from({length:pp.length},(_,i)=>uf.find(i))).size} component(s)`);
+      const compNets = new Map<number, number>();
+      for (let i = 0; i < pp.length; i++) {
+        const root = uf.find(i);
+        if (!compNets.has(root)) compNets.set(root, nextNet());
+        polyGateNetMap.set(pp[i].id, compNets.get(root)!);
+      }
+  }
+
+  // Reverse map: gate netId → all poly shape IDs sharing that net.
+  // Used to include connected poly shapes (e.g., shared poly bus) in
+  // gate terminal shapeIds so the die viewer overlay highlights all
+  // physical polys that belong to the same gate signal.
+  const gateNetShapes = new Map<number, Set<string>>();
+  for (const [polyId, netId] of polyGateNetMap) {
+    let s = gateNetShapes.get(netId);
+    if (!s) { s = new Set(); gateNetShapes.set(netId, s); }
+    s.add(polyId);
+  }
+  function allPolyIdsForGateNet(netId: number): string[] {
+    return [...(gateNetShapes.get(netId) ?? [])];
+  }
+
+  function gateNetFor(polyId: string): number {
+    const net = polyGateNetMap.get(polyId);
+    if (net !== undefined) return net;
+    // Fallback (shouldn't happen since we pre-populated all polys):
+    const newNet = nextNet();
+    console.log(`[analog]  gateNetFor FALLBACK polyId=${polyId} → new net=${newNet}`);
+    polyGateNetMap.set(polyId, newNet);
+    return newNet;
+  }
 
   const WELLS: Array<{ shapes: LayerShape[]; type: "pmos" | "nmos"; wellLabel: string }> = [
     { shapes: nwells, type: "pmos", wellLabel: "nwell" },
@@ -653,6 +884,8 @@ export function detectMOSFromLayers(
           return pb && overlapArea(bodyBox, pb) > 0;
         });
         if (gates.length === 0) continue;
+
+        console.log(`[analog]  body ${body.id}: ${gates.length} gate(s): ${gates.map(g=>`${g.id}`).join(", ")} → gateNets: ${gates.map(g=>polyGateNetMap.get(g.id)).join(", ")}`);
 
         // ── W/L from poly ∩ diffusion intersection ──────────
         // Each gate finger overlaps the diffusion; the intersection
@@ -738,11 +971,12 @@ export function detectMOSFromLayers(
 
               const sN = nextNet();
               const dN = nextNet();
-              const gN = nextNet();
+              const gN = gateNetFor(gate.id);
 
+              const gShapeIds = allPolyIdsForGateNet(gN);
               const terminals: DeviceTerminal[] = [
                 { name: "D", netId: dN, shapeIds: [segD.id] },
-                { name: "G", netId: gN, shapeIds: [gate.id] },
+                { name: "G", netId: gN, shapeIds: gShapeIds },
                 { name: "S", netId: sN, shapeIds: [segS.id] },
                 { name: "B", netId: bulkNetId, shapeIds: [wellId] },
               ];
@@ -821,15 +1055,16 @@ export function detectMOSFromLayers(
           });
           const sNet = diffContacts.length > 0 ? nextNet() : -1;
           const dNet = diffContacts.length > 1 ? nextNet() : -1;
-          const gNet = nextNet();
+          const gNet = gateNetFor(gates[0].id);
 
           const gateIds = gates.map(g => g.id);
           const bodyId = body.id;
           const wellId = well.id;
 
+          const gShapeIds = [...new Set([...gateIds, ...allPolyIdsForGateNet(gNet)])];
           const terminals: DeviceTerminal[] = [
             { name: "D", netId: dNet, shapeIds: [bodyId] },
-            { name: "G", netId: gNet, shapeIds: gateIds },
+            { name: "G", netId: gNet, shapeIds: gShapeIds },
             { name: "S", netId: sNet, shapeIds: [bodyId] },
             { name: "B", netId: bulkNetId, shapeIds: [wellId] },
           ];
@@ -878,6 +1113,20 @@ export function detectMOSFromLayers(
         g.totalW_um = g.W_um * g.fingers * g.multiplier;
       }
     }
+  }
+
+  // ── Metal-connected D/S terminal merging ─────────────────────
+  // Post-process: drain/source terminals that touch the same metal
+  // component (ME1/ME2 + via) inside the cell get a shared netId.
+  mergeMetalConnectedTerminals(devices, allLayers);
+
+  // Debug: итоговые device gate nets
+  console.log(`[analog] detectMOSFromLayers: ${devices.length} devices total`);
+  for (const d of devices) {
+    const gTerm = d.terminals.find((t) => t.name === "G");
+    const sTerm = d.terminals.find((t) => t.name === "S");
+    const dTerm = d.terminals.find((t) => t.name === "D");
+    console.log(`[analog]   ${d.instanceName ?? d.id}: G=${gTerm?.netId ?? "?"} S=${sTerm?.netId ?? "?"} D=${dTerm?.netId ?? "?"}`);
   }
 
   return devices;

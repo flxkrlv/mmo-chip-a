@@ -62,6 +62,9 @@ MOS детектируется **автоматически** по пересе�
 4. **Bulk:** нарисуйте `cont` (contact) на nwell/pwell **вне** diffusion и polysilicon. Если контакт попадает и на diffusion — он считается S/D, не bulk. Если bulk-контакта нет — sentinel -2 → VDD (PMOS) / GND (NMOS). Имена VDD/GND настраиваются в Analog Netlist → SubBar.
 5. **Металлизация:** соедините diffusion-области через контакты и metal1 с остальной схемой.
 6. **Multi-finger (несколько затворов на одной diffusion):** Clipper2 (`polygonDifference()`) разрезает diffusion между затворами. Каждый gate finger → отдельный MOS. Shared сегмент между затворами — D для левого и S для правого (одинаковый netId при wire matching).
+
+7. **Metal-connected D/S:** Если drain/source двух разных транзисторов соединены ME1 (или ME2 через via1) внутри ячейки — они получают один cell-level netId. Union-Find по metal1+metal2+via1+contact.
+
 W/L, fingers, сегменты вычисляются автоматически.
 
 
@@ -312,6 +315,8 @@ ends lmv341
 ## Ключевые изменения относительно оригинального mmo-chip (main)
 
 - **Well-based MOS** — единственный путь для MOS. Multi-finger: Clipper2 разрезает diffusion между затворами, создавая отдельный MOS на каждый gate finger. Shared сегменты между gate (D gate[i] = S gate[i+1]) получают одинаковый netId.
+- **Poly gate grouping (polyGateNetMap)** — физически соединённые poly shapes (через Clipper2 overlap) получают один gate netId. Shared poly bus подсвечивается в overlay.
+- **Metal-connected D/S merging** — drain/source, соединённые ME1/ME2+via1 внутри ячейки, получают общий cell-level netId. Union-Find идентичный cell.ts Step 2.
 - **Diode из BJT** — рисование NPN/PNP без коллектора автоматически даёт диод. PLUS через слои `["base","bulk"]`, MINUS через `["emitter"]`. Приоритет: emitter(0) > base(1) для разрешения коллизий.
 - **BJT с multiple emitter** — AE суммируется, multiplier M = количество эмиттеров (надо проверять)
 - **Polyline Tool** — рисование резисторов-меандров с 90° ортогональным snap, редактируемой шириной.
