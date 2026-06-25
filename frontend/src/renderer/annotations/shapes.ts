@@ -226,6 +226,10 @@ export interface DrawCellLayersOptions {
    *  individually-outlined geometry. The RE canvas keeps outlines on so
    *  each individual annotation reads as a discrete edit. */
   outline?: boolean;
+  /** Optional per-layer alpha multiplier (0..1). Return `undefined` to use
+   *  the default alpha for the layer. Used for the resistor body opacity
+   *  slider in the RE cell page. */
+  layerAlpha?: (layer: LayerType) => number | undefined;
 }
 
 /**
@@ -247,28 +251,43 @@ export function drawCellLayers(
   options: DrawCellLayersOptions = {}
 ): void {
   if (!layers) return;
-  const { isHidden, replaceShape, outline } = options;
+  const { isHidden, replaceShape, outline, layerAlpha } = options;
   const shapeOpts: DrawShapeOptions = { outline };
   for (const layer of LAYER_DRAW_ORDER) {
     if (isHidden?.(layer)) continue;
     const shapes = layers[layer];
     if (!shapes || shapes.length === 0) continue;
 
-    // Group consecutive "line" shapes on resistor_body into a single path
-    // so lineJoin=round fills corners without affecting lineCap at ends.
+    // Group "line" shapes into a continuous path so corners join cleanly
+    // with lineJoin=round without lineCap artifacts at the path ends.
     const lines = shapes.filter((s): s is LayerLine => s.kind === "line");
     const nonLines = shapes.filter(s => s.kind !== "line");
     if (lines.length > 0) {
+      const alphaOv = layerAlpha?.(layer);
+      if (alphaOv !== undefined) ctx.save();
+      if (alphaOv !== undefined) ctx.globalAlpha = alphaOv;
       applyShapeStyle(ctx, layer, lines[0]);
       ctx.lineWidth = Math.max((lines[0] as any).width ?? 4, 0.5);
       ctx.lineCap = "butt";
       ctx.lineJoin = "round";
       ctx.beginPath();
-      for (const l of lines) {
-        ctx.moveTo(l.x1, l.y1);
-        ctx.lineTo(l.x2, l.y2);
+      // Sort into a continuous chain: each segment starts where the
+      // previous one ended, so use lineTo (not moveTo) for the second
+      // and subsequent segments that share the junction point.
+      ctx.moveTo(lines[0].x1, lines[0].y1);
+      ctx.lineTo(lines[0].x2, lines[0].y2);
+      for (let i = 1; i < lines.length; i++) {
+        const prev = lines[i - 1];
+        const cur = lines[i];
+        if (cur.x1 === prev.x2 && cur.y1 === prev.y2) {
+          ctx.lineTo(cur.x2, cur.y2);
+        } else {
+          ctx.moveTo(cur.x1, cur.y1);
+          ctx.lineTo(cur.x2, cur.y2);
+        }
       }
       ctx.stroke();
+      if (alphaOv !== undefined) ctx.restore();
     }
     for (const s of nonLines) {
       const out = replaceShape ? replaceShape(layer, s) : s;

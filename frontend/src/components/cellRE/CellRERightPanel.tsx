@@ -12,7 +12,7 @@ import type {
   Transistor,
   TransmissionGate,
 } from "../../lib/extraction";
-import { shapeKey, useCellREStore } from "../../state/cellRE";
+import { parseShapeKey, shapeKey, useCellREStore } from "../../state/cellRE";
 import { usePreferences } from "../../state/preferences";
 import { effectiveSheetR } from "../../lib/export/resistorDefaults";
 import {
@@ -70,8 +70,11 @@ interface Props {
    *  shared hover state so the image canvas + schematic light up the
    *  matching elements. */
   onHoverEntity?: (entity: HoverEntity) => void;
-  /** Callback to upsert a shape (e.g. changing resistor width). */
-  onUpdateShape?: (layer: LayerType, shape: LayerShape) => void;
+  /** Scale factor: µm per pixel. Passed through for resistor width display. */
+  umPerPx?: number;
+  /** Callback to update width of selected line shapes.
+   *  Receives layer, array of shape ids, and new width in pixels. */
+  onUpdateLineWidths?: (layer: LayerType, shapeIds: string[], widthPx: number) => void;
   /** Replace the canvas selection with these shape keys. */
   onSelect: (ids: Set<string>) => void;
   /** Rename the active cell type. Called by the header's double-click
@@ -118,11 +121,12 @@ export function CellRERightPanel({
   canvasTab,
   onHoverEntity,
   onSelect,
-  onUpdateShape,
+  umPerPx,
   onRename,
   onRenameNet,
   onSetNetLabel,
   onSetDiffusionForcedType,
+  onUpdateLineWidths,
   onDomainOpen,
 }: Props) {
   const inferred =
@@ -201,33 +205,78 @@ export function CellRERightPanel({
 
   // Resistor body layer keys that support polyline width editing
   const RESISTOR_BODY_KEYS = ["resistor_body","polysilicon","base","emitter","hsr","film"] as const;
-  const reselected = useMemo(() => {
-    const layers = cellType?.layers ?? {};
-    for (const key of RESISTOR_BODY_KEYS) {
-      const shapes = (layers as any)[key] as any[] | undefined;
-      if (!shapes?.length) continue;
-      const lines = shapes.filter((s: any) => s.kind === "line");
-      if (!lines.length) continue;
-      let totalL = 0, corners = 0;
-      let prevAngle: number | null = null;
-      const w = (lines[0] as any).width || 4;
-      for (let i = 0; i < lines.length; i++) {
-        const l = lines[i] as any;
-        const dx = l.x2 - l.x1, dy = l.y2 - l.y1;
-        totalL += Math.sqrt(dx * dx + dy * dy);
-        if (i > 0) {
-          const a = Math.atan2(dy, dx);
-          if (prevAngle != null && Math.abs(a - prevAngle) > Math.PI / 6) corners++;
-          prevAngle = a;
-        } else {
-          prevAngle = Math.atan2(dy, dx);
+  // ── Selected resistor info ───────────────────────────────────
+  // Find the resistor chain from the current selection. If one or more
+  // line shapes are selected, find all connected segments forming that
+  // resistor and show its info (segs, L, W, corners, squares).
+  const selectedResistorInfo = useMemo(() => {
+    if (!cellType || !selectedShapeIds || selectedShapeIds.size === 0) return null;
+    // Find the first selected line shape.
+    let seedId: string | null = null;
+    let seedLayer: string | null = null;
+    for (const key of selectedShapeIds) {
+      const p = parseShapeKey(key);
+      if (!p) continue;
+      const shapes = cellType.layers?.[p.layer as LayerType] ?? [];
+      const s = shapes.find((s: any) => s.id === p.id);
+      if (s?.kind === "line") { seedId = p.id; seedLayer = p.layer; break; }
+    }
+    if (!seedId || !seedLayer) return null;
+    const layerKey = seedLayer;
+    const lines = ((cellType.layers?.[layerKey as LayerType] ?? []) as any[]).filter(
+      (s: any) => s.kind === "line"
+    );
+    if (lines.length === 0) return null;
+    // Build adjacency map: lineId -> Set<neighborId> (shared endpoint)
+    const adj = new Map<string, Set<string>>();
+    for (const l of lines) {
+      if (!adj.has(l.id)) adj.set(l.id, new Set());
+    }
+    for (let i = 0; i < lines.length; i++) {
+      for (let j = i + 1; j < lines.length; j++) {
+        const a = lines[i], b = lines[j];
+        const share =
+          (a.x1 === b.x1 && a.y1 === b.y1) ||
+          (a.x1 === b.x2 && a.y1 === b.y2) ||
+          (a.x2 === b.x1 && a.y2 === b.y1) ||
+          (a.x2 === b.x2 && a.y2 === b.y2);
+        if (share) {
+          adj.get(a.id)!.add(b.id);
+          adj.get(b.id)!.add(a.id);
         }
       }
-      const sq = (totalL - corners * w) / w + 0.55 * corners;
-      return { layerKey: key, totalL: totalL.toFixed(0), width: w, corners, squares: sq.toFixed(1), segs: lines.length };
     }
-    return null;
-  }, [cellType?.layers]);
+    // BFS from the seed to find the connected component.
+    const comp = new Set<string>();
+    const queue = [seedId];
+    while (queue.length > 0) {
+      const id = queue.pop()!;
+      if (comp.has(id)) continue;
+      comp.add(id);
+      for (const n of adj.get(id) ?? []) if (!comp.has(n)) queue.push(n);
+    }
+    const chain = lines.filter((l: any) => comp.has(l.id));
+    if (chain.length === 0) return null;
+    // Compute metrics.
+    const w = chain[0].width || 4;
+    let totalL = 0, corners = 0;
+    let prevAngle: number | null = null;
+    for (let i = 0; i < chain.length; i++) {
+      const l = chain[i];
+      const dx = l.x2 - l.x1, dy = l.y2 - l.y1;
+      totalL += Math.sqrt(dx * dx + dy * dy);
+      if (i > 0) {
+        const a = Math.atan2(dy, dx);
+        if (prevAngle != null && Math.abs(a - prevAngle) > Math.PI / 6) corners++;
+        prevAngle = a;
+      } else {
+        prevAngle = Math.atan2(dy, dx);
+      }
+    }
+    const sq = (totalL - corners * w) / w + 0.55 * corners;
+    const chainIds = new Set(chain.map((l: any) => l.id));
+    return { layerKey, totalL: totalL.toFixed(0), width: w, corners, squares: sq.toFixed(1), segs: chain.length, chainIds, seedId };
+  }, [cellType?.layers, selectedShapeIds]);
 
   const [rowMenu, setRowMenu] = useState<RowContextMenuState | null>(null);
   const openNetMenu = (
@@ -430,7 +479,7 @@ export function CellRERightPanel({
         )}
       </div>
   
-      {reselected && (<div style={{borderTop:'1px solid var(--l1)',padding:'6px 10px',fontSize:10,color:'var(--ink2)'}}><div className='u' style={{fontSize:9,color:'var(--ink3)',marginBottom:3}}>RESISTOR ({reselected.layerKey})</div><div>segs: {reselected.segs} | L: {reselected.totalL}px</div><div style={{display:'flex',alignItems:'center',gap:4,margin:'2px 0'}}><span>W:</span><input key={reselected.width} type='number' min={1} max={50} defaultValue={reselected.width} onBlur={e=>{const n=+e.target.value; if(n>=1&&n<=50&&n!==reselected.width&&onUpdateShape){onUpdateShape(reselected.layerKey as any,{id:'',kind:'line',x1:0,y1:0,x2:0,y2:0,width:n})}}} style={{width:45,background:'var(--bg1)',border:'1px solid var(--border)',color:'var(--ink0)',fontSize:10,padding:'1px 4px',borderRadius:3}} /><span>px</span></div><div>corners: {reselected.corners} | squares: {reselected.squares}</div></div>)}
+      {selectedResistorInfo && (<div style={{borderTop:'1px solid var(--l1)',padding:'6px 10px',fontSize:10,color:'var(--ink2)'}}><div className='u' style={{fontSize:9,color:'var(--ink3)',marginBottom:3}}>RESISTOR ({selectedResistorInfo.layerKey})</div><div>segs: {selectedResistorInfo.segs} | L: {selectedResistorInfo.totalL}px{umPerPx ? ' (' + (parseFloat(selectedResistorInfo.totalL) * umPerPx).toFixed(1) + 'µm)' : ''}</div><div style={{display:'flex',alignItems:'center',gap:4,margin:'2px 0'}}><span>W:</span><input type='number' min={0} max={200} step={1} defaultValue={umPerPx ? Math.round(selectedResistorInfo.width * umPerPx) : selectedResistorInfo.width} onBlur={e=>{const um=parseFloat(e.target.value);if(!isNaN(um)&&um>=0&&um<=200&&onUpdateLineWidths){const px=umPerPx?Math.round(um/umPerPx):Math.round(um);onUpdateLineWidths(selectedResistorInfo.layerKey as LayerType,Array.from(selectedResistorInfo.chainIds),Math.max(1,px))}}} style={{width:50,background:'var(--bg1)',border:'1px solid var(--border)',color:'var(--ink0)',fontSize:10,padding:'1px 4px',borderRadius:3}} /><span>µm</span></div><div className='m' style={{fontSize:9.5,color:'var(--ink3)',marginTop:1}}>corners: {selectedResistorInfo.corners} | squares: {selectedResistorInfo.squares}</div></div>)}
   </aside>
   );
 }

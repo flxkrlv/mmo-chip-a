@@ -101,6 +101,9 @@ interface PreferencesState {
   /** Per-cell-type analog device parameter overrides.
    *  Key: cellTypeId → deviceId → paramName → value. */
   analogOverrides: Record<string, Record<string, Record<string, number>>>;
+  /** Resistor body layers opacity (0..1) in the RE canvas. Default 1.
+   *  Helps superimpose the drawn polyline onto the image to verify width. */
+  resistorOpacity: number;
 }
 
 interface PreferencesActions {
@@ -146,6 +149,7 @@ interface PreferencesActions {
   toggleSectionExpanded: (kind: AnnotationKind) => void;
   saveViewport: (dieId: string, viewport: Viewport) => void;
   clearSavedViewport: (dieId: string) => void;
+  setResistorOpacity: (opacity: number) => void;
 }
 
 const DEFAULT_EXPANDED_SECTIONS: AnnotationKind[] = ["net", "via", "roi"];
@@ -183,6 +187,7 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
         inspectorTab: "inspector",
         sheetR: {},
         analogOverrides: {},
+        resistorOpacity: 1,
 
         setNetWidth: (width) => set({ netWidth: width }),
         setNetColor: (color) => set({ netColor: color }),
@@ -281,7 +286,9 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
             if (!(dieId in state.savedViewports)) return state;
             const { [dieId]: _, ...rest } = state.savedViewports;
             return { savedViewports: rest };
-          })
+          }),
+        setResistorOpacity: (opacity) =>
+          set({ resistorOpacity: Math.min(1, Math.max(0, opacity)) })
       }),
       {
         name: "mmo-chip-preferences",
@@ -321,7 +328,8 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
           viaConfidenceThreshold: state.viaConfidenceThreshold,
           inspectorTab: state.inspectorTab,
           sheetR: state.sheetR,
-          analogOverrides: state.analogOverrides
+          analogOverrides: state.analogOverrides,
+          resistorOpacity: state.resistorOpacity
         })
       }
     )

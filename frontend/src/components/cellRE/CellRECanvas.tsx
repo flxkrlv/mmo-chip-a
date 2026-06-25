@@ -11,6 +11,7 @@ import type {
   Cell,
   CellType,
   DieAnnotations,
+  LayerLine,
   LayerShape,
   LayerType,
   ShapeLabel
@@ -61,6 +62,7 @@ import {
 import type { CellExtraction, InferredCellExtraction } from "../../lib/extraction";
 import { uuid } from "../../lib/uuid";
 import { useOverlayLayers } from "../../state/overlayLayers";
+import { usePreferences } from "../../state/preferences";
 
 export interface CellRECanvasHandle {
   /** Re-fit the cell into the viewport. */
@@ -517,13 +519,15 @@ export const CellRECanvas = forwardRef<CellRECanvasHandle, Props>(function CellR
       const hit = hitShape(world);
       if (hit) {
         const key = shapeKey(hit.layer, hit.shape.id);
-        const sel = new Set(propsRef.current.selectedShapeIds);
+        let sel: Set<string>;
         if (e.shiftKey) {
-          if (sel.has(key)) sel.delete(key);
-          else sel.add(key);
-        } else if (!sel.has(key)) {
-          sel.clear();
-          sel.add(key);
+          sel = new Set(propsRef.current.selectedShapeIds);
+          if (sel.has(key)) sel.delete(key); else sel.add(key);
+        } else if (hit.shape.kind === "line") {
+          // Line shape: select ALL connected segments in this layer.
+          sel = getConnectedLines(propsRef.current.cellType, hit.layer, hit.shape);
+        } else {
+          sel = new Set([key]);
         }
         propsRef.current.onSelect(sel);
         // Snapshot the (now) selected shapes so a move drag can translate
@@ -533,27 +537,40 @@ export const CellRECanvas = forwardRef<CellRECanvasHandle, Props>(function CellR
           const r = resolveKey(k);
           if (r) snap.set(k, r);
         }
-        // Alt = duplicate the selection into the same layer(s), and move
-        // the *copies*. We allocate fresh ids up-front so the live drag can
-        // address them; the commit reinserts the originals untouched.
-        const duplicateIds = e.altKey ? new Map<string, string>() : null;
-        if (duplicateIds) {
-          for (const k of snap.keys()) duplicateIds.set(k, uuid());
+        // Cut lines: never allow drag-move (would break the resistor).
+        // Fall through to marquee instead.
+        const hasLines = [...sel].some((k) => {
+          const p = parseShapeKey(k);
+          if (!p) return false;
+          const s = propsRef.current.cellType.layers?.[p.layer]?.find(
+            (sh) => sh.id === p.id
+          );
+          return s?.kind === "line";
+        });
+        if (hasLines) {
+          // Don't start a move drag — fall through to empty-space marquee.
+        } else {
+          // Alt = duplicate the selection into the same layer(s), and move
+          // the *copies*.
+          const duplicateIds = e.altKey ? new Map<string, string>() : null;
+          if (duplicateIds) {
+            for (const k of snap.keys()) duplicateIds.set(k, uuid());
+          }
+          dragRef.current = {
+            kind: "move",
+            sx: e.clientX,
+            sy: e.clientY,
+            wx: world.x,
+            wy: world.y,
+            startView: v,
+            vertex: null,
+            duplicateIds,
+            movingSnapshot: snap,
+            moved: false
+          };
+          liveMoveRef.current = { dx: 0, dy: 0 };
+          return;
         }
-        dragRef.current = {
-          kind: "move",
-          sx: e.clientX,
-          sy: e.clientY,
-          wx: world.x,
-          wy: world.y,
-          startView: v,
-          vertex: null,
-          duplicateIds,
-          movingSnapshot: snap,
-          moved: false
-        };
-        liveMoveRef.current = { dx: 0, dy: 0 };
-        return;
       }
       // Empty space → marquee.
       if (!e.shiftKey) propsRef.current.onSelect(new Set());
@@ -1199,8 +1216,17 @@ export const CellRECanvas = forwardRef<CellRECanvasHandle, Props>(function CellR
     // in the bright pass further down.
     ctx.save();
     if (hovering) ctx.globalAlpha = DIM_ALPHA;
+    const resistorOpacity = usePreferences.getState().resistorOpacity;
     drawCellLayers(ctx, cellType.layers, tile, {
       isHidden: (layer) => layerHidden[layer] === true,
+      layerAlpha: (layer) => {
+        if (resistorOpacity < 1 && (
+          layer === "resistor_body" || layer === "polysilicon" ||
+          layer === "base" || layer === "emitter" ||
+          layer === "hsr" || layer === "film"
+        )) return resistorOpacity;
+        return undefined;
+      },
       replaceShape: (_layer, s) => {
         if (_layer === "diffusion" && hideOriginalDiff.has(s.id)) return null;
         if (hovering && hoveredKeys.has(shapeKey(_layer, s.id))) return null;
@@ -1416,7 +1442,12 @@ export const CellRECanvas = forwardRef<CellRECanvasHandle, Props>(function CellR
       for (let i = 1; i < polylineDraft.length; i++) ctx.lineTo(polylineDraft[i].x, polylineDraft[i].y);
       const cur = cursorRef.current;
       if (cur) {
-        ctx.lineTo(cur.x, cur.y); ctx.setLineDash([6/v.zoom,4/v.zoom]); ctx.stroke(); ctx.setLineDash([]);
+        // Snap the preview point to the nearest 90° axis for orthogonal
+        // preview (same logic as addPoint in useLayerPolylineTool).
+        const last = polylineDraft[polylineDraft.length - 1];
+        const dx = cur.x - last.x, dy = cur.y - last.y;
+        const prevSnapped = dx > dy ? { x: cur.x, y: last.y } : { x: last.x, y: cur.y };
+        ctx.lineTo(prevSnapped.x, prevSnapped.y); ctx.setLineDash([6/v.zoom,4/v.zoom]); ctx.stroke(); ctx.setLineDash([]);
         ctx.beginPath(); ctx.moveTo(polylineDraft[0].x, polylineDraft[0].y);
         for (let i = 1; i < polylineDraft.length; i++) ctx.lineTo(polylineDraft[i].x, polylineDraft[i].y);
       }
@@ -1527,6 +1558,50 @@ export const CellRECanvas = forwardRef<CellRECanvasHandle, Props>(function CellR
 // merge owns the flip/rotate workflow, but the RE canvas wants the same
 // `(flippedH, flippedV, rotation)` triple when drawing instances oriented to
 // the canonical cell-type frame.
+
+/**
+ * Find all line segments connected to `seed` in the given layer.
+ * Two segments are "connected" if they share an endpoint.
+ * Returns a Set of shape keys (layer:id).
+ */
+function getConnectedLines(
+  cellType: CellType,
+  layer: LayerType,
+  seed: LayerShape
+): Set<string> {
+  const allShapes = cellType.layers?.[layer] ?? [];
+  const lines = allShapes.filter((s) => s.kind === "line") as LayerLine[];
+  if (lines.length === 0) return new Set([shapeKey(layer, seed.id)]);
+  // Build adjacency: lineId -> Set<neighborId>
+  const adj = new Map<string, Set<string>>();
+  for (const l of lines) {
+    if (!adj.has(l.id)) adj.set(l.id, new Set());
+  }
+  for (let i = 0; i < lines.length; i++) {
+    for (let j = i + 1; j < lines.length; j++) {
+      const a = lines[i], b = lines[j];
+      const share =
+        (a.x1 === b.x1 && a.y1 === b.y1) ||
+        (a.x1 === b.x2 && a.y1 === b.y2) ||
+        (a.x2 === b.x1 && a.y2 === b.y1) ||
+        (a.x2 === b.x2 && a.y2 === b.y2);
+      if (share) {
+        adj.get(a.id)!.add(b.id);
+        adj.get(b.id)!.add(a.id);
+      }
+    }
+  }
+  // BFS from seed.
+  const comp = new Set<string>();
+  const queue = [seed.id];
+  while (queue.length > 0) {
+    const id = queue.pop()!;
+    if (comp.has(id)) continue;
+    comp.add(id);
+    for (const n of adj.get(id) ?? []) if (!comp.has(n)) queue.push(n);
+  }
+  return new Set([...comp].map((id) => shapeKey(layer, id)));
+}
 
 /** Stroke (outline) a shape for the selection halo. Caller has already set
  *  strokeStyle / lineWidth. */

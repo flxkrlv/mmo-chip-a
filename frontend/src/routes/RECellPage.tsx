@@ -36,6 +36,7 @@ import {
 } from "../lib/cellRE";
 import {
   buildInsertShapesAction,
+  buildUpsertShapeAction,
   buildRemoveShapesAction,
   buildRenameCellTypeAction,
   buildSetShapeCustomNameAction,
@@ -614,6 +615,7 @@ function RE({ dieId }: { dieId: string }) {
           activeLayer={activeLayer}
           setActiveLayer={setActiveLayer}
           polyDraftLen={poly.points.length}
+          umPerPx={annotations?.umPerPx}
         />
       </SubBar>
 
@@ -787,9 +789,21 @@ function RE({ dieId }: { dieId: string }) {
           selectedShapeIds={selectedShapeIds}
           activeDomainId={activeDomain?.id ?? null}
           canvasTab={canvasTab}
-          onUpdateShape={(layer, shape) => { if(cellType) { const w = (shape as any).width; const updated = { ...cellType, layers: { ...cellType.layers, [layer]: (cellType.layers?.[layer]??[]).map((s:any)=>s.kind==='line'?{...s,width:w}:s) } }; void dispatcher.dispatch({ kind: 'upsertCellType', cellType: updated, prevCellType: cellType }) } }}
+          umPerPx={annotations?.umPerPx}
           onHoverEntity={setHoveredEntity}
           onSelect={setSelectedShapeIds}
+          onUpdateLineWidths={(layer, shapeIds, widthPx) => {
+            if (!cellType) return;
+            let working = cellType;
+            for (const id of shapeIds) {
+              const shape = (working.layers?.[layer] ?? []).find((s: any) => s.id === id);
+              if (!shape || shape.kind !== 'line') continue;
+              const updated = { ...shape, width: widthPx };
+              const a = buildUpsertShapeAction(working, layer, updated);
+              if (a.kind === 'upsertCellType') working = a.cellType;
+              void dispatcher.dispatch(a);
+            }
+          }}
           onRename={(newName) => {
             if (!cellType) return;
             const action = buildRenameCellTypeAction(cellType, newName);
