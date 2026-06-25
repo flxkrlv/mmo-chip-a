@@ -146,7 +146,6 @@ function findMarkers(layers: CellLayers | undefined): DeviceBox[] {
     pnp_id: "bjt_pnp",
     lpnp_id: "bjt_pnp",
     vpnp: "unknown",
-    res_id: "resistor",
     cap_id: "capacitor",
     diode_id: "diode",
   };
@@ -550,6 +549,196 @@ export function extractMarkedDevices(
       }
     }
   }
+
+  // ══════════════════════════════════════════════════════════════
+  // Geometric resistor detection (no res_id marker)
+  // ══════════════════════════════════════════════════════════════
+  // Pattern: body layer shape (poly, base, emitter, hsr, film)
+  //   INTERACTs ME1, which INTERACTs contact.
+  //   Two or more contact groups → resistor.
+  // ─────────────────────────────────────────────────────────────
+  const BODY_LAYERS_GEO: Array<{ layer: string; type: string }> = [
+    { layer: "poly", type: "poly" },
+    { layer: "polysilicon", type: "poly" },
+    { layer: "base", type: "pb" },
+    { layer: "emitter", type: "npl" },
+    { layer: "hsr", type: "hsr" },
+    { layer: "film", type: "film" },
+    { layer: "resistor_body", type: "poly" },
+  ];
+  const allLayersRec = layers as Record<string, LayerShape[]>;
+
+  // Collect existing marker bboxes so we don't double-detect BJT layers.
+  const markerBboxes = markers.map((m) => m.bbox);
+  function insideMarker(bbox: Rect): boolean {
+    const cx = bbox.x + bbox.width / 2;
+    const cy = bbox.y + bbox.height / 2;
+    return markerBboxes.some(
+      (mb) =>
+        cx >= mb.x &&
+        cx <= mb.x + mb.width &&
+        cy >= mb.y &&
+        cy <= mb.y + mb.height,
+    );
+  }
+
+  for (const bl of BODY_LAYERS_GEO) {
+    const bodyShapes = allLayersRec[bl.layer] ?? [];
+    for (const bodyShape of bodyShapes) {
+      const bodyBbox = shapeBbox(bodyShape);
+      if (!bodyBbox) continue;
+
+      // Skip body shapes that belong to a BJT/cap/diode marker area.
+      if (insideMarker(bodyBbox)) continue;
+
+      // ── Find ME1 shapes intersecting this body ────────────────
+      const bodyPoly = shapeToPolygon(bodyShape);
+      const me1List = (allLayersRec.metal1 ?? []).filter((me1) =>
+        polygonsIntersect(bodyPoly, shapeToPolygon(me1)),
+      );
+      if (me1List.length < 2) continue;
+
+      // Build UF: ME1 shapes that overlap are connected.
+      const uf = new UnionFind(me1List.length);
+      const me1Polys = me1List.map((m) => shapeToPolygon(m));
+      for (let i = 0; i < me1List.length; i++) {
+        for (let j = i + 1; j < me1List.length; j++) {
+          if (polygonsIntersect(me1Polys[i], me1Polys[j])) uf.union(i, j);
+        }
+      }
+
+      // Group contacts by UF component.
+      const allContactList = allLayersRec.contact ?? [];
+      const compCts = new Map<number, Set<string>>();
+      for (let mi = 0; mi < me1List.length; mi++) {
+        const r = uf.find(mi);
+        const set = compCts.get(r) ?? new Set();
+        for (const ct of allContactList) {
+          if (polygonsIntersect(me1Polys[mi], shapeToPolygon(ct)))
+            set.add(ct.id);
+        }
+        compCts.set(r, set);
+      }
+      const groups = [...compCts.values()].filter((s) => s.size > 0);
+      const contactCount = groups.reduce((acc, s) => acc + s.size, 0);
+      console.log(
+        `[analog] geo-resistor body ${bodyShape.id}: ${groups.length} ME1 groups, ${contactCount} contacts`,
+      );
+      if (groups.length < 2) continue;
+
+      // ── Geometry (L/W/squares) ────────────────────────────────
+      let L_um = 0,
+        W_um = 0,
+        squares = 0,
+        corners = 0;
+      const lines = bodyShapes.filter(
+        (s) => s.kind === "line",
+      ) as Array<{
+        kind: "line";
+        x1: number;
+        y1: number;
+        x2: number;
+        y2: number;
+        width: number;
+      }>;
+      if (lines.length > 0) {
+        let totalL = 0;
+        W_um = (lines[0].width || 4) * umPerPx;
+        let prevAngle: number | null = null;
+        for (let i = 0; i < lines.length; i++) {
+          const l = lines[i];
+          const dx = l.x2 - l.x1,
+            dy = l.y2 - l.y1;
+          const segLen = Math.sqrt(dx * dx + dy * dy);
+          totalL += segLen;
+          if (i > 0) {
+            const angle = Math.atan2(dy, dx);
+            if (
+              prevAngle != null &&
+              Math.abs(angle - prevAngle) > Math.PI / 6
+            )
+              corners++;
+            prevAngle = angle;
+          } else {
+            prevAngle = Math.atan2(dy, dx);
+          }
+        }
+        L_um = totalL * umPerPx;
+        squares =
+          (totalL - corners * lines[0].width) / lines[0].width +
+          0.55 * corners;
+      } else {
+        W_um = bodyBbox.width * umPerPx;
+        L_um = bodyBbox.height * umPerPx;
+        squares =
+          W_um > 0 && L_um > 0
+            ? Math.max(L_um, W_um) / Math.min(L_um, W_um)
+            : 0;
+      }
+
+      // ── Sort groups along body axis to assign PLUS/MINUS ─────
+      const sortByX = bodyBbox.width >= bodyBbox.height;
+      groups.sort((a, b) => {
+        const firstA = [...a][0];
+        const firstB = [...b][0];
+        const ctA = allContactList.find((c) => c.id === firstA);
+        const ctB = allContactList.find((c) => c.id === firstB);
+        const ba = ctA ? shapeBbox(ctA) : null;
+        const bb = ctB ? shapeBbox(ctB) : null;
+        if (!ba || !bb) return 0;
+        return sortByX
+          ? ba.x + ba.width / 2 - (bb.x + bb.width / 2)
+          : ba.y + ba.height / 2 - (bb.y + bb.height / 2);
+      });
+
+      const plusContactIds = [...groups[0]];
+      const minusContactIds = [...groups[1]];
+      // Include body shapeId in terminals so cell viewer overlay
+      // highlights the resistor body.
+      const plusTermIds = [...plusContactIds, bodyShape.id];
+      const minusTermIds = [...minusContactIds, bodyShape.id];
+
+      counter++;
+      const devId = `analog_resistor_geo_${counter}`;
+      const resistorType = bl.type;
+      devices.push({
+        id: devId,
+        kind: "resistor",
+        geometry: {
+          L_um,
+          W_um,
+          squares,
+          resistance_ohms:
+            squares *
+            effectiveSheetR(resistorType as ResistorType, undefined),
+          fingers: 1,
+          multiplier: 1,
+          shape: lines.length > 0 ? "meander" : "straight",
+          resistorType: resistorType as any,
+        },
+        cellTypeId,
+        instanceName: `R${counter}`,
+        modelName: "RES_GEN",
+        terminals: [
+          {
+            name: "PLUS",
+            netId: nextNet(),
+            shapeIds: plusTermIds,
+          },
+          {
+            name: "MINUS",
+            netId: nextNet(),
+            shapeIds: minusTermIds,
+          },
+        ],
+        bbox: bodyBbox,
+      });
+      console.log(
+        `[analog] geo-resistor ${devId}: PLUS=${plusContactIds.join(",")} MINUS=${minusContactIds.join(",")}`,
+      );
+    }
+  }
+
   return devices;
 }
 
