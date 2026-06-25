@@ -19,15 +19,19 @@ export function useLayerPolylineTool(opts: {
   cellType: CellType | null;
   activeLayer: LayerType;
   active: boolean;
+  /** µm per pixel — for converting polyline width from µm to px on commit. */
+  umPerPx?: number;
 }): LayerPolylineTool {
-  const { dispatcher, cellType, activeLayer, active } = opts;
-  const width = useCellREStore((s) => s.polylineWidth);
+  const { dispatcher, cellType, activeLayer, active, umPerPx } = opts;
+  // Store polylineWidth in µm; convert to px for drawing.
+  const widthUm = useCellREStore((s) => s.polylineWidth);
   const [points, setPoints] = useState<Point[]>([]);
   const pointsRef = useRef(points); pointsRef.current = points;
   const redoRef = useRef<Point[]>([]);
   const setUndoOverride = useDieViewerStore((s) => s.setUndoOverride);
-  const ctxRef = useRef({ dispatcher, cellType, activeLayer, width });
-  ctxRef.current = { dispatcher, cellType, activeLayer, width };
+  const widthPx = umPerPx ? Math.round(widthUm / umPerPx) : widthUm;
+  const ctxRef = useRef({ dispatcher, cellType, activeLayer, width: widthPx, umPerPx });
+  ctxRef.current = { dispatcher, cellType, activeLayer, width: widthPx, umPerPx };
 
   const addPoint = useCallback((p: Point) => {
     redoRef.current = [];
@@ -57,7 +61,8 @@ export function useLayerPolylineTool(opts: {
 
   const commit = useCallback(() => {
     const pts = pointsRef.current;
-    const { cellType, activeLayer, dispatcher, width } = ctxRef.current;
+    const { cellType, activeLayer, dispatcher, width, umPerPx } = ctxRef.current;
+
     if (pts.length >= 2 && cellType) {
       const shapes: LayerShape[] = [];
       for (let i = 0; i < pts.length - 1; i++) {
@@ -104,5 +109,5 @@ export function useLayerPolylineTool(opts: {
     return () => setUndoOverride(null);
   }, [drafting, undoPoint, redoPoint, setUndoOverride]);
 
-  return { points, width, addPoint, commit, cancel };
+  return { points, width: widthUm, addPoint, commit, cancel };
 }

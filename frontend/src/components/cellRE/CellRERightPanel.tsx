@@ -203,6 +203,13 @@ export function CellRERightPanel({
   // because the menu only acts on a single row (no selection
   // semantics) and rendering it here keeps the page lean.
 
+  // Read selection directly from Zustand so changes from inside mouse
+  // event handlers (getConnectedLines) are reflected synchronously.
+  const localSelectedShapeIds = useCellREStore((s) => s.selectedShapeIds);
+
+  // Prefer prop when provided (for external control), fall back to store.
+  const effectiveSelection = selectedShapeIds ?? localSelectedShapeIds;
+
   // Resistor body layer keys that support polyline width editing
   const RESISTOR_BODY_KEYS = ["resistor_body","polysilicon","base","emitter","hsr","film"] as const;
   // ── Selected resistor info ───────────────────────────────────
@@ -210,17 +217,21 @@ export function CellRERightPanel({
   // line shapes are selected, find all connected segments forming that
   // resistor and show its info (segs, L, W, corners, squares).
   const selectedResistorInfo = useMemo(() => {
-    if (!cellType || !selectedShapeIds || selectedShapeIds.size === 0) return null;
+
+    if (!cellType || !effectiveSelection || effectiveSelection.size === 0) {
+      return null;
+    }
     // Find the first selected line shape.
     let seedId: string | null = null;
     let seedLayer: string | null = null;
-    for (const key of selectedShapeIds) {
+    for (const key of effectiveSelection) {
       const p = parseShapeKey(key);
       if (!p) continue;
       const shapes = cellType.layers?.[p.layer as LayerType] ?? [];
       const s = shapes.find((s: any) => s.id === p.id);
       if (s?.kind === "line") { seedId = p.id; seedLayer = p.layer; break; }
     }
+
     if (!seedId || !seedLayer) return null;
     const layerKey = seedLayer;
     const lines = ((cellType.layers?.[layerKey as LayerType] ?? []) as any[]).filter(
@@ -276,7 +287,7 @@ export function CellRERightPanel({
     const sq = (totalL - corners * w) / w + 0.55 * corners;
     const chainIds = new Set(chain.map((l: any) => l.id));
     return { layerKey, totalL: totalL.toFixed(0), width: w, corners, squares: sq.toFixed(1), segs: chain.length, chainIds, seedId };
-  }, [cellType?.layers, selectedShapeIds]);
+  }, [cellType?.layers, effectiveSelection]);
 
   const [rowMenu, setRowMenu] = useState<RowContextMenuState | null>(null);
   const openNetMenu = (
@@ -479,7 +490,33 @@ export function CellRERightPanel({
         )}
       </div>
   
-      {selectedResistorInfo && (<div style={{borderTop:'1px solid var(--l1)',padding:'6px 10px',fontSize:10,color:'var(--ink2)'}}><div className='u' style={{fontSize:9,color:'var(--ink3)',marginBottom:3}}>RESISTOR ({selectedResistorInfo.layerKey})</div><div>segs: {selectedResistorInfo.segs} | L: {selectedResistorInfo.totalL}px{umPerPx ? ' (' + (parseFloat(selectedResistorInfo.totalL) * umPerPx).toFixed(1) + 'µm)' : ''}</div><div style={{display:'flex',alignItems:'center',gap:4,margin:'2px 0'}}><span>W:</span><input type='number' min={0} max={200} step={1} defaultValue={umPerPx ? Math.round(selectedResistorInfo.width * umPerPx) : selectedResistorInfo.width} onBlur={e=>{const um=parseFloat(e.target.value);if(!isNaN(um)&&um>=0&&um<=200&&onUpdateLineWidths){const px=umPerPx?Math.round(um/umPerPx):Math.round(um);onUpdateLineWidths(selectedResistorInfo.layerKey as LayerType,Array.from(selectedResistorInfo.chainIds),Math.max(1,px))}}} style={{width:50,background:'var(--bg1)',border:'1px solid var(--border)',color:'var(--ink0)',fontSize:10,padding:'1px 4px',borderRadius:3}} /><span>µm</span></div><div className='m' style={{fontSize:9.5,color:'var(--ink3)',marginTop:1}}>corners: {selectedResistorInfo.corners} | squares: {selectedResistorInfo.squares}</div></div>)}
+      {selectedResistorInfo && (() => {
+        const px = selectedResistorInfo.width;
+        const um = umPerPx ? Math.round(px * umPerPx) : px;
+        // Commit by µm: round to nearest µm, then convert to px once.
+        const commitWidthUm = (umVal: number) => {
+          const roundedUm = Math.max(1, Math.round(umVal));
+          const pxVal = umPerPx ? Math.round(roundedUm / umPerPx) : roundedUm;
+          onUpdateLineWidths?.(selectedResistorInfo.layerKey as LayerType, Array.from(selectedResistorInfo.chainIds), pxVal);
+        };
+        return (
+          <div style={{borderTop:'1px solid var(--l1)',padding:'6px 10px',fontSize:10,color:'var(--ink2)'}}>
+            <div className="u" style={{fontSize:9,color:'var(--ink3)',marginBottom:3}}>RESISTOR ({selectedResistorInfo.layerKey})</div>
+            <div>segs: {selectedResistorInfo.segs} | L: {selectedResistorInfo.totalL}px{umPerPx ? ' (' + (parseFloat(selectedResistorInfo.totalL) * umPerPx).toFixed(1) + 'µm)' : ''}</div>
+            <div style={{display:'flex',alignItems:'center',gap:6,margin:'4px 0'}}>
+              <span style={{fontSize:9.5,color:'var(--ink3)',minWidth:16}}>W:</span>
+              <input type="range" min={1} max={50} step={0.5} value={Math.min(um, 50)}
+                onChange={e => commitWidthUm(parseFloat(e.target.value))}
+                style={{flex:1,height:14,accentColor:'var(--accent)',cursor:'pointer'}} />
+              <input type="number" min={0.5} step={0.5} value={um}
+                onChange={e => { const v = parseFloat(e.target.value); if (!isNaN(v) && v >= 0.5) commitWidthUm(v); }}
+                style={{width:44,background:'var(--bg1)',border:'1px solid var(--border)',color:'var(--ink0)',fontSize:10,padding:'1px 3px',borderRadius:3,textAlign:'center'}} />
+              <span style={{fontSize:9.5,color:'var(--ink3)'}}>µm</span>
+            </div>
+            <div className="m" style={{fontSize:9.5,color:'var(--ink3)',marginTop:1}}>corners: {selectedResistorInfo.corners} | squares: {selectedResistorInfo.squares}</div>
+          </div>
+        );
+      })()}
   </aside>
   );
 }

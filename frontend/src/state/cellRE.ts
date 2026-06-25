@@ -58,7 +58,7 @@ const INITIAL: CellREState = {
   selectedShapeIds: new Set(), expandedTypes: [],
   unmatchedOpen: true, mlOpen: false, inferredOpen: true, dieViewerLayersOpen: true,
   canvasTab: "image", activeDomainId: null, clipboard: [],
-  polylineDraft: [], polylineWidth: 4,
+  polylineDraft: [], polylineWidth: 10,
 };
 
 export const useCellREStore = create<CellREState & CellREActions>()((set, get) => ({

@@ -33,6 +33,7 @@ interface UseCellExtraction {
 
 export function useCellExtraction(
   cellType: CellType | null,
+  _umPerPx?: number,
 ): UseCellExtraction {
   const [clipperReady, setClipperReady] = useState<boolean>(false);
   const [clipperError, setClipperError] = useState<string | null>(null);
@@ -65,17 +66,18 @@ export function useCellExtraction(
       if (extraction.kind === "inferred") {
         const inf = extraction as InferredCellExtraction;
         try {
+          const umPerPxVal = _umPerPx ?? 1.0;
           // 1. Marker-based devices (device_box markers)
           const markerDevices = extractMarkedDevices(
             cellType.layers,
             cellType.id,
-            1.0, // umPerPx — Cell RE doesn't have per-die scale
+            umPerPxVal,
           );
           // 2. Well-based MOS detection (nwell/pwell → PMOS/NMOS + bulk)
           const wellMos = detectMOSFromLayers(
             cellType.layers,
             cellType.id,
-            1.0,
+            umPerPxVal,
           );
           // 3. Merge: well-based MOS preferred, markers for everything else
           const wellMosIds = new Set(wellMos.map((d) => d.id));
@@ -98,7 +100,7 @@ export function useCellExtraction(
       console.error("extractCell failed for", cellType.id, e);
       return null;
     }
-  }, [cellType, clipperReady]);
+  }, [cellType, clipperReady, _umPerPx]);
 
   return {
     data,
@@ -106,3 +108,4 @@ export function useCellExtraction(
     error: clipperError,
   };
 }
+

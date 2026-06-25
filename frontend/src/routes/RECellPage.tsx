@@ -21,7 +21,7 @@ import { Ic } from "../icons";
 import { useDie } from "../api/dies";
 import { useAnnotations } from "../api/annotations";
 import { useAnnotationsWebSocket } from "../api/annotationsWebSocket";
-import { useActionDispatcher } from "../api/actions";
+import { useActionDispatcher, type AnnotationAction } from "../api/actions";
 import { useSession } from "../state/session";
 import { useCellREStore, TOOL_LAYERS } from "../state/cellRE";
 import { usePreferences } from "../state/preferences";
@@ -245,7 +245,7 @@ function RE({ dieId }: { dieId: string }) {
   // Single-source the hook here so the canvas's diffusion-type overlay and
   // the right panel's lists render off the same memoised result. Re-runs
   // whenever `cellType` identity changes (every annotation edit).
-  const extraction = useCellExtraction(cellType);
+  const extraction = useCellExtraction(cellType, annotations?.umPerPx);
 
   // Resolve the schematic's active domain. Falls back to the first domain
   // when the stored id is stale (different cell, deleted shape) or unset.
@@ -339,6 +339,7 @@ function RE({ dieId }: { dieId: string }) {
     cellType,
     activeLayer,
     active: activeTool === "polyline",
+    umPerPx: annotations?.umPerPx,
   });
 
   // ── Cell orientation (right-click) ────────────────────────────────
@@ -749,6 +750,7 @@ function RE({ dieId }: { dieId: string }) {
                 onPolylineCommit={polyline.commit}
                 onPolylineCancel={polyline.cancel}
                 polylineWidth={polyline.width}
+                umPerPx={annotations?.umPerPx}
                 onEscape={() => setActiveTool("select")}
                 onShapeContextMenu={(target, x, y) => {
                   if (!target) {
@@ -794,6 +796,7 @@ function RE({ dieId }: { dieId: string }) {
           onSelect={setSelectedShapeIds}
           onUpdateLineWidths={(layer, shapeIds, widthPx) => {
             if (!cellType) return;
+            const actions: AnnotationAction[] = [];
             let working = cellType;
             for (const id of shapeIds) {
               const shape = (working.layers?.[layer] ?? []).find((s: any) => s.id === id);
@@ -801,7 +804,12 @@ function RE({ dieId }: { dieId: string }) {
               const updated = { ...shape, width: widthPx };
               const a = buildUpsertShapeAction(working, layer, updated);
               if (a.kind === 'upsertCellType') working = a.cellType;
-              void dispatcher.dispatch(a);
+              actions.push(a);
+            }
+            if (actions.length === 1) {
+              void dispatcher.dispatch(actions[0]);
+            } else if (actions.length > 1) {
+              void dispatcher.dispatch({ kind: 'batch', actions });
             }
           }}
           onRename={(newName) => {

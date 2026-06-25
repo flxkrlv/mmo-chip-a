@@ -244,6 +244,48 @@ export interface DrawCellLayersOptions {
  * local frame); this helper only resolves the per-shape style and dispatches
  * `drawShape`.
  */
+/**
+ * Group line shapes by connected component (shared endpoints) so each
+ * group forms a continuous path that can be drawn with a single lineWidth.
+ */
+function groupConnectedLines(lines: LayerLine[]): LayerLine[][] {
+  if (lines.length === 0) return [];
+  const adj = new Map<string, Set<string>>();
+  for (const l of lines) adj.set(l.id, new Set());
+  for (let i = 0; i < lines.length; i++) {
+    for (let j = i + 1; j < lines.length; j++) {
+      const a = lines[i], b = lines[j];
+      const share =
+        (a.x1 === b.x1 && a.y1 === b.y1) ||
+        (a.x1 === b.x2 && a.y1 === b.y2) ||
+        (a.x2 === b.x1 && a.y2 === b.y1) ||
+        (a.x2 === b.x2 && a.y2 === b.y2);
+      if (share) {
+        adj.get(a.id)!.add(b.id);
+        adj.get(b.id)!.add(a.id);
+      }
+    }
+  }
+  const visited = new Set<string>();
+  const groups: LayerLine[][] = [];
+  const byId = new Map(lines.map((l) => [l.id, l]));
+  for (const l of lines) {
+    if (visited.has(l.id)) continue;
+    const comp: LayerLine[] = [];
+    const queue = [l.id];
+    while (queue.length > 0) {
+      const id = queue.pop()!;
+      if (visited.has(id)) continue;
+      visited.add(id);
+      const line = byId.get(id);
+      if (line) comp.push(line);
+      for (const n of adj.get(id) ?? []) if (!visited.has(n)) queue.push(n);
+    }
+    if (comp.length > 0) groups.push(comp);
+  }
+  return groups;
+}
+
 export function drawCellLayers(
   ctx: CanvasRenderingContext2D,
   layers: CellLayers | undefined,
@@ -263,31 +305,38 @@ export function drawCellLayers(
     const lines = shapes.filter((s): s is LayerLine => s.kind === "line");
     const nonLines = shapes.filter(s => s.kind !== "line");
     if (lines.length > 0) {
+      // Group lines by connected component so each continuous path is
+      // drawn with its own line-width.
       const alphaOv = layerAlpha?.(layer);
-      if (alphaOv !== undefined) ctx.save();
-      if (alphaOv !== undefined) ctx.globalAlpha = alphaOv;
-      applyShapeStyle(ctx, layer, lines[0]);
-      ctx.lineWidth = Math.max((lines[0] as any).width ?? 4, 0.5);
-      ctx.lineCap = "butt";
-      ctx.lineJoin = "round";
-      ctx.beginPath();
-      // Sort into a continuous chain: each segment starts where the
-      // previous one ended, so use lineTo (not moveTo) for the second
-      // and subsequent segments that share the junction point.
-      ctx.moveTo(lines[0].x1, lines[0].y1);
-      ctx.lineTo(lines[0].x2, lines[0].y2);
-      for (let i = 1; i < lines.length; i++) {
-        const prev = lines[i - 1];
-        const cur = lines[i];
-        if (cur.x1 === prev.x2 && cur.y1 === prev.y2) {
-          ctx.lineTo(cur.x2, cur.y2);
-        } else {
-          ctx.moveTo(cur.x1, cur.y1);
-          ctx.lineTo(cur.x2, cur.y2);
+      const groups = groupConnectedLines(lines);
+      for (const group of groups) {
+        const w = (group[0] as any).width;
+        const lineWidth = Math.max(w ?? 4, 0.5);
+
+        if (alphaOv !== undefined) {
+          ctx.save();
+          ctx.globalAlpha = alphaOv;
         }
+        applyShapeStyle(ctx, layer, group[0]);
+        ctx.lineWidth = lineWidth;
+        ctx.lineCap = "butt";
+        ctx.lineJoin = "round";
+        ctx.beginPath();
+        ctx.moveTo(group[0].x1, group[0].y1);
+        ctx.lineTo(group[0].x2, group[0].y2);
+        for (let i = 1; i < group.length; i++) {
+          const prev = group[i - 1];
+          const cur = group[i];
+          if (cur.x1 === prev.x2 && cur.y1 === prev.y2) {
+            ctx.lineTo(cur.x2, cur.y2);
+          } else {
+            ctx.moveTo(cur.x1, cur.y1);
+            ctx.lineTo(cur.x2, cur.y2);
+          }
+        }
+        ctx.stroke();
+        if (alphaOv !== undefined) ctx.restore();
       }
-      ctx.stroke();
-      if (alphaOv !== undefined) ctx.restore();
     }
     for (const s of nonLines) {
       const out = replaceShape ? replaceShape(layer, s) : s;

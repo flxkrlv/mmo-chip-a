@@ -61,6 +61,7 @@ import {
 } from "../../state/cellRE";
 import type { CellExtraction, InferredCellExtraction } from "../../lib/extraction";
 import { uuid } from "../../lib/uuid";
+import { useCellREStore } from "../../state/cellRE";
 import { useOverlayLayers } from "../../state/overlayLayers";
 import { usePreferences } from "../../state/preferences";
 
@@ -116,6 +117,8 @@ interface Props {
   onPolylineCommit: () => void;
   onPolylineCancel: () => void;
   polylineWidth: number;
+  /** µm per pixel — for converting polyline width from µm to px. */
+  umPerPx?: number;
   /** Esc with no draft cancels the active tool back to select. */
   onEscape: () => void;
   /** Right-click on a shape. Canvas has already hit-tested + (re-)selected the
@@ -210,6 +213,7 @@ export const CellRECanvas = forwardRef<CellRECanvasHandle, Props>(function CellR
     onPolylineCommit,
     onPolylineCancel,
     polylineWidth,
+    umPerPx,
     onEscape,
     onShapeContextMenu,
     onCanvasHover
@@ -260,7 +264,32 @@ export const CellRECanvas = forwardRef<CellRECanvasHandle, Props>(function CellR
 
   // Mirror dynamic props into a ref so the pointer/keyboard handlers stay
   // referentially stable (no ResizeObserver / wheel re-subscription churn).
-  const propsRef = useRef({
+  type PropsRef = {
+    cellType: Props["cellType"];
+    cell: Props["cell"];
+    activeTool: Props["activeTool"];
+    activeLayer: Props["activeLayer"];
+    layerHidden: Props["layerHidden"];
+    selectedShapeIds: Props["selectedShapeIds"];
+    hoveredShapeIds: Set<string> | undefined;
+    extraction: Props["extraction"];
+    onSelect: Props["onSelect"];
+    dispatch: Props["dispatch"];
+    polyDraft: Props["polyDraft"];
+    onPolyAddVertex: Props["onPolyAddVertex"];
+    onPolyCommit: Props["onPolyCommit"];
+    onPolyCancel: Props["onPolyCancel"];
+    polylineDraft: Props["polylineDraft"];
+    onPolylineAddVertex: Props["onPolylineAddVertex"];
+    onPolylineCommit: Props["onPolylineCommit"];
+    onPolylineCancel: Props["onPolylineCancel"];
+    polylineWidth: Props["polylineWidth"];
+    umPerPx: Props["umPerPx"];
+    onEscape: Props["onEscape"];
+    onShapeContextMenu: Props["onShapeContextMenu"];
+    onCanvasHover: Props["onCanvasHover"];
+  };
+  const propsRef = useRef<PropsRef>({
     cellType,
     cell,
     activeTool,
@@ -280,6 +309,7 @@ export const CellRECanvas = forwardRef<CellRECanvasHandle, Props>(function CellR
     onPolylineCommit,
     onPolylineCancel,
     polylineWidth,
+    umPerPx,
     onEscape,
     onShapeContextMenu: undefined as Props["onShapeContextMenu"],
     onCanvasHover: undefined as Props["onCanvasHover"]
@@ -304,6 +334,7 @@ export const CellRECanvas = forwardRef<CellRECanvasHandle, Props>(function CellR
     onPolylineCommit,
     onPolylineCancel,
     polylineWidth,
+    umPerPx,
     onEscape,
     onShapeContextMenu,
     onCanvasHover
@@ -519,6 +550,7 @@ export const CellRECanvas = forwardRef<CellRECanvasHandle, Props>(function CellR
       const hit = hitShape(world);
       if (hit) {
         const key = shapeKey(hit.layer, hit.shape.id);
+        //
         let sel: Set<string>;
         if (e.shiftKey) {
           sel = new Set(propsRef.current.selectedShapeIds);
@@ -526,9 +558,12 @@ export const CellRECanvas = forwardRef<CellRECanvasHandle, Props>(function CellR
         } else if (hit.shape.kind === "line") {
           // Line shape: select ALL connected segments in this layer.
           sel = getConnectedLines(propsRef.current.cellType, hit.layer, hit.shape);
+          //
         } else {
           sel = new Set([key]);
         }
+        // Direct Zustand update for reliable store synchronisation.
+        useCellREStore.getState().setSelectedShapeIds(sel);
         propsRef.current.onSelect(sel);
         // Snapshot the (now) selected shapes so a move drag can translate
         // them in lock-step from the original positions.
@@ -1433,28 +1468,38 @@ export const CellRECanvas = forwardRef<CellRECanvasHandle, Props>(function CellR
 
     // ── In-progress polyline ──────────────────────────────────────────
     if (activeTool === "polyline" && polylineDraft.length > 0) {
-      const lw = polylineWidth;
+      // Convert µm to px; fallback to store value if no umPerPx
+      const umPerPxLocal = propsRef.current.umPerPx ?? 1;
+      const lwPx = polylineWidth / umPerPxLocal;
+      const finalLineWidth = Math.max(lwPx, 0.5);
       ctx.strokeStyle = COLOR_LAYER[activeLayer] ?? "#fff";
-      ctx.lineWidth = lw / v.zoom;
+      ctx.lineWidth = finalLineWidth;
       ctx.lineCap = "butt"; ctx.lineJoin = "round";
+      // Draw committed segments (solid)
       ctx.beginPath();
       ctx.moveTo(polylineDraft[0].x, polylineDraft[0].y);
       for (let i = 1; i < polylineDraft.length; i++) ctx.lineTo(polylineDraft[i].x, polylineDraft[i].y);
+      ctx.stroke();
+      // Draw preview segment (dashed line to cursor)
       const cur = cursorRef.current;
       if (cur) {
-        // Snap the preview point to the nearest 90° axis for orthogonal
-        // preview (same logic as addPoint in useLayerPolylineTool).
         const last = polylineDraft[polylineDraft.length - 1];
         const dx = cur.x - last.x, dy = cur.y - last.y;
-        const prevSnapped = dx > dy ? { x: cur.x, y: last.y } : { x: last.x, y: cur.y };
-        ctx.lineTo(prevSnapped.x, prevSnapped.y); ctx.setLineDash([6/v.zoom,4/v.zoom]); ctx.stroke(); ctx.setLineDash([]);
-        ctx.beginPath(); ctx.moveTo(polylineDraft[0].x, polylineDraft[0].y);
-        for (let i = 1; i < polylineDraft.length; i++) ctx.lineTo(polylineDraft[i].x, polylineDraft[i].y);
+        // Snap to nearest 90° axis
+        const prevSnapped = dx > dy
+          ? { x: cur.x, y: last.y }
+          : { x: last.x, y: cur.y };
+        ctx.beginPath();
+        ctx.moveTo(last.x, last.y);
+        ctx.lineTo(prevSnapped.x, prevSnapped.y);
+        ctx.setLineDash([6 / v.zoom, 4 / v.zoom]);
+        ctx.stroke();
+        ctx.setLineDash([]);
       }
-      ctx.stroke(); ctx.lineCap = "butt"; ctx.lineJoin = "miter";
+      ctx.lineCap = "butt"; ctx.lineJoin = "miter";
       ctx.fillStyle = COLOR_LAYER[activeLayer] ?? "#fff";
-      const dotR = 3/v.zoom;
-      for (const p of polylineDraft) { ctx.beginPath(); ctx.arc(p.x,p.y,dotR,0,Math.PI*2); ctx.fill(); }
+      const dotR = 3 / v.zoom;
+      for (const p of polylineDraft) { ctx.beginPath(); ctx.arc(p.x, p.y, dotR, 0, Math.PI * 2); ctx.fill(); }
     }
 
     // ── Marquee rectangle ─────────────────────────────────────────────

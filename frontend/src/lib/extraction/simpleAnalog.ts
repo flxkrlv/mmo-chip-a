@@ -703,7 +703,7 @@ export function extractMarkedDevices(
       const lineSegs = group.filter(
         (s) => s.kind === "line",
       ) as Array<{
-        kind: "line"; x1: number; y1: number;
+        kind: "line"; id: string; x1: number; y1: number;
         x2: number; y2: number; width: number;
       }>;
       if (lineSegs.length > 0) {

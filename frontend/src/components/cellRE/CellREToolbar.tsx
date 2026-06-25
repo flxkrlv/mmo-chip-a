@@ -68,18 +68,17 @@ export function CellREToolbar({
   const resistorOpacity = usePreferences((s) => s.resistorOpacity);
   const setResistorOpacity = usePreferences((s) => s.setResistorOpacity);
 
-  // Текущая ширина в целых мкм
-  const currentWidthUm = umPerPx ? Math.round(plWidth * umPerPx) : plWidth;
+  // polylineWidth is stored in µm directly — no conversion needed.
+  const currentWidthUm = Math.round(plWidth);
 
   const setWidth = (um: number) => {
     const roundedUm = Math.round(um);
-    const px = umPerPx ? Math.round(roundedUm / umPerPx) : roundedUm;
-    setPlWidth(Math.max(1, Math.min(500, px)));
+    setPlWidth(Math.max(1, Math.min(50, roundedUm)));
   };
 
-  // Slider range in µm: 0–100, step 1
-  const SLIDER_MIN_UM = 0;
-  const SLIDER_MAX_UM = 100;
+  // Slider range in µm: 1–50, step 1
+  const SLIDER_MIN_UM = 1;
+  const SLIDER_MAX_UM = 50;
   const SLIDER_STEP_UM = 1;
 
   return (
