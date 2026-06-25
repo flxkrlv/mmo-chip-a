@@ -556,6 +556,9 @@ export function extractMarkedDevices(
   // Pattern: body layer shape (poly, base, emitter, hsr, film)
   //   INTERACTs ME1, which INTERACTs contact.
   //   Two or more contact groups → resistor.
+  //
+  // Line shapes (polyline segments) are grouped by end-to-end
+  // connectivity so multi-segment polylines form one resistor.
   // ─────────────────────────────────────────────────────────────
   const BODY_LAYERS_GEO: Array<{ layer: string; type: string }> = [
     { layer: "poly", type: "poly" },
@@ -568,37 +571,100 @@ export function extractMarkedDevices(
   ];
   const allLayersRec = layers as Record<string, LayerShape[]>;
 
-  // Collect existing marker bboxes so we don't double-detect BJT layers.
+  // ── Helper: group connected line segments ────────────────────
+  const TOL = 1; // 1px end-to-end tolerance
+  function linesConnect(a: LayerShape, b: LayerShape): boolean {
+    if (a.kind !== "line" || b.kind !== "line") return false;
+    const la = a as any, lb = b as any;
+    const ends = [
+      [la.x1, la.y1], [la.x2, la.y2],
+    ];
+    const otherEnds = [
+      [lb.x1, lb.y1], [lb.x2, lb.y2],
+    ];
+    for (const [ex, ey] of ends) {
+      for (const [ox, oy] of otherEnds) {
+        if (Math.hypot(ex - ox, ey - oy) <= TOL) return true;
+      }
+    }
+    return false;
+  }
+
+  // Collect existing marker bboxes so we don't double-detect
+  // body shapes (base/emitter) that belong to a BJT/diode.
   const markerBboxes = markers.map((m) => m.bbox);
   function insideMarker(bbox: Rect): boolean {
     const cx = bbox.x + bbox.width / 2;
     const cy = bbox.y + bbox.height / 2;
     return markerBboxes.some(
       (mb) =>
-        cx >= mb.x &&
-        cx <= mb.x + mb.width &&
-        cy >= mb.y &&
-        cy <= mb.y + mb.height,
+        cx >= mb.x && cx <= mb.x + mb.width &&
+        cy >= mb.y && cy <= mb.y + mb.height,
     );
   }
 
   for (const bl of BODY_LAYERS_GEO) {
     const bodyShapes = allLayersRec[bl.layer] ?? [];
-    for (const bodyShape of bodyShapes) {
-      const bodyBbox = shapeBbox(bodyShape);
-      if (!bodyBbox) continue;
+    if (bodyShapes.length === 0) continue;
 
-      // Skip body shapes that belong to a BJT/cap/diode marker area.
-      if (insideMarker(bodyBbox)) continue;
+    // Split into line shapes and non-line shapes.
+    const lines = bodyShapes.filter((s) => s.kind === "line");
+    const other = bodyShapes.filter((s) => s.kind !== "line");
 
-      // ── Find ME1 shapes intersecting this body ────────────────
-      const bodyPoly = shapeToPolygon(bodyShape);
-      const me1List = (allLayersRec.metal1 ?? []).filter((me1) =>
-        polygonsIntersect(bodyPoly, shapeToPolygon(me1)),
-      );
+    // Group connected lines into polylines.
+    const polylineGroups: LayerShape[][] = [];
+    const assigned = new Set<string>();
+    for (let i = 0; i < lines.length; i++) {
+      if (assigned.has(lines[i].id)) continue;
+      const group: LayerShape[] = [lines[i]];
+      assigned.add(lines[i].id);
+      let changed = true;
+      while (changed) {
+        changed = false;
+        for (let j = 0; j < lines.length; j++) {
+          if (assigned.has(lines[j].id)) continue;
+          if (group.some((g) => linesConnect(g, lines[j]))) {
+            group.push(lines[j]);
+            assigned.add(lines[j].id);
+            changed = true;
+          }
+        }
+      }
+      polylineGroups.push(group);
+    }
+
+    // Process each group (polyline or single non-line shape).
+    const groupsToProcess: LayerShape[][] = [...polylineGroups];
+    for (const s of other) groupsToProcess.push([s]);
+
+    for (const group of groupsToProcess) {
+      // Compute group bbox.
+      let gBbox: Rect | null = null;
+      for (const s of group) {
+        const b = shapeBbox(s);
+        if (!b) continue;
+        if (!gBbox) { gBbox = { ...b }; continue; }
+        const x2 = Math.max(gBbox.x + gBbox.width, b.x + b.width);
+        const y2 = Math.max(gBbox.y + gBbox.height, b.y + b.height);
+        gBbox.x = Math.min(gBbox.x, b.x);
+        gBbox.y = Math.min(gBbox.y, b.y);
+        gBbox.width = x2 - gBbox.x;
+        gBbox.height = y2 - gBbox.y;
+      }
+      if (!gBbox) continue;
+
+      // Skip if inside a BJT/cap/diode marker.
+      if (insideMarker(gBbox)) continue;
+
+      // ── Find ME1 shapes intersecting ANY shape in group ──────
+      const groupPolys = group.map((s) => shapeToPolygon(s));
+      const me1List = (allLayersRec.metal1 ?? []).filter((me1) => {
+        const mp = shapeToPolygon(me1);
+        return groupPolys.some((gp) => polygonsIntersect(gp, mp));
+      });
       if (me1List.length < 2) continue;
 
-      // Build UF: ME1 shapes that overlap are connected.
+      // ── UF: ME1 shapes that overlap are one component ────────
       const uf = new UnionFind(me1List.length);
       const me1Polys = me1List.map((m) => shapeToPolygon(m));
       for (let i = 0; i < me1List.length; i++) {
@@ -607,7 +673,7 @@ export function extractMarkedDevices(
         }
       }
 
-      // Group contacts by UF component.
+      // ── Group contacts by ME1 UF component ───────────────────
       const allContactList = allLayersRec.contact ?? [];
       const compCts = new Map<number, Set<string>>();
       for (let mi = 0; mi < me1List.length; mi++) {
@@ -622,62 +688,61 @@ export function extractMarkedDevices(
       const groups = [...compCts.values()].filter((s) => s.size > 0);
       const contactCount = groups.reduce((acc, s) => acc + s.size, 0);
       console.log(
-        `[analog] geo-resistor body ${bodyShape.id}: ${groups.length} ME1 groups, ${contactCount} contacts`,
+        `[analog] geo-resistor group ${group.length} shapes: ${groups.length} ME1 groups, ${contactCount} contacts`,
       );
       if (groups.length < 2) continue;
 
-      // ── Geometry (L/W/squares) ────────────────────────────────
-      let L_um = 0,
-        W_um = 0,
-        squares = 0,
-        corners = 0;
-      const lines = bodyShapes.filter(
+      // ── Geometry (L/W/squares) using this group's shapes only ──
+      let L_um = 0, W_um = 0, squares = 0, corners = 0;
+      const lineSegs = group.filter(
         (s) => s.kind === "line",
       ) as Array<{
-        kind: "line";
-        x1: number;
-        y1: number;
-        x2: number;
-        y2: number;
-        width: number;
+        kind: "line"; x1: number; y1: number;
+        x2: number; y2: number; width: number;
       }>;
-      if (lines.length > 0) {
+      if (lineSegs.length > 0) {
+        // Polyline: sort into connected order for corner detection.
+        const sorted: typeof lineSegs = [lineSegs[0]];
+        const used = new Set([lineSegs[0].id]);
+        while (sorted.length < lineSegs.length) {
+          const last = sorted[sorted.length - 1];
+          const next = lineSegs.find(
+            (ls) =>
+              !used.has(ls.id) &&
+              (Math.hypot(last.x2 - ls.x1, last.y2 - ls.y1) <= TOL ||
+               Math.hypot(last.x2 - ls.x2, last.y2 - ls.y2) <= TOL),
+          );
+          if (!next) break;
+          sorted.push(next);
+          used.add(next.id);
+        }
         let totalL = 0;
-        W_um = (lines[0].width || 4) * umPerPx;
+        W_um = (sorted[0].width || 4) * umPerPx;
         let prevAngle: number | null = null;
-        for (let i = 0; i < lines.length; i++) {
-          const l = lines[i];
-          const dx = l.x2 - l.x1,
-            dy = l.y2 - l.y1;
+        for (let i = 0; i < sorted.length; i++) {
+          const l = sorted[i];
+          const dx = l.x2 - l.x1, dy = l.y2 - l.y1;
           const segLen = Math.sqrt(dx * dx + dy * dy);
           totalL += segLen;
           if (i > 0) {
             const angle = Math.atan2(dy, dx);
-            if (
-              prevAngle != null &&
-              Math.abs(angle - prevAngle) > Math.PI / 6
-            )
-              corners++;
+            if (prevAngle != null && Math.abs(angle - prevAngle) > Math.PI / 6) corners++;
             prevAngle = angle;
           } else {
             prevAngle = Math.atan2(dy, dx);
           }
         }
         L_um = totalL * umPerPx;
-        squares =
-          (totalL - corners * lines[0].width) / lines[0].width +
-          0.55 * corners;
+        squares = (totalL - corners * sorted[0].width) / sorted[0].width + 0.55 * corners;
       } else {
-        W_um = bodyBbox.width * umPerPx;
-        L_um = bodyBbox.height * umPerPx;
-        squares =
-          W_um > 0 && L_um > 0
-            ? Math.max(L_um, W_um) / Math.min(L_um, W_um)
-            : 0;
+        // Non-line body (rect/polygon): use bbox.
+        W_um = gBbox.width * umPerPx;
+        L_um = gBbox.height * umPerPx;
+        squares = W_um > 0 && L_um > 0 ? Math.max(L_um, W_um) / Math.min(L_um, W_um) : 0;
       }
 
-      // ── Sort groups along body axis to assign PLUS/MINUS ─────
-      const sortByX = bodyBbox.width >= bodyBbox.height;
+      // ── Sort contact groups along body axis → PLUS/MINUS ─────
+      const sortByX = gBbox.width >= gBbox.height;
       groups.sort((a, b) => {
         const firstA = [...a][0];
         const firstB = [...b][0];
@@ -693,48 +758,36 @@ export function extractMarkedDevices(
 
       const plusContactIds = [...groups[0]];
       const minusContactIds = [...groups[1]];
-      // Include body shapeId in terminals so cell viewer overlay
-      // highlights the resistor body.
-      const plusTermIds = [...plusContactIds, bodyShape.id];
-      const minusTermIds = [...minusContactIds, bodyShape.id];
+      // Include all body shapeIds for cell viewer overlay.
+      const allBodyIds = group.map((s) => s.id);
+      const plusTermIds = [...plusContactIds, ...allBodyIds];
+      const minusTermIds = [...minusContactIds, ...allBodyIds];
 
       counter++;
       const devId = `analog_resistor_geo_${counter}`;
       const resistorType = bl.type;
+      const shape = lineSegs.length > 0 ? "meander" : "straight";
       devices.push({
         id: devId,
         kind: "resistor",
         geometry: {
-          L_um,
-          W_um,
-          squares,
-          resistance_ohms:
-            squares *
-            effectiveSheetR(resistorType as ResistorType, undefined),
-          fingers: 1,
-          multiplier: 1,
-          shape: lines.length > 0 ? "meander" : "straight",
+          L_um, W_um, squares,
+          resistance_ohms: squares * effectiveSheetR(resistorType as ResistorType, undefined),
+          fingers: 1, multiplier: 1,
+          shape: shape as any,
           resistorType: resistorType as any,
         },
         cellTypeId,
         instanceName: `R${counter}`,
         modelName: "RES_GEN",
         terminals: [
-          {
-            name: "PLUS",
-            netId: nextNet(),
-            shapeIds: plusTermIds,
-          },
-          {
-            name: "MINUS",
-            netId: nextNet(),
-            shapeIds: minusTermIds,
-          },
+          { name: "PLUS", netId: nextNet(), shapeIds: plusTermIds },
+          { name: "MINUS", netId: nextNet(), shapeIds: minusTermIds },
         ],
-        bbox: bodyBbox,
+        bbox: gBbox,
       });
       console.log(
-        `[analog] geo-resistor ${devId}: PLUS=${plusContactIds.join(",")} MINUS=${minusContactIds.join(",")}`,
+        `[analog] geo-resistor ${devId}: ${lineSegs.length} seg(s) L=${L_um.toFixed(1)} W=${W_um.toFixed(1)} squares=${squares.toFixed(2)}`,
       );
     }
   }
