@@ -26,11 +26,27 @@ nwell слой (или pwell)
 | `polysilicon` | Затвор (gate) — должен пересекать diffusion |
 | `contact` | Контакты на diffusion → S/D; на well (без diff/poly) → bulk |
 
-### Multi-finger MOS (fingers > 1) — Clipper2
+### Clipper2 diffusion split (all MOS) — Единый подход
 
-Для multi-finger транзисторов diffusion **физически разрезается** между
-затворами с помощью Clipper2 `polygonDifference()`:
+Любой MOS-транзистор **обязательно** использует Clipper2 `polygonDifference()`
+для физического разрезания diffusion между затворами. Без Clipper2 MOS-детекция
+невозможна — устройства не создаются, а пользователю показывается warning.
 
+Разрез даёт отдельные synthetic LayerShape сегменты для drain и source,
+благодаря чему `mergeMetalConnectedTerminals` видит разные polygon shapes
+и не закорачивает D и S.
+
+**Single-finger** (1 gate → 2 сегмента):
+```
+          gate[0]
+  ┌────┼────┼────┐
+  │  S │    │  D │  diffusion
+  └────┼────┼────┘
+       │    │
+   seg[0] seg[1]
+```
+
+**Multi-finger** (N gates → N+1 сегментов):
 ```
     gate[0]   gate[1]   gate[2]
   ┌────┼────┼────┼────┼────┼────┐
@@ -44,7 +60,11 @@ nwell слой (или pwell)
 - Каждый gate → отдельный MOS с `id = mos_well_${well}_${n}_finger${i}`
 - Shared сегмент `seg[i+1]` = D для gate[i] и S для gate[i+1]
 - Shared сегменты → одинаковый netId при wire matching
-- Сегменты кешируются в `_segmentShapesCache` под per-gate device ID
+- Сегменты кешируются в `_segmentShapesCache` (module-level Map).
+  **Важно:** записи не удаляются после первого чтения — один и тот же
+  cell type инстанциируется многократно (клоны/merged cells), и каждому
+  экземпляру нужны те же synthetic segment shapes для корректной
+  resolution контактов `resolveDeviceContacts()`.
 
 ### W/L/fingers/multiplier
 
@@ -182,16 +202,10 @@ Die viewer overlay подсвечивает gate pin только на поли 
 Gate terminal теперь включает в `shapeIds` все поли shapes из той же
 `polyGateNetMap` компоненты, не только пересекающие diffusion:
 
-**Multi-finger (фрагмент `simpleAnalog.ts`):**
+**Все MOS (единый код, `simpleAnalog.ts`):**
 ```typescript
 const gShapeIds = allPolyIdsForGateNet(gN);  // все polys с netId=gN
 { name: "G", netId: gN, shapeIds: gShapeIds }
-```
-
-**Single-finger:**
-```typescript
-const gShapeIds = [...new Set([...gateIds, ...allPolyIdsForGateNet(gNet)])];
-{ name: "G", netId: gNet, shapeIds: gShapeIds }
 ```
 
 ### Результат
@@ -296,8 +310,12 @@ mergeMetalConnectedTerminals(devices, allLayers);
 
 При загрузке Analog Netlist страницы проверяется `isClipperLoaded()`.
 Если Clipper2 не загружен, в панель предупреждений (warnings) добавляется
-сообщение: `"Clipper2 is not loaded — polysilicon gate net grouping uses
-shapeId-only fallback. Connected poly shapes may not share a gate net."`
+сообщение: `"Clipper2 is not loaded — all MOS detection is disabled."`
+
+MOS-детекция полностью отключается, если Clipper2 недоступен:
+- `detectMOSFromLayers()` возвращает пустой массив при `!isClipperLoaded()`
+- Показывается console.warn + GUI warning
+- Никакого fallback на старую single-finger детекцию нет
 
 Код: `frontend/src/api/dieWideAnalog.ts` → `collectDieWideAnalogDevices()`
 
