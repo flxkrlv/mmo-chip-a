@@ -170,6 +170,7 @@ function AnalogNetlist({ dieId }: { dieId: string }) {
   const [rightView, setRightView] = useState<"code" | "graph">("code");
   const viewerRef = useRef<CodeViewerHandle | null>(null);
   const [selectedLine, setSelectedLine] = useState<number | null>(null);
+  const [selectedInstance, setSelectedInstance] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
 
   // Reset the "Copied!" flash.
@@ -196,6 +197,10 @@ function AnalogNetlist({ dieId }: { dieId: string }) {
     },
     [dieId, navigate],
   );
+
+  const onSelectInstance = useCallback((instanceName: string | null) => {
+    setSelectedInstance(instanceName);
+  }, []);
 
   const onCopy = useCallback(async () => {
     const text = netlist.data?.source;
@@ -500,6 +505,7 @@ function AnalogNetlist({ dieId }: { dieId: string }) {
               selectedLine={selectedLine ?? undefined}
               onGoToLine={goToLine}
               onSelectDevice={onSelectDevice}
+              onSelectInstance={onSelectInstance}
               totalDevices={netlist.data.totalDevices}
             />
           ) : (
@@ -519,6 +525,10 @@ function AnalogNetlist({ dieId }: { dieId: string }) {
           {rightView === "graph" && annotations && netlist.data ? (
             <NetGraphView
               annotations={annotations}
+              vddNet={vddNet}
+              gndNet={gndNet}
+              highlightDevice={selectedInstance}
+              onCanvasTap={() => setSelectedInstance(null)}
               onDeviceClick={(name, cellId) => {
                 navigate(`/die/${encodeURIComponent(dieId)}?focusCell=${encodeURIComponent(cellId)}&focusDevice=${encodeURIComponent(name)}`);
               }}
@@ -560,12 +570,14 @@ function InstanceOutline({
   selectedLine,
   onGoToLine,
   onSelectDevice,
+  onSelectInstance,
   totalDevices,
 }: {
   outline: import("../api/analogNetlist").AnalogNetlistGroup[];
   selectedLine?: number;
   onGoToLine: (line: number) => void;
   onSelectDevice: (instanceName: string, cellId: string, line: number) => void;
+  onSelectInstance: (instanceName: string | null) => void;
   totalDevices: number;
 }) {
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
@@ -633,7 +645,7 @@ function InstanceOutline({
           double-click to frame on die
         </span>
       </div>
-      <div style={{ flex: 1, overflow: "auto" }}>
+      <div style={{ flex: 1, overflow: "auto" }} onClick={() => onSelectInstance(null)}>
         {outline.length === 0 ? (
           <div
             style={{
@@ -668,7 +680,7 @@ function InstanceOutline({
                       meta={leaf.meta}
                       monoLabel
                       selected={selectedLeafId === leaf.id}
-                      onSelect={() => onGoToLine(leaf.line)}
+                      onSelect={() => { onGoToLine(leaf.line); onSelectInstance(leaf.label); }}
                       onDoubleClick={() => onSelectDevice(leaf.label, leaf.cellId, leaf.line)}
                     />
                   ))}

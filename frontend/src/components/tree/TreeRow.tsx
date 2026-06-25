@@ -51,8 +51,8 @@ export function TreeRow({
         opacity: dimmed ? 0.58 : 1,
         cursor: onSelect ? "pointer" : "default"
       }}
-      onClick={onSelect}
-      onDoubleClick={onDoubleClick}
+      onClick={onSelect ? (e) => { e.stopPropagation(); onSelect(); } : undefined}
+      onDoubleClick={onDoubleClick ? (e) => { e.stopPropagation(); onDoubleClick(); } : undefined}
     >
       <span
         onClick={

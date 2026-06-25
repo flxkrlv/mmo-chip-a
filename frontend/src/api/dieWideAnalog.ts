@@ -429,6 +429,138 @@ export function extractAnalogDevicesFromCellType(
 }
 
 // ═════════════════════════════════════════════════════════════════
+// Device-level warnings
+// ═════════════════════════════════════════════════════════════════
+
+/**
+ * Detect device-level electrical warnings: shorted pins,
+ * polarity mismatches, floating terminals, dummy passives.
+ */
+function detectDeviceWarnings(
+  devices: AnalogDevice[],
+  namedNets: Map<number, string>,
+  spiceConfig?: SpiceConfig,
+): string[] {
+  const w: string[] = [];
+
+  // Resolve power net ids by name
+  const vddNames = [
+    spiceConfig?.vdd ?? "VDD",
+    "VCC", "vcc", "VDD", "vdd",
+  ];
+  const gndNames = [
+    spiceConfig?.gnd ?? "GND",
+    "VSS", "vss", "GND", "gnd",
+  ];
+
+  function netName(id: number): string {
+    return namedNets.get(id) ?? `NET${id}`;
+  }
+
+  for (const d of devices) {
+    const inst = d.instanceName ?? d.id;
+    const terms = new Map(d.terminals.map((t) => [t.name, t]));
+
+    // ── Helper: short check ──────────────────────────────
+    function isShort(nameA: string, nameB: string): boolean {
+      const a = terms.get(nameA);
+      const b = terms.get(nameB);
+      return a !== undefined && b !== undefined && a.netId === b.netId;
+    }
+
+    // ── 2T devices (resistor, capacitor) ─────────────────
+    if (d.kind === "resistor" || d.kind === "capacitor") {
+      if (isShort("PLUS", "MINUS")) {
+        w.push(`[INFO] ${inst} (${d.kind}): both pins shorted — dummy ${d.kind}`);
+      }
+      continue;
+    }
+
+    // ── Diode ────────────────────────────────────────────
+    if (d.kind === "diode" || d.kind === "zener" || d.kind === "schottky") {
+      if (isShort("PLUS", "MINUS")) {
+        w.push(`[WARN] ${inst} (${d.kind}): anode=PLUS and cathode=MINUS are shorted`);
+      }
+      continue;
+    }
+
+    // ── BJT ──────────────────────────────────────────────
+    if (d.kind === "bjt_npn" || d.kind === "bjt_pnp") {
+      const bjtType = (d.geometry as any).bjtType ?? "unknown";
+
+      // C=E → error (shorted transistor)
+      if (isShort("C", "E")) {
+        w.push(`[WARN] ${inst} (${d.kind}): collector and emitter shorted (same net ${netName(terms.get("C")!.netId)})`);
+      }
+
+      // E=B → strange (diode-connected is C=B, which is normal)
+      if (isShort("E", "B")) {
+        w.push(`[WARN] ${inst} (${d.kind}): emitter and base shorted (same net ${netName(terms.get("E")!.netId)})`);
+      }
+
+      // Polarity
+      const eNet = terms.get("E")?.netId;
+      if (eNet != null) {
+        const eName = netName(eNet);
+        if (bjtType === "npn" && vddNames.includes(eName)) {
+          w.push(`[WARN] ${inst} (NPN): emitter on VDD (${eName}) — will not work`);
+        }
+        if (bjtType === "pnp" && gndNames.includes(eName)) {
+          w.push(`[WARN] ${inst} (PNP): emitter on GND (${eName}) — will not work`);
+        }
+      }
+
+      // Floating base
+      const bNet = terms.get("B")?.netId;
+      if (bNet != null && bNet >= 2000) {
+        w.push(`[INFO] ${inst} (${d.kind}): base is floating (no connection)`);
+      }
+
+      continue;
+    }
+
+    // ── MOS ──────────────────────────────────────────────
+    if (d.kind === "mos") {
+      const mosType = (d.geometry as any).mosType ?? "unknown";
+
+      // D=S → shorted transistor
+      if (isShort("D", "S")) {
+        w.push(`[WARN] ${inst} (${mosType.toUpperCase()}): drain and source shorted (same net ${netName(terms.get("D")!.netId)})`);
+      }
+
+      // D=B — we don't reliably know which is D vs S, so this might
+      // actually be source=bulk (normal). Flag as INFO only.
+      if (isShort("D", "B")) {
+        w.push(`[INFO] ${inst} (${mosType.toUpperCase()}): D and bulk shorted (same net ${netName(terms.get("D")!.netId)}) — may be normal (source=bulk)`);
+      }
+
+      // Polarity: both D and S on the same supply suggests wrong type
+      const dNet = terms.get("D")?.netId;
+      const sNet = terms.get("S")?.netId;
+      if (dNet != null && sNet != null && dNet === sNet) {
+        const bothName = netName(dNet);
+        if (mosType === "nmos" && (vddNames.includes(bothName))) {
+          w.push(`[WARN] ${inst} (NMOS): both D and S on VDD (${bothName}) — possibly wrong type (should be PMOS?)`);
+        }
+        if (mosType === "pmos" && (gndNames.includes(bothName))) {
+          w.push(`[WARN] ${inst} (PMOS): both D and S on GND (${bothName}) — possibly wrong type (should be NMOS?)`);
+        }
+      }
+
+      // Floating gate
+      const gNet = terms.get("G")?.netId;
+      if (gNet != null && gNet >= 2000) {
+        w.push(`[INFO] ${inst} (${mosType.toUpperCase()}): gate is floating (no connection)`);
+      }
+
+      continue;
+    }
+  }
+
+  return w;
+}
+
+// ═════════════════════════════════════════════════════════════════
 // Main collection
 // ═════════════════════════════════════════════════════════════════
 
@@ -561,16 +693,17 @@ export function collectDieWideAnalogDevices(
               }
             }
 
-            // 2) Check IO pin names
+            // 2) Wire name check (case-insensitive, broader than step 1)
+            // Scan ALL nets for a case-insensitive match against the supply name.
+            // This catches wires named "gnd", "GND!", "gnd_1", etc.
             if (foundNetId == null) {
-              const pins = ann.pins ?? [];
-              for (const pin of pins) {
-                if (targetNames.includes(pin.name)) {
-                  const pinNetId = matchWireToPoint(nets, pin.x, pin.y, 10, netIdMap, nextNetId);
-                  if (pinNetId != null) {
-                    foundNetId = pinNetId;
-                    break;
-                  }
+              for (const n of nets) {
+                if (!n.name) continue;
+                const lo = n.name.toLowerCase().replace(/[^a-z0-9]/g, "");
+                if (targetNames.some(t => lo === t.toLowerCase().replace(/[^a-z0-9]/g, ""))) {
+                  if (!netIdMap.has(n.id)) netIdMap.set(n.id, nextNetId.v++);
+                  foundNetId = netIdMap.get(n.id)!;
+                  break;
                 }
               }
             }
@@ -662,6 +795,11 @@ export function collectDieWideAnalogDevices(
       if (!namedNets.has(id)) namedNets.set(id, name);
     }
   }
+
+  // ── Device-level warnings ──────────────────────────────────
+  // Check for shorted pins, polarity mismatches, floating terminals.
+  const devWarn = detectDeviceWarnings(allDevices, namedNets, _spiceConfig);
+  warnings.push(...devWarn);
 
   return { devices: allDevices, namedNets, netIdMap, warnings };
 }
