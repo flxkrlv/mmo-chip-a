@@ -28,6 +28,9 @@ Clean architecture, thoughtful modularity, and clear interfaces between the fron
 └────────────────┴────────────────────────┘
 ```
 
+![die-viewer-analog-workflow](docs/die-viewer-analog-workflow.png)
+*Die viewer с обнаруженными аналоговыми приборами: цветные bbox с подписями (M1 pmos, Q3 npn, R5 poly res), терминальные метки (G, S/D, B, C, E), параметры (W/L, AE, Ω)*
+
 ---
 
 ## Поддерживаемые устройства
@@ -68,21 +71,10 @@ MOS детектируется **автоматически** по пересе�
 W/L, fingers, сегменты вычисляются автоматически.
 
 
-#### Пример (N-канальный) - позже добавим изображение-пример:
+![RECEll MOS — 3 PMOS в одной ячейке (multi-finger + single-finger)](docs/RECEll_3pmos_1cell(multi_and_single_finger).png)
+*Cell RE: 3 PMOS в одной ячейке (multi-finger и single-finger). Clipper2 разрезает diffusion, poly gate net grouping объединяет затворы, overlay показывает W/L/fingers.*
 
-```
-       pwell
-┌─────────────────────┐
-│    diffusion         │
-│  ┌──────────────┐   │
-│  │   polysilicon │   │  ← затвор пересекает diffusion
-│  │  ┌──────┐    │   │
-│  │  │      │    │   │
-│  │  └──────┘    │   │
-│  └──────────────┘   │
-│         ∙           │  ← contact на pwell = bulk (подтяжка к GND)
-└─────────────────────┘
-```
+> Подробное описание MOS detection pipeline — [`docs/mos_detection.md`](docs/mos_detection.md).
 
 ### BJT (NPN / PNP)
 
@@ -360,12 +352,20 @@ ends lmv341
 - **Ruler Tool** (клавиша `K`) — измерение расстояний на кристалле. Режимы: free, horizontal, vertical, orthogonal, diagonal (45°). Double-click → ввод размера в µm → umPerPx сохраняется.
 - **Overlay-изображения** — мультислойные SEM / doping / металл-изображения, загружаемые с сервера или из файла, с горячими клавишами управления.
 - **Analog overlay на die viewer** — каждый обнаруженный прибор: цветной прямоугольник с подписью (`M1 pmos`, `Q3 npn`, `R5 poly res`...) и параметрами. Терминальные метки (G, S/D, C, B, E) при зуме >0.7×, параметры >0.5×.
-- **SPICE/CDL/Spectre экспорт** — корректный Spectre-формат. MOS: w/l/m без AS/AD/PS/PD. BJT: AE, PE, M. Резисторы: r=Ω. Диоды: are a=AREA. Три диалекта. (надо проверять совместимость - не тестировалось)
+- **SPICE/CDL/Spectre экспорт** — корректный Spectre-формат. MOS: w/l/m без AS/AD/PS/PD. BJT: AE, PE, M. Резисторы: r=Ω. Диоды: are a=AREA. Три диалекта.
+
+  ![netlist-example](docs/netlist_example.png)
+  *Пример сгенерированного SPICE-нетлиста с обнаруженными приборами и предупреждениями*
+
 - **BJT normalisation** — поиск минимального AE (NPN) / PE (PNP) → это m=1, остальные масштабируются.
 - **VDD/GND config persistence** — имена supply net-ов настраиваются в SubBar, сохраняются на backend с debounced auto-save.
 - **Cell RE device review** — force override W/L, AE, R, fingers через GUI. (надо проверять)
 - **Layout CSV + SKILL шаблон** для импорта в Cadence.
-- **Net Graph** (Cytoscape.js) — force-directed граф соединений приборов. Режимы: пока только D2D (device-to-device) 
+- **Net Graph** (Cytoscape.js) — force-directed граф соединений приборов. Режимы: пока только D2D (device-to-device)
+
+  ![graph-netlist-example](docs/graph_netlist_example.png)
+  *Net Graph: force-directed граф соединений приборов с возможностью скрывать/показывать неты*
+
 - **Per-net color override** — цвета выводов сохраняются в preferences.
 - **uuid polyfill** — `crypto.randomUUID()` не работает через Network IP; заменён на `uuid()` с fallback Math.random() для v4.
 - **Overlay-изображения на Merge Canvas + RE Cell Canvas** — с clipping по cell area и глобальными hotkeys.
@@ -385,7 +385,7 @@ ends lmv341
 - **Диод Шоттки** — отдельный маркер / детекция
 - **VPNP** (вертикальный PNP) — слой `vpnp` добавлен в типы, но не детектится
 - **JFET** — маркеры и geometry params в зачаточном состоянии
-- **Wire matching на die-wide уровне** — потенциально нестабилен на плотных разводках
+- **Wire matching на die-wide уровне** — допуск привязан к размеру контакта (`contactTolerance()`: tol = size×0.5, без запаса). На плотных разводках возможны ложные срабатывания — тестировать
 - **Редактирование polyline после размещения** — stretch/reshape сегментов (только перерисовать заново)
 - **Сериализация overlay-изображений** в JSON аннотаций (пока статика)
 - **Hierarchical netlist + floorplan:** базовый функционал готов, но требуется тестирование на реальных кейсах
