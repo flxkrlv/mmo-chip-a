@@ -163,6 +163,7 @@ CellType layers
     │         └── DEVICE_TERMINAL_DEFS / DIODE_DEFS table
     │
     ├── matchWireToPoint()          // find die-level wires by proximity
+    │   └── tolerance = contactTolerance(shape)  // half contact size
     └── generateSpiceNetlist()      // CDL/Spectre/HSPICE with VDD/GND config
 ```
 
@@ -231,6 +232,27 @@ const DIODE_DEFS: TerminalDef[] = [
 - `SpiceConfig` loaded on mount from backend, auto-saved with 500ms debounce
 - Merges with existing config (preserves technology, models, etc.)
 - `@globalpowernet@` / `@globalgroundnet@` placeholders in SPICE netlist
+
+### Wire matching tolerance (`matchWireToPoint`)
+
+Each terminal's contacts are matched to die-level annotation wires by
+proximity. The tolerance is computed per-contact-shape via
+`contactTolerance()`:
+
+| Contact shape | Tolerance formula | For 4px contact |
+|---|---|---|
+| `rect` | `max(w, h) × 0.5` | 2px |
+| `point` | `size × 0.5` | 2px |
+| `circle` | `radius` | 2px |
+| `polygon` | `maxDistToCentroid` | — |
+| fallback | 2px | — |
+
+**Rule:** tolerance = half the contact size. No extra margin — if a wire
+doesn't reach the contact area, the unconnpin halo shows the mismatch
+rather than risking shorts from overly generous proximity matching.
+
+Scales automatically: if contact shapes change size (e.g. higher-resolution
+imagery → smaller contacts), the tolerance shrinks with them.
 
 ### Adding a new device type
 

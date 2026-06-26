@@ -144,6 +144,37 @@ function centerOfShape(s: LayerShape): {x:number;y:number}|null {
   }
 }
 
+/**
+ * Compute a wire-matching tolerance proportional to contact shape size.
+ * Returns pixels: ~60% of the contact's bounding-box max dimension, no extra margin.
+ * If the wire doesn't reach the contact area, it stays unconnpin (visible halo)
+ * rather than risking a short from overly generous tolerance.
+ */
+function contactTolerance(s: LayerShape): number {
+  // Rule: tolerance = half the contact size.
+  // For a 4px contact → 2px tolerance — only wires that reach the
+  // contact area match. If a wire misses, unconnpin halo shows it.
+  // Scales automatically if contact size changes (e.g. 3px → 1.5px).
+  switch (s.kind) {
+    case "rect": return Math.max(s.width, s.height) * 0.5;
+    case "point": return s.size * 0.5;
+    case "circle": return s.radius;
+    case "polygon": {
+      if (s.points.length === 0) return 2;
+      let cx = 0, cy = 0;
+      for (const p of s.points) { cx += p.x; cy += p.y; }
+      cx /= s.points.length; cy /= s.points.length;
+      let maxDist = 0;
+      for (const p of s.points) {
+        const d = Math.sqrt((p.x - cx) ** 2 + (p.y - cy) ** 2);
+        if (d > maxDist) maxDist = d;
+      }
+      return maxDist;
+    }
+    default: return 2;
+  }
+}
+
 function rectsOverlap(ax1:number,ay1:number,ax2:number,ay2:number,
                        bx1:number,by1:number,bx2:number,by2:number): boolean {
   return ax1<bx2 && ax2>bx1 && ay1<by2 && ay2>by1;
@@ -223,18 +254,18 @@ function resolveDeviceContacts(
   cx: number, cy: number,
 ): {
   termPoints: Array<{x:number;y:number;name:string}>;
-  termContacts: Array<Array<{x:number;y:number}>>;
+  termContacts: Array<Array<{x:number;y:number;tol:number}>>;
 } {
   const defMap = terminalDefMap(dev.kind);
   const hasPri = defsHavePriority(defMap);
-  const termContacts: Array<Array<{x:number;y:number}>> = dev.terminals.map(() => []);
+  const termContacts: Array<Array<{x:number;y:number;tol:number}>> = dev.terminals.map(() => []);
 
   // ── Match each contact to its candidate terminal(s) ──────────
   // cTis: contact-shape id → set of matching DEV.terminal indices
   // cPos: contact-shape id → world-coordinate center point
   const allContactShapes = (ctLayers.contact ?? []) as LayerShape[];
   const cTis = new Map<string, Set<number>>();
-  const cPos = new Map<string, {x:number;y:number}>();
+  const cPos = new Map<string, {x:number;y:number;tol:number}>();
 
   // For MOS bulk exclusion: layers that a well contact must NOT be on.
   // ("diffusion" and "polysilicon" — the active terminal layers)
@@ -317,16 +348,17 @@ function resolveDeviceContacts(
     }
     if (selected.length === 0) continue;
 
-    // Record
+    // Record — compute tolerance from contact shape for wire matching
+    const cpTol = contactTolerance(cs as any);
     const wx = cx + cc.x, wy = cy + cc.y;
-    if (!cPos.has(cs.id)) cPos.set(cs.id, { x: wx, y: wy });
+    if (!cPos.has(cs.id)) cPos.set(cs.id, { x: wx, y: wy, tol: cpTol });
     const set = cTis.get(cs.id) ?? new Set<number>();
     for (const ti of selected) set.add(ti);
     cTis.set(cs.id, set);
   }
 
   // ── Build termContacts (wire matching) with round-robin ──────
-  const bySig = new Map<string, Array<{cid:string; cp:{x:number;y:number}}>>();
+  const bySig = new Map<string, Array<{cid:string; cp:{x:number;y:number;tol:number}}>>();
   for (const [cid, tis] of cTis) {
     const sig = [...tis].sort().map((ti) => dev.terminals[ti].name).join(",");
     const cp = cPos.get(cid)!;
@@ -346,14 +378,14 @@ function resolveDeviceContacts(
     if (termIndices.length <= 1) {
       // Unique layer → assign all contacts to that terminal.
       for (const { cp } of contacts) {
-        termContacts[termIndices[0]].push({ x: cp.x, y: cp.y });
+        termContacts[termIndices[0]].push({ x: cp.x, y: cp.y, tol: cp.tol });
       }
     } else {
       // Shared layer (D+S for MOS, PLUS+MINUS for simple 2T devices) →
       // distribute round-robin so both terminals get contacts.
       for (let ci = 0; ci < contacts.length; ci++) {
         const ti = termIndices[ci % termIndices.length];
-        termContacts[ti].push({ x: contacts[ci].cp.x, y: contacts[ci].cp.y });
+        termContacts[ti].push({ x: contacts[ci].cp.x, y: contacts[ci].cp.y, tol: contacts[ci].cp.tol });
       }
     }
   }
@@ -746,7 +778,7 @@ export function collectDieWideAnalogDevices(
           const contacts = termContacts[ti];
           // contacts.length === 0 — no contact centers
           for (const cp of contacts) {
-            const wid = matchWireToPoint(nets, cp.x, cp.y, 10, netIdMap, nextNetId);
+            const wid = matchWireToPoint(nets, cp.x, cp.y, cp.tol ?? 10, netIdMap, nextNetId);
             if (wid!=null) {
               cellNetCache.set(cacheKey, wid);
               return {...t, netId: wid};
