@@ -29,7 +29,7 @@ Clean architecture, thoughtful modularity, and clear interfaces between the fron
 ```
 
 ![die-viewer-analog-workflow](docs/die-viewer-analog-workflow.png)
-*Die viewer с обнаруженными аналоговыми приборами: цветные bbox с подписями (M1 pmos, Q3 npn, R5 poly res), терминальные метки (G, S/D, B, C, E), параметры (W/L, AE, Ω)*
+*Die viewer с обнаруженными аналоговыми приборами: цветные bbox с подписями, терминальные метки (G, S/D, B, C, E), параметры (W/L, AE, Ω)*
 
 ---
 
@@ -72,7 +72,7 @@ W/L, fingers, сегменты вычисляются автоматически
 
 
 ![RECEll MOS — 3 PMOS в одной ячейке (multi-finger + single-finger)](docs/RECEll_3pmos_1cell(multi_and_single_finger).png)
-*Cell RE: 3 PMOS в одной ячейке (multi-finger и single-finger). Clipper2 разрезает diffusion, poly gate net grouping объединяет затворы, overlay показывает W/L/fingers.*
+*Cell RE: 3 PMOS в одной ячейке (multi-finger и single-finger). Clipper2 разрезает diffusion, poly gate net grouping объединяет затворы.*
 
 > Подробное описание MOS detection pipeline — [`docs/mos_detection.md`](docs/mos_detection.md).
 
@@ -364,7 +364,7 @@ ends lmv341
 - **Net Graph** (Cytoscape.js) — force-directed граф соединений приборов. Режимы: пока только D2D (device-to-device)
 
   ![graph-netlist-example](docs/graph_netlist_example.png)
-  *Net Graph: force-directed граф соединений приборов с возможностью скрывать/показывать неты*
+  *Net Graph: граф соединений приборов*
 
 - **Per-net color override** — цвета выводов сохраняются в preferences.
 - **uuid polyfill** — `crypto.randomUUID()` не работает через Network IP; заменён на `uuid()` с fallback Math.random() для v4.
