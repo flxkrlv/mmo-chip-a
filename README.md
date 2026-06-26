@@ -34,11 +34,11 @@ Clean architecture, thoughtful modularity, and clear interfaces between the fron
 
 | Устройство | Детекция | Параметры |
 |---|---|---|
-| **NMOS / PMOS** (3-/4-терминальные) | **Well-based**: nwell→PMOS, pwell→NMOS. Без маркеров — автоматически по пересечению diffusion + polysilicon. Multi-finger (fingers>1): Clipper2 разрезает diffusion между затворами — один MOS на gate | W, L, fingers. Bulk: контакт на nwell/pwell вне diffusion/poly → positive netId. Если нет → sentinel -2 → VDD/GND (настраиваемые имена) |
+| **NMOS / PMOS** (3-/4-терминальные) | **Well-based**: nwell→PMOS, pwell→NMOS. Без маркеров — автоматически по пересечению diffusion + polysilicon. **Все MOS** (включая single-finger) используют **Clipper2** для разрезания diffusion между затворами. N gate fingers → N+1 сегментов → N отдельных MOS | W, L, fingers, multiplier. Bulk: контакт на nwell/pwell вне diffusion/poly → positive netId. Если нет → sentinel -2 → VDD/GND (настраиваемые имена) |
 | **NPN** | Маркер `npn_id` с collector + base + emitter | AE (overlap base∩emitter), multiplier M |
 | **PNP / LPnp** (латеральный PNP) | Маркер `pnp_id` | AE, PE (периметр эмиттера), multiplier M |
 | **Диод** | Маркер `diode_id` **или** NPN/PNP без коллектора — base=анод(+), emitter=катод(-). Терминалы: PLUS через `["base","bulk"]`, MINUS через `["emitter"]` с приоритетами (emitter 0 > base 1) | Площадь (AE из base-emitter overlap) |
-| **Резистор** | Маркер `res_id` + body-слой (poly/base/emitter/hsr/film). Можно рисовать polyline-меандр (пока несколько кривая отрисовка и редактирование) | Ω или squares×Rₛ. Поддерживаются body-слои: poly-R, p-base (pb), n+ (npl), HSR (high-sheet), thin film |
+| **Резистор** | **Геометрическая детекция** (res_id не требуется): тело резистора (poly/base/emitter/hsr/film) → ME1, пересекающий тело → контакты на ME1 → группы контактов = PLUS/MINUS. Рисуется polyline-инструментом (`L`) с ортогональным snap. Ширина в µm (слайдер 0–200µm). При клике — выделяется вся цепочка сегментов | Ω или squares×Rₛ. Поддерживаются body-слои: poly-R, p-base (pb), n+ (npl), HSR (high-sheet), thin film. Множественные резисторы в одной ячейке |
 | **Конденсатор** | Маркер `cap_id` — ёмкость из overlap-области | fF = площадь × плотность (1 fF/µm² по умолчанию) - проверить |
 
 ---
@@ -126,15 +126,16 @@ W/L, fingers, сегменты вычисляются автоматически
 | `film` | Тело (тонкоплёночный) |
 | `contact` | Контакты (минимум 2) |
 
-1. НЕ ТРЕБУЕТСЯ рисовать `res_id` — bounding box для экстракции, используется автоматическая layout geometric экстракция. 
-2. Выберите **body-слой** из списка: poly, base, emitter, hsr, film. Нарисуйте тело резистора используя ТОЛЬКО polyline tool, даже если резистор прямой.
-3. Нарисуйте me-1 прямоугольник, **перекрывающийся с телом резистора**. Поставьте минимум 2 контакта (`contact`) на нарисованные me-1 области — они станут PLUS и MINUS выводами резистора.
-4. **Polyline-режим:** для ВСЕХ РЕЗИСТОРОВ, включая меандры используйте инструмент Polyline (клавиша `L`).  Выберите ширину ДО начала рисования, можно также выставить Opacity слайдер, чтобы подобрать ширину.
-   Каждый сегмент polyline суммируется в общую длину. Ширина задаётся в панели инструментов (по умолчанию в пикселях).  
-   Polyline автоматически привязывается к ортогональным направлениям (90° snap).  
-5. Ширину уже нарисованного резистора можно поменять. Используйте Select tool - достаточно выбрать любой сегмент резситора, справа внизу появится панель, где можно указать новую ширну в мкм.
-
-В CellRe для резситоров требуется улучшение UX дизайна, на данный момент polyline тул в MWP/WIP.
+1. **res_id** больше не требуется — детекция чисто геометрическая: тело → ME1 → контакты → группы = PLUS/MINUS.
+2. Выберите **body-слой**: poly, base, emitter, hsr, film. Рисуйте тело ТОЛЬКО polyline-инструментом (`L`), даже для прямых резисторов.
+3. Нарисуйте ME1, **перекрывающийся с телом резистора**. Поставьте минимум 2 контакта (`contact`) — они станут PLUS и MINUS.
+4. **Polyline-режим:**
+   - `L` — активировать инструмент
+   - Ширина в µm (слайдер 0–200µm, шаг 1) задаётся ДО рисования в тулбаре
+   - Ортогональный snap (90°) в реальном времени
+   - Каждый сегмент суммируется в общую длину
+   - Opacity слайдер в тулбаре — наложение полупрозрачного слоя на изображение для проверки совпадения ширины
+5. Ширину нарисованного резистора можно поменять: кликните на любом сегменте → выделится вся цепочка → в правой панели (внизу) поле Width в µm. Drag-move для line shapes отключён (не ломать геометрию).
 
 > **Sheet R₀:** настраивается в GUI (по умолчанию: poly=25 Ω/□, hsr=1500 Ω/□, pb=200 Ω/□, npl=5 Ω/□, film=500 Ω/□). Это базовые ориентировные значения, которые могут меняться в широких пределах
 > Сопротивление = squares × sheetR₀. Можно переключать отображение между Ω и sq·Rs.
@@ -180,7 +181,7 @@ W/L, fingers, сегменты вычисляются автоматически
 | `R` | Rect (прямоугольник) |
 | `P` | Polygon (многоугольник) |
 | `O` | Point / via (точка / контакт) |
-| `L` | Polyline (меандр-резистор) |
+| `L` | Polyline (меандр-резистор, ортогональный snap) |
 
 ### Undo / Redo
 
@@ -199,6 +200,25 @@ W/L, fingers, сегменты вычисляются автоматически
 | `Ctrl+Shift+1..8` | Показать **только** overlay-слой №1..8, остальные скрыть |
 
 Работают на всех трёх вкладках: Die Viewer, Merge Cells, RE Cell. (надо проверять)
+
+### Merge Cells — режимы просмотра
+
+| Клавиша | Режим |
+|---|---|
+| `Alt+1` | Overlay (наложение) |
+| `Alt+2` | Side-by-side (рядом) |
+| `Alt+3` | Difference (разница) |
+| `Alt+4` | Specimen only (только образец) |
+| `Alt+5` | Candidate only (только кандидат) |
+
+### Analog Netlist — горячие клавиши
+
+| Клавиша | Действие |
+|---|---|
+| `G` | Переключить Code / Graph вид |
+| `H` | Hierarchical on/off |
+| `R` | Формат резистора (Ω / sq·Rs) |
+| `M` | Device matching on/off |
 
 ### Cell RE — прочее
 
@@ -301,6 +321,19 @@ ends lmv341
 
 ---
 
+## Предупреждения нетлиста
+
+Подробная документация всех предупреждений при генерации SPICE/CDL — [`docs/netlist_warnings.md`](docs/netlist_warnings.md).
+
+| Префикс | Значение |
+|---|---|
+| `[WARN]` | Вероятная ошибка (D=S short, emitter на VDD и т.д.) |
+| `[INFO]` | Подозрительно, но может быть нормально (floating gate, dummy resistor) |
+
+Предупреждения отображаются в Collapsible-панели внизу вкладки Analog Netlist и в начале сгенерированного файла как комментарии.
+
+---
+
 ## Управление слоями (Cell RE)
 
 В Cell RE доступны слои для рисования аналоговых устройств:
@@ -317,12 +350,13 @@ ends lmv341
 
 ## Ключевые изменения относительно оригинального mmo-chip (main)
 
-- **Well-based MOS** — единственный путь для MOS. Multi-finger: Clipper2 разрезает diffusion между затворами, создавая отдельный MOS на каждый gate finger. Shared сегменты между gate (D gate[i] = S gate[i+1]) получают одинаковый netId.
+- **Well-based MOS** — единственный путь для MOS. **Все MOS** (single-finger + multi-finger) используют Clipper2 (`polygonDifference()`) для разрезания diffusion между затворами. Каждый gate finger → отдельный MOS. Shared сегменты между gate (D gate[i] = S gate[i+1]) получают одинаковый netId.
 - **Poly gate grouping (polyGateNetMap)** — физически соединённые poly shapes (через Clipper2 overlap) получают один gate netId. Shared poly bus подсвечивается в overlay.
+- **Gate тёрминал включает все poly shapes** из polyGateNetMap-компоненты (не только режущие diffusion), поэтому shared poly bus корректно подсвечивается в overlay.
 - **Metal-connected D/S merging** — drain/source, соединённые ME1/ME2+via1 внутри ячейки, получают общий cell-level netId. Union-Find идентичный cell.ts Step 2.
 - **Diode из BJT** — рисование NPN/PNP без коллектора автоматически даёт диод. PLUS через слои `["base","bulk"]`, MINUS через `["emitter"]`. Приоритет: emitter(0) > base(1) для разрешения коллизий.
 - **BJT с multiple emitter** — AE суммируется, multiplier M = количество эмиттеров (надо проверять)
-- **Polyline Tool** — рисование резисторов-меандров с 90° ортогональным snap, редактируемой шириной.
+- **Polyline Tool** — рисование резисторов-меандров с 90° ортогональным snap (включая превью), редактируемой шириной в µm (слайдер 0–200µm, шаг 1). Opacity слайдер для наложения на изображение. Клик выделяет всю цепочку сегментов. Drag-move отключён. Геометрическая детекция: тело → ME1 → контакты → PLUS/MINUS группы.
 - **Ruler Tool** (клавиша `K`) — измерение расстояний на кристалле. Режимы: free, horizontal, vertical, orthogonal, diagonal (45°). Double-click → ввод размера в µm → umPerPx сохраняется.
 - **Overlay-изображения** — мультислойные SEM / doping / металл-изображения, загружаемые с сервера или из файла, с горячими клавишами управления.
 - **Analog overlay на die viewer** — каждый обнаруженный прибор: цветной прямоугольник с подписью (`M1 pmos`, `Q3 npn`, `R5 poly res`...) и параметрами. Терминальные метки (G, S/D, C, B, E) при зуме >0.7×, параметры >0.5×.
@@ -351,12 +385,9 @@ ends lmv341
 - **Диод Шоттки** — отдельный маркер / детекция
 - **VPNP** (вертикальный PNP) — слой `vpnp` добавлен в типы, но не детектится
 - **JFET** — маркеры и geometry params в зачаточном состоянии
-- **Multi-emitter BJT с эмиттерами разного размера** — пока все считаются одинаковыми
 - **Wire matching на die-wide уровне** — потенциально нестабилен на плотных разводках
-- **Редактирование polyline после размещения** — только перерисовать заново
+- **Редактирование polyline после размещения** — stretch/reshape сегментов (только перерисовать заново)
 - **Сериализация overlay-изображений** в JSON аннотаций (пока статика)
-- **L-хоткей для polyline** — указан в тулбаре, но не зарегистрирован в центральном hotkey registry
-- **Cell RE hotkeys: select (V) и pan** — документированы в тулбаре, но не все могут быть зарегистрированы
 - **Hierarchical netlist + floorplan:** базовый функционал готов, но требуется тестирование на реальных кейсах
   - Alias collision: проверить при чистом старте (нет старых алиасов с неправильными netId)
   - Global rename: проверка revert при снятии алиаса
@@ -389,7 +420,9 @@ shared/       Shared TypeScript types (annotation schema + analog device types)
 ml/           Python U-Net (опционально, для assisted annotation)
 docs/
   analog-devices.md              ← актуальное описание детекции аналоговых приборов
-  mos_detection.md               ← MOS detection pipeline
+  mos_detection.md               ← MOS detection pipeline (Clipper2, polyGateNetMap, metal merge)
+  netlist_warnings.md            ← все предупреждения при генерации SPICE/CDL
+  lvs_rules_examples/            ← примеры LVS-правил для аналоговых слоёв
   reference/
     analogDevices.ts             ← legacy auto-detection (reference), см. docs/reference/README.md
 ```
@@ -415,7 +448,7 @@ frontend/src/
     CellREToolbar.tsx             ← инструменты Cell RE
     useLayerPolylineTool.ts       ← polyline (резистор-меандр)
   state/cellRE.ts                 ← TOOL_LAYERS, ReToolKind, polyline state
-  lib/hotkeys.ts                  ← центральный registry горячих клавиш
+  lib/hotkeys.ts                  ← центральный registry горячих клавиш (все страницы)
   lib/useOverlayHotkeys.ts        ← overlay-хоткеи
   routes/
     AnalogNetlistPage.tsx         ← Analog Netlist вкладка
