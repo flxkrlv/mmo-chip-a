@@ -28,6 +28,9 @@ import {
   saveSpiceConfigToBackend,
 } from "../api/analogNetlist";
 import { loadClipper } from "../lib/extraction";
+import { ANALOG_NETLIST_HOTKEYS } from "../lib/hotkeys";
+import { isTypingTarget } from "../lib/keyboard";
+
 import { Ic } from "../icons";
 import { exportLayout, renderLayoutCsv } from "../lib/export/layoutExport";
 
@@ -180,6 +183,39 @@ function AnalogNetlist({ dieId }: { dieId: string }) {
     return () => clearTimeout(t);
   }, [copied]);
 
+  // ── Keyboard: analog netlist workflow shortcuts ──────────────────
+  //   G — toggle Code / Graph view
+  //   H — toggle hierarchical netlist
+  //   R — toggle resistor format (Ω / sq·Rs)
+  //   M — toggle device geometry matching
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      if (isTypingTarget(e.target)) return;
+      const action = ANALOG_NETLIST_HOTKEYS[e.key];
+      switch (action) {
+        case "toggleGraph":
+          e.preventDefault();
+          setRightView((v) => (v === "code" ? "graph" : "code"));
+          break;
+        case "toggleHierarchy":
+          e.preventDefault();
+          setHierarchical((v) => !v);
+          break;
+        case "toggleResFormat":
+          e.preventDefault();
+          setResistorFormat((v) => (v === "ohms" ? "sqRs" : "ohms"));
+          break;
+        case "toggleMatch":
+          e.preventDefault();
+          setMatchEnabled((v) => !v);
+          break;
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
   const goToLine = useCallback((line: number) => {
     setSelectedLine(line);
     viewerRef.current?.goToLine(line);
@@ -298,6 +334,7 @@ function AnalogNetlist({ dieId }: { dieId: string }) {
                 className={"btn sm" + (rightView === "code" ? " on" : "")}
                 onClick={() => setRightView("code")}
                 style={{ fontSize: 10, fontWeight: 600 }}
+                title="Code view [G]"
               >
                 Code
               </button>
@@ -306,6 +343,7 @@ function AnalogNetlist({ dieId }: { dieId: string }) {
                 className={"btn sm" + (rightView === "graph" ? " on" : "")}
                 onClick={() => setRightView("graph")}
                 style={{ fontSize: 10, fontWeight: 600 }}
+                title="Graph view [G]"
               >
                 Graph
               </button>
@@ -322,7 +360,7 @@ function AnalogNetlist({ dieId }: { dieId: string }) {
                   cursor: "pointer",
                   userSelect: "none",
                 }}
-                title="Partition by floorplan regions → .SUBCKT per region"
+                title="Partition by floorplan regions → .SUBCKT per region [H]"
               >
                 <input
                   type="checkbox"
@@ -395,7 +433,7 @@ function AnalogNetlist({ dieId }: { dieId: string }) {
                 className={"btn sm" + (resistorFormat === "ohms" ? " on" : "")}
                 onClick={() => setResistorFormat("ohms")}
                 style={{ fontSize: 10, fontWeight: 600 }}
-                title="Resistor: resolved ohms value"
+                title="Resistor: resolved ohms value [R]"
               >
                 R=Ω
               </button>
@@ -404,7 +442,7 @@ function AnalogNetlist({ dieId }: { dieId: string }) {
                 className={"btn sm" + (resistorFormat === "sqRs" ? " on" : "")}
                 onClick={() => setResistorFormat("sqRs")}
                 style={{ fontSize: 10, fontWeight: 600 }}
-                title="Resistor: squares × sheetR expression"
+                title="Resistor: squares × sheetR expression [R]"
               >
                 R=sq·Rs
               </button>
@@ -417,7 +455,7 @@ function AnalogNetlist({ dieId }: { dieId: string }) {
                 className={"btn sm" + (matchEnabled ? " on" : "")}
                 onClick={() => setMatchEnabled((v) => !v)}
                 style={{ fontSize: 10, fontWeight: 600 }}
-                title="Match & average similar device geometry"
+                title="Match & average similar device geometry [M]"
               >
                 Match
               </button>

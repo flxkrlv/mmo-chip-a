@@ -85,6 +85,24 @@ export const MERGE_HOTKEYS: Record<string, MergeModeId> = {
   "Alt+5": "candidate",
 };
 
+// ── Analog Netlist (Netlist page) hotkeys ───────────────────────
+export type AnalogNetlistAction =
+  | "toggleGraph"      // G — switch between Code / Graph views
+  | "toggleHierarchy" // H — toggle hierarchical netlist
+  | "toggleResFormat"  // R — resistor format ohms / sq·Rs
+  | "toggleMatch";     // M — toggle device geometry matching
+
+export const ANALOG_NETLIST_HOTKEYS: Record<string, AnalogNetlistAction> = {
+  "g": "toggleGraph",
+  "G": "toggleGraph",
+  "h": "toggleHierarchy",
+  "H": "toggleHierarchy",
+  "r": "toggleResFormat",
+  "R": "toggleResFormat",
+  "m": "toggleMatch",
+  "M": "toggleMatch",
+};
+
 // ── Overlay hotkeys (shared across Die viewer / Merge / RE Cell) ─
 //   Ctrl+Shift+B    — toggle base image visibility
 //   ]               — cycle to next overlay (toggle on/off)
