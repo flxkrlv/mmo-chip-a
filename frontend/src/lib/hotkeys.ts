@@ -90,7 +90,10 @@ export type AnalogNetlistAction =
   | "toggleGraph"      // G — switch between Code / Graph views
   | "toggleHierarchy" // H — toggle hierarchical netlist
   | "toggleResFormat"  // R — resistor format ohms / sq·Rs
-  | "toggleMatch";     // M — toggle device geometry matching
+  | "toggleMatch"     // M — toggle device geometry matching
+  | "viewCode"        // Alt+1 — Code view
+  | "viewGraph"       // Alt+2 — Graph view
+  | "viewSchematic";  // Alt+3 — Schematic view
 
 export const ANALOG_NETLIST_HOTKEYS: Record<string, AnalogNetlistAction> = {
   "g": "toggleGraph",
@@ -101,6 +104,13 @@ export const ANALOG_NETLIST_HOTKEYS: Record<string, AnalogNetlistAction> = {
   "R": "toggleResFormat",
   "m": "toggleMatch",
   "M": "toggleMatch",
+};
+
+/** Alt+1/2/3 view switch mappings (checked in handler via e.altKey) */
+export const ANALOG_NETLIST_ALT_HOTKEYS: Record<string, AnalogNetlistAction> = {
+  "1": "viewCode",
+  "2": "viewGraph",
+  "3": "viewSchematic",
 };
 
 // ── Overlay hotkeys (shared across Die viewer / Merge / RE Cell) ─

@@ -11,6 +11,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { NetGraphView } from "../components/netlist/NetGraphView";
+import { SchematicViewPanel } from "../components/netlist/SchematicViewPanel";
 import type { SpiceConfig, SpiceDialect } from "shared";
 import { AppShell } from "../components/shell/AppShell";
 import { StatusBar } from "../components/shell/StatusBar";
@@ -28,7 +29,7 @@ import {
   saveSpiceConfigToBackend,
 } from "../api/analogNetlist";
 import { loadClipper } from "../lib/extraction";
-import { ANALOG_NETLIST_HOTKEYS } from "../lib/hotkeys";
+import { ANALOG_NETLIST_HOTKEYS, ANALOG_NETLIST_ALT_HOTKEYS } from "../lib/hotkeys";
 import { isTypingTarget } from "../lib/keyboard";
 
 import { Ic } from "../icons";
@@ -89,8 +90,8 @@ function AnalogNetlist({ dieId }: { dieId: string }) {
     [die?.name, dieId],
   );
 
-  // Hierarchical netlist toggle
-  const [hierarchical, setHierarchical] = useState(false);
+  // Hierarchical netlist toggle (default on for schematic view)
+  const [hierarchical, setHierarchical] = useState(true);
 
   // Reactive sheetR from preferences (set in Die Viewer → AnalogDiePanel → SheetRConfigPanel)
   const sheetRPrefs = usePreferences((s) => (s as any).sheetR ?? {});
@@ -170,7 +171,8 @@ function AnalogNetlist({ dieId }: { dieId: string }) {
   const netlist = useAnalogNetlist(annotations, moduleName, dialect, spiceConfig, hierarchical);
 
   // ── UI state ────────────────────────────────────────────────────
-  const [rightView, setRightView] = useState<"code" | "graph">("code");
+  const [rightView, setRightView] = useState<"code" | "graph" | "schematic">("code");
+  const [selectedRegion, setSelectedRegion] = useState<string | null>(null);
   const viewerRef = useRef<CodeViewerHandle | null>(null);
   const [selectedLine, setSelectedLine] = useState<number | null>(null);
   const [selectedInstance, setSelectedInstance] = useState<string | null>(null);
@@ -184,19 +186,49 @@ function AnalogNetlist({ dieId }: { dieId: string }) {
   }, [copied]);
 
   // ── Keyboard: analog netlist workflow shortcuts ──────────────────
-  //   G — toggle Code / Graph view
-  //   H — toggle hierarchical netlist
-  //   R — toggle resistor format (Ω / sq·Rs)
-  //   M — toggle device geometry matching
+  //   G       — toggle Code / Graph / Schematic view
+  //   H       — toggle hierarchical netlist
+  //   R       — toggle resistor format (Ω / sq·Rs)
+  //   M       — toggle device geometry matching
+  //   Alt+1   — Code view
+  //   Alt+2   — Graph view
+  //   Alt+3   — Schematic view
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      if (e.metaKey || e.ctrlKey) return;
       if (isTypingTarget(e.target)) return;
+
+      // Alt+1/2/3 view switch
+      if (e.altKey) {
+        const altAction = ANALOG_NETLIST_ALT_HOTKEYS[e.key];
+        if (altAction) {
+          e.preventDefault();
+          setRightView(altAction === "viewCode" ? "code" : altAction === "viewGraph" ? "graph" : "schematic");
+          return;
+        }
+      }
+
       const action = ANALOG_NETLIST_HOTKEYS[e.key];
       switch (action) {
         case "toggleGraph":
           e.preventDefault();
-          setRightView((v) => (v === "code" ? "graph" : "code"));
+          setRightView((v) => {
+            if (v === "code") return "graph";
+            if (v === "graph") return "schematic";
+            return "code";
+          });
+          break;
+        case "viewCode":
+          e.preventDefault();
+          setRightView("code");
+          break;
+        case "viewGraph":
+          e.preventDefault();
+          setRightView("graph");
+          break;
+        case "viewSchematic":
+          e.preventDefault();
+          setRightView("schematic");
           break;
         case "toggleHierarchy":
           e.preventDefault();
@@ -327,7 +359,7 @@ function AnalogNetlist({ dieId }: { dieId: string }) {
                 </span>
               </span>
             )}
-            {/* View toggle: Code / Graph */}
+            {/* View toggle: Code / Graph / Schematic */}
             <div className="row" style={{ gap: 2, background: "var(--l1)", borderRadius: 4, padding: 2 }}>
               <button
                 type="button"
@@ -347,8 +379,17 @@ function AnalogNetlist({ dieId }: { dieId: string }) {
               >
                 Graph
               </button>
+              <button
+                type="button"
+                className={"btn sm" + (rightView === "schematic" ? " on" : "")}
+                onClick={() => setRightView("schematic")}
+                style={{ fontSize: 10, fontWeight: 600 }}
+                title="Schematic view"
+              >
+                Schematic
+              </button>
             </div>
-            {/* Hierarchical toggle */}
+            {/* Hierarchical toggle (only in code view — schematic uses it by default) */}
             {rightView === "code" && (
               <label
                 className="row"
@@ -560,7 +601,17 @@ function AnalogNetlist({ dieId }: { dieId: string }) {
             background: "var(--card)",
           }}
         >
-          {rightView === "graph" && annotations && netlist.data ? (
+          {rightView === "schematic" && annotations ? (
+            <SchematicViewPanel
+              annotations={annotations}
+              moduleName={moduleName}
+              hierarchical={true}
+              spiceConfig={spiceConfig}
+              floorplanRegions={annotations.floorplanRegions}
+              selectedRegion={selectedRegion}
+              onSelectRegion={setSelectedRegion}
+            />
+          ) : rightView === "graph" && annotations && netlist.data ? (
             <NetGraphView
               annotations={annotations}
               vddNet={vddNet}
