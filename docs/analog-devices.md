@@ -270,3 +270,32 @@ imagery → smaller contacts), the tolerance shrinks with them.
 - Terminal points at contact positions (G, S/D, B, …)
 - Zoom-based hiding: terminal labels fade below 0.7×, params below 0.5×
 - Devices sharing a cellId concatenate instance names ("M4 M5")
+
+## Debug logging (removed)
+
+The following `console.log` calls were stripped in commit `2e700f2` to improve
+runtime performance. They can be restored per-file if needed for diagnostics:
+
+### `frontend/src/lib/extraction/simpleAnalog.ts`
+- Resistor contact/body counts, ME1 group membership, PLUS/MINUS split, fallbacks
+- `splitDiffusionAtGates`: gate counts, poly bbox, sorted gate positions, diff ring
+  area, pieces kept per gate, segment counts
+- `mergeMetalConnectedTerminals`: component count, merge mapping
+- `detectMOSFromLayers`: poly gate net map, merge pairs, finger counts, device list
+  with G/S/D net ids
+- `polyGateNetMap`: poly bboxes, merge pairs, component counts
+- `geo-resistor`: group sizes, contact counts, L/W/squares
+
+### `frontend/src/routes/DieViewerPage.tsx`
+- Clipper2 load timing, analog device computation triggers and results per device
+- Device label map construction
+
+### `frontend/src/api/dieWideAnalog.ts`
+- `resolveContact`: contact center vs shape bounds, outside-fallback
+- Segment shape injection counts, cellNetCache hit logging
+
+### `frontend/src/components/netlist/NetGraphView.tsx`
+- Vdd/gnd assignment, named net sizes, device list with terminal info
+
+### `frontend/src/routes/AnalogNetlistPage.tsx`
+- Clipper2 WASM loaded confirmation
