@@ -68,7 +68,8 @@ import {
   type TerminalSnapTarget,
   TERMINAL_SNAP_TOLERANCE_PX,
   useWireTool,
-  type WireSnap
+  type WireSnap,
+  type WireTool
 } from "../components/dieViewer/useWireTool";
 import { buildInstanceTerminalMap } from "../lib/extraction/terminalDetect";
 import { useCellTool } from "../components/dieViewer/useCellTool";
@@ -295,6 +296,9 @@ function DieViewer({ dieId }: { dieId: string }) {
   const zoomInRef = useRef<() => void>(() => {});
   const zoomOutRef = useRef<() => void>(() => {});
   const fitToScreenRef = useRef<() => void>(() => {});
+  const wireRef = useRef<WireTool>(null!);
+  const dispatcherRef = useRef(dispatcher);
+  dispatcherRef.current = dispatcher;
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.repeat || isTypingTarget(e.target)) return;
@@ -331,6 +335,41 @@ function DieViewer({ dieId }: { dieId: string }) {
       if (toolId === "pan") {
         e.preventDefault();
         fitToScreenRef.current();
+        return;
+      }
+
+      // E = via up to next metal, Q = via down to previous metal.
+      // Only fires during an active wire draft.
+      if ((e.key === "e" || e.key === "E" || e.key === "q" || e.key === "Q") && e.key.length === 1) {
+        const cur = useDieViewerStore.getState();
+        if (cur.activeTool !== "wire") return;
+        const w = wireRef.current;
+        if (!w.draft) return;
+        const cursorWorld = cursorLive.get();
+        if (!cursorWorld) return;
+        e.preventDefault();
+        const viaPoint = w.insertDraftPoint(cursorWorld);
+        if (!viaPoint) return;
+        // Create a point_via annotation at the transition point.
+        void dispatcherRef.current.dispatch({
+          kind: "upsertAnnotation",
+          annotation: {
+            id: uuid(),
+            class: "point_via",
+            geometry: { kind: "point", x: viaPoint.x, y: viaPoint.y },
+            source: "human"
+          },
+          prevAnnotation: null
+        });
+        // E = up, Q = down. Skip if already at the boundary layer.
+        const METAL_ORDER: NonNullable<typeof cur.wireLayer>[] = ["metal1", "metal2"];
+        const idx = METAL_ORDER.indexOf(cur.wireLayer as any);
+        if (idx < 0) return;
+        if ((e.key === "e" || e.key === "E") && idx < METAL_ORDER.length - 1) {
+          cur.setWireLayer(METAL_ORDER[idx + 1]);
+        } else if ((e.key === "q" || e.key === "Q") && idx > 0) {
+          cur.setWireLayer(METAL_ORDER[idx - 1]);
+        }
         return;
       }
     };
@@ -917,6 +956,7 @@ const analogMemo = useMemo(
     findNearestTerminal,
     autoEndOnContactEnabled
   });
+  wireRef.current = wire;
 
   const cell = useCellTool({
     dispatcher,

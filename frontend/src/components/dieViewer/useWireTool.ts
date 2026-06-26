@@ -114,6 +114,13 @@ export interface WireTool {
   commitWire: (opts?: { dropLast?: boolean }) => void;
   /** Recompute the rubber-band preview for the current cursor. */
   computeWirePreview: (world: Point, shiftKey: boolean, zoom: number) => void;
+  /**
+   * Extend the draft with a free-placed point (no snapping).
+   * Returns the rounded point, or null if no draft is active.
+   * Used by the via-insertion hotkeys (E/Q) to place a
+   * layer-transition via mid-wire.
+   */
+  insertDraftPoint: (world: Point) => Point | null;
 }
 
 /**
@@ -690,6 +697,30 @@ export function useWireTool(opts: {
     [annotationLayer, wirePreviewLive, viaSnap, viaOnProjection, snapNode, resolveTerminalSnap]
   );
 
+  /**
+   * Extend the draft with a free-placed point (no snapping).
+   * The caller is responsible for creating a via annotation and
+   * switching the wire layer. Returns the rounded point, or null
+   * if no draft is active.
+   */
+  const insertDraftPoint = useCallback(
+    (world: Point): Point | null => {
+      const d = draftRef.current;
+      if (!d) return null;
+      const point = { x: Math.round(world.x), y: Math.round(world.y) };
+      const layer = useDieViewerStore.getState().wireLayer;
+      draftRedoRef.current = [];
+      setDraft({
+        points: [...d.points, point],
+        anchor: d.anchor,
+        segLayers: [...d.segLayers, layer],
+        startSplit: d.startSplit,
+      });
+      return point;
+    },
+    []
+  );
+
   // Leaving the wire tool abandons any uncommitted draft.
   useEffect(() => {
     if (activeTool !== "wire" && draftRef.current) clearDraft();
@@ -744,6 +775,7 @@ export function useWireTool(opts: {
     snapVertex,
     addWirePoint,
     commitWire,
-    computeWirePreview
+    computeWirePreview,
+    insertDraftPoint
   };
 }
