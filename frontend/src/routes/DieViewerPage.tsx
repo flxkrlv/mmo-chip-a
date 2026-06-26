@@ -557,16 +557,16 @@ function DieViewer({ dieId }: { dieId: string }) {
   useEffect(() => {
     if (!dieId || autoLoadRef.current) return;
     autoLoadRef.current = true;
+    // Clear any stale overlay layers from a previous project.
+    useOverlayLayers.getState().clearLayers();
     const addLayer = useOverlayLayers.getState().addLayer;
-    const layers = useOverlayLayers.getState().layers;
-    const existing = new Set(layers.map((l) => l.name));
     import("../api/overlayImages").then((mod) =>
       mod.fetchOverlayImageList(dieId).then((list) =>
         Promise.allSettled(
           list.images.map((img) => mod.loadOverlayImageFromServer(dieId, img.name))
         ).then((results) => {
           for (const r of results) {
-            if (r.status === "fulfilled" && !existing.has(r.value.name)) {
+            if (r.status === "fulfilled") {
               addLayer(r.value.name, r.value.image, true); // hidden by default
             }
           }
