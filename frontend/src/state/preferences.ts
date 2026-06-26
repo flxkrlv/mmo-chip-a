@@ -6,7 +6,12 @@ import {
   NET_COLOR,
   NET_DEFAULT_WIDTH
 } from "../renderer/annotations/dieAnnotations";
-import { VIA_DEFAULT_SIZE } from "../renderer/annotations/style";
+import {
+  VIA_DEFAULT_COLOR,
+  VIA_DEFAULT_SIZE,
+  WIRE_LAYER_COLOR,
+  NET_NODE_RADIUS_MULT
+} from "../renderer/annotations/style";
 import type { Viewport } from "../renderer/types";
 import type { InspectorTab } from "./dieViewer";
 import {
@@ -78,6 +83,9 @@ interface PreferencesState {
   /** Wire: when clicking on a cell terminal snap (orange halo), auto-commit
    *  the wire immediately instead of staying in edit mode. */
   autoEndOnContact: boolean;
+  /** Render colour for point vias (stroke + fill alpha derived). Shared by
+   *  the manual via annotation render path and the ML-via overlay. */
+  viaColor: string;
   /** Render radius for point vias (world / source-pixel units). Shared by
    *  the manual via annotation render path and the ML-via overlay, and used
    *  as the snap-to-via tolerance. One setting because the user thinks of
@@ -101,6 +109,15 @@ interface PreferencesState {
   /** Per-cell-type analog device parameter overrides.
    *  Key: cellTypeId → deviceId → paramName → value. */
   analogOverrides: Record<string, Record<string, Record<string, number>>>;
+  /** Per-conductor-layer wire colour override (metal1, metal2, etc.).
+   *  Absent = use WIRE_LAYER_COLOR defaults from style.ts. */
+  wireLayerColors: Record<string, string>;
+  /** Wire node (junction dot) radius multiplier relative to net width.
+   *  0 = hide nodes entirely. Default = NET_NODE_RADIUS_MULT. */
+  netNodeSize: number;
+  /** Wire node (junction dot) visibility toggle. When false, no dots drawn
+   *  at wire junctions regardless of netNodeSize. */
+  netNodeVisible: boolean;
   /** Resistor body layers opacity (0..1) in the RE canvas. Default 1.
    *  Helps superimpose the drawn polyline onto the image to verify width. */
   resistorOpacity: number;
@@ -111,6 +128,13 @@ interface PreferencesActions {
   setNetColor: (color: string) => void;
   /** Override color for a specific net (id like "net:abc"). null = clear. */
   setNetColorOverride: (netId: string, color: string | null) => void;
+  /** Set colour for a specific conductor layer (metal1, metal2, poly, etc.). */
+  setWireLayerColor: (layer: string, color: string) => void;
+  /** Set wire node radius multiplier (0 = hide nodes). */
+  setNetNodeSize: (size: number) => void;
+  /** Toggle wire node visibility. */
+  setNetNodeVisible: (visible: boolean) => void;
+  setViaColor: (color: string) => void;
   setCellColor: (color: string) => void;
   setCellShowShapes: (show: boolean) => void;
   setCellSnapToGuides: (snap: boolean) => void;
@@ -182,15 +206,30 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
         snapToVias: false,
         wireAutoEndOnVia: false,
         autoEndOnContact: true,
+        viaColor: VIA_DEFAULT_COLOR,
         viaSize: VIA_DEFAULT_SIZE,
         viaConfidenceThreshold: 0.5,
         inspectorTab: "inspector",
         sheetR: {},
         analogOverrides: {},
+        wireLayerColors: {
+          metal1: WIRE_LAYER_COLOR.metal1,
+          metal2: WIRE_LAYER_COLOR.metal2
+        },
+        netNodeSize: NET_NODE_RADIUS_MULT,
+        netNodeVisible: true,
         resistorOpacity: 1,
 
         setNetWidth: (width) => set({ netWidth: width }),
         setNetColor: (color) => set({ netColor: color }),
+        setWireLayerColor: (layer, color) =>
+          set((state) => ({
+            wireLayerColors: { ...state.wireLayerColors, [layer]: color }
+          })),
+        setNetNodeSize: (size) =>
+          set({ netNodeSize: Math.max(0, Math.min(5, size)) }),
+        setNetNodeVisible: (visible) => set({ netNodeVisible: visible }),
+        setViaColor: (color) => set({ viaColor: color }),
         setNetColorOverride: (netId, color) =>
           set((state) => {
             if (color === null || color === state.netColor) {
@@ -324,11 +363,15 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
           snapToVias: state.snapToVias,
           wireAutoEndOnVia: state.wireAutoEndOnVia,
           autoEndOnContact: state.autoEndOnContact,
+          viaColor: state.viaColor,
           viaSize: state.viaSize,
           viaConfidenceThreshold: state.viaConfidenceThreshold,
           inspectorTab: state.inspectorTab,
           sheetR: state.sheetR,
           analogOverrides: state.analogOverrides,
+          wireLayerColors: state.wireLayerColors,
+          netNodeSize: state.netNodeSize,
+          netNodeVisible: state.netNodeVisible,
           resistorOpacity: state.resistorOpacity
         })
       }

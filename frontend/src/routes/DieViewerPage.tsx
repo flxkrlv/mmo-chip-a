@@ -431,6 +431,8 @@ function DieViewer({ dieId }: { dieId: string }) {
             // Same render radius as manual vias — the user-facing pref
             // governs both render + snap so the visible dot matches the
             // click target.
+            // Same via colour as manual vias — the user pref is shared.
+            getViaColor: () => usePreferences.getState().viaColor,
             getViaWorldRadius: () => usePreferences.getState().viaSize,
             // Confidence slider filters the cached predictions client-side.
             getConfidenceThreshold: () =>
@@ -509,17 +511,24 @@ function DieViewer({ dieId }: { dieId: string }) {
           return useDieViewerStore.getState().mlConfig.pointViaSize;
         return usePreferences.getState().viaSize;
       },
+      pointViaColor: () => usePreferences.getState().viaColor,
       netNodeMatchesWidth: () =>
-        usePreferences.getState().inspectorTab === "ml"
+        usePreferences.getState().inspectorTab === "ml",
+      wireLayerColor: (layer: string) =>
+        usePreferences.getState().wireLayerColors[layer],
+      netNodeRadiusMult: () =>
+        usePreferences.getState().netNodeVisible
+          ? usePreferences.getState().netNodeSize
+          : 0
     });
   }, [annotationLayer, annotations]);
 
-  // Net width/color + cell color/detail + via size pref changes → invalidate
-  // the canvas. The layers read these prefs live each draw, so an invalidate
-  // is all that's needed.
+  // Net width/color + cell color/detail + via size/color + wire layer color
+  // + net node size/visibility pref changes → invalidate the canvas.
   useEffect(() => {
     const unsubs = (
-      ["netWidth", "netColor", "cellColor", "cellShowShapes", "viaSize"] as const
+      ["netWidth", "netColor", "cellColor", "cellShowShapes", "viaSize",
+       "viaColor", "wireLayerColors", "netNodeSize", "netNodeVisible"] as const
     ).map((key) =>
       usePreferences.subscribe(
         (s) => s[key],

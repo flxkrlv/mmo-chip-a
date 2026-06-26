@@ -10,8 +10,12 @@ import {
   NET_MIN_WIDTH
 } from "../../renderer/annotations/dieAnnotations";
 import {
+  VIA_COLOR_OPTIONS,
+  VIA_DEFAULT_COLOR,
   VIA_MAX_SIZE,
-  VIA_MIN_SIZE
+  VIA_MIN_SIZE,
+  WIRE_LAYER_COLOR,
+  NET_NODE_RADIUS_MULT
 } from "../../renderer/annotations/style";
 import { ColorSwatches, SettingsPopover } from "./SettingsPopover";
 import {
@@ -757,6 +761,12 @@ function NetSettingsButton() {
   const setNetWidth = usePreferences((s) => s.setNetWidth);
   const netColor = usePreferences((s) => s.netColor);
   const setNetColor = usePreferences((s) => s.setNetColor);
+  const wireLayerColors = usePreferences((s) => s.wireLayerColors);
+  const setWireLayerColor = usePreferences((s) => s.setWireLayerColor);
+  const netNodeSize = usePreferences((s) => s.netNodeSize);
+  const setNetNodeSize = usePreferences((s) => s.setNetNodeSize);
+  const netNodeVisible = usePreferences((s) => s.netNodeVisible);
+  const setNetNodeVisible = usePreferences((s) => s.setNetNodeVisible);
 
   return (
     <SettingsPopover label="Net settings">
@@ -784,6 +794,55 @@ function NetSettingsButton() {
         Net wire color
       </div>
       <ColorSwatches options={NET_COLOR_OPTIONS} value={netColor} onPick={setNetColor} />
+
+      <div className="u" style={{ margin: "12px 0 8px" }}>
+        Wire layer colors
+      </div>
+      <div style={{ fontSize: 10, color: "var(--ink3)", marginBottom: 6 }}>
+        metal1
+      </div>
+      <ColorSwatches
+        options={NET_COLOR_OPTIONS}
+        value={wireLayerColors.metal1 ?? WIRE_LAYER_COLOR.metal1}
+        onPick={(c) => setWireLayerColor("metal1", c)}
+      />
+      <div style={{ fontSize: 10, color: "var(--ink3)", marginTop: 8, marginBottom: 6 }}>
+        metal2
+      </div>
+      <ColorSwatches
+        options={NET_COLOR_OPTIONS}
+        value={wireLayerColors.metal2 ?? WIRE_LAYER_COLOR.metal2}
+        onPick={(c) => setWireLayerColor("metal2", c)}
+      />
+
+      <div className="u" style={{ margin: "12px 0 8px" }}>
+        Junction dots
+      </div>
+      <label className="check" style={{ marginBottom: 8 }}>
+        <input
+          type="checkbox"
+          checked={netNodeVisible}
+          onChange={(e) => setNetNodeVisible(e.target.checked)}
+        />
+        Show dots at wire turns
+      </label>
+      <div className="row" style={{ gap: 10 }}>
+        <input
+          type="range"
+          min={0}
+          max={5}
+          step={0.1}
+          value={netNodeVisible ? netNodeSize : 0}
+          disabled={!netNodeVisible}
+          onChange={(e) => setNetNodeSize(Number(e.target.value))}
+        />
+        <span
+          className="m"
+          style={{ width: 36, color: "var(--ink2)", fontSize: 11, textAlign: "right" }}
+        >
+          {netNodeVisible ? netNodeSize.toFixed(1) : "—"}
+        </span>
+      </div>
     </SettingsPopover>
   );
 }
@@ -791,6 +850,8 @@ function NetSettingsButton() {
 function ViaSettingsButton() {
   const viaSize = usePreferences((s) => s.viaSize);
   const setViaSize = usePreferences((s) => s.setViaSize);
+  const viaColor = usePreferences((s) => s.viaColor);
+  const setViaColor = usePreferences((s) => s.setViaColor);
   return (
     <SettingsPopover label="Via settings">
       <div className="u" style={{ marginBottom: 8 }}>
@@ -812,6 +873,15 @@ function ViaSettingsButton() {
           {viaSize.toFixed(1)}
         </span>
       </div>
+
+      <div className="u" style={{ margin: "12px 0 8px" }}>
+        Via color
+      </div>
+      <ColorSwatches
+        options={VIA_COLOR_OPTIONS}
+        value={viaColor}
+        onPick={setViaColor}
+      />
     </SettingsPopover>
   );
 }

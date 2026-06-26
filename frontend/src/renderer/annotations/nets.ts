@@ -38,6 +38,13 @@ export function buildNetAnnotation(
    *  this colour (ignoring WIRE_LAYER_COLOR) — this makes an overridden net
    *  visually cohesive across all metal layers. */
   getNetOverrideColor?: (netId: string) => string | null,
+  /** Optional: per-conductor-layer wire colour override. Return value wins
+   *  over `WIRE_LAYER_COLOR[e.layer]`. Absent / returns undefined → use
+   *  the default from `WIRE_LAYER_COLOR`. */
+  getLayerColor?: (layer: string) => string | undefined,
+  /** Optional: node radius multiplier (relative to net width). 0 = hide
+   *  junction dots entirely. Default = `NET_NODE_RADIUS_MULT`. */
+  getNodeRadiusMult?: () => number,
 ): Annotation {
   // Compute bbox from all nodes.
   let minX = Infinity,
@@ -59,10 +66,27 @@ export function buildNetAnnotation(
   const nodeSubId = (nodeId: string) => `${netId}/node:${nodeId}`;
   const edgeSubId = (edgeId: string) => `${netId}/edge:${edgeId}`;
 
+  // Composite drawOrder = (min_layer + 1) * 100 + (max_layer + 1).
+  // This sorts: m1-only (202) < m1+m2 (203) < m2-only (303) < m3-only (404).
+  // No-layer nets get 0 (draw alongside cells/vias).
+  const NET_Z: Record<string, number> = {
+    poly: 0, metal1: 1, metal2: 2, metal3: 3, metal4: 4, metal5: 5, metal6: 6
+  };
+  let minZ = 99, maxZ = -1;
+  for (const e of net.edges) {
+    if (e.layer) {
+      const z = NET_Z[e.layer] ?? -1;
+      if (z < minZ) minZ = z;
+      if (z > maxZ) maxZ = z;
+    }
+  }
+  const drawOrder =
+    maxZ >= 0 ? (minZ + 1) * 100 + (maxZ + 1) : 0;
   return {
     id: netId,
     kind: "net",
     pickPriority: PICK.net,
+    drawOrder,
     bbox,
     draw(ctx, bounds, state) {
       // ML mode: the stroke is the real document-space width (source px), so
@@ -86,11 +110,15 @@ export function buildNetAnnotation(
       // layer-based colours) so the net reads as one cohesive trace across
       // metal layers. Otherwise use the per-layer colour, falling back to the
       // configurable base colour for edges without a known layer.
+      // When the AnnotationLayer does multi-pass z-ordering, `layerFilter`
+      // restricts which edges to draw in the current pass.
       const netOverrideColor = getNetOverrideColor?.(netId);
       const byColor = new Map<string, AnnotationNet["edges"]>();
       for (const e of net.edges) {
         if (edgeSel(e)) continue;
-        const col = netOverrideColor ?? (e.layer ? WIRE_LAYER_COLOR[e.layer] : baseColor);
+        if (state.layerFilter && e.layer !== state.layerFilter) continue;
+        const layerCol = e.layer && (getLayerColor?.(e.layer) ?? WIRE_LAYER_COLOR[e.layer]);
+        const col = netOverrideColor ?? layerCol ?? baseColor;
         const list = byColor.get(col);
         if (list) list.push(e);
         else byColor.set(col, [e]);
@@ -109,6 +137,7 @@ export function buildNetAnnotation(
         ctx.stroke();
       }
 
+      // Selected edges draw on top of everything in SELECT_COLOR.
       ctx.strokeStyle = SELECT_COLOR;
       ctx.lineWidth = worldWidth * SELECT_WIDTH_MULT;
       ctx.beginPath();
@@ -127,34 +156,40 @@ export function buildNetAnnotation(
       // Nodes: fill unselected, then larger fill + white ring for selected on
       // top (the ring pops against dark imagery).
       // ML mode: a vertex is just the wire's rounded join — radius = half the
-      // stroke — so junctions don't bulge. Otherwise the bigger edit handle.
+      // stroke — so junctions don't bulge. Otherwise the bigger edit handle,
+      // scaled by the user-configurable node radius multiplier.
+      const nodeMult = getNodeRadiusMult?.() ?? NET_NODE_RADIUS_MULT;
+      const showNodes = nodeMult > 0;
       const nodeRadius = mlMode
         ? worldWidth / 2
-        : (screenWidth * NET_NODE_RADIUS_MULT) / bounds.zoom;
-      ctx.fillStyle = baseColor;
-      for (const n of net.nodes) {
-        if (nodeSel(n)) continue;
-        ctx.beginPath();
-        ctx.arc(n.x, n.y, nodeRadius, 0, Math.PI * 2);
-        ctx.fill();
-      }
-      const selRadius = nodeRadius * SELECT_NODE_MULT;
-      ctx.fillStyle = SELECT_COLOR;
-      ctx.strokeStyle = SELECT_RING;
-      ctx.lineWidth = SELECT_OUTLINE_PX / bounds.zoom;
-      for (const n of net.nodes) {
-        if (!nodeSel(n)) continue;
-        ctx.beginPath();
-        ctx.arc(n.x, n.y, selRadius, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.beginPath();
-        ctx.arc(n.x, n.y, selRadius, 0, Math.PI * 2);
-        ctx.stroke();
+        : (screenWidth * nodeMult) / bounds.zoom;
+      if (showNodes) {
+        ctx.fillStyle = baseColor;
+        for (const n of net.nodes) {
+          if (nodeSel(n)) continue;
+          ctx.beginPath();
+          ctx.arc(n.x, n.y, nodeRadius, 0, Math.PI * 2);
+          ctx.fill();
+        }
+        const selRadius = nodeRadius * SELECT_NODE_MULT;
+        ctx.fillStyle = SELECT_COLOR;
+        ctx.strokeStyle = SELECT_RING;
+        ctx.lineWidth = SELECT_OUTLINE_PX / bounds.zoom;
+        for (const n of net.nodes) {
+          if (!nodeSel(n)) continue;
+          ctx.beginPath();
+          ctx.arc(n.x, n.y, selRadius, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.beginPath();
+          ctx.arc(n.x, n.y, selRadius, 0, Math.PI * 2);
+          ctx.stroke();
+        }
       }
     },
     hitTest(p, tol) {
       // Vertices win over segments — they're the smaller, on-top target.
-      const nodeR = getWidth() * NET_NODE_RADIUS_MULT + tol;
+      const nodeMult = getNodeRadiusMult?.() ?? NET_NODE_RADIUS_MULT;
+      const nodeR = getWidth() * nodeMult + tol;
       let bestNode: { id: string; d: number } | null = null;
       for (const n of net.nodes) {
         const d = Math.hypot(p.x - n.x, p.y - n.y);

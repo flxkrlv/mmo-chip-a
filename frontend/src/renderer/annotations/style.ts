@@ -145,13 +145,29 @@ export const CELL_DETAIL_ZOOM = 0.2;
 
 /** Preset colors offered for unselected wires + vertices (chosen in the net
  *  settings popover). All are bright/opaque and distinct from the amber
- *  selection accent. First entry is the default (legacy viewer blue). */
+ *  selection accent. First entry is the default (legacy viewer blue).
+ *  18 colors ≈ 2 rows of 9 in a 300px popover with flexWrap. */
 export const NET_COLOR_OPTIONS: ReadonlyArray<{ label: string; value: string }> = [
+  // Row 1 — cool
   { label: "Blue", value: "#2e97ff" },
   { label: "Cyan", value: "#22d3ee" },
+  { label: "Teal", value: "#2dd4bf" },
   { label: "Green", value: "#34d399" },
+  { label: "Lime", value: "#a3e635" },
+  { label: "Sky", value: "#38bdf8" },
+  { label: "Indigo", value: "#818cf8" },
   { label: "Violet", value: "#a78bfa" },
-  { label: "Magenta", value: "#e879f9" }
+  { label: "Purple", value: "#c084fc" },
+  // Row 2 — warm
+  { label: "Magenta", value: "#e879f9" },
+  { label: "Hot Pink", value: "#ec4899" },
+  { label: "Rose", value: "#fb7185" },
+  { label: "Red", value: "#ef4444" },
+  { label: "Orange", value: "#fb923c" },
+  { label: "Amber", value: "#f59e0b" },
+  { label: "Yellow", value: "#facc15" },
+  { label: "Chartreuse", value: "#84cc16" },
+  { label: "Slate Gray", value: "#94a3b8" }
 ];
 
 /** Default base color for unselected wires + vertices (legacy viewer blue). */
@@ -199,6 +215,56 @@ export function netNodeScreenRadius(zoom: number, netWidth: number): number {
 
 export const COLOR_VIA = "rgba(130, 214, 166, 0.85)"; // green-power
 export const COLOR_VIA_FILL = "rgba(130, 214, 166, 0.25)";
+
+/** Preset colors offered for via dot/outline (chosen in the via settings
+ *  popover). All bright/opaque colours; first entry is the default.
+ *  18 colors ≈ 2 rows of 9 in a 300px popover. Every swatch is visually
+ *  distinct — full spectrum coverage with no two adjacent hues looking alike. */
+export const VIA_COLOR_OPTIONS: ReadonlyArray<{ label: string; value: string }> = [
+  // Row 1 — cool to neutral
+  { label: "Green (default)", value: "rgba(130, 214, 166, 0.85)" },
+  { label: "Teal", value: "rgba(45, 212, 191, 0.85)" },
+  { label: "Cyan", value: "rgba(52, 211, 235, 0.85)" },
+  { label: "Sky Blue", value: "rgba(56, 189, 248, 0.85)" },
+  { label: "Blue", value: "rgba(96, 165, 250, 0.85)" },
+  { label: "Indigo", value: "rgba(129, 140, 248, 0.85)" },
+  { label: "Violet", value: "rgba(167, 139, 250, 0.85)" },
+  { label: "Purple", value: "rgba(192, 132, 252, 0.85)" },
+  { label: "Magenta", value: "rgba(232, 121, 249, 0.85)" },
+  // Row 2 — warm to bright
+  { label: "Hot Pink", value: "rgba(236, 72, 153, 0.85)" },
+  { label: "Pink", value: "rgba(251, 113, 133, 0.85)" },
+  { label: "Red", value: "rgba(239, 68, 68, 0.85)" },
+  { label: "Bright Orange", value: "rgba(251, 146, 60, 0.85)" },
+  { label: "Orange", value: "rgba(249, 115, 22, 0.85)" },
+  { label: "Amber", value: "rgba(245, 194, 66, 0.85)" },
+  { label: "Yellow", value: "rgba(250, 204, 21, 0.85)" },
+  { label: "Lime", value: "rgba(163, 230, 53, 0.85)" },
+  { label: "White", value: "rgba(230, 230, 230, 0.85)" }
+];
+/** Default via color (green-power — current look). */
+export const VIA_DEFAULT_COLOR = VIA_COLOR_OPTIONS[0].value;
+
+/** Opaque (no alpha) variant for outline swatch — strips any alpha channel
+ *  so the swatch reads solid in the UI. */
+export function viaColorOpaque(color: string): string {
+  // If it's an rgba string, drop the alpha; if hex, return as-is.
+  if (color.startsWith("rgba")) {
+    const m = color.match(/rgba\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/);
+    if (m) return `rgb(${m[1]}, ${m[2]}, ${m[3]})`;
+  }
+  return color;
+}
+
+/** Extract R,G,B from an rgba string and return a new rgba with a custom
+ *  alpha (0..1). Returns the original string unchanged for hex inputs. */
+export function viaColorWithAlpha(color: string, alpha: number): string {
+  if (color.startsWith("rgba")) {
+    const m = color.match(/rgba\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/);
+    if (m) return `rgba(${m[1]}, ${m[2]}, ${m[3]}, ${alpha})`;
+  }
+  return color;
+}
 
 /** Default render radius for point vias (world / source-pixel units). Single
  *  source of truth for both manual and ML vias, and the snap-to-via

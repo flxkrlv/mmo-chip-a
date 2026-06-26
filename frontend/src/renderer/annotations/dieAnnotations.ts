@@ -40,6 +40,9 @@ import {
   SELECT_NODE_MULT,
   SELECT_OUTLINE_PX,
   SELECT_RING,
+  VIA_DEFAULT_COLOR,
+  viaColorOpaque,
+  viaColorWithAlpha,
   VIA_RADIUS_PX,
   viaScreenRadius
 } from "./style";
@@ -84,9 +87,20 @@ export interface PopulateOptions {
    *  When it returns a number the via is drawn at that physical size (the ML
    *  export footprint); `null` ⇒ the default fixed screen-size dot. */
   pointViaWorldRadius?: () => number | null;
+  /** Live getter for point-via colour (rgba string). Used for both fill and
+   *  stroke; fill gets an additional alpha reduction.
+   *  Default: VIA_DEFAULT_COLOR. */
+  pointViaColor?: () => string;
   /** Live getter: ML mode → render net vertices flush with the wire (radius =
    *  half the stroke) instead of the larger edit handles. Default false. */
   netNodeMatchesWidth?: () => boolean;
+  /** Live getter: per-conductor-layer wire colour override. Returns the
+   *  colour for a layer like "metal1", or undefined to fall back to
+   *  WIRE_LAYER_COLOR. */
+  wireLayerColor?: (layer: string) => string | undefined;
+  /** Live getter: net node radius multiplier (0 = hide nodes).
+   *  Default: use NET_NODE_RADIUS_MULT from style. */
+  netNodeRadiusMult?: () => number;
 }
 
 /**
@@ -105,8 +119,11 @@ export function populateAnnotationLayer(
   const getCellColor = options.cellColor ?? (() => CELL_COLOR);
   const getCellShowShapes = options.cellShowShapes ?? (() => true);
   const getPointViaWorldRadius = options.pointViaWorldRadius ?? (() => null);
+  const getPointViaColor = options.pointViaColor ?? (() => VIA_DEFAULT_COLOR);
   const getNetNodeMatchesWidth =
     options.netNodeMatchesWidth ?? (() => false);
+  const getLayerColor = options.wireLayerColor;
+  const getNodeRadiusMult = options.netNodeRadiusMult;
 
   const cellTypeMap = new Map(annotations.cellTypes.map((ct) => [ct.id, ct]));
 
@@ -118,18 +135,44 @@ export function populateAnnotationLayer(
 
   const getNetOverrideColor = options.netOverrideColor ?? ((_: string) => null);
 
-  for (const net of annotations.nets) {
+  // Sort nets by highest metal layer so lower metals (metal1) draw
+  // underneath higher metals (metal2+). This mirrors the physical chip
+  // stack-up — when two different nets cross, the upper metal wins.
+  const NET_LAYER_PRIORITY: Record<string, number> = {
+    poly: 0,
+    metal1: 1,
+    metal2: 2,
+    metal3: 3,
+    metal4: 4,
+    metal5: 5,
+    metal6: 6
+  };
+  const maxLayerPriority = (edges: typeof annotations.nets[number]["edges"]) => {
+    let maxP = -1;
+    for (const e of edges) {
+      if (e.layer) {
+        const p = NET_LAYER_PRIORITY[e.layer];
+        if (p !== undefined && p > maxP) maxP = p;
+      }
+    }
+    return maxP;
+  };
+  const sortedNets = [...annotations.nets].sort(
+    (a, b) => maxLayerPriority(a.edges) - maxLayerPriority(b.edges)
+  );
+
+  for (const net of sortedNets) {
     if (net.nodes.length === 0 && net.edges.length === 0) continue;
     layer.add(
       buildNetAnnotation(
         net, getNetWidth, getNetColor, getNetNodeMatchesWidth,
-        getNetOverrideColor
+        getNetOverrideColor, getLayerColor, getNodeRadiusMult
       )
     );
   }
 
   for (const a of annotations.annotations ?? []) {
-    const built = buildAnnotation(a, getPointViaWorldRadius);
+    const built = buildAnnotation(a, getPointViaWorldRadius, getPointViaColor);
     if (built) layer.add(built);
   }
   for (const r of annotations.rois ?? []) layer.add(buildRoiRect(r));
@@ -231,7 +274,8 @@ export function buildCellAnnotation(
 
 export function buildAnnotation(
   a: HumanAnnotation,
-  getPointViaWorldRadius: () => number | null = () => null
+  getPointViaWorldRadius: () => number | null = () => null,
+  getPointViaColor: () => string = () => VIA_DEFAULT_COLOR
 ): Annotation | null {
   const g = a.geometry;
   const id = `anno:${a.id}`;
@@ -253,7 +297,8 @@ export function buildAnnotation(
             ? viaScreenRadius(bounds.zoom, worldR) / bounds.zoom
             : VIA_RADIUS_PX / bounds.zoom;
         const r = state.selected ? baseR * SELECT_NODE_MULT : baseR;
-        ctx.fillStyle = state.selected ? SELECT_COLOR : COLOR_VIA;
+        const viaColor = getPointViaColor();
+        ctx.fillStyle = state.selected ? SELECT_COLOR : viaColor;
         ctx.beginPath();
         ctx.arc(g.x, g.y, r, 0, Math.PI * 2);
         ctx.fill();
@@ -274,8 +319,10 @@ export function buildAnnotation(
       pickPriority: PICK.via,
       bbox: { x: g.x, y: g.y, width: g.width, height: g.height },
       draw(ctx, bounds, state) {
-        ctx.fillStyle = state.selected ? SELECT_FILL : COLOR_VIA_FILL;
-        ctx.strokeStyle = state.selected ? SELECT_COLOR : COLOR_VIA;
+        const viaColor = getPointViaColor();
+        const viaFill = viaColorWithAlpha(viaColor, 0.25);
+        ctx.fillStyle = state.selected ? SELECT_FILL : viaFill;
+        ctx.strokeStyle = state.selected ? SELECT_COLOR : viaColor;
         ctx.lineWidth =
           (state.selected ? SELECT_OUTLINE_PX : OUTLINE_WIDTH_PX) / bounds.zoom;
         ctx.fillRect(g.x, g.y, g.width, g.height);
@@ -303,8 +350,10 @@ export function buildAnnotation(
       bbox: { x: minX, y: minY, width: maxX - minX, height: maxY - minY },
       draw(ctx, bounds, state) {
         if (pts.length < 2) return;
-        ctx.fillStyle = state.selected ? SELECT_FILL : COLOR_VIA_FILL;
-        ctx.strokeStyle = state.selected ? SELECT_COLOR : COLOR_VIA;
+        const viaColor = getPointViaColor();
+        const viaFill = viaColorWithAlpha(viaColor, 0.25);
+        ctx.fillStyle = state.selected ? SELECT_FILL : viaFill;
+        ctx.strokeStyle = state.selected ? SELECT_COLOR : viaColor;
         ctx.lineWidth =
           (state.selected ? SELECT_OUTLINE_PX : OUTLINE_WIDTH_PX) / bounds.zoom;
         ctx.beginPath();

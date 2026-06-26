@@ -11,6 +11,11 @@ export interface AnnotationDrawState {
    *  selectable sub-parts (e.g. net vertices/segments) use this to highlight
    *  individual parts by their sub-id. */
   isSelected: (id: string) => boolean;
+  /** When set, only draw edges belonging to this conductor layer
+   *  (e.g. "metal1", "metal2"). Used by the AnnotationLayer for z-ordered
+   *  multi-pass rendering: it draws all metal1 edges from all net
+   *  annotations in one pass, then all metal2 edges on top. */
+  layerFilter?: string;
 }
 
 /** Result of a successful point-pick. */
@@ -42,6 +47,15 @@ export interface Annotation {
    * Defaults to 0 when omitted.
    */
   pickPriority?: number;
+  /**
+   * Visual z-order within the same tile. Higher values are drawn later (on
+   * top). Defaults to 0 when omitted. Nets encode a composite
+   * (min_layer, max_layer) key packed as `min*100 + max` so that:
+   *   - metal1-only (2,2) → 202 draws before metal2-only (3,3) → 303
+   *   - metal1+metal2 (2,3) → 203 draws AFTER metal1-only (202) but BEFORE
+   *     metal2-only (303) — its metal2 edges correctly hide below pure m2.
+   */
+  drawOrder?: number;
   draw(ctx: CanvasRenderingContext2D, bounds: TileBounds, state: AnnotationDrawState): void;
   /**
    * Narrow-phase point-pick. `worldTolerance` is the click slop in world
@@ -277,10 +291,35 @@ export class AnnotationLayer implements Layer {
     const selected = this.selectedIds;
     const isSelected = (id: string) => selected.has(id);
     const state: AnnotationDrawState = { selected: false, isSelected };
+
+    // Separate hits: non-nets draw once (cells, vias, pins, rois, ignores),
+    // nets draw in layer-order passes (metal1 first, then metal2, etc.).
+    const nonNets: typeof hits = [];
+    const nets: typeof hits = [];
     for (const h of hits) {
+      if (h.annotation.kind === "net") nets.push(h);
+      else nonNets.push(h);
+    }
+
+    // Non-nets (cells, vias, pins, etc.) — draw in drawOrder.
+    nonNets.sort((a, b) => (a.annotation.drawOrder ?? 0) - (b.annotation.drawOrder ?? 0));
+    for (const h of nonNets) {
       if (visible && !visible.has(h.annotation.kind)) continue;
       state.selected = selected.has(h.annotation.id);
       h.annotation.draw(ctx, bounds, state);
+    }
+
+    // Nets — multi-pass by conductor layer: metal1 → metal2 → metal3+.
+    // This guarantees ALL metal1 edges from ALL nets draw underneath ALL
+    // metal2 edges, regardless of per-net drawOrder.
+    const LAYER_PASSES = ["metal1", "metal2", "poly", "metal3", "metal4", "metal5", "metal6"];
+    for (const layer of LAYER_PASSES) {
+      const layerState: AnnotationDrawState = { ...state, layerFilter: layer };
+      for (const h of nets) {
+        if (visible && !visible.has(h.annotation.kind)) continue;
+        layerState.selected = selected.has(h.annotation.id);
+        h.annotation.draw(ctx, bounds, layerState);
+      }
     }
   }
 }

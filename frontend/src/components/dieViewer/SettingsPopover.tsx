@@ -26,8 +26,13 @@ export function SettingsPopover({
   useLayoutEffect(() => {
     if (!open || !triggerRef.current) return;
     const rect = triggerRef.current.getBoundingClientRect();
-    const popWidth = popoverRef.current?.offsetWidth ?? 220;
-    setPosition({ top: rect.bottom + 4, left: rect.right - popWidth });
+    const popWidth = popoverRef.current?.offsetWidth ?? 300;
+    // Popover right-edge aligned with trigger right-edge, but clamped so
+    // the left edge never goes off-screen (minimum 8px margin) and the right
+    // edge never goes off-screen either.
+    const maxLeft = window.innerWidth - popWidth - 8;
+    const left = Math.max(8, Math.min(maxLeft, rect.right - popWidth));
+    setPosition({ top: rect.bottom + 4, left });
   }, [open]);
 
   useEffect(() => {
@@ -85,7 +90,7 @@ export function SettingsPopover({
               top: position?.top ?? -9999,
               left: position?.left ?? -9999,
               visibility: position ? "visible" : "hidden",
-              width: 220
+              width: 300
             }}
           >
             {children}
@@ -96,7 +101,9 @@ export function SettingsPopover({
   );
 }
 
-/** A horizontal row of round color swatches with a single active selection. */
+/** A horizontal row of round color swatches with a single active selection.
+ *  Wraps to multiple lines when the popover is too narrow to fit all options
+ *  in one row. */
 export function ColorSwatches({
   options,
   value,
@@ -107,7 +114,7 @@ export function ColorSwatches({
   onPick: (value: string) => void;
 }) {
   return (
-    <div className="row" style={{ gap: 8 }}>
+    <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
       {options.map((opt) => {
         const active = value === opt.value;
         return (

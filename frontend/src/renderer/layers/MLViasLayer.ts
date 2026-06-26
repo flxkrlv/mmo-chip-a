@@ -13,7 +13,9 @@ import {
   SELECT_NODE_MULT,
   SELECT_OUTLINE_PX,
   SELECT_RING,
+  VIA_DEFAULT_COLOR,
   VIA_DEFAULT_SIZE,
+  viaColorWithAlpha,
   viaScreenRadius
 } from "../annotations/style";
 import type { Layer, TileBounds } from "../types";
@@ -126,6 +128,8 @@ export interface MLViasDisplay {
    *  snapped. Cached predictions keep every detection + score; this filters
    *  them client-side. Absent ⇒ 0 (show everything). */
   getConfidenceThreshold?: () => number;
+  /** Point-via colour (rgba string). Default: VIA_DEFAULT_COLOR. */
+  getViaColor?: () => string;
   /** Fired whenever a tile loads (or the cache is cleared on model switch),
    *  with the sum of point + irregular vias currently held across every
    *  cached tile. Cardinal but partial — only counts what's been fetched so
@@ -525,14 +529,15 @@ export class MLViasLayer implements Layer {
       const hasSel = sel.size > 0;
       const selectR = pointR * SELECT_NODE_MULT;
       const selectStroke = SELECT_OUTLINE_PX / zoom;
-      // Point vias: small filled circles. ML-derived → same green as the
-      // human via annotation style so the legend stays consistent. Selected
-      // ones use the shared SELECT_COLOR + white ring for parity with the
-      // manual via annotation drawing path (see dieAnnotations.ts).
+      const viaColor = this.display.getViaColor?.() ?? VIA_DEFAULT_COLOR;
+      // Point vias: small filled circles. Colour follows the user pref
+      // (same as the human via annotation style). Selected ones use the
+      // shared SELECT_COLOR + white ring for parity with the manual via
+      // annotation drawing path (see dieAnnotations.ts).
       for (const v of pointVias) {
         if (v.score < minScore) continue;
         const selected = hasSel && sel.has(mlViaId(v.x, v.y));
-        ctx.fillStyle = selected ? SELECT_COLOR : COLOR_VIA;
+        ctx.fillStyle = selected ? SELECT_COLOR : viaColor;
         const r = selected ? selectR : pointR;
         ctx.beginPath();
         ctx.arc(v.x, v.y, r, 0, Math.PI * 2);
@@ -552,8 +557,9 @@ export class MLViasLayer implements Layer {
         const cx = reg.centroid[0];
         const cy = reg.centroid[1];
         const selected = hasSel && sel.has(mlViaId(cx, cy));
-        ctx.fillStyle = selected ? SELECT_FILL : COLOR_VIA_FILL;
-        ctx.strokeStyle = selected ? SELECT_COLOR : COLOR_VIA;
+        const viaFill = viaColorWithAlpha(viaColor, 0.25);
+        ctx.fillStyle = selected ? SELECT_FILL : viaFill;
+        ctx.strokeStyle = selected ? SELECT_COLOR : viaColor;
         ctx.lineWidth = selected ? selectStroke : stroke;
         ctx.fillRect(x, y, w, h);
         ctx.strokeRect(x, y, w, h);
