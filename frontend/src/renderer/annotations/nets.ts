@@ -163,10 +163,34 @@ export function buildNetAnnotation(
       const nodeRadius = mlMode
         ? worldWidth / 2
         : (screenWidth * nodeMult) / bounds.zoom;
+      // Node colour: use highest-layer connected edge's colour so dots on
+      // metal1 turns match teal, dots on metal2 turn violet, etc.
+      const nodeColor = new Map<string, string>();
+      for (const n of net.nodes) {
+        let bestLayer: string | undefined;
+        let bestP = -1;
+        const NET_P: Record<string, number> = {
+          poly: 0, metal1: 1, metal2: 2, metal3: 3, metal4: 4, metal5: 5, metal6: 6
+        };
+        for (const e of net.edges) {
+          if (e.from !== n.id && e.to !== n.id) continue;
+          if (e.layer && (NET_P[e.layer] ?? -1) > bestP) {
+            bestP = NET_P[e.layer];
+            bestLayer = e.layer;
+          }
+        }
+        if (bestLayer) {
+          const layerCol = getLayerColor?.(bestLayer) ?? WIRE_LAYER_COLOR[bestLayer];
+          nodeColor.set(n.id, netOverrideColor ?? layerCol ?? baseColor);
+        } else {
+          nodeColor.set(n.id, baseColor);
+        }
+      }
+
       if (showNodes) {
-        ctx.fillStyle = baseColor;
         for (const n of net.nodes) {
           if (nodeSel(n)) continue;
+          ctx.fillStyle = nodeColor.get(n.id) ?? baseColor;
           ctx.beginPath();
           ctx.arc(n.x, n.y, nodeRadius, 0, Math.PI * 2);
           ctx.fill();
