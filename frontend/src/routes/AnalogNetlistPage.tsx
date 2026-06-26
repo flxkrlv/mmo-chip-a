@@ -108,7 +108,7 @@ function AnalogNetlist({ dieId }: { dieId: string }) {
   // ══ Ensure Clipper2 WASM is loaded for multi-finger MOS splitting ═
   useEffect(() => {
     loadClipper()
-      .then(() => console.log("[analog] Clipper2 loaded"))
+      .then(() => {/* Clipper2 loaded */})
       .catch((e) => console.warn("[analog] Clipper2 load failed:", e));
   }, []);
 

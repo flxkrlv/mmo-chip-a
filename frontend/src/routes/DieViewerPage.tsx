@@ -888,9 +888,9 @@ function DieViewer({ dieId }: { dieId: string }) {
   // (multi-finger MOS splitting depends on Clipper).
   const [clipperTick, setClipperTick] = useState(0);
   useEffect(() => {
-    console.log("[analog] DieViewerPage: loadClipper start");
+
     loadClipper().then(() => {
-      console.log("[analog] DieViewerPage: Clipper ready, bumping tick");
+
       setClipperTick((s) => s + 1);
     });
   }, []);
@@ -899,14 +899,14 @@ const analogMemo = useMemo(
     () => {
       if (!annotations) return { devices: [], netNames: new Map<number, string>(), unconnectedCount: 0 };
       try {
-        console.log(`[analog] DieViewerPage: computing analog devices (clipperTick=${clipperTick})`);
+
         const r = collectDieWideAnalogDevices(annotations as any, annotations.umPerPx ?? 1);
         const unconnectedCount = r.devices.reduce(
           (sum, d) => sum + d.terminals.filter((t) => t.netId >= 2000).length, 0,
         );
-        console.log(`[analog] DieViewerPage: devices=${r.devices.length} unconnected=${unconnectedCount}`);
+
         for (const d of r.devices) {
-          console.log(`[analog]   dev=${d.instanceName ?? d.id} cid=${(d as any)._cellId} bbox=${JSON.stringify(d.bbox)}`);
+
         }
         return { devices: r.devices, netNames: r.namedNets, unconnectedCount };
       } catch { return { devices: [], netNames: new Map<number, string>(), unconnectedCount: 0 }; }
@@ -934,9 +934,9 @@ const analogMemo = useMemo(
       const existing = m.get(cid);
       const newLabel = existing ? `${existing} ${name}` : name;
       m.set(cid, newLabel);
-      console.log(`[analog] deviceLabels: cid=${cid} name=${name} label=${newLabel}`);
+
     }
-    console.log(`[analog] deviceLabels final:`, [...m.entries()].map(([k,v])=>`${k}=${v}`).join(", "));
+
     return m;
   }, [analogDevices]);
 

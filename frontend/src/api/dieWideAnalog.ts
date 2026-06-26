@@ -304,7 +304,7 @@ function resolveDeviceContacts(
 
           const isInside = pointInShape(cc.x, cc.y, shape);
           if (shape.id.startsWith("mos_well") || shape.id.includes("_seg")) {
-            console.log(`[analog] resolveContact dev=${dev.instanceName??dev.id} term=${termName} shape=${shape.id.slice(0,30)} (${shape.kind}) pt=(${cc.x.toFixed(1)},${cc.y.toFixed(1)}) => ${isInside ? "INSIDE" : "OUTSIDE"} shapeIds=${JSON.stringify(dev.terminals[ti].shapeIds)}`);
+
           }
           if (isInside) {
             // MOS B (bulk): contact must be EXCLUSIVELY on well layers —
@@ -321,7 +321,7 @@ function resolveDeviceContacts(
             break;
           } else {
             if (shape.id.startsWith("mos_well") || shape.id.includes("_seg")) {
-              console.log(`[analog]   OUTSIDE for term ${termName}`);
+
             }
           }
         }
@@ -681,7 +681,7 @@ export function collectDieWideAnalogDevices(
         // segment polygons for D/S contact matching.
         const segShapes = consumeSegmentShapes(dev.id);
         if (segShapes.length > 0) {
-          console.log(`[analog] injecting ${segShapes.length} segment shapes for ${dev.instanceName ?? dev.id}`);
+
         }
         const layersWithSegs = segShapes.length > 0
           ? {
@@ -776,7 +776,7 @@ export function collectDieWideAnalogDevices(
           const cacheKey = `${instCell.id}:${t.netId}`;
           const cachedDieNet = cellNetCache.get(cacheKey);
           if (cachedDieNet !== undefined) {
-            console.log(`[analog] cellNetCache HIT inst=${instCell.id} cellNet=${t.netId} → dieNet=${cachedDieNet} for ${instName}.${dev.terminals[ti].name}`);
+
             return {...t, netId: cachedDieNet};
           }
           const contacts = termContacts[ti];

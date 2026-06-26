@@ -395,7 +395,7 @@ export function extractMarkedDevices(
         // shapes.  Group contacts by UF-connected ME1 components.
         let plusContactIds: string[] = [];
         let minusContactIds: string[] = [];
-        console.log(`[analog] resistor ${marker.id}: ${contacts.length} contacts, ${bodyShapes.length} body (${lines.length} lines)`);
+
         if (contacts.length >= 2 && bodyShapes.length > 0) {
           const bodyPolys = bodyShapes.map((s) => shapeToPolygon(s));
           const allMe1 = (layers as Record<string, LayerShape[] | undefined>)?.metal1 ?? [];
@@ -410,7 +410,7 @@ export function extractMarkedDevices(
                 .filter((c) => polygonsIntersect(me1Poly, shapeToPolygon(c)))
                 .map((c) => c.id),
             );
-            console.log(`[analog]   ME1[${mi}] ${allMe1[mi].id}: hits body, ctIds=[${[...ctIds].join(",")}]`);
+
             me1Hits.push({ idx: mi, poly: me1Poly, ctIds });
           }
           // Union-find: ME1 shapes that overlap each other are connected.
@@ -431,7 +431,7 @@ export function extractMarkedDevices(
             compCts.set(r, set);
           }
           const groups = [...compCts.values()].filter((s) => s.size > 0);
-          console.log(`[analog]   ME1 groups: ${groups.length}`);
+
           if (groups.length >= 2) {
             // Compute body bbox once for axis determination.
             let bbox: Rect | null = null;
@@ -461,17 +461,17 @@ export function extractMarkedDevices(
               });
               plusContactIds = [...groups[0]];
               minusContactIds = [...groups[1]];
-              console.log(`[analog]   split OK: PLUS=${plusContactIds.join(",")}  MINUS=${minusContactIds.join(",")}`);
+
             }
           }
         }
         if (plusContactIds.length === 0) {
           plusContactIds = contacts.map((c) => c.id);
-          console.log(`[analog]   FALLBACK: all ${contacts.length} contacts → PLUS`);
+
         }
         if (minusContactIds.length === 0) {
           minusContactIds = contacts.map((c) => c.id);
-          console.log(`[analog]   FALLBACK: all ${contacts.length} contacts → MINUS`);
+
         }
 
         devices.push({
@@ -693,9 +693,8 @@ export function extractMarkedDevices(
       }
       const groups = [...compCts.values()].filter((s) => s.size > 0);
       const contactCount = groups.reduce((acc, s) => acc + s.size, 0);
-      console.log(
-        `[analog] geo-resistor group ${group.length} shapes: ${groups.length} ME1 groups, ${contactCount} contacts`,
-      );
+
+
       if (groups.length < 2) continue;
 
       // ── Geometry (L/W/squares) using this group's shapes only ──
@@ -792,9 +791,8 @@ export function extractMarkedDevices(
         ],
         bbox: gBbox,
       });
-      console.log(
-        `[analog] geo-resistor ${devId}: ${lineSegs.length} seg(s) L=${L_um.toFixed(1)} W=${W_um.toFixed(1)} squares=${squares.toFixed(2)}`,
-      );
+
+
     }
   }
 
@@ -824,10 +822,10 @@ function splitDiffusionAtGates(
   devId: string,
 ): { segments: Point[][]; shapes: LayerShape[] } | null {
   getClipper(); // ensure Clipper2 is initialized before use
-  console.log(`[analog] splitDiffusionAtGates: ${gateShapes.length} gates for ${devId}`);
+
 
   const diffPoly = shapeToPolygon(bodyShape);
-  console.log(`[analog]  diffPoly pts=${diffPoly.length}, bbox=${JSON.stringify(polygonBounds(diffPoly))}`);
+
   if (diffPoly.length < 3) return null;
 
   // Sort gates by position along the diffusion's dominant axis.
@@ -852,11 +850,11 @@ function splitDiffusionAtGates(
   const sortedGatePolys = [...gCentroids].sort((a, b) =>
     sortByX ? a.cx - b.cx : a.cy - b.cy,
   );
-  console.log(`[analog]  sorted gates: ${sortedGatePolys.map((g,i) => `${i}:(${g.cx.toFixed(1)},${g.cy.toFixed(1)})`).join(", ")}`);
+
 
   // Iteratively cut: start with full diffusion, cut at each gate poly.
   // This gives deterministic ordering of pieces.
-  console.log(`[analog]  starting diffPoly pts=${diffPoly.length}, area=${ringSignedArea(diffPoly).toFixed(2)}`);
+
   let pieces: Point[][] = [diffPoly];
   for (const gp of sortedGatePolys) {
     const nextPieces: Point[][] = [];
@@ -875,23 +873,23 @@ function splitDiffusionAtGates(
         nextPieces.push(piece);
         continue;
       }
-      console.log(`[analog]   piece bbox=${JSON.stringify(pb)}, gate bbox=${JSON.stringify(gb)}`);
+
       const diff = polygonDifference(piece, [gp.poly]);
       const before = nextPieces.length;
       for (const ring of diff) {
         const ringArea = ringSignedArea(ring);
-        console.log(`[analog]   diff ring area=${ringArea.toFixed(2)}, pts=${ring.length}`);
+
         if (Math.abs(ringArea) < 1.0) continue; // discard noise (Clipper CW rings → negative area)
         nextPieces.push(ring);
       }
-      console.log(`[analog]   => ${nextPieces.length - before} pieces kept of ${diff.length} diff rings`);
+
     }
     pieces = nextPieces;
-    console.log(`[analog]   after gate: ${pieces.length} pieces`);
+
   }
 
   if (pieces.length < 2) {
-    console.log(`[analog] splitDiffusionAtGates: got ${pieces.length} pieces, need >=2`);
+
     return null; // shouldn't happen for fingers>1
   }
 
@@ -916,7 +914,7 @@ function splitDiffusionAtGates(
     points: seg.poly.map((p) => ({ x: Math.round(p.x * 100) / 100, y: Math.round(p.y * 100) / 100 })),
   }));
 
-  console.log(`[analog] splitDiffusionAtGates: ${shapes.length} segments created`);
+
   return {
     segments: withCentroid.map((s) => s.poly),
     shapes,
@@ -1080,7 +1078,7 @@ export function mergeMetalConnectedTerminals(
     arr.push({ devId, termName });
   }
 
-  console.log(`[analog] mergeMetalConnectedTerminals: ${rootToTerms.size} metal component(s)`);
+
 
   // ── Assign a common netId to each component's terminals ────────
   const compNetId = new Map<number, number>();
@@ -1093,7 +1091,7 @@ export function mergeMetalConnectedTerminals(
       const term = dev.terminals.find((t) => t.name === termName);
       if (!term) continue;
       term.netId = netId;
-      console.log(`[analog]  merge: ${devId}.${termName} → net=${netId}`);
+
     }
   }
 }
@@ -1155,7 +1153,7 @@ export function detectMOSFromLayers(
   // and die-level wires to share the gate net.
   const polyGateNetMap = new Map<string, number>();
 
-  console.log(`[analog] polyGateNetMap: ${polys.length} polys, clipperLoaded=${isClipperLoaded()}`);
+
 
   if (polys.length > 0) {
     // Connected components via Clipper2 overlap test.
@@ -1163,7 +1161,7 @@ export function detectMOSFromLayers(
       const pp = polys.map((p) => ({ id: p.id, poly: shapeToPolygon(p) }));
       pp.forEach((p, i) => {
         const b = polygonBounds(p.poly)!;
-        console.log(`[analog]  poly[${i}] id=${p.id} bbox=(${b.x.toFixed(1)},${b.y.toFixed(1)},${b.width.toFixed(1)},${b.height.toFixed(1)})`);
+
       });
       const uf = new UnionFind(pp.length);
       let mergeCount = 0;
@@ -1173,13 +1171,13 @@ export function detectMOSFromLayers(
           const bj = polygonBounds(pp[j].poly)!;
           if (!rectsIntersect(bi, bj)) continue;
           if (polygonsIntersect(pp[i].poly, pp[j].poly)) {
-            console.log(`[analog]  MERGE poly[${i}](${pp[i].id}) ↔ poly[${j}](${pp[j].id})`);
+
             uf.union(i, j);
             mergeCount++;
           }
         }
       }
-      console.log(`[analog]  merged ${mergeCount} pairs into ${new Set(Array.from({length:pp.length},(_,i)=>uf.find(i))).size} component(s)`);
+
       const compNets = new Map<number, number>();
       for (let i = 0; i < pp.length; i++) {
         const root = uf.find(i);
@@ -1207,7 +1205,7 @@ export function detectMOSFromLayers(
     if (net !== undefined) return net;
     // Fallback (shouldn't happen since we pre-populated all polys):
     const newNet = nextNet();
-    console.log(`[analog]  gateNetFor FALLBACK polyId=${polyId} → new net=${newNet}`);
+
     polyGateNetMap.set(polyId, newNet);
     return newNet;
   }
@@ -1241,7 +1239,7 @@ export function detectMOSFromLayers(
         });
         if (gates.length === 0) continue;
 
-        console.log(`[analog]  body ${body.id}: ${gates.length} gate(s): ${gates.map(g=>`${g.id}`).join(", ")} → gateNets: ${gates.map(g=>polyGateNetMap.get(g.id)).join(", ")}`);
+
 
         // ── W/L from poly ∩ diffusion intersection ──────────
         // Each gate finger overlaps the diffusion; the intersection
@@ -1306,7 +1304,7 @@ export function detectMOSFromLayers(
         // S/D for the adjacent gate. Shared segments between gates get
         // assigned to both D of the left and S of the right gate.
         // Single-finger (N=1) → 2 segments: seg[0]=S, seg[1]=D.
-        console.log(`[analog] detectMOSFromLayers: ${fingers} fingers for ${devId}, body=${body.id}`);
+
         const split = splitDiffusionAtGates(body, gates, devId);
         if (split && split.segments.length === fingers + 1) {
           const wellId = well.id;
@@ -1394,12 +1392,12 @@ export function detectMOSFromLayers(
   // on all devices together so inter-device connections work.
 
   // Debug: итоговые device gate nets
-  console.log(`[analog] detectMOSFromLayers: ${devices.length} devices total`);
+
   for (const d of devices) {
     const gTerm = d.terminals.find((t) => t.name === "G");
     const sTerm = d.terminals.find((t) => t.name === "S");
     const dTerm = d.terminals.find((t) => t.name === "D");
-    console.log(`[analog]   ${d.instanceName ?? d.id}: G=${gTerm?.netId ?? "?"} S=${sTerm?.netId ?? "?"} D=${dTerm?.netId ?? "?"}`);
+
   }
 
   return devices;

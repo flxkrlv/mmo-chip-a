@@ -134,16 +134,16 @@ function buildElements(ctx: BuildCtx, hideGlobalNets: boolean): ElementDefinitio
   // Debug: dump rail detection once
   if (!_debugFired) {
     _debugFired = true;
-    console.log("[NetGraphView] userVdd=%s userGnd=%s", userVdd, userGnd);
-    console.log("[NetGraphView] namedNets (%d):", namedNets.size);
+
+
     for (const [nid, name] of namedNets) {
       const r = railForNet.get(nid);
-      console.log("  netId=%d name=%s rail=%s", nid, name, r ?? "-");
+
     }
-    console.log("[NetGraphView] devices (%d):", devs.length);
+
     for (const d of devs) {
       const terms = d.terminals.map(t => `${t.name}:netId=${t.netId}${railForNet.has(t.netId) ? "["+railForNet.get(t.netId)+"]" : ""}`).join(", ");
-      console.log("  %s (%s) → %s", d.instanceName, d.kindLabel, terms);
+
     }
   }
 
