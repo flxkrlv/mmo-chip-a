@@ -58,7 +58,7 @@ const INITIAL: CellREState = {
   selectedShapeIds: new Set(), expandedTypes: [],
   unmatchedOpen: true, mlOpen: false, inferredOpen: true, dieViewerLayersOpen: true,
   canvasTab: "image", activeDomainId: null, clipboard: [],
-  polylineDraft: [], polylineWidth: 10,
+  polylineDraft: [], polylineWidth: parseFloat(localStorage.getItem('cellRE_polylineWidth') ?? '') || 10,
 };
 
 export const useCellREStore = create<CellREState & CellREActions>()((set, get) => ({
@@ -86,7 +86,7 @@ export const useCellREStore = create<CellREState & CellREActions>()((set, get) =
   setClipboard: (items) => set({ clipboard: items }),
   addPolylinePoint: (pt) => set((s) => ({ polylineDraft: [...s.polylineDraft, pt] })),
   clearPolylineDraft: () => set({ polylineDraft: [] }),
-  setPolylineWidth: (w) => set({ polylineWidth: w }),
+  setPolylineWidth: (w) => { localStorage.setItem('cellRE_polylineWidth', String(w)); set({ polylineWidth: w }); },
   reset: () => { const { expandedTypes, unmatchedOpen, mlOpen } = get(); set({ ...INITIAL, expandedTypes, unmatchedOpen, mlOpen }); },
 }));
 

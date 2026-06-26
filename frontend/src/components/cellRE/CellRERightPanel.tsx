@@ -1707,7 +1707,7 @@ function AnalogDeviceRow({ device, cellTypeId, onOverride }: AnalogDeviceRowProp
     switch (device.kind) {
       case "mos": return ["W_um", "L_um", "fingers", "multiplier"];
       case "bjt_npn": case "bjt_pnp": return ["AE_um2", "PE_um", "multiplier"];
-      case "resistor": return ["squares", "W_um", "L_um"];
+      case "resistor": return ["squares", "L_um"];
       case "capacitor": return ["area_um2", "capacitance_fF"];
       case "diode": return ["area_um2"];
       default: return [];

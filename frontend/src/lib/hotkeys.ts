@@ -47,6 +47,7 @@ export const CELL_RE_HOTKEYS: Record<string, ReToolId> = {
   "r": "rect",
   "p": "polygon",
   "o": "point",     // o = via/contact point
+  "l": "polyline",
 };
 
 // ── Global action hotkeys (no modifier) ───────────────────────

@@ -1480,13 +1480,13 @@ export const CellRECanvas = forwardRef<CellRECanvasHandle, Props>(function CellR
       ctx.moveTo(polylineDraft[0].x, polylineDraft[0].y);
       for (let i = 1; i < polylineDraft.length; i++) ctx.lineTo(polylineDraft[i].x, polylineDraft[i].y);
       ctx.stroke();
-      // Draw preview segment (dashed line to cursor)
+      // Draw preview segment (dashed line to cursor, snapped to H/V)
       const cur = cursorRef.current;
       if (cur) {
         const last = polylineDraft[polylineDraft.length - 1];
         const dx = cur.x - last.x, dy = cur.y - last.y;
-        // Snap to nearest 90° axis
-        const prevSnapped = dx > dy
+        // Snap to nearest 90° axis — uses Math.abs so all 4 quadrants work
+        const prevSnapped = Math.abs(dx) > Math.abs(dy)
           ? { x: cur.x, y: last.y }
           : { x: last.x, y: cur.y };
         ctx.beginPath();
