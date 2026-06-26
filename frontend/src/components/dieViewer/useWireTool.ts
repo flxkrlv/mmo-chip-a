@@ -226,6 +226,11 @@ export function useWireTool(opts: {
    *  virtual vertex marker, so a terminal under that wire doesn't confuse. */
   const resolveTerminalSnap = useCallback(
     (world: Point, zoom: number): TerminalSnapTarget | null => {
+      // Only snap to device terminals when ME1 is selected.
+      // ME2+ requires a via to reach the contact — don't lure the user
+      // into drawing an illegal ME2→contact connection.
+      const layer = useDieViewerStore.getState().wireLayer;
+      if (layer && layer !== "metal1") return null;
       const { findNearestTerminal } = snapRef.current;
       if (!findNearestTerminal) return null;
       const tol = TERMINAL_SNAP_TOLERANCE_PX / zoom;

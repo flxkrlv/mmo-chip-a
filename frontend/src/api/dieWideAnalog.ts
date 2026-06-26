@@ -27,7 +27,7 @@
 import type {
   AnalogDevice, AnnotationNet, Cell, CellType,
   DeviceGeometryMOS, DeviceKind, DieAnnotations, IOPin,
-  LayerShape, SpiceConfig,
+  LayerShape, SpiceConfig, WireLayer,
 } from "shared";
 import { extractMarkedDevices, detectMOSFromLayers, consumeSegmentShapes, mergeMetalConnectedTerminals } from "../lib/extraction/simpleAnalog";
 import { isClipperLoaded } from "../lib/extraction/clipper";
@@ -418,6 +418,7 @@ function matchWireToPoint(
   px:number, py:number, tol:number,
   netIdMap: Map<string,number>,
   nextId: {v:number},
+  allowedLayer?: WireLayer,
 ): number|null {
   const tol2 = tol*tol;
   for (const net of nets) {
@@ -425,6 +426,9 @@ function matchWireToPoint(
       const a = net.nodes.find(n=>n.id===edge.from);
       const b = net.nodes.find(n=>n.id===edge.to);
       if (!a||!b) continue;
+      // Layer check: if allowedLayer is set and edge has a defined layer,
+      // it must match.  Undefined layer (legacy) is allowed regardless.
+      if (allowedLayer && edge.layer && edge.layer !== allowedLayer) continue;
       const dx=b.x-a.x, dy=b.y-a.y;
       const len2=dx*dx+dy*dy;
       let t = len2===0 ? 0 : ((px-a.x)*dx+(py-a.y)*dy)/len2;
@@ -778,7 +782,9 @@ export function collectDieWideAnalogDevices(
           const contacts = termContacts[ti];
           // contacts.length === 0 — no contact centers
           for (const cp of contacts) {
-            const wid = matchWireToPoint(nets, cp.x, cp.y, cp.tol ?? 10, netIdMap, nextNetId);
+            // Only ME1 wires can connect to device contacts.
+            // ME2+ requires a via (drawn on die viewer) to bridge up.
+            const wid = matchWireToPoint(nets, cp.x, cp.y, cp.tol ?? 10, netIdMap, nextNetId, "metal1");
             if (wid!=null) {
               cellNetCache.set(cacheKey, wid);
               return {...t, netId: wid};

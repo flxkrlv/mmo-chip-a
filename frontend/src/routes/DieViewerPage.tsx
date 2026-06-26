@@ -304,7 +304,20 @@ function DieViewer({ dieId }: { dieId: string }) {
       const toolId = DIE_VIEWER_HOTKEYS[e.key];
       if (toolId && toolId !== "pan") {
         e.preventDefault();
-        setActiveTool(toolId);
+        if (toolId === "wire") {
+          // W carousel: first press activates wire+M1, repeat toggles M1↔M2.
+          // All other metals are reached via the layer selector in the toolbar.
+          const cur = useDieViewerStore.getState();
+          if (cur.activeTool === "wire") {
+            const nextLayer = cur.wireLayer === "metal1" ? "metal2" : "metal1";
+            cur.setWireLayer(nextLayer);
+          } else {
+            setActiveTool("wire");
+            cur.setWireLayer("metal1");
+          }
+        } else {
+          setActiveTool(toolId);
+        }
         return;
       }
 

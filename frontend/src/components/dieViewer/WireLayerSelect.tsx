@@ -1,13 +1,13 @@
 import type { WireLayer } from "shared";
 
-/** Selectable layers (null = the default "unknown" — edges store no layer).
- *  Short chip labels match the wireframe (unk / poly / m1 / m2). */
+/** Selectable layers for the wire tool — only metal layers.
+ *  Poly and unknown are removed: device contacts connect to ME1 only;
+ *  ME2+ requires a via.  Also used in the InspectorPanel for edge
+ *  layer assignment. */
 export const WIRE_LAYER_OPTIONS: ReadonlyArray<{
   label: string;
   value: WireLayer | null;
 }> = [
-  { label: "unk", value: null },
-  { label: "poly", value: "poly" },
   { label: "m1", value: "metal1" },
   { label: "m2", value: "metal2" }
 ];
