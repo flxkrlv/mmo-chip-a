@@ -49,6 +49,7 @@ import {
   rotateCw
 } from "../lib/mergeCells";
 import { alignVias, viasToCanonical } from "../lib/viaAlign";
+import { MERGE_HOTKEYS } from "../lib/hotkeys";
 import { useOverlayHotkeys } from "../lib/useOverlayHotkeys";
 
 export function MergeCellsPage() {
@@ -421,9 +422,9 @@ function Merge({ dieId }: { dieId: string }) {
   }, [dispatcher]);
 
   // ── Keyboard: merge workflow shortcuts ──────────────────────────────
+  //   Alt+1/2/3/4/5  switch merge modes (from MERGE_HOTKEYS)
   //   ←/↑ prev · →/↓ next candidate
-  //   1 overlay · 2 side-by-side · 3 difference
-  //   f flip H · g flip V · h rotate · j auto-align (stub)
+  //   f flip H · g flip V · h rotate · j auto-align
   //   y accept & merge
   useEffect(() => {
     const stepCandidate = (delta: number) => {
@@ -435,8 +436,17 @@ function Merge({ dieId }: { dieId: string }) {
       if (c) setCandidate(c.cell.id);
     };
     const onKey = (e: KeyboardEvent) => {
-      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      if (e.metaKey || e.ctrlKey) return;
       if (isTypingTarget(e.target)) return;
+      // Merge mode shortcuts (Alt+1..Alt+5)
+      if (e.altKey && !e.shiftKey && !e.metaKey && !e.ctrlKey) {
+        const mode = MERGE_HOTKEYS[`Alt+${e.key}`];
+        if (mode) {
+          e.preventDefault();
+          setMode(mode);
+          return;
+        }
+      }
       switch (e.key) {
         case "ArrowLeft":
         case "ArrowUp":
@@ -447,21 +457,6 @@ function Merge({ dieId }: { dieId: string }) {
         case "ArrowDown":
           e.preventDefault();
           stepCandidate(1);
-          break;
-        case "1":
-          setMode("overlay");
-          break;
-        case "2":
-          setMode("sxs");
-          break;
-        case "3":
-          setMode("diff");
-          break;
-        case "4":
-          setMode("specimen");
-          break;
-        case "5":
-          setMode("candidate");
           break;
         case "f":
         case "F":
@@ -539,41 +534,41 @@ function Merge({ dieId }: { dieId: string }) {
           className={"chip" + (mode === "overlay" ? " on" : "")}
           style={{ cursor: "pointer" }}
           onClick={() => setMode("overlay")}
-          title="Overlay (1)"
+          title="Overlay (Alt+1)"
         >
-          <Kb>1</Kb> overlay
+          <Kb>Alt+1</Kb> overlay
         </span>
         <span
           className={"chip" + (mode === "sxs" ? " on" : "")}
           style={{ cursor: "pointer" }}
           onClick={() => setMode("sxs")}
-          title="Side-by-side (2)"
+          title="Side-by-side (Alt+2)"
         >
-          <Kb>2</Kb> side-by-side
+          <Kb>Alt+2</Kb> side-by-side
         </span>
         <span
           className={"chip" + (mode === "diff" ? " on" : "")}
           style={{ cursor: "pointer" }}
           onClick={() => setMode("diff")}
-          title="Pixel difference — black where aligned, bright where they disagree (3)"
+          title="Pixel difference — black where aligned, bright where they disagree (Alt+3)"
         >
-          <Kb>3</Kb> difference
+          <Kb>Alt+3</Kb> difference
         </span>
         <span
           className={"chip" + (mode === "specimen" ? " on" : "")}
           style={{ cursor: "pointer" }}
           onClick={() => setMode("specimen")}
-          title="Specimen only (4)"
+          title="Specimen only (Alt+4)"
         >
-          <Kb>4</Kb> specimen
+          <Kb>Alt+4</Kb> specimen
         </span>
         <span
           className={"chip" + (mode === "candidate" ? " on" : "")}
           style={{ cursor: "pointer" }}
           onClick={() => setMode("candidate")}
-          title="Candidate only (5)"
+          title="Candidate only (Alt+5)"
         >
-          <Kb>5</Kb> candidate
+          <Kb>Alt+5</Kb> candidate
         </span>
         {mode === "overlay" && (
           <>

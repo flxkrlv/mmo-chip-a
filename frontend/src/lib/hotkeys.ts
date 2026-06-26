@@ -72,6 +72,19 @@ export const NAV_HOTKEYS: Record<string, number> = {
   "5": 5,  // Netlist (Analog)
 };
 
+// ── Merge Cells mode hotkeys ────────────────────────────────────
+// Alt+1..Alt+5 to switch merge view mode (Alt prefix avoids conflict
+// with NAV_HOTKEYS which uses bare digits for tab switching).
+export type MergeModeId = "overlay" | "sxs" | "diff" | "specimen" | "candidate";
+
+export const MERGE_HOTKEYS: Record<string, MergeModeId> = {
+  "Alt+1": "overlay",
+  "Alt+2": "sxs",
+  "Alt+3": "diff",
+  "Alt+4": "specimen",
+  "Alt+5": "candidate",
+};
+
 // ── Overlay hotkeys (shared across Die viewer / Merge / RE Cell) ─
 //   Ctrl+Shift+B    — toggle base image visibility
 //   ]               — cycle to next overlay (toggle on/off)
