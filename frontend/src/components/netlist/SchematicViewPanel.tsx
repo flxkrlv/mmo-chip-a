@@ -1,9 +1,11 @@
 /**
- * SchematicViewPanel.tsx — Renders analog schematics via @spice-ts/ui SchematicView.
+ * SchematicViewPanel.tsx — Renders analog schematics.
  *
- * Supports:
- *   - Flat mode: one big schematic of all devices
- *   - Hierarchical mode: sidebar of subcircuit regions, each renders independently
+ * Supports two rendering engines:
+ *   - spice-ts: @spice-ts/ui SchematicView (has issues with labels/pins)
+ *   - netlist2svg: netlist2svg (Yosys JSON → SVG via ELK layout)
+ *
+ * User can toggle between them. netlist2svg loads ELK.js (~2MB) on first use.
  */
 
 import { useEffect, useMemo, useState } from "react";
@@ -12,6 +14,18 @@ import {
   SpiceSchematicPrototype,
 } from "./SpiceSchematicPrototype";
 import { generateSpiceTSViews, type SpiceTSResult } from "../../lib/schematic/spiceTSFormat";
+import { Netlist2SvgView } from "./Netlist2SvgView";
+import { LAYOUT_STRATEGIES, LAYOUT_DIRECTIONS, type LayoutStrategy, type LayoutDirection } from "../../lib/schematic/netlist2svgSkin";
+import { formatDevicesAsNetlist2Svg } from "../../lib/schematic/netlist2svgFormat";
+import { collectDieWideAnalogDevices } from "../../api/dieWideAnalog";
+import { assignInstanceNames } from "../../lib/export/spice";
+import { matchGeometry } from "../../lib/export/matching";
+
+// ── Engine selection ────────────────────────────────────────────
+
+type SchematicEngine = "spice-ts" | "netlist2svg";
+
+// ── Props ───────────────────────────────────────────────────────
 
 interface Props {
   annotations: DieAnnotations;
@@ -25,6 +39,8 @@ interface Props {
   onSelectRegion?: (regionId: string | null) => void;
 }
 
+// ── Component ───────────────────────────────────────────────────
+
 export function SchematicViewPanel({
   annotations,
   moduleName,
@@ -34,38 +50,118 @@ export function SchematicViewPanel({
   selectedRegion: selectedRegionProp,
   onSelectRegion,
 }: Props) {
+  // ── Engine toggle ─────────────────────────────────────────────
+  const [engine, setEngine] = useState<SchematicEngine>("spice-ts");
+  const [layoutStrategy, setLayoutStrategy] = useState<LayoutStrategy>("BRANDES_KOEPF");
+  const [layoutDirection, setLayoutDirection] = useState<LayoutDirection>("DOWN");
+
+  // ══ Generate spice-ts views ═══════════════════════════════════
   const views = useMemo(
     () => generateSpiceTSViews(annotations, moduleName, spiceConfig, hierarchical ? floorplanRegions : undefined),
     [annotations, moduleName, spiceConfig, hierarchical, floorplanRegions],
   );
 
-  // Current region selection (controlled or internal)
-  const regionIds = useMemo(() => [...views.perRegion.keys()], [views.perRegion]);
+  // ══ Generate netlist2svg views ════════════════════════════════
+  const n2sData = useMemo(() => {
+    const config: SpiceConfig = { vdd: "VDD", gnd: "GND", ...spiceConfig };
+    const { devices, namedNets, ioNetIds } = collectDieWideAnalogDevices(
+      annotations,
+      spiceConfig?.umPerPx ?? annotations.umPerPx ?? 1.0,
+      config,
+    );
+    const named = assignInstanceNames(devices);
+    matchGeometry(named as any[], config, namedNets);
+
+    // Build hierarchical (per-region) device lists
+    let floorplanDevices: Map<string, AnalogDevice[]> | undefined;
+    if (hierarchical && floorplanRegions && floorplanRegions.length > 0) {
+      floorplanDevices = new Map();
+      const assignedKeys = new Set<string>();
+      const typedDevices = named as (import("shared").AnalogDevice & { instanceName: string })[];
+      
+      for (const region of floorplanRegions) {
+        const inside: typeof typedDevices = [];
+        for (const d of typedDevices) {
+          const key = d.instanceName ?? d.id;
+          if (assignedKeys.has(key)) continue;
+          if (deviceInRegion(d, region)) {
+            inside.push(d);
+            assignedKeys.add(key);
+          }
+        }
+        if (inside.length > 0) {
+          floorplanDevices.set(region.id, inside as any);
+        }
+      }
+
+      // Unassigned devices
+      const unassigned = typedDevices.filter((d) => {
+        const k = d.instanceName ?? d.id;
+        return !assignedKeys.has(k);
+      });
+      if (unassigned.length > 0) {
+        floorplanDevices.set("__unassigned__", unassigned as any);
+      }
+    }
+
+    const flat = formatDevicesAsNetlist2Svg(
+      named,
+      namedNets,
+      moduleName,
+      { vdd: config.vdd ?? "VDD", gnd: config.gnd ?? "GND", hierarchical, ioNetIds },
+    );
+
+    return { flatJson: flat, floorplanDevices, namedNets, ioNetIds };
+  }, [annotations, moduleName, spiceConfig, hierarchical, floorplanRegions]);
+
+  // ── Region state ──────────────────────────────────────────────
+  const regionIds = useMemo(
+    () => [...views.perRegion.keys()],
+    [views.perRegion],
+  );
   const [internalRegion, setInternalRegion] = useState<string | null>(
     regionIds[0] ?? null,
   );
   const activeRegion = selectedRegionProp ?? internalRegion;
 
-  // Sync internal when regions change
+  // Sync internal region when regions change
   useEffect(() => {
-    if (regionIds.length > 0 && !regionIds.includes(activeRegion ?? '')) {
+    if (regionIds.length > 0 && !regionIds.includes(activeRegion ?? "")) {
       const next = regionIds[0];
       setInternalRegion(next);
       onSelectRegion?.(next);
     }
-  }, [regionIds.join(',')]);
+  }, [regionIds.join(",")]);
 
   const handleSelectRegion = (id: string) => {
     setInternalRegion(id);
     onSelectRegion?.(id);
   };
 
-  const current: SpiceTSResult | null = useMemo(() => {
+  // ── Current data ──────────────────────────────────────────────
+
+  const currentSpiceTs: SpiceTSResult | null = useMemo(() => {
     if (hierarchical && activeRegion) {
       return views.perRegion.get(activeRegion)?.result ?? null;
     }
     return views.flat;
   }, [hierarchical, activeRegion, views]);
+
+  const currentN2sJson = useMemo(() => {
+    if (hierarchical && activeRegion && n2sData.floorplanDevices) {
+      const regionDevices = n2sData.floorplanDevices.get(activeRegion);
+      if (regionDevices) {
+        return formatDevicesAsNetlist2Svg(
+          regionDevices,
+          n2sData.namedNets,
+          `${moduleName}.${activeRegion.slice(0, 8)}`,
+          { vdd: spiceConfig?.vdd ?? "VDD", gnd: spiceConfig?.gnd ?? "GND", hierarchical, ioNetIds: n2sData.ioNetIds },
+        );
+      }
+      return null;
+    }
+    return n2sData.flatJson;
+  }, [hierarchical, activeRegion, n2sData, moduleName, spiceConfig]);
 
   return (
     <div
@@ -76,48 +172,145 @@ export function SchematicViewPanel({
         overflow: "hidden",
       }}
     >
-      {/* Hierarchical region sidebar */}
-      {hierarchical && regionIds.length > 0 && (
+      {/* ── Toolbar: engine toggle + region buttons ────────────── */}
+      <div
+        style={{
+          display: "flex",
+          gap: 4,
+          padding: "6px 8px",
+          background: "var(--l1)",
+          borderBottom: "1px solid var(--l2)",
+          overflow: "auto",
+          flexShrink: 0,
+          flexWrap: "wrap",
+          alignItems: "center",
+        }}
+      >
+        {/* Engine toggle */}
         <div
+          className="row"
           style={{
-            display: "flex",
-            gap: 4,
-            padding: "6px 8px",
-            background: "var(--l1)",
-            borderBottom: "1px solid var(--l2)",
-            overflow: "auto",
+            gap: 2,
+            background: "var(--l2)",
+            borderRadius: 4,
+            padding: 2,
             flexShrink: 0,
-            flexWrap: "wrap",
           }}
         >
-          {regionIds.map((id) => {
-            const reg = views.perRegion.get(id)!;
-            const active = id === activeRegion;
-            return (
-              <button
-                key={id}
-                type="button"
-                className={"btn sm" + (active ? " on" : "")}
-                onClick={() => handleSelectRegion(id)}
-                style={{
-                  fontSize: 10,
-                  fontWeight: 600,
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 4,
-                }}
-              >
-                <span>{reg.name}</span>
-                <span style={{ fontSize: 9, opacity: 0.6 }}>
-                  {reg.result.totalDevices} devices
-                </span>
-              </button>
-            );
-          })}
+          <button
+            type="button"
+            className={"btn sm" + (engine === "spice-ts" ? " on" : "")}
+            onClick={() => setEngine("spice-ts")}
+            style={{ fontSize: 10, fontWeight: 600 }}
+            title="@spice-ts schematic (basic)"
+          >
+            Spice-TS
+          </button>
+          <button
+            type="button"
+            className={"btn sm" + (engine === "netlist2svg" ? " on" : "")}
+            onClick={() => setEngine("netlist2svg")}
+            style={{ fontSize: 10, fontWeight: 600 }}
+            title="netlist2svg schematic (ELK layout)"
+          >
+            Netlist2SVG
+          </button>
         </div>
-      )}
 
-      {/* Schematic canvas */}
+        {/* Layout strategy selector (netlist2svg only) */}
+        {engine === "netlist2svg" && (
+          <select
+            value={layoutStrategy}
+            onChange={(e) => setLayoutStrategy(e.target.value as LayoutStrategy)}
+            style={{
+              fontSize: 10,
+              padding: "1px 4px",
+              border: "1px solid var(--l2)",
+              borderRadius: 3,
+              background: "var(--card)",
+              color: "var(--fg)",
+              outline: "none",
+              cursor: "pointer",
+            }}
+            title="ELK layout strategy — switch if rendering fails"
+          >
+            {LAYOUT_STRATEGIES.map((s) => (
+              <option key={s.value} value={s.value} title={s.desc}>
+                {s.label}
+              </option>
+            ))}
+          </select>
+        )}
+
+        {/* Layout direction selector (netlist2svg only) */}
+        {engine === "netlist2svg" && (
+          <select
+            value={layoutDirection}
+            onChange={(e) => setLayoutDirection(e.target.value as LayoutDirection)}
+            style={{
+              fontSize: 10,
+              padding: "1px 4px",
+              border: "1px solid var(--l2)",
+              borderRadius: 3,
+              background: "var(--card)",
+              color: "var(--fg)",
+              outline: "none",
+              cursor: "pointer",
+            }}
+            title="ELK layout direction — controls power rail and signal flow"
+          >
+            {LAYOUT_DIRECTIONS.map((d) => (
+              <option key={d.value} value={d.value} title={d.desc}>
+                {d.label}
+              </option>
+            ))}
+          </select>
+        )}
+
+        {/* Separator */}
+        <span style={{ width: 1, height: 16, background: "var(--l2)", flexShrink: 0 }} />
+
+        {/* Hierarchical region buttons */}
+        {hierarchical && regionIds.length > 0 && (
+          <>
+            {/* "All" button (flat view) */}
+            <button
+              type="button"
+              className={"btn sm" + (!activeRegion ? " on" : "")}
+              onClick={() => handleSelectRegion("")}
+              style={{ fontSize: 10, fontWeight: 600 }}
+            >
+              All
+            </button>
+            {regionIds.map((id) => {
+              const reg = views.perRegion.get(id)!;
+              const active = id === activeRegion;
+              return (
+                <button
+                  key={id}
+                  type="button"
+                  className={"btn sm" + (active ? " on" : "")}
+                  onClick={() => handleSelectRegion(id)}
+                  style={{
+                    fontSize: 10,
+                    fontWeight: 600,
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 4,
+                  }}
+                >
+                  <span>{reg.name}</span>
+                  <span style={{ fontSize: 9, opacity: 0.6 }}>
+                    {reg.result.totalDevices} devices
+                  </span>
+                </button>
+              );
+            })}
+          </>
+        )}
+      </div>
+
+      {/* ── Schematic canvas ──────────────────────────────────── */}
       <div
         style={{
           flex: "1 1 auto",
@@ -125,26 +318,84 @@ export function SchematicViewPanel({
           position: "relative",
         }}
       >
-        {current ? (
-          <SpiceSchematicPrototype netlist={current.netlist} height={800} />
+        {engine === "spice-ts" ? (
+          // ── spice-ts renderer ────────────────────────────────
+          currentSpiceTs ? (
+            <SpiceSchematicPrototype netlist={currentSpiceTs.netlist} height={800} />
+          ) : (
+            <EmptyView hasRegions={regionIds.length > 0} />
+          )
         ) : (
-          <div
-            style={{
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              height: "100%",
-              color: "var(--ink3)",
-              fontStyle: "italic",
-              fontSize: 12,
-            }}
-          >
-            {regionIds.length > 0
-              ? "Select a region"
-              : "No analog devices found"}
-          </div>
+          // ── netlist2svg renderer ─────────────────────────────
+          currentN2sJson ? (
+            <Netlist2SvgView netlistJson={currentN2sJson} layoutStrategy={layoutStrategy} layoutDirection={layoutDirection} />
+          ) : (
+            <EmptyView hasRegions={regionIds.length > 0} />
+          )
         )}
       </div>
     </div>
   );
+}
+
+// ── Empty view ──────────────────────────────────────────────────
+
+function EmptyView({ hasRegions }: { hasRegions?: boolean }) {
+  return (
+    <div
+      style={{
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        height: "100%",
+        color: "var(--ink3)",
+        fontStyle: "italic",
+        fontSize: 12,
+      }}
+    >
+      {hasRegions
+        ? "Select a region"
+        : "No analog devices found"}
+    </div>
+  );
+}
+
+// ── Helpers (duplicated from spiceTSFormat.ts to avoid import cycle) ──
+
+import type { AnalogDevice } from "shared";
+
+function deviceInRegion(
+  d: AnalogDevice,
+  region: FloorplanRegion,
+): boolean {
+  const bb = d.bbox;
+  if (!bb) return false;
+  const cx = bb.x + bb.width / 2;
+  const cy = bb.y + bb.height / 2;
+
+  const pts = region.geometry;
+  if (pts.length < 2) return false;
+
+  if (region.kind === "rect" && pts.length >= 2) {
+    const minX = Math.min(pts[0].x, pts[1].x);
+    const maxX = Math.max(pts[0].x, pts[1].x);
+    const minY = Math.min(pts[0].y, pts[1].y);
+    const maxY = Math.max(pts[0].y, pts[1].y);
+    return cx >= minX && cx <= maxX && cy >= minY && cy <= maxY;
+  }
+
+  if (pts.length >= 3) {
+    let inside = false;
+    for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
+      const xi = pts[i].x, yi = pts[i].y;
+      const xj = pts[j].x, yj = pts[j].y;
+      if ((yi > cy) !== (yj > cy) &&
+          cx < ((xj - xi) * (cy - yi)) / (yj - yi) + xi) {
+        inside = !inside;
+      }
+    }
+    return inside;
+  }
+
+  return false;
 }
