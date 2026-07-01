@@ -273,6 +273,12 @@ export interface Netlist2SvgConfig {
    *  When omitted, ALL named nets become ports — which can overwhelm ELK
    *  and cause "Invalid hitboxes for scanline constraint calculation". */
   ioNetIds?: Set<number>;
+  /**
+   * Show net label pins (inputExt/outputExt symbols) for named nets.
+   * When false, only VCC/GND symbols are shown, no port labels.
+   * @default true
+   */
+  showNetLabels?: boolean;
 }
 
 /**
@@ -338,6 +344,8 @@ export function formatDevicesAsNetlist2Svg(
   const gndBitId = gndNetId != null ? netToBitId.get(gndNetId) : undefined;
   console.log('[n2s] VDD match:', cfg.vdd, '→ netId:', vddNetId, 'bitId:', vddBitId, '| namedNets has it:', vddNetId != null);
   console.log('[n2s] GND match:', cfg.gnd, '→ netId:', gndNetId, 'bitId:', gndBitId, '| namedNets has it:', gndNetId != null);
+
+  // ── Single global VCC and GND symbols ────────────────────────
   if (vddBitId != null) {
     cells["VDD"] = {
       type: "vcc",
@@ -353,8 +361,10 @@ export function formatDevicesAsNetlist2Svg(
     };
   }
 
-  // Build top-level ports from IO pins (named nets)
-  const ports = topLevelPorts(devices, namedNets, netToBitId, cfg.vdd, cfg.gnd, cfg.ioNetIds);
+  // Build top-level ports from IO pins (named nets) — skip when showNetLabels is off
+  const ports = cfg.showNetLabels !== false
+    ? topLevelPorts(devices, namedNets, netToBitId, cfg.vdd, cfg.gnd, cfg.ioNetIds)
+    : {};
 
   // Build the module
   const module: YosysModule = {

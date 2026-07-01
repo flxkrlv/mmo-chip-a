@@ -27,15 +27,28 @@ export const LAYOUT_DIRECTIONS: { value: LayoutDirection; label: string; desc: s
   { value: "LEFT", label: "← Left", desc: "Inputs right, outputs left" },
 ];
 
+/** ELK post-compaction strategy — controls how tightly nodes are packed after layout */
+export type CompactionLevel = 0 | 1 | 2 | 3 | 4;
+
+export const COMPACTION_LEVELS: { value: CompactionLevel; label: string; desc: string }[] = [
+  { value: 0, label: "Off", desc: "No post-compaction — safest, more whitespace" },
+  { value: 1, label: "LUT", desc: "Look-up table — light compaction, safe" },
+  { value: 2, label: "Scanline", desc: "Scanline — good density, stable on most graphs" },
+  { value: 3, label: "Scanline+Sweep", desc: "Scanline + sweep — denser, may crash on complex graphs" },
+  { value: 4, label: "Pocket", desc: "Pocket — max density, prone to hitbox errors on dense graphs" },
+];
+
 /**
- * Build skin with a specific ELK layout strategy and direction.
+ * Build skin with a specific ELK layout strategy, direction, and compaction level.
  *
- * @param strategy - Node placement algorithm (default: BRANDES_KOEPF)
- * @param direction - Layout flow direction (default: DOWN)
+ * @param strategy   - Node placement algorithm (default: BRANDES_KOEPF)
+ * @param direction  - Layout flow direction (default: DOWN)
+ * @param compaction - Post-compaction level 0-4 (default: 2 = SCANLINE)
  */
-export function buildSkin(strategy?: LayoutStrategy, direction?: LayoutDirection): string {
+export function buildSkin(strategy?: LayoutStrategy, direction?: LayoutDirection, compaction?: CompactionLevel): string {
   const np = LAYOUT_STRATEGIES.find(s => s.value === strategy) ?? LAYOUT_STRATEGIES[0];
   const dir = LAYOUT_DIRECTIONS.find(d => d.value === direction) ?? LAYOUT_DIRECTIONS[0];
+  const comp = COMPACTION_LEVELS.find(c => c.value === compaction) ?? COMPACTION_LEVELS[2];
   return CUSTOM_ANALOG_SKIN
     .replace(
       /org\.eclipse\.elk\.layered\.nodePlacement\.strategy="[^"]*"/,
@@ -43,7 +56,7 @@ export function buildSkin(strategy?: LayoutStrategy, direction?: LayoutDirection
     )
     .replace(
       /org\.eclipse\.elk\.layered\.compaction\.postCompaction\.strategy="[^"]*"/,
-      `org.eclipse.elk.layered.compaction.postCompaction.strategy="${np.value === "BRANDES_KOEPF" ? "4" : "0"}"`
+      `org.eclipse.elk.layered.compaction.postCompaction.strategy="${comp.value}"`
     )
     .replace(
       /org\.eclipse\.elk\.direction="[^"]*"/,
@@ -54,69 +67,62 @@ export function buildSkin(strategy?: LayoutStrategy, direction?: LayoutDirection
 export const CUSTOM_ANALOG_SKIN = `<svg xmlns="http://www.w3.org/2000/svg"
   xmlns:xlink="http://www.w3.org/1999/xlink"
   xmlns:s="https://github.com/ajsb85/netlist2svg"><style>
-  svg { stroke: #000; fill: none; }
-  text {
+  .n2s-svg { stroke: #000; fill: none; }
+  .n2s-svg text {
     fill: #000; stroke: none;
     font-size: 10px; font-weight: bold;
     font-family: "Courier New", monospace;
   }
-  .nodelabel { text-anchor: middle; }
-  .valuelabel {
+  .n2s-svg .nodelabel { text-anchor: middle; }
+  .n2s-svg .valuelabel {
     white-space: pre;
     line-height: 1.3;
     font-size: 9px;
     fill: #888;
   }
-  .inputPortLabel { text-anchor: end; }
-  .splitjoinBody { fill: #000; }
-  .junction { fill: #000; }
-  .labelBackground { fill: #fff; stroke: none; }
-  .detail, .symbol { stroke-linejoin: round; stroke-linecap: round; }
-  .symbol { stroke-width: 2; }
-  .detail { fill: #000; }
+  .n2s-svg .inputPortLabel { text-anchor: end; }
+  .n2s-svg .splitjoinBody { fill: #000; }
+  .n2s-svg .junction { fill: #000; }
+  .n2s-svg .labelBackground { fill: #fff; stroke: none; }
+  .n2s-svg .detail, .n2s-svg .symbol { stroke-linejoin: round; stroke-linecap: round; }
+  .n2s-svg .symbol { stroke-width: 2; }
+  .n2s-svg .detail { fill: #000; }
 
-  @media (prefers-color-scheme: dark) {
-    svg { stroke: #fff !important; }
-    text { fill: #fff !important; }
-    .splitjoinBody { fill: #fff !important; }
-    .junction { fill: #fff !important; }
-    .labelBackground { fill: #0a192f !important; }
-    .detail { fill: #fff !important; }
-    .valuelabel { fill: #88aacc !important; }
-    circle, path, rect, line { stroke: #fff; }
-    .subModuleOdd { fill: #0e2238 !important; }
-    .subModuleEven { fill: #16365a !important; }
-    [style*="fill:#000"], [style*="fill:#000000"] { fill: #fff !important; }
-    [style*="stroke:#000"], [style*="stroke:#000000"] { stroke: #fff !important; }
-  }
-  svg.dark {
+  /* Dark theme (forced via .n2s-svg class) */
+  .n2s-svg {
     stroke: #fff !important;
   }
-  svg.dark text { fill: #fff !important; }
-  svg.dark .splitjoinBody { fill: #fff !important; }
-  svg.dark .junction { fill: #fff !important; }
-  svg.dark .labelBackground { fill: #0a192f !important; }
-  svg.dark .detail { fill: #fff !important; }
-  svg.dark .valuelabel { fill: #88aacc !important; }
-  svg.dark circle, svg.dark path, svg.dark rect, svg.dark line { stroke: #fff; }
-  svg.dark .subModuleOdd { fill: #0e2238 !important; }
-  svg.dark .subModuleEven { fill: #16365a !important; }
-  svg.dark [style*="fill:#000"], svg.dark [style*="fill:#000000"] { fill: #fff !important; }
-  svg.dark [style*="stroke:#000"], svg.dark [style*="stroke:#000000"] { stroke: #fff !important; }
-  svg.light {
+  .n2s-svg text { fill: #fff !important; }
+  .n2s-svg .splitjoinBody { fill: #fff !important; }
+  .n2s-svg .junction { fill: #fff !important; }
+  .n2s-svg .labelBackground { fill: #0a192f !important; }
+  .n2s-svg .detail { fill: #fff !important; }
+  .n2s-svg .valuelabel { fill: #88aacc !important; }
+  .n2s-svg circle, .n2s-svg path, .n2s-svg rect, .n2s-svg line { stroke: #fff; }
+  .n2s-svg .subModuleOdd { fill: #0e2238 !important; }
+  .n2s-svg .subModuleEven { fill: #16365a !important; }
+  .n2s-svg [style*="fill:#000"], .n2s-svg [style*="fill:#000000"] { fill: #fff !important; }
+  .n2s-svg [style*="stroke:#000"], .n2s-svg [style*="stroke:#000000"] { stroke: #fff !important; }
+  /* Light theme variant — used for white-background SVG download */
+  .n2s-light {
     stroke: #000 !important;
+    fill: none !important;
   }
-  svg.light text { fill: #000 !important; }
-  svg.light .splitjoinBody { fill: #000 !important; }
-  svg.light .junction { fill: #000 !important; }
-  svg.light .labelBackground { fill: #fff !important; }
-  svg.light .detail { fill: #000 !important; }
-  svg.light .valuelabel { fill: #555 !important; }
-  svg.light circle, svg.light path, svg.light rect, svg.light line { stroke: #000; }
-  svg.light .subModuleOdd { fill: #e9e9e9 !important; }
-  svg.light .subModuleEven { fill: #ffffff !important; }
-  svg.light [style*="fill:#000"], svg.light [style*="fill:#000000"] { fill: #000 !important; }
-  svg.light [style*="stroke:#000"], svg.light [style*="stroke:#000000"] { stroke: #000 !important; }
+  .n2s-light text { fill: #000 !important; stroke: none !important; }
+  .n2s-light .nodelabel { text-anchor: middle; }
+  .n2s-light .inputPortLabel { text-anchor: end; }
+  .n2s-light .splitjoinBody { fill: #000 !important; }
+  .n2s-light .junction { fill: #000 !important; }
+  .n2s-light .labelBackground { fill: #fff !important; stroke: none !important; }
+  .n2s-light .detail, .n2s-light .symbol { stroke-linejoin: round; stroke-linecap: round; }
+  .n2s-light .symbol { stroke-width: 2; }
+  .n2s-light .detail { fill: #000 !important; }
+  .n2s-light .valuelabel { fill: #555 !important; }
+  .n2s-light circle, .n2s-light path, .n2s-light rect, .n2s-light line { stroke: #000; }
+  .n2s-light .subModuleOdd { fill: #e9e9e9 !important; }
+  .n2s-light .subModuleEven { fill: #ffffff !important; }
+  .n2s-light [style*="fill:#000"], .n2s-light [style*="fill:#000000"] { fill: #000 !important; }
+  .n2s-light [style*="stroke:#000"], .n2s-light [style*="stroke:#000000"] { stroke: #000 !important; }
 </style>
 
   <s:properties
@@ -321,23 +327,24 @@ export const CUSTOM_ANALOG_SKIN = `<svg xmlns="http://www.w3.org/2000/svg"
   <!-- ===== TRANSISTORS: MOS ===== -->
   <!--
     Based on user's reference SVGs (nmos.svg / pmos.svg).
-    C-shaped gate on RIGHT, channel vertical, horizontal source arrow.
-    NMOS: S=bottom (arrow right/outward toward G), D=top, B=left, G=right.
-    PMOS: S=top (arrow left/inward toward channel), D=bottom, B=left, G=right.
+    Gate on LEFT (vertical bar at x=20 with horizontal connection to left edge),
+    bulk/substrate (B) on RIGHT (body connection from channel to right edge).
+    NMOS: S=bottom (arrow right/outward toward G), D=top, G=left, B=right.
+    PMOS: S=top (arrow left/inward toward channel), D=bottom, G=left, B=right.
 
     Multi-line value display: the <text s:attribute="value"> element uses
     white-space:pre so \n in the attribute string renders as line breaks.
   -->
-  <g s:type="transistor_nmos" s:width="32" s:height="36" transform="translate(130,340)">
+  <g s:type="transistor_nmos" s:width="42" s:height="36" transform="translate(130,340)">
     <s:alias val="nmos_v"/>
     <text x="16" y="42" class="nodelabel $cell_id" s:attribute="ref">M1</text>
     <text x="16" y="56" class="nodelabel $cell_id valuelabel $cell_id" s:attribute="value"></text>
     <!-- Gate C-shape (body+gate combined) -->
     <path d="M30,36 V30 H20 V6 H30 V0" class="symbol $cell_id"/>
-    <!-- Gate connection to right edge at G port -->
-    <path d="M20,18 H30" class="connect $cell_id"/>
-    <!-- Body from left edge to C-shape left side -->
-    <path d="M 0,18 H 15.501953" class="connect $cell_id"/>
+    <!-- Gate connection from left edge to C-shape left side — G port on left -->
+    <path d="M 0,18 H20" class="connect $cell_id"/>
+    <!-- Body connection from channel area to right — B port offset right of D/S -->
+    <path d="M 15.501953,18 H36" class="connect $cell_id"/>
     <!-- Drain from top-right corner to C-shape top bar -->
     <path d="M30,0 V6" class="connect $cell_id"/>
     <!-- Internal channel -->
@@ -347,21 +354,21 @@ export const CUSTOM_ANALOG_SKIN = `<svg xmlns="http://www.w3.org/2000/svg"
     <!-- Source arrow (NMOS → right on C bottom bar) -->
     <path d="M20,30 H27 M27,30 L25,28 L25,32 Z" class="detail $cell_id"/>
     <g s:x="30" s:y="0" s:pid="D" s:position="top"/>
-    <g s:x="0" s:y="18" s:pid="B" s:position="left"/>
+    <g s:x="0" s:y="18" s:pid="G" s:position="left"/>
     <g s:x="30" s:y="36" s:pid="S" s:position="bottom"/>
-    <g s:x="30" s:y="18" s:pid="G" s:position="right"/>
+    <g s:x="36" s:y="18" s:pid="B" s:position="right"/>
   </g>
 
-  <g s:type="transistor_pmos" s:width="32" s:height="36" transform="translate(180,340)">
+  <g s:type="transistor_pmos" s:width="42" s:height="36" transform="translate(180,340)">
     <s:alias val="pmos_v"/>
     <text x="16" y="42" class="nodelabel $cell_id" s:attribute="ref">M1</text>
     <text x="16" y="56" class="nodelabel $cell_id valuelabel $cell_id" s:attribute="value"></text>
     <!-- Gate C-shape (body+gate combined) -->
     <path d="M30,36 V30 H20 V6 H30 V0" class="symbol $cell_id"/>
-    <!-- Gate connection to right edge at G port -->
-    <path d="M20,18 H30" class="connect $cell_id"/>
-    <!-- Body from left edge to C-shape left side -->
-    <path d="M 0,18 H 16.424168" class="connect $cell_id"/>
+    <!-- Gate connection from left edge to C-shape — G port on left -->
+    <path d="M 0,18 H20" class="connect $cell_id"/>
+    <!-- Body connection from channel area to right — B port offset right of D/S -->
+    <path d="M 16.424168,18 H36" class="connect $cell_id"/>
     <!-- Source from top-right corner to C-shape top bar with arrow -->
     <path d="M30,0 V6" class="connect $cell_id"/>
     <!-- Source arrow (PMOS ← left on C top bar) -->
@@ -371,9 +378,9 @@ export const CUSTOM_ANALOG_SKIN = `<svg xmlns="http://www.w3.org/2000/svg"
     <!-- Drain from bottom-right corner to C-shape bottom bar -->
     <path d="M30,30 V36" class="connect $cell_id"/>
     <g s:x="30" s:y="0" s:pid="S" s:position="top"/>
-    <g s:x="0" s:y="18" s:pid="B" s:position="left"/>
+    <g s:x="0" s:y="18" s:pid="G" s:position="left"/>
     <g s:x="30" s:y="36" s:pid="D" s:position="bottom"/>
-    <g s:x="30" s:y="18" s:pid="G" s:position="right"/>
+    <g s:x="36" s:y="18" s:pid="B" s:position="right"/>
   </g>
 
   <!-- ===== GENERIC ===== -->

@@ -5,8 +5,8 @@
  * netlist2svg uses ELK.js for layout (~2MB, fetched from CDN on first use).
  */
 
-import { useEffect, useRef, useState, useCallback } from "react";
-import { buildSkin, type LayoutStrategy, type LayoutDirection } from "../../lib/schematic/netlist2svgSkin";
+import { useEffect, useRef, useState, useCallback, forwardRef, useImperativeHandle } from "react";
+import { buildSkin, type LayoutStrategy, type LayoutDirection, type CompactionLevel } from "../../lib/schematic/netlist2svgSkin";
 
 // ── Types ───────────────────────────────────────────────────────
 
@@ -24,10 +24,11 @@ type LoadStatus = "idle" | "loading" | "ready" | "error";
 // We track the actual loading progress of elk + netlist2svg so that
 // multiple component mounts share one load cycle.
 
-const ELK_CDN =
-  "https://github.com/ajsb85/netlist2svg/releases/download/v1.1.2/elk.bundled.js";
-const N2S_CDN =
-  "https://github.com/ajsb85/netlist2svg/releases/download/v1.1.2/netlist2svg.bundle.js";
+// Local copies served from public/lib/netlist2svg/ — no internet needed.
+// To update, replace these files with newer releases from:
+// https://github.com/ajsb85/netlist2svg/releases
+const ELK_CDN = "/lib/netlist2svg/elk.bundled.js";
+const N2S_CDN = "/lib/netlist2svg/netlist2svg.bundle.js";
 
 declare global {
   interface Window {
@@ -83,6 +84,17 @@ function ensureLoaded(): Promise<void> {
   return loadPromise;
 }
 
+// ── Refs handle for parent access ───────────────────────────────
+
+export interface Netlist2SvgHandle {
+  /** Get SVG string with white background + black elements (for document export) */
+  getSvgString(): string | null;
+  /** Get the raw Yosys netlist JSON (for debug export) */
+  getJson(): unknown;
+  /** Get SVG bounding size */
+  getSvgSize(): { width: number; height: number } | null;
+}
+
 // ── Component ───────────────────────────────────────────────────
 
 interface Props {
@@ -92,15 +104,71 @@ interface Props {
   layoutStrategy?: LayoutStrategy;
   /** ELK layout direction (default: DOWN) */
   layoutDirection?: LayoutDirection;
+  /** ELK post-compaction level 0-4 (default: 2 = Scanline) */
+  compactionLevel?: CompactionLevel;
   /** Height of the schematic container (default: flex-fill) */
   height?: number | string;
 }
 
-export function Netlist2SvgView({ netlistJson, height, layoutStrategy, layoutDirection }: Props) {
+export const Netlist2SvgView = forwardRef<Netlist2SvgHandle, Props>(function Netlist2SvgView({ netlistJson, height, layoutStrategy, layoutDirection, compactionLevel }, ref) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [status, setStatus] = useState<LoadStatus>("idle");
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const renderSeq = useRef(0);
+  const svgRef = useRef<SVGSVGElement | null>(null);
+
+  // Expose download helpers to parent
+  useImperativeHandle(ref, () => ({
+    getSvgString() {
+      const svg = svgRef.current;
+      if (!svg) return null;
+      const clone = svg.cloneNode(true) as SVGSVGElement;
+
+      // Switch from dark theme (n2s-svg) to light theme (n2s-light)
+      // The skin already defines .n2s-light CSS — just change the class
+      if (clone.classList.contains("n2s-svg")) {
+        clone.classList.remove("n2s-svg");
+        clone.classList.add("n2s-light");
+      }
+
+      // Safety: inject missing light-theme rules in case skin is stale
+      // (fill:none prevents solid-black fills on symbols; .symbol needs explicit stroke-width)
+      const safetyStyle = document.createElementNS("http://www.w3.org/2000/svg", "style");
+      safetyStyle.textContent = `
+        .n2s-light { fill: none !important; }
+        .n2s-light .symbol { stroke-width: 2; }
+        .n2s-light .detail, .n2s-light .symbol { stroke-linejoin: round; stroke-linecap: round; }
+      `;
+      clone.prepend(safetyStyle);
+
+      // Force white background on SVG root
+      clone.style.background = "#ffffff";
+
+      const serializer = new XMLSerializer();
+      return serializer.serializeToString(clone);
+    },
+    getJson() {
+      return netlistJson;
+    },
+    getSvgSize() {
+      const svg = svgRef.current;
+      if (!svg) return null;
+      // Try viewBox first, then width/height attributes
+      const vb = svg.getAttribute("viewBox");
+      if (vb) {
+        const parts = vb.split(/[\s,]+/).map(Number);
+        if (parts.length === 4) {
+          return { width: parts[2], height: parts[3] };
+        }
+      }
+      const w = svg.getAttribute("width");
+      const h = svg.getAttribute("height");
+      if (w && h) {
+        return { width: parseFloat(w), height: parseFloat(h) };
+      }
+      return { width: svg.clientWidth || 800, height: svg.clientHeight || 600 };
+    },
+  }), [netlistJson]);
 
   const renderSchematic = useCallback(async () => {
     console.log('[Netlist2Svg] render triggered, strategy:', layoutStrategy, 'direction:', layoutDirection);
@@ -114,16 +182,18 @@ export function Netlist2SvgView({ netlistJson, height, layoutStrategy, layoutDir
     try {
       console.log('[Netlist2Svg] Layout strategy:', layoutStrategy, 'direction:', layoutDirection);
 
-      const skin = buildSkin(layoutStrategy, layoutDirection);
+      const skin = buildSkin(layoutStrategy, layoutDirection, compactionLevel);
       let svg = await window.netlist2svg.render(
         skin,
         netlistJson,
       );
       if (seq !== renderSeq.current) return; // stale
-      // The app is always in dark mode. Force .dark class on <svg> root
+      // The app is always in dark mode. Force .n2s-svg class on <svg> root
       // so all dark-theme CSS rules apply (white strokes/fills).
-      svg = svg.replace("<svg ", `<svg class="dark" `);
+      svg = svg.replace("<svg ", `<svg class="n2s-svg" `);
       container.innerHTML = svg;
+      // Keep a reference to the <svg> element for download export
+      svgRef.current = container.querySelector("svg");
     } catch (err) {
       if (seq !== renderSeq.current) return; // stale
       console.error("[Netlist2Svg] render error:", err);
@@ -136,7 +206,7 @@ export function Netlist2SvgView({ netlistJson, height, layoutStrategy, layoutDir
           : ''}
       </div>`;
     }
-  }, [netlistJson, layoutStrategy, layoutDirection]);
+  }, [netlistJson, layoutStrategy, layoutDirection, compactionLevel]);
 
   // Trigger load on mount
   useEffect(() => {
@@ -170,6 +240,11 @@ export function Netlist2SvgView({ netlistJson, height, layoutStrategy, layoutDir
       renderSchematic();
     }
   }, [status, netlistJson, layoutStrategy, renderSchematic]);
+
+  // Clear svgRef when netlist changes (will be set again after render)
+  useEffect(() => {
+    svgRef.current = null;
+  }, [netlistJson]);
 
   // ── Render ─────────────────────────────────────────────────
 
@@ -227,7 +302,7 @@ export function Netlist2SvgView({ netlistJson, height, layoutStrategy, layoutDir
       }}
     />
   );
-}
+});
 
 // ── Loading indicator ───────────────────────────────────────────
 

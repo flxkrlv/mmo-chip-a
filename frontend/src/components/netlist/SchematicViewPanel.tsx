@@ -8,14 +8,14 @@
  * User can toggle between them. netlist2svg loads ELK.js (~2MB) on first use.
  */
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, useRef, useCallback } from "react";
 import type { DieAnnotations, FloorplanRegion, SpiceConfig } from "shared";
 import {
   SpiceSchematicPrototype,
 } from "./SpiceSchematicPrototype";
 import { generateSpiceTSViews, type SpiceTSResult } from "../../lib/schematic/spiceTSFormat";
-import { Netlist2SvgView } from "./Netlist2SvgView";
-import { LAYOUT_STRATEGIES, LAYOUT_DIRECTIONS, type LayoutStrategy, type LayoutDirection } from "../../lib/schematic/netlist2svgSkin";
+import { Netlist2SvgView, type Netlist2SvgHandle } from "./Netlist2SvgView";
+import { LAYOUT_STRATEGIES, LAYOUT_DIRECTIONS, COMPACTION_LEVELS, type LayoutStrategy, type LayoutDirection, type CompactionLevel } from "../../lib/schematic/netlist2svgSkin";
 import { formatDevicesAsNetlist2Svg } from "../../lib/schematic/netlist2svgFormat";
 import { collectDieWideAnalogDevices } from "../../api/dieWideAnalog";
 import { assignInstanceNames } from "../../lib/export/spice";
@@ -51,9 +51,12 @@ export function SchematicViewPanel({
   onSelectRegion,
 }: Props) {
   // ── Engine toggle ─────────────────────────────────────────────
-  const [engine, setEngine] = useState<SchematicEngine>("spice-ts");
+  const [engine, setEngine] = useState<SchematicEngine>("netlist2svg");
   const [layoutStrategy, setLayoutStrategy] = useState<LayoutStrategy>("BRANDES_KOEPF");
   const [layoutDirection, setLayoutDirection] = useState<LayoutDirection>("DOWN");
+  const [compactionLevel, setCompactionLevel] = useState<CompactionLevel>(2);
+  const [showNetLabels, setShowNetLabels] = useState(false);
+  const n2sRef = useRef<Netlist2SvgHandle>(null);
 
   // ══ Generate spice-ts views ═══════════════════════════════════
   const views = useMemo(
@@ -108,11 +111,11 @@ export function SchematicViewPanel({
       named,
       namedNets,
       moduleName,
-      { vdd: config.vdd ?? "VDD", gnd: config.gnd ?? "GND", hierarchical, ioNetIds },
+      { vdd: config.vdd ?? "VDD", gnd: config.gnd ?? "GND", hierarchical, ioNetIds, showNetLabels },
     );
 
     return { flatJson: flat, floorplanDevices, namedNets, ioNetIds };
-  }, [annotations, moduleName, spiceConfig, hierarchical, floorplanRegions]);
+  }, [annotations, moduleName, spiceConfig, hierarchical, floorplanRegions, showNetLabels]);
 
   // ── Region state ──────────────────────────────────────────────
   const regionIds = useMemo(
@@ -123,6 +126,48 @@ export function SchematicViewPanel({
     regionIds[0] ?? null,
   );
   const activeRegion = selectedRegionProp ?? internalRegion;
+
+  // ── Download handler (netlist2svg only) ──────────────────────
+  const handleDownload = useCallback((format: "svg" | "png" | "json") => {
+    const region = activeRegion ? activeRegion.slice(0, 8) : "full";
+    const baseName = `${moduleName}_${region}`;
+
+    if (format === "json") {
+      const json = n2sRef.current?.getJson();
+      if (!json) return;
+      const blob = new Blob([JSON.stringify(json, null, 2)], { type: "application/json" });
+      downloadBlob(blob, `${baseName}.json`);
+      return;
+    }
+
+    const svgString = n2sRef.current?.getSvgString();
+    if (!svgString) return;
+
+    if (format === "svg") {
+      const blob = new Blob([svgString], { type: "image/svg+xml" });
+      downloadBlob(blob, `${baseName}.svg`);
+      return;
+    }
+
+    // PNG: render SVG to canvas
+    const size = n2sRef.current?.getSvgSize();
+    if (!size) return;
+    const scale = 2;
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.round(size.width * scale);
+    canvas.height = Math.round(size.height * scale);
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+
+    const img = new Image();
+    img.onload = () => {
+      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+      canvas.toBlob((blob) => {
+        if (blob) downloadBlob(blob, `${baseName}.png`);
+      }, "image/png");
+    };
+    img.src = "data:image/svg+xml;base64," + btoa(unescape(encodeURIComponent(svgString)));
+  }, [activeRegion, moduleName]);
 
   // Sync internal region when regions change
   useEffect(() => {
@@ -155,13 +200,13 @@ export function SchematicViewPanel({
           regionDevices,
           n2sData.namedNets,
           `${moduleName}.${activeRegion.slice(0, 8)}`,
-          { vdd: spiceConfig?.vdd ?? "VDD", gnd: spiceConfig?.gnd ?? "GND", hierarchical, ioNetIds: n2sData.ioNetIds },
+          { vdd: spiceConfig?.vdd ?? "VDD", gnd: spiceConfig?.gnd ?? "GND", hierarchical, ioNetIds: n2sData.ioNetIds, showNetLabels },
         );
       }
       return null;
     }
     return n2sData.flatJson;
-  }, [hierarchical, activeRegion, n2sData, moduleName, spiceConfig]);
+  }, [hierarchical, activeRegion, n2sData, moduleName, spiceConfig, showNetLabels]);
 
   return (
     <div
@@ -267,8 +312,90 @@ export function SchematicViewPanel({
           </select>
         )}
 
-        {/* Separator */}
+        {/* Compaction level selector (BRANDES_KOEPF only) */}
+        {engine === "netlist2svg" && layoutStrategy === "BRANDES_KOEPF" && (
+          <select
+            value={compactionLevel}
+            onChange={(e) => setCompactionLevel(Number(e.target.value) as CompactionLevel)}
+            style={{
+              fontSize: 10,
+              padding: "1px 4px",
+              border: "1px solid var(--l2)",
+              borderRadius: 3,
+              background: "var(--card)",
+              color: "var(--fg)",
+              outline: "none",
+              cursor: "pointer",
+            }}
+            title="ELK post-compaction — 0=off, 4=max, 2=default stable"
+          >
+            {COMPACTION_LEVELS.map((c) => (
+              <option key={c.value} value={c.value} title={c.desc}>
+                {c.label}
+              </option>
+            ))}
+          </select>
+        )}
+
+        {/* Show/hide net labels (netlist2svg only) */}
+        {engine === "netlist2svg" && (
+          <label
+            style={{
+              fontSize: 10,
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 3,
+              cursor: "pointer",
+              color: "var(--fg)",
+              userSelect: "none",
+            }}
+            title="Show or hide net label pins (VCC/GND symbols always visible)"
+          >
+            <input
+              type="checkbox"
+              checked={showNetLabels}
+              onChange={(e) => setShowNetLabels(e.target.checked)}
+              style={{ margin: 0, cursor: "pointer" }}
+            />
+            Nets
+          </label>
+        )}
+
+        {/* Separator before download buttons */}
         <span style={{ width: 1, height: 16, background: "var(--l2)", flexShrink: 0 }} />
+
+        {/* Download buttons (netlist2svg only) */}
+        {engine === "netlist2svg" && currentN2sJson && (
+          <>
+            <button
+              type="button"
+              className="btn sm"
+              onClick={() => handleDownload("svg")}
+              style={{ fontSize: 10 }}
+              title="Download SVG (black on white, for documents)"
+            >
+              ↓ SVG
+            </button>
+            <button
+              type="button"
+              className="btn sm"
+              onClick={() => handleDownload("png")}
+              style={{ fontSize: 10 }}
+              title="Download PNG (black on white, 2x resolution)"
+            >
+              ↓ PNG
+            </button>
+            <button
+              type="button"
+              className="btn sm"
+              onClick={() => handleDownload("json")}
+              style={{ fontSize: 10 }}
+              title="Download Yosys JSON (netlist2svg input, for debugging)"
+            >
+              ↓ JSON
+            </button>
+          </>
+        )}
 
         {/* Hierarchical region buttons */}
         {hierarchical && regionIds.length > 0 && (
@@ -328,7 +455,7 @@ export function SchematicViewPanel({
         ) : (
           // ── netlist2svg renderer ─────────────────────────────
           currentN2sJson ? (
-            <Netlist2SvgView netlistJson={currentN2sJson} layoutStrategy={layoutStrategy} layoutDirection={layoutDirection} />
+            <Netlist2SvgView ref={n2sRef} netlistJson={currentN2sJson} layoutStrategy={layoutStrategy} layoutDirection={layoutDirection} compactionLevel={compactionLevel} />
           ) : (
             <EmptyView hasRegions={regionIds.length > 0} />
           )
@@ -339,6 +466,19 @@ export function SchematicViewPanel({
 }
 
 // ── Empty view ──────────────────────────────────────────────────
+
+// ── Utility ────────────────────────────────────────────────────
+
+function downloadBlob(blob: Blob, filename: string) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
 
 function EmptyView({ hasRegions }: { hasRegions?: boolean }) {
   return (
