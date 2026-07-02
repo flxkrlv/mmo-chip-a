@@ -345,7 +345,7 @@ function paramHint(dev: AnalogDevice): string {
  *  All same-name labels share one net (handled by the extractor). */
 function drawTerminalLabels(
   ctx: CanvasRenderingContext2D,
-  dev: AnalogDevice & { _termPoints?: Array<{x:number;y:number;name:string}> },
+  dev: AnalogDevice & { _termPoints?: Array<{x:number;y:number;name:string}>; _dsResolved?: boolean },
   vp: { originX: number; originY: number; zoom: number },
   showNetIds?: boolean,
   netNames?: Map<number, string>,
@@ -400,8 +400,12 @@ if (netId !== undefined && netId >= 2000) {
   ctx.restore();
 }
 
-    // Relabel D/S to "S/D" for display (MOS is symmetric)
-    const displayName = pt.name === "D" || pt.name === "S" ? "S/D" : pt.name;
+    // Relabel D/S: if resolved (force SOURCE or bulk heuristic), show actual name.
+    // Otherwise show "S/D" for both (MOS is symmetric by default).
+    const dsResolved = (dev as any)._dsResolved === true;
+    const displayName = pt.name === "D" || pt.name === "S"
+      ? (dsResolved ? pt.name : "S/D")
+      : pt.name;
     // Build label: optionally show net name
     const netLabel = showNetIds && netId !== undefined && netNames?.has(netId)
       ? netNames.get(netId)!

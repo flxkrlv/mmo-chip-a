@@ -1024,17 +1024,22 @@ export function mergeMetalConnectedTerminals(
     }
   }
 
+  // ── Pre-collect well, diffusion, poly shapes for bulk tap detection ─
+  const nwells = allLayers["nwell"] ?? [];
+  const pwells = allLayers["pwell"] ?? [];
+  const wellShapes = [...nwells, ...pwells];
+  const diffShapes = allLayers["diffusion"] ?? [];
+  const polyShapes = allLayers["polysilicon"] ?? [];
+
   // ── For each candidate terminal, collect overlapping contacts' UF roots ─
   // Terminal → set of UF roots (contacts overlapping this terminal).
-  // Only MOS D/S and resistor PLUS/MINUS are processed.
+  // MOS D, S, B and resistor PLUS/MINUS are processed.
   // Other devices (BJT, cap, diode-marker) are resolved at die level.
   const termRoots = new Map<string, Set<number>>();
   for (const dev of devices) {
-    // MOS: merge D and S terminals (gate handled by polyGateNetMap, bulk by -2)
-    // Resistor: merge PLUS and MINUS (shapeIds now split spatially)
     if (dev.kind !== "mos" && dev.kind !== "resistor") continue;
     for (const term of dev.terminals) {
-      if (dev.kind === "mos" && term.name !== "D" && term.name !== "S") continue;
+      if (dev.kind === "mos" && term.name !== "D" && term.name !== "S" && term.name !== "B") continue;
       if (dev.kind === "resistor" && term.name !== "PLUS" && term.name !== "MINUS") continue;
 
       // Find the terminal's source LayerShape by first shapeId.
@@ -1053,6 +1058,22 @@ export function mergeMetalConnectedTerminals(
         const ctB = polygonBounds(ctPoly);
         if (!ctB || !rectsIntersect(tBbox, ctB)) continue;
         if (!polygonsIntersect(tPoly, ctPoly)) continue;
+
+        // For bulk terminal (B): exclude contacts also on diffusion (S/D)
+        // or poly (gate) — those aren't well tap contacts.
+        if (dev.kind === "mos" && term.name === "B") {
+          const onDiff = diffShapes.some((d) => {
+            const dp = shapePoly.get(d.id);
+            return dp && polygonsIntersect(dp, ctPoly);
+          });
+          if (onDiff) continue;
+          const onPoly = polyShapes.some((p) => {
+            const pp = shapePoly.get(p.id);
+            return pp && polygonsIntersect(pp, ctPoly);
+          });
+          if (onPoly) continue;
+        }
+
         const root = contactRoot.get(ct.id);
         if (root !== undefined) roots.add(root);
       }
@@ -1401,4 +1422,640 @@ export function detectMOSFromLayers(
   }
 
   return devices;
+}
+
+// ═════════════════════════════════════════════════════════════════
+// Terminal contact resolution — shared between cell-level (RE Cell)
+// and die-level (dieWideAnalog) pipelines.  Guarantees that the
+// same contacts map to the same terminal names in both views.
+// ═════════════════════════════════════════════════════════════════
+
+interface TerminalDef {
+  name: string;
+  /** Layout layers to search for shapes of this terminal. */
+  layers: string[];
+  priority?: number;
+}
+
+const BJT_DEFS: TerminalDef[] = [
+  { name: "E", layers: ["emitter"], priority: 0 },
+  { name: "C", layers: ["collector"], priority: 1 },
+  { name: "B", layers: ["base", "bulk"], priority: 2 },
+];
+
+const MOS_DEFS: TerminalDef[] = [
+  { name: "D", layers: ["diffusion"] },
+  { name: "G", layers: ["polysilicon"] },
+  { name: "S", layers: ["diffusion"] },
+  { name: "B", layers: ["bulk", "nwell", "pwell"] },
+];
+
+const DEFAULT_2T_DEFS: TerminalDef[] = [
+  { name: "PLUS", layers: ["contact"] },
+  { name: "MINUS", layers: ["contact"] },
+];
+
+const DIODE_DEFS: TerminalDef[] = [
+  { name: "PLUS", layers: ["base", "bulk"], priority: 1 },
+  { name: "MINUS", layers: ["emitter"], priority: 0 },
+];
+
+const DEVICE_TERMINAL_DEFS: Record<string, TerminalDef[]> = {
+  bjt_npn: BJT_DEFS,
+  bjt_pnp: BJT_DEFS,
+  mos: MOS_DEFS,
+  resistor: DEFAULT_2T_DEFS,
+  capacitor: DEFAULT_2T_DEFS,
+  diode: DIODE_DEFS,
+  jfet_n: DEFAULT_2T_DEFS,
+  jfet_p: DEFAULT_2T_DEFS,
+  zener: DEFAULT_2T_DEFS,
+  schottky: DEFAULT_2T_DEFS,
+  inductor: DEFAULT_2T_DEFS,
+  unknown: DEFAULT_2T_DEFS,
+};
+
+function terminalDefMap(kind: DeviceKind): Map<string, TerminalDef> {
+  const defs = DEVICE_TERMINAL_DEFS[kind] ?? DEFAULT_2T_DEFS;
+  const map = new Map<string, TerminalDef>();
+  for (const d of defs) map.set(d.name, d);
+  return map;
+}
+
+function defsHavePriority(defs: Map<string, TerminalDef>): boolean {
+  for (const [, d] of defs) if (d.priority !== undefined) return true;
+  return false;
+}
+
+function _shapeBounds(s: LayerShape): {x:number;y:number;width:number;height:number} | null {
+  switch (s.kind) {
+    case "rect": return { x: s.x, y: s.y, width: s.width, height: s.height };
+    case "point": return { x: s.x - s.size/2, y: s.y - s.size/2, width: s.size, height: s.size };
+    case "circle": return { x: s.x - s.radius, y: s.y - s.radius, width: s.radius*2, height: s.radius*2 };
+    case "polygon": {
+      if (s.points.length === 0) return null;
+      let mx = Infinity, my = Infinity, Mx = -Infinity, My = -Infinity;
+      for (const p of s.points) { if (p.x<mx)mx=p.x; if(p.x>Mx)Mx=p.x; if(p.y<my)my=p.y; if(p.y>My)My=p.y; }
+      return { x: mx, y: my, width: Mx-mx, height: My-my };
+    }
+    case "line": {
+      return { x: Math.min(s.x1,s.x2), y: Math.min(s.y1,s.y2), width: Math.abs(s.x2-s.x1), height: Math.abs(s.y2-s.y1) };
+    }
+    default: return null;
+  }
+}
+
+function _centerOfShape(s: LayerShape): {x:number;y:number}|null {
+  switch (s.kind) {
+    case "rect": return { x: s.x + s.width/2, y: s.y + s.height/2 };
+    case "point": return { x: s.x, y: s.y };
+    case "circle": return { x: s.x, y: s.y };
+    case "polygon": {
+      if (s.points.length===0) return null;
+      let sx=0,sy=0; for(const p of s.points){sx+=p.x;sy+=p.y;}
+      return {x:sx/s.points.length, y:sy/s.points.length};
+    }
+    case "line": return { x: (s.x1+s.x2)/2, y: (s.y1+s.y2)/2 };
+    default: return null;
+  }
+}
+
+function _contactTolerance(s: LayerShape): number {
+  switch (s.kind) {
+    case "rect": return Math.max(s.width, s.height) * 0.5;
+    case "point": return s.size * 0.5;
+    case "circle": return s.radius;
+    case "polygon": {
+      if (s.points.length === 0) return 2;
+      let cx = 0, cy = 0;
+      for (const p of s.points) { cx += p.x; cy += p.y; }
+      cx /= s.points.length; cy /= s.points.length;
+      let maxDist = 0;
+      for (const p of s.points) {
+        const d = Math.sqrt((p.x - cx) ** 2 + (p.y - cy) ** 2);
+        if (d > maxDist) maxDist = d;
+      }
+      return maxDist;
+    }
+    default: return 2;
+  }
+}
+
+function _pointInShape(px: number, py: number, s: LayerShape): boolean {
+  switch (s.kind) {
+    case "rect":
+      return px >= s.x && px <= s.x + s.width && py >= s.y && py <= s.y + s.height;
+    case "polygon": {
+      const pts = s.points;
+      if (pts.length < 3) return false;
+      let inside = false;
+      for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
+        const xi = pts[i].x, yi = pts[i].y;
+        const xj = pts[j].x, yj = pts[j].y;
+        if ((yi > py) !== (yj > py) && px < ((xj - xi) * (py - yi)) / (yj - yi) + xi)
+          inside = !inside;
+      }
+      return inside;
+    }
+    case "circle":
+      return (px - s.x) ** 2 + (py - s.y) ** 2 <= s.radius * s.radius;
+    case "point":
+      return Math.abs(px - s.x) <= s.size / 2 && Math.abs(py - s.y) <= s.size / 2;
+    case "line": {
+      const dx = s.x2 - s.x1, dy = s.y2 - s.y1;
+      const len2 = dx * dx + dy * dy;
+      if (len2 === 0) return (px - s.x1) ** 2 + (py - s.y1) ** 2 <= (s.width ?? 4) ** 2;
+      let t = ((px - s.x1) * dx + (py - s.y1) * dy) / len2;
+      t = Math.max(0, Math.min(1, t));
+      const cx = s.x1 + t * dx, cy = s.y1 + t * dy;
+      return (px - cx) ** 2 + (py - cy) ** 2 <= ((s.width ?? 4) / 2) ** 2;
+    }
+    default:
+      return false;
+  }
+}
+
+/**
+ * Resolve which contacts belong to which terminals for a single device.
+ * Shared between RE Cell and die-wide pipelines for label consistency.
+ */
+export function resolveDeviceContacts(
+  dev: AnalogDevice,
+  ctLayers: Record<string, LayerShape[] | undefined>,
+  cx: number, cy: number,
+): {
+  termPoints: Array<{x:number;y:number;name:string;contactId?:string}>;
+  termContacts: Array<Array<{x:number;y:number;tol:number;contactId?:string}>>;
+} {
+  const defMap = terminalDefMap(dev.kind);
+  const hasPri = defsHavePriority(defMap);
+  const termContacts: Array<Array<{x:number;y:number;tol:number;contactId?:string}>> = dev.terminals.map(() => []);
+
+  const allContactShapes = (ctLayers.contact ?? []) as LayerShape[];
+  const cTis = new Map<string, Set<number>>();
+  const cPos = new Map<string, {x:number;y:number;tol:number}>();
+
+  const mosOtherLayers: string[] = [];
+  for (const [key, d] of defMap) {
+    if (key === "B") continue;
+    for (const l of d.layers) {
+      if (!mosOtherLayers.includes(l)) mosOtherLayers.push(l);
+    }
+  }
+
+  for (const cs of allContactShapes) {
+    const cc = _centerOfShape(cs as any);
+    if (!cc) continue;
+
+    const candidates: Array<{ti:number; pri:number}> = [];
+
+    for (let ti = 0; ti < dev.terminals.length; ti++) {
+      const termName = dev.terminals[ti].name;
+      const termDef = defMap.get(termName);
+      if (!termDef) continue;
+
+      let matched = false;
+      for (const layer of termDef.layers) {
+        const shapes = ctLayers[layer] as LayerShape[] | undefined;
+        if (!shapes) continue;
+
+        for (const shape of shapes) {
+          const termShapeIds = dev.terminals[ti].shapeIds;
+          if (termShapeIds && termShapeIds.length > 0 && !termShapeIds.includes(shape.id)) continue;
+
+          const isInside = _pointInShape(cc.x, cc.y, shape);
+          if (isInside) {
+            if (dev.kind === "mos" && termDef.name === "B") {
+              const alsoOnOther = mosOtherLayers.some((otherLayer) => {
+                const otherShapes = ctLayers[otherLayer] as LayerShape[] | undefined;
+                return otherShapes?.some((s) => _pointInShape(cc.x, cc.y, s)) ?? false;
+              });
+              if (alsoOnOther) continue;
+            }
+            candidates.push({ ti, pri: termDef.priority ?? 999 });
+            matched = true;
+            break;
+          }
+        }
+        if (matched) break;
+      }
+    }
+
+    if (candidates.length === 0) continue;
+
+    let selected: number[];
+    if (hasPri) {
+      const bestPri = Math.min(...candidates.map((c) => c.pri));
+      selected = [...new Set(
+        candidates.filter((c) => c.pri === bestPri).map((c) => c.ti),
+      )];
+    } else {
+      selected = [...new Set(candidates.map((c) => c.ti))];
+    }
+    if (selected.length === 0) continue;
+
+    const cpTol = _contactTolerance(cs as any);
+    const wx = cx + cc.x, wy = cy + cc.y;
+    if (!cPos.has(cs.id)) cPos.set(cs.id, { x: wx, y: wy, tol: cpTol });
+    const set = cTis.get(cs.id) ?? new Set<number>();
+    for (const ti of selected) set.add(ti);
+    cTis.set(cs.id, set);
+  }
+
+  const bySig = new Map<string, Array<{cid:string; cp:{x:number;y:number;tol:number}}>>();
+  for (const [cid, tis] of cTis) {
+    const sig = [...tis].sort().map((ti) => dev.terminals[ti].name).join(",");
+    const cp = cPos.get(cid)!;
+    const list = bySig.get(sig) ?? [];
+    list.push({ cid, cp });
+    bySig.set(sig, list);
+  }
+
+  for (const [, contacts] of bySig) {
+    const firstCid = contacts[0].cid;
+    const firstTis = cTis.get(firstCid)!;
+    const sig = [...firstTis].sort().map((ti) => dev.terminals[ti].name).join(",");
+    const termIndices = sig.split(",").map((n) =>
+      dev.terminals.findIndex((t) => t.name === n),
+    ).filter((i) => i >= 0);
+
+    if (termIndices.length <= 1) {
+      for (const { cid, cp } of contacts) {
+        termContacts[termIndices[0]].push({ x: cp.x, y: cp.y, tol: cp.tol, contactId: cid });
+      }
+    } else {
+      for (let ci = 0; ci < contacts.length; ci++) {
+        const ti = termIndices[ci % termIndices.length];
+        termContacts[ti].push({ x: contacts[ci].cp.x, y: contacts[ci].cp.y, tol: contacts[ci].cp.tol, contactId: contacts[ci].cid });
+      }
+    }
+  }
+
+  const termPoints: Array<{x:number;y:number;name:string;contactId?:string}> = [];
+  for (let ti = 0; ti < termContacts.length; ti++) {
+    for (const cp of termContacts[ti]) {
+      const wr = Math.round(cp.x), hr = Math.round(cp.y);
+      const already = termPoints.some((p) => Math.round(p.x) === wr && Math.round(p.y) === hr);
+      if (!already) {
+        termPoints.push({ x: cp.x, y: cp.y, name: dev.terminals[ti].name, contactId: cp.contactId });
+      }
+    }
+  }
+
+  return { termPoints, termContacts };
+}
+
+// ═════════════════════════════════════════════════════════════════
+// D/S assignment: Bulk connection heuristic
+// ═════════════════════════════════════════════════════════════════
+// After mergeMetalConnectedTerminals, B (well tap) and D/S terminals
+// have netIds from the metal UF component they belong to.
+// If S.netId === B.netId → source is correctly assigned (S is on bulk).
+// If D.netId === B.netId → swap D/S (D is actually the source terminal).
+// If neither matches (or no well contact) → leave unchanged.
+
+/**
+ * Swap D and S terminals for a MOS device.  Exchanges netIds and shapeIds
+ * so that the user-assigned (or heuristic-detected) drain/source roles
+ * are reflected in the device data.
+ */
+function _swapDSTerminals(dev: AnalogDevice): void {
+  const dIdx = dev.terminals.findIndex((t) => t.name === "D");
+  const sIdx = dev.terminals.findIndex((t) => t.name === "S");
+  if (dIdx < 0 || sIdx < 0) return;
+  const tmp = { ...dev.terminals[dIdx] };
+  dev.terminals[dIdx] = { ...dev.terminals[sIdx], name: "D" };
+  dev.terminals[sIdx] = { ...tmp, name: "S" };
+  // Mark that D/S went through resolution (not default positional).
+  // Used by display code to show "D"/"S" instead of "S/D".
+  (dev as any)._dsResolved = true;
+  // Swap the displayed termPoint names so labels update immediately.
+  const pts = (dev as any)._termPoints as
+    Array<{x:number;y:number;name:string}> | undefined;
+  if (pts) {
+    for (const p of pts) {
+      if (p.name === "D") p.name = "S";
+      else if (p.name === "S") p.name = "D";
+    }
+  }
+}
+
+/**
+ * Apply the bulk connection heuristic:
+ * After mergeMetalConnectedTerminals, if S's metal component matches
+ * B's (well tap) component, S stays S. If D's matches B, swap D/S.
+ *
+ * Safe to call even when no well contact exists (netId comparisons
+ * are strict equality).
+ */
+export function applyBulkHeuristic(
+  devices: AnalogDevice[],
+): void {
+  for (const dev of devices) {
+    if (dev.kind !== "mos") continue;
+
+    // Skip devices already resolved (force SOURCE or cell-level heuristic).
+    // Die-level heuristic should not override user-defined assignments.
+    if ((dev as any)._dsResolved === true) continue;
+
+    const dTerm = dev.terminals.find((t) => t.name === "D");
+    const sTerm = dev.terminals.find((t) => t.name === "S");
+    const bTerm = dev.terminals.find((t) => t.name === "B");
+    if (!dTerm || !sTerm || !bTerm) continue;
+
+    // Both D and S must have positive netIds (resolved to metal components)
+    // AND B must have a positive netId (well tap exists + connected to metal).
+    if (dTerm.netId < 0 || sTerm.netId < 0 || bTerm.netId < 0) continue;
+
+    // Skip if D and S already share a netId (shorted) — can't determine.
+    if (dTerm.netId === sTerm.netId) continue;
+
+    if (sTerm.netId === bTerm.netId) {
+      // S is already on bulk — correct. Mark as resolved so display
+      // shows "S" instead of "S/D".
+      (dev as any)._dsResolved = true;
+      continue;
+    }
+
+    if (dTerm.netId === bTerm.netId) {
+      // D is on bulk — D should be S. Swap.
+      _swapDSTerminals(dev);
+    }
+  }
+}
+
+// ═════════════════════════════════════════════════════════════════
+// D/S assignment: Force SOURCE override (user-defined)
+// ═════════════════════════════════════════════════════════════════
+// The user can right-click a contact in RE Cell and mark it as "Force SOURCE".
+// This pushes the contact's shape ID into cellType.forcedSourceContacts.
+//
+// After resolution, if a contact's termPoint is named "D" but its contactId
+// is in the forced set, swap D/S for that device.
+//
+// Priority: force SOURCE > bulk heuristic > default "S/D".
+
+/**
+ * Apply user-defined force-source overrides.
+ *
+ * @param devices  Devices with _termPoints already populated from
+ *                 resolveDeviceContacts.
+ * @param forcedSourceIds  Set of contact shape IDs forced to be SOURCE.
+ */
+export function applySourceOverride(
+  devices: AnalogDevice[],
+  forcedSourceIds: Set<string> | undefined,
+): void {
+  if (!forcedSourceIds || forcedSourceIds.size === 0) return;
+
+  for (const dev of devices) {
+    if (dev.kind !== "mos") continue;
+
+    const pts = (dev as any)._termPoints as
+      Array<{x:number;y:number;name:string;contactId?:string}> | undefined;
+    if (!pts || pts.length === 0) continue;
+
+    // Check if any termPoint (D or S) has a contactId in the forced set.
+    const forcedContactOnD = pts.some(
+      (p) => p.name === "D" && p.contactId && forcedSourceIds.has(p.contactId),
+    );
+    const forcedContactOnS = pts.some(
+      (p) => p.name === "S" && p.contactId && forcedSourceIds.has(p.contactId),
+    );
+    if (!forcedContactOnD && !forcedContactOnS) continue;
+
+    if (forcedContactOnD && forcedContactOnS) {
+      // Both set — conflicting (shouldn't happen, but guard).
+      continue;
+    }
+
+    if (forcedContactOnD) {
+      // User forced a contact that resolved to D — swap to make it S.
+      _swapDSTerminals(dev);
+    } else {
+      // forcedContactOnS — user confirmed a contact that's already S.
+      // Mark as resolved so display shows "S" and multi-finger propagates.
+      (dev as any)._dsResolved = true;
+    }
+  }
+}
+
+// ═════════════════════════════════════════════════════════════════
+// Multi-finger D/S propagation
+// ═════════════════════════════════════════════════════════════════
+// Multi-finger MOS devices share diffusion segments (seg[i] is D for gate i-1
+// AND S for gate i). If one device gets resolved (force SOURCE or bulk
+// heuristic), the S/D pattern must propagate to all devices in the group
+// because segments always alternate: S, D, S, D, ...
+
+/**
+ * Propagate D/S resolution across multi-finger device groups.
+ *
+ * Algorithm:
+ * 1. Find groups of MOS devices that share segment shape IDs (multi-finger chain)
+ * 2. For each group with at least one resolved device (_dsResolved):
+ *    a. Determine the alternating pattern from known assignments
+ *    b. Propagate: if seg[i] = S → seg[i-1] = D, seg[i+1] = D, etc.
+ *    c. Swap devices whose S-terminal doesn't match the pattern
+ */
+export function propagateMultiFingerDS(devices: AnalogDevice[]): void {
+  // ── Find segment-sharing groups via UF ────────────────────────
+  // Map: segmentShapeId → array of {dev, term}
+  const segToTerms = new Map<string, Array<{dev: AnalogDevice; termName: string}>>();
+  for (const dev of devices) {
+    if (dev.kind !== "mos") continue;
+    for (const term of dev.terminals) {
+      if (term.name !== "D" && term.name !== "S") continue;
+      if (!term.shapeIds) continue;
+      for (const sid of term.shapeIds) {
+        // Only segment shapes (created by Clipper2 for MOS)
+        if (!sid.includes("_seg")) continue;
+        let list = segToTerms.get(sid);
+        if (!list) { list = []; segToTerms.set(sid, list); }
+        list.push({ dev, termName: term.name });
+      }
+    }
+  }
+
+  // UF over device instances
+  const uf = new UnionFind(devices.length);
+  for (const [, terms] of segToTerms) {
+    if (terms.length < 2) continue;
+    // All devices sharing a segment are in the same multi-finger group
+    const idx0 = devices.indexOf(terms[0].dev);
+    for (let i = 1; i < terms.length; i++) {
+      uf.union(idx0, devices.indexOf(terms[i].dev));
+    }
+  }
+
+  // Group by UF root
+  const groups = new Map<number, AnalogDevice[]>();
+  for (let i = 0; i < devices.length; i++) {
+    if (devices[i].kind !== "mos") continue;
+    // Skip if no segment shapes (not multi-finger)
+    const hasSeg = devices[i].terminals.some(
+      (t) => (t.name === "D" || t.name === "S") &&
+        t.shapeIds?.some((sid) => sid.includes("_seg")),
+    );
+    if (!hasSeg) continue;
+    const root = uf.find(i);
+    let list = groups.get(root);
+    if (!list) { list = []; groups.set(root, list); }
+    list.push(devices[i]);
+  }
+
+  // ── Propagate within each group ───────────────────────────────
+  for (const [, groupDevices] of groups) {
+    if (groupDevices.length < 2) continue; // not multi-finger
+
+    const hasResolved = groupDevices.some(
+      (d) => (d as any)._dsResolved === true,
+    );
+    if (!hasResolved) continue;
+
+    // ── Parallel vs series detection ────────────────────────────
+    // In a parallel multi-finger layout, non-adjacent segments share
+    // a metal net (e.g., seg0 + seg2 both on source bus). In a series
+    // (cascode) layout, each segment has its own net. Only propagate
+    // the alternating S/D pattern for parallel layouts.
+    // Check: do any two non-adjacent segments share a netId?
+    let isParallel = false;
+    const segNetIds = new Map<string, Set<number>>();
+    for (const dev of groupDevices) {
+      for (const t of dev.terminals) {
+        if (t.name !== "D" && t.name !== "S") continue;
+        if (t.netId < 0) continue;
+        for (const sid of t.shapeIds ?? []) {
+          if (!sid.includes("_seg")) continue;
+          let set = segNetIds.get(sid);
+          if (!set) { set = new Set(); segNetIds.set(sid, set); }
+          set.add(t.netId);
+        }
+      }
+    }
+    // Collect sorted segments
+    const allSegIds = new Set(segNetIds.keys());
+    const sortedSegs = [...allSegIds].sort((a, b) => {
+      const ai = parseInt(a.match(/_seg(\d+)$/)?.[1] ?? "0", 10);
+      const bi = parseInt(b.match(/_seg(\d+)$/)?.[1] ?? "0", 10);
+      return ai - bi;
+    });
+    if (sortedSegs.length < 2) continue;
+
+    // Check non-adjacent pairs for shared netIds
+    for (let i = 0; i < sortedSegs.length; i++) {
+      for (let j = i + 2; j < sortedSegs.length; j++) {
+        const netI = segNetIds.get(sortedSegs[i]);
+        const netJ = segNetIds.get(sortedSegs[j]);
+        if (netI && netJ) {
+          for (const nid of netI) {
+            if (netJ.has(nid)) {
+              isParallel = true;
+              break;
+            }
+          }
+        }
+        if (isParallel) break;
+      }
+      if (isParallel) break;
+    }
+    if (!isParallel) continue; // series layout — don't propagate
+
+    // Collect known segment assignments from resolved devices
+    const segAssignment = new Map<string, "S" | "D">();
+    for (const dev of groupDevices) {
+      if ((dev as any)._dsResolved !== true) continue;
+      for (const term of dev.terminals) {
+        if (term.name !== "D" && term.name !== "S") continue;
+        for (const sid of term.shapeIds ?? []) {
+          if (!sid.includes("_seg")) continue;
+          // The segment is assigned to terminal term.name
+          // If terminal is S → segment should be S, if D → segment is D
+          if (!segAssignment.has(sid)) {
+            segAssignment.set(sid, term.name as "S" | "D");
+          }
+        }
+      }
+    }
+
+    if (segAssignment.size === 0) continue;
+
+    // Propagate: alternate outward from known segments
+    let changed = true;
+    while (changed) {
+      changed = false;
+      for (let i = 0; i < sortedSegs.length; i++) {
+        const cur = sortedSegs[i];
+        const curVal = segAssignment.get(cur);
+        if (!curVal) continue;
+        const opposite: "S" | "D" = curVal === "S" ? "D" : "S";
+
+        if (i > 0) {
+          const prev = sortedSegs[i - 1];
+          if (!segAssignment.has(prev)) {
+            segAssignment.set(prev, opposite);
+            changed = true;
+          }
+        }
+        if (i < sortedSegs.length - 1) {
+          const next = sortedSegs[i + 1];
+          if (!segAssignment.has(next)) {
+            segAssignment.set(next, opposite);
+            changed = true;
+          }
+        }
+      }
+    }
+
+    // Apply: for each device, check if its S-terminal segment matches pattern
+    for (const dev of groupDevices) {
+      const sTerm = dev.terminals.find((t) => t.name === "S");
+      const dTerm = dev.terminals.find((t) => t.name === "D");
+      if (!sTerm || !dTerm) continue;
+
+      // Find which segment this device uses as S-side
+      // In detectMOSFromLayers: S-side = seg[gi], D-side = seg[gi+1]
+      // Excluding non-segment shapes (well/other)
+      const sSegId = sTerm.shapeIds?.find(
+        (sid) => sid.includes("_seg"),
+      );
+      if (!sSegId) continue;
+
+      const expectedS = segAssignment.get(sSegId);
+      if (!expectedS) continue;
+
+      if (expectedS === "D") {
+        // S-terminal is on a segment the pattern says should be D → swap.
+        // Pattern stays unchanged — each device is checked independently.
+        _swapDSTerminals(dev);
+      }
+      // If expectedS === "S", S-terminal is correct — no swap needed
+    }
+
+    // Mark ALL devices in the group as resolved after propagation.
+    // Devices that didn't need a swap also get _dsResolved so the
+    // display shows "S"/"D" instead of "S/D".
+    for (const dev of groupDevices) {
+      (dev as any)._dsResolved = true;
+    }
+
+    // ── Deduplicate termPoints within multi-finger group ───────
+    // Shared segments (e.g., seg1 used by both Gate0 and Gate1) produce
+    // multiple termPoints at the same contact position — one per device.
+    // Remove duplicates: keep only the FIRST termPoint at each position.
+    const seenPos = new Set<string>();
+    for (const dev of groupDevices) {
+      const pts = (dev as any)._termPoints as
+        Array<{x:number;y:number;name:string}> | undefined;
+      if (!pts) continue;
+      for (let i = pts.length - 1; i >= 0; i--) {
+        const key = `${Math.round(pts[i].x)},${Math.round(pts[i].y)}`;
+        if (seenPos.has(key)) {
+          pts.splice(i, 1); // duplicate — remove
+        } else {
+          seenPos.add(key);
+        }
+      }
+    }
+  }
 }

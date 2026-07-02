@@ -531,6 +531,26 @@ export function buildSetShapeForcedTypesAction(
   return { kind: "upsertCellType", cellType: next, prevCellType: cellType };
 }
 
+/**
+ * Toggle a contact shape ID in `cellType.forcedSourceContacts`.
+ * If the contact is already forced, remove it (clear). If not, add it.
+ * Returns null when the operation is a no-op (not a contact layer shape).
+ */
+export function buildToggleForceSourceAction(
+  cellType: CellType,
+  contactId: string,
+): AnnotationAction {
+  const current = cellType.forcedSourceContacts ?? [];
+  const nextIds = current.includes(contactId)
+    ? current.filter((id) => id !== contactId)
+    : [...current, contactId];
+  const next: CellType = {
+    ...cellType,
+    forcedSourceContacts: nextIds.length > 0 ? nextIds : undefined,
+  };
+  return { kind: "upsertCellType", cellType: next, prevCellType: cellType };
+}
+
 /** Batch insert (paste) — gives every shape a fresh id, sites them in `layer`. */
 export function buildInsertShapesAction(
   cellType: CellType,

@@ -52,6 +52,10 @@ interface Props {
   onCopy: () => void;
   onPaste: () => void;
   onDelete: () => void;
+  /** Toggle force-source for a contact shape. Called only for "contact" layer. */
+  onForceSource?: (contactId: string) => void;
+  /** True when the clicked contact is in cellType.forcedSourceContacts. */
+  isSourceForced?: boolean;
 }
 
 /**
@@ -79,7 +83,9 @@ export function ShapeContextMenu({
   onDuplicate,
   onCopy,
   onPaste,
-  onDelete
+  onDelete,
+  onForceSource,
+  isSourceForced
 }: Props) {
   const ref = useRef<HTMLDivElement | null>(null);
 
@@ -108,6 +114,7 @@ export function ShapeContextMenu({
 
   const isMetal = menu.layer === "metal1" || menu.layer === "metal2";
   const isDiffusion = menu.layer === "diffusion";
+  const isContact = menu.layer === "contact";
   const plural = selectionCount > 1 ? ` (${selectionCount})` : "";
   // Section-header hint. We only surface the count when it's >1 — the single-
   // shape case is the obvious default and the chrome would be noise.
@@ -200,6 +207,22 @@ export function ShapeContextMenu({
               Clear (auto-infer)
             </button>
           )}
+          <div className="menu-sep" />
+        </>
+      )}
+
+      {isContact && (
+        <>
+          <div className="menu-section">
+            Source override
+          </div>
+          <button
+            className={"menu-item" + (isSourceForced ? " on" : "")}
+            onClick={run(() => onForceSource?.(menu.shape.id))}
+          >
+            <span>{isSourceForced ? "Clear SOURCE override" : "Force SOURCE"}</span>
+            <span style={{ width: 12, textAlign: "right" }}>{isSourceForced ? "✓" : ""}</span>
+          </button>
           <div className="menu-sep" />
         </>
       )}

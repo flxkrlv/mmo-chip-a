@@ -42,6 +42,7 @@ import {
   buildSetShapeCustomNameAction,
   buildSetShapeForcedTypesAction,
   buildSetShapeLabelsAction,
+  buildToggleForceSourceAction,
   translateShape
 } from "../lib/cellLayers";
 import {
@@ -943,6 +944,12 @@ function RE({ dieId }: { dieId: string }) {
             onClose={() => setShapeMenu(null)}
             onSetLabel={(label) => doSetLabel(shapeMenu, label)}
             onSetForcedType={(type) => doSetForcedType(shapeMenu, type)}
+            onForceSource={(contactId) => {
+              if (!cellType) return;
+              const action = buildToggleForceSourceAction(cellType, contactId);
+              void dispatcher.dispatch(action);
+            }}
+            isSourceForced={cellType?.forcedSourceContacts?.includes(shapeMenu.shape.id) ?? false}
             onDuplicate={doDuplicate}
             onCopy={doCopy}
             onPaste={doPaste}

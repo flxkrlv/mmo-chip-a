@@ -14,7 +14,8 @@ import type {
   LayerLine,
   LayerShape,
   LayerType,
-  ShapeLabel
+  ShapeLabel,
+  AnalogDevice,
 } from "shared";
 import type { AnnotationAction } from "../../api/actions";
 import {
@@ -1197,6 +1198,12 @@ export const CellRECanvas = forwardRef<CellRECanvasHandle, Props>(function CellR
       !inflightForDim && extraction && extraction.kind === "inferred"
         ? (extraction as InferredCellExtraction)
         : null;
+    // Terminal labels: contact-point markers for analog devices.
+    // Extracted devices carry _termPoints from the shared pipeline
+    // (extractAnalogDevicesFromCellType → resolveDeviceContacts).
+    // Draw them on top of everything when zoom is sufficient.
+    const analogDevices: (AnalogDevice & { _termPoints?: Array<{x:number;y:number;name:string}> })[] =
+      (inferred as any)?.analogDevices ?? [];
     const inferredLabel = new Map<string, ShapeLabel>();
     const hideOriginalDiff = new Set<string>();
     const subRegionDraws: Array<{
@@ -1500,6 +1507,53 @@ export const CellRECanvas = forwardRef<CellRECanvasHandle, Props>(function CellR
       ctx.fillStyle = COLOR_LAYER[activeLayer] ?? "#fff";
       const dotR = 3 / v.zoom;
       for (const p of polylineDraft) { ctx.beginPath(); ctx.arc(p.x, p.y, dotR, 0, Math.PI * 2); ctx.fill(); }
+    }
+
+    // ── Analog device terminal labels ────────────────────────────────
+    // Painted on top of everything — at sufficient zoom only.
+    if (analogDevices.length > 0 && v.zoom >= 0.8) {
+      const TERM_FONT_SIZE = 9;
+      const TERM_RADIUS = 3;
+      const TERM_COLORS: Record<string, string> = {
+        D: "#ffcc44", S: "#66ee66", G: "#ffffff", B: "#aaaaaa",
+        C: "#ff8844", E: "#44dd88",
+        PLUS: "#44ddff", MINUS: "#ff6666",
+      };
+      const DEVICE_COLORS: Record<string, string> = {
+        mos: "#4488ff", bjt_npn: "#22cc66", bjt_pnp: "#ff8844",
+        resistor: "#ffaa44", capacitor: "#44ddff", diode: "#ff4444",
+      };
+      for (const dev of analogDevices) {
+        const points = (dev as any)._termPoints as Array<{x:number;y:number;name:string}> | undefined;
+        if (!points || points.length === 0) continue;
+        const color = DEVICE_COLORS[dev.kind] ?? "#888888";
+        ctx.font = `600 ${TERM_FONT_SIZE}px monospace`;
+        ctx.textBaseline = "middle";
+        for (const pt of points) {
+          const sx = pt.x, sy = pt.y;
+          const dsResolved = (dev as any)._dsResolved === true;
+          const displayName = pt.name === "D" || pt.name === "S"
+            ? (dsResolved ? pt.name : "S/D")
+            : pt.name;
+          const tm = ctx.measureText(displayName);
+          const tw = tm.width + 4;
+          const th = TERM_FONT_SIZE + 4;
+          // Dot
+          ctx.beginPath();
+          ctx.arc(sx, sy, TERM_RADIUS / v.zoom, 0, Math.PI * 2);
+          ctx.fillStyle = TERM_COLORS[pt.name] ?? color;
+          ctx.fill();
+          ctx.strokeStyle = "rgba(0,0,0,0.6)";
+          ctx.lineWidth = 0.5 / v.zoom;
+          ctx.stroke();
+          // Background rect
+          ctx.fillStyle = "rgba(0,0,0,0.7)";
+          ctx.fillRect(sx + 3, sy - th / 2, tw, th);
+          // Label text
+          ctx.fillStyle = color;
+          ctx.fillText(displayName, sx + 5, sy);
+        }
+      }
     }
 
     // ── Marquee rectangle ─────────────────────────────────────────────

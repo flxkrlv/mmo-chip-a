@@ -223,6 +223,11 @@ export interface CellType {
    *  tool. Absent/false ⇒ an auto-created singleton placeholder (a cell that
    *  has only been labelled, not yet classified) - grouped under "Unmatched". */
   matched?: boolean;
+  /** Contact shape IDs explicitly forced to be SOURCE terminals.
+   *  When a MOS device's D terminal touches one of these contacts,
+   *  D and S are swapped so the forced contact shows "S".
+   *  Empty/absent = no overrides. */
+  forcedSourceContacts?: string[];
 }
 
 export interface Cell {
