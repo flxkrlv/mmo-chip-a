@@ -2,18 +2,21 @@
  * SchematicViewPanel.tsx — Renders schematics and functional block diagrams.
  *
  * Two render modes:
- *   - Analog: transistor-level schematic (two engines: spice-ts / netlist2svg)
+ *   - Analog: transistor-level schematic via netlist2svg (ELK layout)
  *   - Functional: block diagram showing floorplan regions as sub-module rectangles
+ *
+ * ⚠ We previously experimented with @spice-ts/ui as an alternative SVG schematic
+ *   renderer, but its rendering quality was poor and it lacked customisation.
+ *   It has been replaced entirely by netlist2svg.  The old import and types
+ *   (SpiceSchematicPrototype, SpiceTSResult, generateSpiceTSViews) remain in
+ *   the file for reference but are no longer wired into the UI.
  *
  * netlist2svg loads ELK.js (~2MB) on first use.
  */
 
 import { useEffect, useMemo, useState, useRef, useCallback } from "react";
 import type { DieAnnotations, FloorplanRegion, SpiceConfig } from "shared";
-import {
-  SpiceSchematicPrototype,
-} from "./SpiceSchematicPrototype";
-import { generateSpiceTSViews, type SpiceTSResult } from "../../lib/schematic/spiceTSFormat";
+import { generateSpiceTSViews } from "../../lib/schematic/spiceTSFormat";
 import { Netlist2SvgView, type Netlist2SvgHandle } from "./Netlist2SvgView";
 import { LAYOUT_STRATEGIES, LAYOUT_DIRECTIONS, COMPACTION_LEVELS, type LayoutStrategy, type LayoutDirection, type CompactionLevel } from "../../lib/schematic/netlist2svgSkin";
 import { formatDevicesAsNetlist2Svg } from "../../lib/schematic/netlist2svgFormat";
@@ -21,10 +24,6 @@ import { generateBlockDiagram } from "../../lib/schematic/blockDiagramFormat";
 import { collectDieWideAnalogDevices } from "../../api/dieWideAnalog";
 import { assignInstanceNames } from "../../lib/export/spice";
 import { matchGeometry } from "../../lib/export/matching";
-
-// ── Engine selection ────────────────────────────────────────────
-
-type SchematicEngine = "spice-ts" | "netlist2svg";
 
 // ── Props ───────────────────────────────────────────────────────
 
@@ -51,8 +50,6 @@ export function SchematicViewPanel({
   selectedRegion: selectedRegionProp,
   onSelectRegion,
 }: Props) {
-  // ── Engine toggle ─────────────────────────────────────────────
-  const [engine, setEngine] = useState<SchematicEngine>("netlist2svg");
   const [renderMode, setRenderMode] = useState<"analog" | "functional">("analog");
   const [layoutStrategy, setLayoutStrategy] = useState<LayoutStrategy>("BRANDES_KOEPF");
   const [layoutDirection, setLayoutDirection] = useState<LayoutDirection>("DOWN");
@@ -219,13 +216,6 @@ export function SchematicViewPanel({
 
   // ── Current data ──────────────────────────────────────────────
 
-  const currentSpiceTs: SpiceTSResult | null = useMemo(() => {
-    if (hierarchical && activeRegion) {
-      return views.perRegion.get(activeRegion)?.result ?? null;
-    }
-    return views.flat;
-  }, [hierarchical, activeRegion, views]);
-
   const currentN2sJson = useMemo(() => {
     if (hierarchical && activeRegion && n2sData.floorplanDevices) {
       const regionDevices = n2sData.floorplanDevices.get(activeRegion);
@@ -289,7 +279,7 @@ export function SchematicViewPanel({
             type="button"
             className={"btn sm" + (renderMode === "functional" ? " on" : "")}
             onClick={() => {
-              if (functionalAvail) { setRenderMode("functional"); setEngine("netlist2svg"); }
+              if (functionalAvail) setRenderMode("functional");
             }}
             style={{
               fontSize: 10,
@@ -303,89 +293,54 @@ export function SchematicViewPanel({
           </button>
         </div>
 
-        {/* ── Engine toggle (always visible) ── */}
-        <div
-          className="row"
+        {/* Layout strategy selector */}
+        <select
+          value={layoutStrategy}
+          onChange={(e) => setLayoutStrategy(e.target.value as LayoutStrategy)}
           style={{
-            gap: 2,
-            background: "var(--l2)",
-            borderRadius: 4,
-            padding: 2,
-            flexShrink: 0,
+            fontSize: 10,
+            padding: "1px 4px",
+            border: "1px solid var(--l2)",
+            borderRadius: 3,
+            background: "var(--card)",
+            color: "var(--fg)",
+            outline: "none",
+            cursor: "pointer",
           }}
+          title="ELK layout strategy — switch if rendering fails"
         >
-          <button
-            type="button"
-            className={"btn sm" + (engine === "spice-ts" ? " on" : "")}
-            onClick={() => setEngine("spice-ts")}
-            style={{ fontSize: 10, fontWeight: 600 }}
-            title="@spice-ts schematic (basic)"
-          >
-            Spice-TS
-          </button>
-          <button
-            type="button"
-            className={"btn sm" + (engine === "netlist2svg" ? " on" : "")}
-            onClick={() => setEngine("netlist2svg")}
-            style={{ fontSize: 10, fontWeight: 600 }}
-            title="netlist2svg schematic (ELK layout)"
-          >
-            Netlist2SVG
-          </button>
-        </div>
+          {LAYOUT_STRATEGIES.map((s) => (
+            <option key={s.value} value={s.value} title={s.desc}>
+              {s.label}
+            </option>
+          ))}
+        </select>
 
-        {/* Layout strategy selector (netlist2svg only, both modes) */}
-        {engine === "netlist2svg" && (
-          <select
-            value={layoutStrategy}
-            onChange={(e) => setLayoutStrategy(e.target.value as LayoutStrategy)}
-            style={{
-              fontSize: 10,
-              padding: "1px 4px",
-              border: "1px solid var(--l2)",
-              borderRadius: 3,
-              background: "var(--card)",
-              color: "var(--fg)",
-              outline: "none",
-              cursor: "pointer",
-            }}
-            title="ELK layout strategy — switch if rendering fails"
-          >
-            {LAYOUT_STRATEGIES.map((s) => (
-              <option key={s.value} value={s.value} title={s.desc}>
-                {s.label}
-              </option>
-            ))}
-          </select>
-        )}
+        {/* Layout direction selector */}
+        <select
+          value={layoutDirection}
+          onChange={(e) => setLayoutDirection(e.target.value as LayoutDirection)}
+          style={{
+            fontSize: 10,
+            padding: "1px 4px",
+            border: "1px solid var(--l2)",
+            borderRadius: 3,
+            background: "var(--card)",
+            color: "var(--fg)",
+            outline: "none",
+            cursor: "pointer",
+          }}
+          title="ELK layout direction — controls signal flow and power rail placement"
+        >
+          {LAYOUT_DIRECTIONS.map((d) => (
+            <option key={d.value} value={d.value} title={d.desc}>
+              {d.label}
+            </option>
+          ))}
+        </select>
 
-        {/* Layout direction selector (netlist2svg only, both modes) */}
-        {engine === "netlist2svg" && (
-          <select
-            value={layoutDirection}
-            onChange={(e) => setLayoutDirection(e.target.value as LayoutDirection)}
-            style={{
-              fontSize: 10,
-              padding: "1px 4px",
-              border: "1px solid var(--l2)",
-              borderRadius: 3,
-              background: "var(--card)",
-              color: "var(--fg)",
-              outline: "none",
-              cursor: "pointer",
-            }}
-            title="ELK layout direction — controls signal flow and power rail placement"
-          >
-            {LAYOUT_DIRECTIONS.map((d) => (
-              <option key={d.value} value={d.value} title={d.desc}>
-                {d.label}
-              </option>
-            ))}
-          </select>
-        )}
-
-        {/* Compaction level selector (BRANDES_KOEPF only, both modes) */}
-        {engine === "netlist2svg" && layoutStrategy === "BRANDES_KOEPF" && (
+        {/* Compaction level selector (BRANDES_KOEPF only) */}
+        {layoutStrategy === "BRANDES_KOEPF" && (
           <select
             value={compactionLevel}
             onChange={(e) => setCompactionLevel(Number(e.target.value) as CompactionLevel)}
@@ -412,74 +367,70 @@ export function SchematicViewPanel({
         {/* Separator */}
         <span style={{ width: 1, height: 16, background: "var(--l2)", flexShrink: 0 }} />
 
-        {/* Zoom controls (netlist2svg only, both modes) */}
-        {engine === "netlist2svg" && (
-          <>
-            <button
-              type="button"
-              className="btn sm"
-              onClick={() => n2sRef.current?.zoomIn()}
-              style={{ fontSize: 10, fontWeight: 600 }}
-              title="Zoom in"
-            >
-              +
-            </button>
-            <button
-              type="button"
-              className="btn sm"
-              onClick={() => n2sRef.current?.zoomOut()}
-              style={{ fontSize: 10, fontWeight: 600 }}
-              title="Zoom out"
-            >
-              −
-            </button>
-            <button
-              type="button"
-              className="btn sm"
-              onClick={() => n2sRef.current?.zoomReset()}
-              style={{ fontSize: 10 }}
-              title="Reset zoom to 1:1"
-            >
-              ⊖
-            </button>
-          </>
-        )}
+        {/* Zoom controls */}
+        <>
+          <button
+            type="button"
+            className="btn sm"
+            onClick={() => n2sRef.current?.zoomIn()}
+            style={{ fontSize: 10, fontWeight: 600 }}
+            title="Zoom in"
+          >
+            +
+          </button>
+          <button
+            type="button"
+            className="btn sm"
+            onClick={() => n2sRef.current?.zoomOut()}
+            style={{ fontSize: 10, fontWeight: 600 }}
+            title="Zoom out"
+          >
+            −
+          </button>
+          <button
+            type="button"
+            className="btn sm"
+            onClick={() => n2sRef.current?.zoomReset()}
+            style={{ fontSize: 10 }}
+            title="Reset zoom to 1:1"
+          >
+            ⊖
+          </button>
+        </>
 
         {/* Separator */}
         <span style={{ width: 1, height: 16, background: "var(--l2)", flexShrink: 0 }} />
 
-        {/* Download buttons (netlist2svg only, both modes) */}
-        {engine === "netlist2svg" && (
-          <>
-            <button
-              type="button"
-              className="btn sm"
-              onClick={() => handleDownload("svg")}
-              style={{ fontSize: 10 }}
-              title="Download SVG (black on white, for documents)"
-            >
-              ↓ SVG
-            </button>
-            <button
-              type="button"
-              className="btn sm"
-              onClick={() => handleDownload("png")}
-              style={{ fontSize: 10 }}
-              title="Download PNG (black on white, 2x resolution)"
-            >
-              ↓ PNG
-            </button>
-            <button
-              type="button"
-              className="btn sm"
-              onClick={() => handleDownload("json")}
-              style={{ fontSize: 10 }}
-              title="Download Yosys JSON (netlist2svg input, for debugging)"
-            >
-              ↓ JSON
-            </button>
-          </>
-        )}
+        {/* Download buttons */}
+        <>
+          <button
+            type="button"
+            className="btn sm"
+            onClick={() => handleDownload("svg")}
+            style={{ fontSize: 10 }}
+            title="Download SVG (black on white, for documents)"
+          >
+            ↓ SVG
+          </button>
+          <button
+            type="button"
+            className="btn sm"
+            onClick={() => handleDownload("png")}
+            style={{ fontSize: 10 }}
+            title="Download PNG (black on white, 2x resolution)"
+          >
+            ↓ PNG
+          </button>
+          <button
+            type="button"
+            className="btn sm"
+            onClick={() => handleDownload("json")}
+            style={{ fontSize: 10 }}
+            title="Download Yosys JSON (netlist2svg input, for debugging)"
+          >
+            ↓ JSON
+          </button>
+        </>
 
         {/* Hierarchical region buttons (analog mode only) */}
         {renderMode === "analog" && hierarchical && regionIds.length > 0 && (
@@ -531,7 +482,7 @@ export function SchematicViewPanel({
       >
         {renderMode === "functional" ? (
           // ── Functional block diagram ─────────────────────────
-          blockDiagramJson && functionalAvail && engine === "netlist2svg" ? (
+          blockDiagramJson && functionalAvail ? (
             <Netlist2SvgView
               ref={n2sRef}
               netlistJson={blockDiagramJson}
@@ -542,15 +493,8 @@ export function SchematicViewPanel({
           ) : (
             <EmptyView message="No regions to show in block diagram" />
           )
-        ) : engine === "spice-ts" ? (
-          // ── spice-ts renderer (analog mode) ──────────────────
-          currentSpiceTs ? (
-            <SpiceSchematicPrototype netlist={currentSpiceTs.netlist} height={800} />
-          ) : (
-            <EmptyView hasRegions={regionIds.length > 0} />
-          )
         ) : (
-          // ── netlist2svg renderer (analog mode) ───────────────
+          // ── Analog schematic via netlist2svg ────────────────
           currentN2sJson ? (
             <Netlist2SvgView ref={n2sRef} netlistJson={currentN2sJson} layoutStrategy={layoutStrategy} layoutDirection={layoutDirection} compactionLevel={compactionLevel} />
           ) : (
