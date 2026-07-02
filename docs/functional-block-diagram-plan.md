@@ -10,6 +10,8 @@
 
 аналовый схемный рендер ОСТАВЛЯЕМ как есть, ДОБАВИМ к нему новый функционал - блок схемы на основе иерархии
 
+и лучше наверно добавлять блок диаграмму прям в существующий топ-левел (сейчас там только элементы которые не входят в блоки, а можно рисовать и сами блоки тоже с входами и выходами)
+
 ## Формат Yosys JSON
 ```json
 {
@@ -86,9 +88,25 @@ function inferPortDirection(regionDevices, netId): "input" | "output" | "inout" 
 - Layout strategy selector не показывается в Functional mode (там свой скин)
 
 ## Файлы
-- `frontend/src/lib/schematic/blockDiagramFormat.ts` — генерация Yosys JSON
-- Изменения в `SchematicViewPanel.tsx` — новая кнопка
-- Изменения в `Netlist2SvgView.tsx` — поддержка разных скинов
+- ✅ `frontend/src/lib/schematic/blockDiagramFormat.ts` — генерация Yosys JSON
+- ✅ Изменения в `SchematicViewPanel.tsx` — кнопка Analog/Functional, скрытие стратегий в Functional
+- ⏭️ `Netlist2SvgView.tsx` — изменений не нужно (layoutDirection и layoutStrategy уже пробрасываются)
+
+## Статус реализации
+- ✅ Core: блок-диаграмма генерируется через `generateBlockDiagram()`
+  - Каждый floorplan-регион → `sub_odd`/`sub_even` прямоугольник с портами
+  - Кросс-регионные нет → провода между блоками
+  - IO пины → `inputExt` стрелки
+  - VDD/GND → `vcc`/`gnd` символы
+  - Направление портов: gate → input, пассив → output, оба → inout
+- ✅ UI: переключатель Analog / Functional в тулбаре
+- ✅ Functional mode: layout RIGHT, SIMPLE strategy, compaction=0
+- ✅ Selector'ы стратегии/направления/компакшена скрыты в Functional mode
+- ✅ Zoom/Download кнопки работают в обоих режимах
+- ✅ Region кнопки видны только в Analog mode
+- ❌ `__unassigned__` устройства пропускаются в блок-диаграмме
+- ❌ Смешанный режим (аналоговые устройства + блоки на топ-левеле) пока не реализован
 
 ## Приоритет
-1. ❌ НЕ сейчас — сначала чиним analog skin (ELK crash)
+1. ✅ Functional block diagram — реализован
+2. ❌ НЕ сейчас — сначала чиним analog skin (ELK crash)

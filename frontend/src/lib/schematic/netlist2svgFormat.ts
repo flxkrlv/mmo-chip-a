@@ -298,7 +298,7 @@ export function formatDevicesAsNetlist2Svg(
     ...config,
   };
 
-  const { netToBitId } = buildNetIdMap(devices, namedNets);
+  const { netToBitId, bitIdToName } = buildNetIdMap(devices, namedNets);
 
   // Build the cells
   const cells: Record<string, YosysCell> = {};
@@ -319,6 +319,13 @@ export function formatDevicesAsNetlist2Svg(
 
     // Add instance name as ref attribute
     cellAttrs.ref = instName;
+
+    // Add net names as per-port attrs (_net_D, _net_G) for tooltips
+    for (const [portName, bitIds] of Object.entries(conns)) {
+      const bitId = Array.isArray(bitIds) ? bitIds[0] : bitIds;
+      const netName = bitIdToName.get(bitId);
+      if (netName) cellAttrs[`_net_${portName}`] = netName;
+    }
 
     const cell: YosysCell = {
       type,

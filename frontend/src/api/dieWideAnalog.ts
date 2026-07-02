@@ -608,6 +608,8 @@ export interface DieWideAnalogResult {
   netIdMap: Map<string, number>;
   /** Warnings (unconnected terminals, auto-connected bulk, etc.) */
   warnings: string[];
+  /** Net IDs that correspond to die-level IO pins (from ann.pins) */
+  ioNetIds: Set<number>;
 }
 
 export function collectDieWideAnalogDevices(
@@ -818,10 +820,14 @@ export function collectDieWideAnalogDevices(
       namedNets.set(spiceId, aNet.name);
     }
   }
+
+  // Collect die-level IO pin net IDs (used by netlist2svg to limit port count)
+  const ioNetIds = new Set<number>();
   const pins = ann.pins ?? [];
   for (const pin of pins) {
     const netId = matchWireToPoint(nets, pin.x, pin.y, 10, netIdMap, nextNetId);
     if (netId != null) {
+      ioNetIds.add(netId);
       if (!namedNets.has(netId)) namedNets.set(netId, pin.name);
     }
   }
@@ -839,7 +845,7 @@ export function collectDieWideAnalogDevices(
   const devWarn = detectDeviceWarnings(allDevices, namedNets, _spiceConfig);
   warnings.push(...devWarn);
 
-  return { devices: allDevices, namedNets, netIdMap, warnings };
+  return { devices: allDevices, namedNets, netIdMap, warnings, ioNetIds };
 }
 
 // ═════════════════════════════════════════════════════════════════

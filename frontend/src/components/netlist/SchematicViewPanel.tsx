@@ -1,11 +1,11 @@
 /**
- * SchematicViewPanel.tsx — Renders analog schematics.
+ * SchematicViewPanel.tsx — Renders schematics and functional block diagrams.
  *
- * Supports two rendering engines:
- *   - spice-ts: @spice-ts/ui SchematicView (has issues with labels/pins)
- *   - netlist2svg: netlist2svg (Yosys JSON → SVG via ELK layout)
+ * Two render modes:
+ *   - Analog: transistor-level schematic (two engines: spice-ts / netlist2svg)
+ *   - Functional: block diagram showing floorplan regions as sub-module rectangles
  *
- * User can toggle between them. netlist2svg loads ELK.js (~2MB) on first use.
+ * netlist2svg loads ELK.js (~2MB) on first use.
  */
 
 import { useEffect, useMemo, useState, useRef, useCallback } from "react";
@@ -17,6 +17,7 @@ import { generateSpiceTSViews, type SpiceTSResult } from "../../lib/schematic/sp
 import { Netlist2SvgView, type Netlist2SvgHandle } from "./Netlist2SvgView";
 import { LAYOUT_STRATEGIES, LAYOUT_DIRECTIONS, COMPACTION_LEVELS, type LayoutStrategy, type LayoutDirection, type CompactionLevel } from "../../lib/schematic/netlist2svgSkin";
 import { formatDevicesAsNetlist2Svg } from "../../lib/schematic/netlist2svgFormat";
+import { generateBlockDiagram } from "../../lib/schematic/blockDiagramFormat";
 import { collectDieWideAnalogDevices } from "../../api/dieWideAnalog";
 import { assignInstanceNames } from "../../lib/export/spice";
 import { matchGeometry } from "../../lib/export/matching";
@@ -52,10 +53,11 @@ export function SchematicViewPanel({
 }: Props) {
   // ── Engine toggle ─────────────────────────────────────────────
   const [engine, setEngine] = useState<SchematicEngine>("netlist2svg");
+  const [renderMode, setRenderMode] = useState<"analog" | "functional">("analog");
   const [layoutStrategy, setLayoutStrategy] = useState<LayoutStrategy>("BRANDES_KOEPF");
   const [layoutDirection, setLayoutDirection] = useState<LayoutDirection>("DOWN");
   const [compactionLevel, setCompactionLevel] = useState<CompactionLevel>(2);
-  const [showNetLabels, setShowNetLabels] = useState(false);
+
   const n2sRef = useRef<Netlist2SvgHandle>(null);
 
   // ══ Generate spice-ts views ═══════════════════════════════════
@@ -111,11 +113,43 @@ export function SchematicViewPanel({
       named,
       namedNets,
       moduleName,
-      { vdd: config.vdd ?? "VDD", gnd: config.gnd ?? "GND", hierarchical, ioNetIds, showNetLabels },
+      { vdd: config.vdd ?? "VDD", gnd: config.gnd ?? "GND", hierarchical, ioNetIds, showNetLabels: false },
     );
 
     return { flatJson: flat, floorplanDevices, namedNets, ioNetIds };
-  }, [annotations, moduleName, spiceConfig, hierarchical, floorplanRegions, showNetLabels]);
+  }, [annotations, moduleName, spiceConfig, hierarchical, floorplanRegions]);
+
+  // ══ Functional block diagram ═════════════════════════════════
+  const blockDiagramJson = useMemo(() => {
+    if (!hierarchical || !floorplanRegions || floorplanRegions.length === 0) return null;
+    if (!n2sData.floorplanDevices) return null;
+    // Separate region blocks from unassigned (top-level) devices
+    const regionDevices = new Map<string, AnalogDevice[]>();
+    let unassignedDevices: AnalogDevice[] = [];
+    for (const [regionId, devices] of n2sData.floorplanDevices) {
+      if (regionId === "__unassigned__") {
+        unassignedDevices = devices;
+      } else {
+        regionDevices.set(regionId, devices);
+      }
+    }
+    // At least one real region is needed
+    if (regionDevices.size === 0 && unassignedDevices.length === 0) return null;
+    if (regionDevices.size === 0) return null; // only unassigned — use analog view instead
+    const cfg: SpiceConfig = { vdd: "VDD", gnd: "GND", ...spiceConfig };
+    return generateBlockDiagram(
+      regionDevices,
+      floorplanRegions,
+      n2sData.namedNets,
+      n2sData.ioNetIds,
+      moduleName,
+      { vdd: cfg.vdd ?? "VDD", gnd: cfg.gnd ?? "GND" },
+      unassignedDevices.length > 0 ? unassignedDevices : undefined,
+    );
+  }, [hierarchical, floorplanRegions, n2sData, moduleName, spiceConfig]);
+
+  /** Is functional mode available? Need hierarchical + regions with devices */
+  const functionalAvail = blockDiagramJson !== null;
 
   // ── Region state ──────────────────────────────────────────────
   const regionIds = useMemo(
@@ -200,13 +234,13 @@ export function SchematicViewPanel({
           regionDevices,
           n2sData.namedNets,
           `${moduleName}.${activeRegion.slice(0, 8)}`,
-          { vdd: spiceConfig?.vdd ?? "VDD", gnd: spiceConfig?.gnd ?? "GND", hierarchical, ioNetIds: n2sData.ioNetIds, showNetLabels },
+          { vdd: spiceConfig?.vdd ?? "VDD", gnd: spiceConfig?.gnd ?? "GND", hierarchical, ioNetIds: n2sData.ioNetIds, showNetLabels: false },
         );
       }
       return null;
     }
     return n2sData.flatJson;
-  }, [hierarchical, activeRegion, n2sData, moduleName, spiceConfig, showNetLabels]);
+  }, [hierarchical, activeRegion, n2sData, moduleName, spiceConfig]);
 
   return (
     <div
@@ -231,7 +265,45 @@ export function SchematicViewPanel({
           alignItems: "center",
         }}
       >
-        {/* Engine toggle */}
+        {/* ── Render mode toggle: Analog vs Functional ── */}
+        <div
+          className="row"
+          style={{
+            gap: 2,
+            background: "var(--l2)",
+            borderRadius: 4,
+            padding: 2,
+            flexShrink: 0,
+          }}
+        >
+          <button
+            type="button"
+            className={"btn sm" + (renderMode === "analog" ? " on" : "")}
+            onClick={() => setRenderMode("analog")}
+            style={{ fontSize: 10, fontWeight: 600 }}
+            title="Transistor-level analog schematic"
+          >
+            Analog
+          </button>
+          <button
+            type="button"
+            className={"btn sm" + (renderMode === "functional" ? " on" : "")}
+            onClick={() => {
+              if (functionalAvail) { setRenderMode("functional"); setEngine("netlist2svg"); }
+            }}
+            style={{
+              fontSize: 10,
+              fontWeight: 600,
+              opacity: functionalAvail ? 1 : 0.4,
+              cursor: functionalAvail ? "pointer" : "default",
+            }}
+            title={functionalAvail ? "Functional block diagram (region-based)" : "No floorplan regions available"}
+          >
+            Functional
+          </button>
+        </div>
+
+        {/* ── Engine toggle (always visible) ── */}
         <div
           className="row"
           style={{
@@ -262,7 +334,7 @@ export function SchematicViewPanel({
           </button>
         </div>
 
-        {/* Layout strategy selector (netlist2svg only) */}
+        {/* Layout strategy selector (netlist2svg only, both modes) */}
         {engine === "netlist2svg" && (
           <select
             value={layoutStrategy}
@@ -287,7 +359,7 @@ export function SchematicViewPanel({
           </select>
         )}
 
-        {/* Layout direction selector (netlist2svg only) */}
+        {/* Layout direction selector (netlist2svg only, both modes) */}
         {engine === "netlist2svg" && (
           <select
             value={layoutDirection}
@@ -302,7 +374,7 @@ export function SchematicViewPanel({
               outline: "none",
               cursor: "pointer",
             }}
-            title="ELK layout direction — controls power rail and signal flow"
+            title="ELK layout direction — controls signal flow and power rail placement"
           >
             {LAYOUT_DIRECTIONS.map((d) => (
               <option key={d.value} value={d.value} title={d.desc}>
@@ -312,7 +384,7 @@ export function SchematicViewPanel({
           </select>
         )}
 
-        {/* Compaction level selector (BRANDES_KOEPF only) */}
+        {/* Compaction level selector (BRANDES_KOEPF only, both modes) */}
         {engine === "netlist2svg" && layoutStrategy === "BRANDES_KOEPF" && (
           <select
             value={compactionLevel}
@@ -337,35 +409,47 @@ export function SchematicViewPanel({
           </select>
         )}
 
-        {/* Show/hide net labels (netlist2svg only) */}
-        {engine === "netlist2svg" && (
-          <label
-            style={{
-              fontSize: 10,
-              display: "inline-flex",
-              alignItems: "center",
-              gap: 3,
-              cursor: "pointer",
-              color: "var(--fg)",
-              userSelect: "none",
-            }}
-            title="Show or hide net label pins (VCC/GND symbols always visible)"
-          >
-            <input
-              type="checkbox"
-              checked={showNetLabels}
-              onChange={(e) => setShowNetLabels(e.target.checked)}
-              style={{ margin: 0, cursor: "pointer" }}
-            />
-            Nets
-          </label>
-        )}
-
-        {/* Separator before download buttons */}
+        {/* Separator */}
         <span style={{ width: 1, height: 16, background: "var(--l2)", flexShrink: 0 }} />
 
-        {/* Download buttons (netlist2svg only) */}
-        {engine === "netlist2svg" && currentN2sJson && (
+        {/* Zoom controls (netlist2svg only, both modes) */}
+        {engine === "netlist2svg" && (
+          <>
+            <button
+              type="button"
+              className="btn sm"
+              onClick={() => n2sRef.current?.zoomIn()}
+              style={{ fontSize: 10, fontWeight: 600 }}
+              title="Zoom in"
+            >
+              +
+            </button>
+            <button
+              type="button"
+              className="btn sm"
+              onClick={() => n2sRef.current?.zoomOut()}
+              style={{ fontSize: 10, fontWeight: 600 }}
+              title="Zoom out"
+            >
+              −
+            </button>
+            <button
+              type="button"
+              className="btn sm"
+              onClick={() => n2sRef.current?.zoomReset()}
+              style={{ fontSize: 10 }}
+              title="Reset zoom to 1:1"
+            >
+              ⊖
+            </button>
+          </>
+        )}
+
+        {/* Separator */}
+        <span style={{ width: 1, height: 16, background: "var(--l2)", flexShrink: 0 }} />
+
+        {/* Download buttons (netlist2svg only, both modes) */}
+        {engine === "netlist2svg" && (
           <>
             <button
               type="button"
@@ -397,8 +481,8 @@ export function SchematicViewPanel({
           </>
         )}
 
-        {/* Hierarchical region buttons */}
-        {hierarchical && regionIds.length > 0 && (
+        {/* Hierarchical region buttons (analog mode only) */}
+        {renderMode === "analog" && hierarchical && regionIds.length > 0 && (
           <>
             {/* "All" button (flat view) */}
             <button
@@ -445,15 +529,28 @@ export function SchematicViewPanel({
           position: "relative",
         }}
       >
-        {engine === "spice-ts" ? (
-          // ── spice-ts renderer ────────────────────────────────
+        {renderMode === "functional" ? (
+          // ── Functional block diagram ─────────────────────────
+          blockDiagramJson && functionalAvail && engine === "netlist2svg" ? (
+            <Netlist2SvgView
+              ref={n2sRef}
+              netlistJson={blockDiagramJson}
+              layoutStrategy={layoutStrategy}
+              layoutDirection={layoutDirection}
+              compactionLevel={compactionLevel}
+            />
+          ) : (
+            <EmptyView message="No regions to show in block diagram" />
+          )
+        ) : engine === "spice-ts" ? (
+          // ── spice-ts renderer (analog mode) ──────────────────
           currentSpiceTs ? (
             <SpiceSchematicPrototype netlist={currentSpiceTs.netlist} height={800} />
           ) : (
             <EmptyView hasRegions={regionIds.length > 0} />
           )
         ) : (
-          // ── netlist2svg renderer ─────────────────────────────
+          // ── netlist2svg renderer (analog mode) ───────────────
           currentN2sJson ? (
             <Netlist2SvgView ref={n2sRef} netlistJson={currentN2sJson} layoutStrategy={layoutStrategy} layoutDirection={layoutDirection} compactionLevel={compactionLevel} />
           ) : (
@@ -480,7 +577,8 @@ function downloadBlob(blob: Blob, filename: string) {
   URL.revokeObjectURL(url);
 }
 
-function EmptyView({ hasRegions }: { hasRegions?: boolean }) {
+function EmptyView({ hasRegions, message }: { hasRegions?: boolean; message?: string }) {
+  const text = message ?? (hasRegions ? "Select a region" : "No analog devices found");
   return (
     <div
       style={{
@@ -493,9 +591,7 @@ function EmptyView({ hasRegions }: { hasRegions?: boolean }) {
         fontSize: 12,
       }}
     >
-      {hasRegions
-        ? "Select a region"
-        : "No analog devices found"}
+      {text}
     </div>
   );
 }

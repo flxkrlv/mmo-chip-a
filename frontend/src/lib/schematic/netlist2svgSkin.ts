@@ -38,6 +38,12 @@ export const COMPACTION_LEVELS: { value: CompactionLevel; label: string; desc: s
   { value: 4, label: "Pocket", desc: "Pocket — max density, prone to hitbox errors on dense graphs" },
 ];
 
+/** Colors used for power net highlighting (VDD red, GND blue) */
+export const POWER_COLORS = {
+  vdd: "#ff3344",
+  gnd: "#3388ff",
+} as const;
+
 /**
  * Build skin with a specific ELK layout strategy, direction, and compaction level.
  *
@@ -101,6 +107,13 @@ export const CUSTOM_ANALOG_SKIN = `<svg xmlns="http://www.w3.org/2000/svg"
   .n2s-svg circle, .n2s-svg path, .n2s-svg rect, .n2s-svg line { stroke: #fff; }
   .n2s-svg .subModuleOdd { fill: #0e2238 !important; }
   .n2s-svg .subModuleEven { fill: #16365a !important; }
+  /* Power net colors — VDD red, GND blue */
+  .n2s-svg [s\\:type="vcc"] path { stroke: #ff3344 !important; fill: none !important; }
+  .n2s-svg [s\\:type="vcc"] .detail { fill: #ff3344 !important; stroke: #ff3344 !important; }
+  .n2s-svg [s\\:type="vcc"] text { fill: #ff3344 !important; }
+  .n2s-svg [s\\:type="gnd"] path { stroke: #3388ff !important; fill: none !important; }
+  .n2s-svg [s\\:type="gnd"] .detail { fill: #3388ff !important; stroke: #3388ff !important; }
+  .n2s-svg [s\\:type="gnd"] text { fill: #3388ff !important; }
   .n2s-svg [style*="fill:#000"], .n2s-svg [style*="fill:#000000"] { fill: #fff !important; }
   .n2s-svg [style*="stroke:#000"], .n2s-svg [style*="stroke:#000000"] { stroke: #fff !important; }
   /* Light theme variant — used for white-background SVG download */
@@ -108,7 +121,7 @@ export const CUSTOM_ANALOG_SKIN = `<svg xmlns="http://www.w3.org/2000/svg"
     stroke: #000 !important;
     fill: none !important;
   }
-  .n2s-light text { fill: #000 !important; stroke: none !important; }
+  .n2s-light text { fill: #000 !important; stroke: none !important; font-size: 10px; font-weight: bold; font-family: "Courier New", monospace; }
   .n2s-light .nodelabel { text-anchor: middle; }
   .n2s-light .inputPortLabel { text-anchor: end; }
   .n2s-light .splitjoinBody { fill: #000 !important; }
@@ -117,10 +130,17 @@ export const CUSTOM_ANALOG_SKIN = `<svg xmlns="http://www.w3.org/2000/svg"
   .n2s-light .detail, .n2s-light .symbol { stroke-linejoin: round; stroke-linecap: round; }
   .n2s-light .symbol { stroke-width: 2; }
   .n2s-light .detail { fill: #000 !important; }
-  .n2s-light .valuelabel { fill: #555 !important; }
+  .n2s-light .valuelabel { fill: #555 !important; font-size: 9px; }
   .n2s-light circle, .n2s-light path, .n2s-light rect, .n2s-light line { stroke: #000; }
   .n2s-light .subModuleOdd { fill: #e9e9e9 !important; }
   .n2s-light .subModuleEven { fill: #ffffff !important; }
+  /* Power net colors for light theme (SVG export) */
+  .n2s-light [s\\:type="vcc"] path { stroke: #cc2233 !important; fill: none !important; }
+  .n2s-light [s\\:type="vcc"] .detail { fill: #cc2233 !important; stroke: #cc2233 !important; }
+  .n2s-light [s\\:type="vcc"] text { fill: #cc2233 !important; }
+  .n2s-light [s\\:type="gnd"] path { stroke: #2266cc !important; fill: none !important; }
+  .n2s-light [s\\:type="gnd"] .detail { fill: #2266cc !important; stroke: #2266cc !important; }
+  .n2s-light [s\\:type="gnd"] text { fill: #2266cc !important; }
   .n2s-light [style*="fill:#000"], .n2s-light [style*="fill:#000000"] { fill: #000 !important; }
   .n2s-light [style*="stroke:#000"], .n2s-light [style*="stroke:#000000"] { stroke: #000 !important; }
 </style>
@@ -460,5 +480,32 @@ export const CUSTOM_ANALOG_SKIN = `<svg xmlns="http://www.w3.org/2000/svg"
     <g s:x="60" s:y="20" s:pid="OUT" s:position="right"/>
     <g s:x="30" s:y="0" s:pid="VCC" s:position="top"/>
     <g s:x="30" s:y="40" s:pid="VEE" s:position="bottom"/>
+  </g>
+
+  <!-- ===== BLOCK DIAGRAM — custom types for functional mode ===== -->
+  <!-- Block name shown via s:attribute="name" on the <text> element.
+       We set attributes: { name: blockName } on the Yosys cell. -->
+  <g s:type="block_odd" s:width="30" s:height="40">
+    <s:alias val="block_odd"/>
+    <text x="15" y="-6" class="nodelabel $cell_id" s:attribute="name">Block</text>
+    <rect width="30" height="40" x="0" y="0" s:generic="body" class="subModuleOdd" rx="6" />
+    <g s:x="0" s:y="10" s:pid="p0" s:position="left">
+      <text x="-3" y="-4" class="inputPortLabel $cell_id">p0</text>
+    </g>
+    <g s:x="30" s:y="10" s:pid="p1" s:position="right">
+      <text x="5" y="-4" class="$cell_id">p1</text>
+    </g>
+  </g>
+
+  <g s:type="block_even" s:width="30" s:height="40">
+    <s:alias val="block_even"/>
+    <text x="15" y="-6" class="nodelabel $cell_id" s:attribute="name">Block</text>
+    <rect width="30" height="40" x="0" y="0" s:generic="body" class="subModuleEven" rx="6" />
+    <g s:x="0" s:y="10" s:pid="p0" s:position="left">
+      <text x="-3" y="-4" class="inputPortLabel $cell_id">p0</text>
+    </g>
+    <g s:x="30" s:y="10" s:pid="p1" s:position="right">
+      <text x="5" y="-4" class="$cell_id">p1</text>
+    </g>
   </g>
 </svg>`;
