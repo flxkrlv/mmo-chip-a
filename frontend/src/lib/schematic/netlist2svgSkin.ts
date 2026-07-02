@@ -321,6 +321,7 @@ export const CUSTOM_ANALOG_SKIN = `<svg xmlns="http://www.w3.org/2000/svg"
   <g s:type="transistor_npn" s:width="32" s:height="32" transform="translate(15,350)">
     <s:alias val="q_npn"/>
     <text x="35" y="20" s:attribute="ref" class="$cell_id">X1</text>
+    <text x="35" y="35" s:attribute="value" class="valuelabel $cell_id"></text>
     <circle r="16" cx="16" cy="16" class="symbol $cell_id"/>
     <path d="M0,16 H12 M12,6 V26" class="detail $cell_id"/>
     <path d="m12,10 11,-8" class="detail $cell_id"/>
@@ -334,6 +335,7 @@ export const CUSTOM_ANALOG_SKIN = `<svg xmlns="http://www.w3.org/2000/svg"
   <g s:type="transistor_pnp" s:width="32" s:height="32" transform="translate(85,350)">
     <s:alias val="q_pnp"/>
     <text x="35" y="20" s:attribute="ref" class="$cell_id">X1</text>
+    <text x="35" y="35" s:attribute="value" class="valuelabel $cell_id"></text>
     <circle r="16" cx="16" cy="16" class="symbol $cell_id"/>
     <path d="M0,16 H12 M12,6 V26" class="detail $cell_id"/>
     <path d="m12,10 11,-8" class="detail $cell_id"/>

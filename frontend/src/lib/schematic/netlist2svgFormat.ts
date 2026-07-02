@@ -27,6 +27,7 @@
 import type {
   AnalogDevice,
   DeviceGeometryMOS,
+  DeviceGeometryBJT,
   DeviceGeometryResistor,
   DeviceGeometryCapacitor,
 } from "shared";
@@ -99,8 +100,11 @@ function valueString(d: AnalogDevice): string | undefined {
   switch (d.kind) {
     case "resistor": {
       const g = d.geometry as DeviceGeometryResistor;
-      if (g.resistance_ohms == null) return undefined;
-      return formatValue(g.resistance_ohms, "Ω");
+      const lines: string[] = [];
+      if (g.resistance_ohms != null) lines.push(formatValue(g.resistance_ohms, "Ω"));
+      if (g.squares != null && g.squares > 0) lines.push(`${g.squares.toFixed(1)} sq`);
+      if (g.resistorType) lines.push(resistorTypeLabel(g.resistorType));
+      return lines.length > 0 ? lines.join("\n") : undefined;
     }
     case "capacitor": {
       const g = d.geometry as DeviceGeometryCapacitor;
@@ -112,6 +116,17 @@ function valueString(d: AnalogDevice): string | undefined {
     default:
       return undefined;
   }
+}
+
+function resistorTypeLabel(t: string): string {
+  const m: Record<string, string> = {
+    poly: "poly",
+    hsr: "base",
+    pb: "pb",
+    npl: "npl",
+    film: "film",
+  };
+  return m[t] ?? t;
 }
 
 function formatValue(val: number, unit: string): string {
@@ -144,6 +159,22 @@ function mosAttributes(d: AnalogDevice): Record<string, string> | undefined {
   if (g.L_um) lines.push(`L=${g.L_um.toFixed(2)} um`);
   if (g.multiplier && g.multiplier > 1) lines.push(`M=${g.multiplier}`);
   return { value: lines.join("\n") };
+}
+
+// ── BJT attributes (multi-line: type + AE + M) ───────────────
+// Renders as:
+//   NPN
+//   AE=4.0 um2
+//   M=4
+
+function bjtAttributes(d: AnalogDevice): Record<string, string> | undefined {
+  if (d.kind !== "bjt_npn" && d.kind !== "bjt_pnp") return undefined;
+  const g = d.geometry as DeviceGeometryBJT;
+  const lines: string[] = [];
+  lines.push(g.bjtType === "npn" ? "NPN" : "PNP");
+  if (g.AE_um2) lines.push(`AE=${g.AE_um2.toFixed(2)} um2`);
+  if (g.multiplier && g.multiplier > 1) lines.push(`M=${g.multiplier}`);
+  return lines.length > 0 ? { value: lines.join("\n") } : undefined;
 }
 
 // ── Build net ID mapping ────────────────────────────────────────
@@ -316,6 +347,8 @@ export function formatDevicesAsNetlist2Svg(
     if (val) cellAttrs.value = val;
     const mosAttrs = mosAttributes(d);
     if (mosAttrs) Object.assign(cellAttrs, mosAttrs);
+    const bjtAttrs = bjtAttributes(d);
+    if (bjtAttrs) Object.assign(cellAttrs, bjtAttrs);
 
     // Add instance name as ref attribute
     cellAttrs.ref = instName;

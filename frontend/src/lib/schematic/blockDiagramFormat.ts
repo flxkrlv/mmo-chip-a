@@ -230,7 +230,54 @@ function sortByNetName(
   };
 }
 
+// ── Value string for unassigned devices (mirrors netlist2svgFormat) ──
 
+function unassignedValueString(d: AnalogDevice): string | undefined {
+  switch (d.kind) {
+    case "resistor": {
+      const g = d.geometry as any;
+      const lines: string[] = [];
+      if (g.resistance_ohms != null) lines.push(formatSimple(g.resistance_ohms) + "Ω");
+      if (g.squares != null && g.squares > 0) lines.push(`${g.squares.toFixed(1)} sq`);
+      if (g.resistorType) lines.push(g.resistorType);
+      return lines.length > 0 ? lines.join("\n") : undefined;
+    }
+    case "mos": {
+      const g = d.geometry as any;
+      const lines: string[] = [g.mosType === "pmos" ? "PMOS" : "NMOS"];
+      if (g.W_um) lines.push(`W=${g.W_um.toFixed(2)} um`);
+      if (g.L_um) lines.push(`L=${g.L_um.toFixed(2)} um`);
+      if (g.multiplier && g.multiplier > 1) lines.push(`M=${g.multiplier}`);
+      return lines.join("\n");
+    }
+    case "bjt_npn":
+    case "bjt_pnp": {
+      const g = d.geometry as any;
+      const lines: string[] = [g.bjtType === "npn" ? "NPN" : "PNP"];
+      if (g.AE_um2) lines.push(`AE=${g.AE_um2.toFixed(2)} um2`);
+      if (g.multiplier && g.multiplier > 1) lines.push(`M=${g.multiplier}`);
+      return lines.length > 0 ? lines.join("\n") : undefined;
+    }
+    case "capacitor": {
+      const g = d.geometry as any;
+      if (g.capacitance_fF == null) return undefined;
+      const fF = g.capacitance_fF;
+      if (fF >= 1_000_000) return `${(fF / 1_000_000).toFixed(1)}uF`;
+      if (fF >= 1_000) return `${(fF / 1_000).toFixed(1)}nF`;
+      return `${fF.toFixed(0)}pF`;
+    }
+    default:
+      return undefined;
+  }
+}
+
+function formatSimple(val: number): string {
+  if (val >= 1_000_000) return `${(val / 1_000_000).toFixed(1)}M`;
+  if (val >= 1_000) return `${(val / 1_000).toFixed(1)}k`;
+  if (val >= 1) return `${val.toFixed(1)}`;
+  if (val >= 0.001) return `${(val * 1_000).toFixed(1)}m`;
+  return `${(val * 1_000_000).toFixed(0)}u`;
+}
 
 // ══════════════════════════════════════════════════════════════════
 //  Main generator
@@ -349,6 +396,9 @@ export function generateBlockDiagram(
     if (Object.keys(conns).length === 0) continue;
 
     const attrs: Record<string, string> = { ref: instName };
+    // Add value/multiplier attributes (same logic as netlist2svgFormat.ts)
+    const valStr = unassignedValueString(d);
+    if (valStr) attrs.value = valStr;
     const dirs = portDirectionsForDevice(d);
     for (const [portName, bitIds] of Object.entries(conns)) {
       const bitId = Array.isArray(bitIds) ? bitIds[0] : bitIds;
