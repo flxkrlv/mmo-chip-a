@@ -244,9 +244,9 @@ function annotateDeviceData(svg: SVGSVGElement, netlistJson: unknown): void {
     const lines: string[] = [instName];
     const hl = humanType(type);
     if (hl) lines[0] += ` — ${hl}`;
-    if (attrs.value) {
-      for (const v of attrs.value.split("\n")) if (v.trim()) lines.push(v.trim());
-    }
+    // Use _detail for extended tooltip info (BJT AE/PE etc.), fall back to value
+    const detailSrc = attrs._detail || attrs.value || "";
+    for (const v of detailSrc.split("\n")) if (v.trim()) lines.push(v.trim());
 
     const conns = cell.connections as Record<string, number[]> | undefined;
     if (conns) {

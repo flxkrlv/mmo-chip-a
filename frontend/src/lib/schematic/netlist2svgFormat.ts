@@ -170,11 +170,19 @@ function mosAttributes(d: AnalogDevice): Record<string, string> | undefined {
 function bjtAttributes(d: AnalogDevice): Record<string, string> | undefined {
   if (d.kind !== "bjt_npn" && d.kind !== "bjt_pnp") return undefined;
   const g = d.geometry as DeviceGeometryBJT;
-  const lines: string[] = [];
-  lines.push(g.bjtType === "npn" ? "NPN" : "PNP");
-  if (g.AE_um2) lines.push(`AE=${g.AE_um2.toFixed(2)} um2`);
-  if (g.multiplier && g.multiplier > 1) lines.push(`M=${g.multiplier}`);
-  return lines.length > 0 ? { value: lines.join("\n") } : undefined;
+  // Schematic: just multiplier
+  const result: Record<string, string> = {};
+  if (g.multiplier && g.multiplier > 1) result.value = `M=${g.multiplier}`;
+  // Tooltip detail: type + AE (NPN) or PE (PNP) + M
+  const detailLines: string[] = [g.bjtType === "npn" ? "NPN" : "PNP"];
+  if (g.bjtType === "npn" && g.AE_um2) {
+    detailLines.push(`AE=${g.AE_um2.toFixed(2)} um2`);
+  } else if (g.bjtType === "pnp" && g.PE_um) {
+    detailLines.push(`PE=${g.PE_um.toFixed(2)} um`);
+  }
+  if (g.multiplier && g.multiplier > 1) detailLines.push(`M=${g.multiplier}`);
+  if (detailLines.length > 0) result._detail = detailLines.join("\n");
+  return result;
 }
 
 // ── Build net ID mapping ────────────────────────────────────────

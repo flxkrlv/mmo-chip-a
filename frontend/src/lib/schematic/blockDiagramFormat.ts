@@ -232,15 +232,22 @@ function sortByNetName(
 
 // ── Value string for unassigned devices (mirrors netlist2svgFormat) ──
 
-function unassignedValueString(d: AnalogDevice): string | undefined {
+function unassignedAttrs(d: AnalogDevice): Record<string, string> | undefined {
+  const result: Record<string, string> = {};
   switch (d.kind) {
     case "resistor": {
       const g = d.geometry as any;
       const lines: string[] = [];
-      if (g.resistance_ohms != null) lines.push(formatSimple(g.resistance_ohms) + "Ω");
-      if (g.squares != null && g.squares > 0) lines.push(`${g.squares.toFixed(1)} sq`);
-      if (g.resistorType) lines.push(g.resistorType);
-      return lines.length > 0 ? lines.join("\n") : undefined;
+      const detailLines: string[] = [];
+      if (g.resistance_ohms != null) {
+        lines.push(formatSimple(g.resistance_ohms) + "Ω");
+        detailLines.push(formatSimple(g.resistance_ohms) + "Ω");
+      }
+      if (g.squares != null && g.squares > 0) detailLines.push(`${g.squares.toFixed(1)} sq`);
+      if (g.resistorType) detailLines.push(g.resistorType);
+      if (lines.length > 0) result.value = lines.join("\n");
+      if (detailLines.length > 0) result._detail = detailLines.join("\n");
+      return Object.keys(result).length > 0 ? result : undefined;
     }
     case "mos": {
       const g = d.geometry as any;
@@ -248,23 +255,36 @@ function unassignedValueString(d: AnalogDevice): string | undefined {
       if (g.W_um) lines.push(`W=${g.W_um.toFixed(2)} um`);
       if (g.L_um) lines.push(`L=${g.L_um.toFixed(2)} um`);
       if (g.multiplier && g.multiplier > 1) lines.push(`M=${g.multiplier}`);
-      return lines.join("\n");
+      const joined = lines.join("\n");
+      result.value = joined;
+      result._detail = joined;
+      return result;
     }
     case "bjt_npn":
     case "bjt_pnp": {
       const g = d.geometry as any;
-      const lines: string[] = [g.bjtType === "npn" ? "NPN" : "PNP"];
-      if (g.AE_um2) lines.push(`AE=${g.AE_um2.toFixed(2)} um2`);
-      if (g.multiplier && g.multiplier > 1) lines.push(`M=${g.multiplier}`);
-      return lines.length > 0 ? lines.join("\n") : undefined;
+      const isNpn = g.bjtType === "npn";
+      // Schematic: just M
+      if (g.multiplier && g.multiplier > 1) result.value = `M=${g.multiplier}`;
+      // Tooltip: type + AE(NPN)/PE(PNP) + M
+      const details: string[] = [isNpn ? "NPN" : "PNP"];
+      if (isNpn && g.AE_um2) details.push(`AE=${g.AE_um2.toFixed(2)} um2`);
+      else if (!isNpn && g.PE_um) details.push(`PE=${g.PE_um.toFixed(2)} um`);
+      if (g.multiplier && g.multiplier > 1) details.push(`M=${g.multiplier}`);
+      if (details.length > 0) result._detail = details.join("\n");
+      return Object.keys(result).length > 0 ? result : undefined;
     }
     case "capacitor": {
       const g = d.geometry as any;
       if (g.capacitance_fF == null) return undefined;
       const fF = g.capacitance_fF;
-      if (fF >= 1_000_000) return `${(fF / 1_000_000).toFixed(1)}uF`;
-      if (fF >= 1_000) return `${(fF / 1_000).toFixed(1)}nF`;
-      return `${fF.toFixed(0)}pF`;
+      let cap: string;
+      if (fF >= 1_000_000) cap = `${(fF / 1_000_000).toFixed(1)}uF`;
+      else if (fF >= 1_000) cap = `${(fF / 1_000).toFixed(1)}nF`;
+      else cap = `${fF.toFixed(0)}pF`;
+      result.value = cap;
+      result._detail = cap;
+      return result;
     }
     default:
       return undefined;
@@ -397,8 +417,8 @@ export function generateBlockDiagram(
 
     const attrs: Record<string, string> = { ref: instName };
     // Add value/multiplier attributes (same logic as netlist2svgFormat.ts)
-    const valStr = unassignedValueString(d);
-    if (valStr) attrs.value = valStr;
+    const devAttrs = unassignedAttrs(d);
+    if (devAttrs) Object.assign(attrs, devAttrs);
     const dirs = portDirectionsForDevice(d);
     for (const [portName, bitIds] of Object.entries(conns)) {
       const bitId = Array.isArray(bitIds) ? bitIds[0] : bitIds;
