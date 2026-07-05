@@ -342,8 +342,35 @@ export function formatDevicesAsNetlist2Svg(
   // Build the cells
   const cells: Record<string, YosysCell> = {};
 
+  // Deduplicate: if the same instance name appears multiple times (e.g. all MOS
+  // named M_1 from the same well group), append a counter to make each unique.
+  const usedNames = new Set<string>();
   for (const d of devices) {
-    const instName = d.instanceName ?? `X${d.id.slice(0, 8)}`;
+    // Start with the provided instance name, or fall back to a prefix by kind
+    let instName = d.instanceName;
+    if (!instName) {
+      switch (d.kind) {
+        case "mos":      instName = "M";   break;
+        case "bjt_npn":
+        case "bjt_pnp":  instName = "Q";   break;
+        case "resistor": instName = "R";   break;
+        case "capacitor":instName = "C";   break;
+        case "diode":
+        case "zener":
+        case "schottky": instName = "D";   break;
+        case "inductor": instName = "L";   break;
+        default:         instName = "X";   break;
+      }
+    }
+
+    // Ensure uniqueness: append _1, _2, … if already used
+    let uniqueName = instName;
+    let counter = 1;
+    while (usedNames.has(uniqueName)) {
+      uniqueName = `${instName}_${counter++}`;
+    }
+    usedNames.add(uniqueName);
+
     const type = cellTypeForDevice(d);
     const portMap = DEVICE_PORT_MAP[d.kind] ?? { PLUS: "A", MINUS: "B" };
 
@@ -358,7 +385,7 @@ export function formatDevicesAsNetlist2Svg(
     const bjtAttrs = bjtAttributes(d);
     if (bjtAttrs) Object.assign(cellAttrs, bjtAttrs);
 
-    // Add instance name as ref attribute
+    // Add instance name as ref attribute (the original, not the uniquified name)
     cellAttrs.ref = instName;
 
     // Add net names as per-port attrs (_net_D, _net_G) for tooltips
@@ -378,7 +405,7 @@ export function formatDevicesAsNetlist2Svg(
     const dirs = portDirections(d);
     if (dirs) cell.port_directions = dirs;
 
-    cells[instName] = cell;
+    cells[uniqueName] = cell;
   }
 
   // ── Add VCC and GND power cells (visible symbols, not ports) ──
@@ -390,9 +417,6 @@ export function formatDevicesAsNetlist2Svg(
   }
   const vddBitId = vddNetId != null ? netToBitId.get(vddNetId) : undefined;
   const gndBitId = gndNetId != null ? netToBitId.get(gndNetId) : undefined;
-  console.log('[n2s] VDD match:', cfg.vdd, '→ netId:', vddNetId, 'bitId:', vddBitId, '| namedNets has it:', vddNetId != null);
-  console.log('[n2s] GND match:', cfg.gnd, '→ netId:', gndNetId, 'bitId:', gndBitId, '| namedNets has it:', gndNetId != null);
-
   // ── Single global VCC and GND symbols ────────────────────────
   if (vddBitId != null) {
     cells["VDD"] = {

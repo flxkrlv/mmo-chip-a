@@ -64,7 +64,7 @@ interface Props {
    *   - on the `schematic` (CMOS) tab specifically, clicking a domain
    *     row opens that domain — the small chevron is a finicky target
    *     when the schematic itself is already visible. */
-  canvasTab?: "image" | "schematic" | "logicSchematic";
+  canvasTab?: "image" | "schematic" | "logicSchematic" | "analogSchematic";
   /** Fired when the cursor enters / leaves a row. Carries the row's typed
    *  entity (or `null` on leave). The page routes this through the
    *  shared hover state so the image canvas + schematic light up the

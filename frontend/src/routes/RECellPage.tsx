@@ -69,6 +69,7 @@ import { CellRELeftPanel } from "../components/cellRE/CellRELeftPanel";
 import { CellRERightPanel } from "../components/cellRE/CellRERightPanel";
 import { SchematicCanvas } from "../components/cellRE/SchematicCanvas";
 import { LogicSchematicCanvas } from "../components/cellRE/LogicSchematicCanvas";
+import { CellAnalogSchematicCanvas } from "../components/cellRE/CellAnalogSchematicCanvas";
 import {
   CellREContextMenu,
   type ReContextMenuState
@@ -188,6 +189,7 @@ function RE({ dieId }: { dieId: string }) {
     const tab = params.get("tab");
     if (tab === "schematic") setCanvasTab("schematic");
     else if (tab === "logic") setCanvasTab("logicSchematic");
+    else if (tab === "analog") setCanvasTab("analogSchematic");
   }, [params, setActiveCellType, setCanvasTab]);
 
   // Write the active type / cell / tab back into the URL whenever they
@@ -223,6 +225,7 @@ function RE({ dieId }: { dieId: string }) {
     const tabToken =
       canvasTab === "schematic" ? "schematic"
       : canvasTab === "logicSchematic" ? "logic"
+      : canvasTab === "analogSchematic" ? "analog"
       : null;
     if (tabToken) {
       if (next.get("tab") !== tabToken) {
@@ -683,6 +686,15 @@ function RE({ dieId }: { dieId: string }) {
             >
               schematic (logic)
             </button>
+            <button
+              type="button"
+              className={"tab" + (canvasTab === "analogSchematic" ? " on" : "")}
+              onClick={() => setCanvasTab("analogSchematic")}
+              style={tabStyle(canvasTab === "analogSchematic")}
+              title="Analog schematic — transistor-level view of devices in this cell"
+            >
+              schematic (analog)
+            </button>
             <div style={{ flex: 1 }} />
             {cellType && (
               <span
@@ -719,6 +731,25 @@ function RE({ dieId }: { dieId: string }) {
                 extraction={extraction.data}
                 hover={effectiveHover}
                 onHoverEntity={setHoveredEntity}
+              />
+            ) : canvasTab === "analogSchematic" ? (
+              <CellAnalogSchematicCanvas
+                devices={
+                  extraction.data?.kind === "inferred"
+                    ? extraction.data.analogDevices ?? []
+                    : []
+                }
+                nets={
+                  extraction.data?.kind === "inferred"
+                    ? extraction.data.nets
+                    : []
+                }
+                moduleName={cellType.name}
+                spiceConfig={{
+                  vdd: "VDD",
+                  gnd: "GND",
+                }}
+                loading={extraction.loading}
               />
             ) : (
               <CellRECanvas

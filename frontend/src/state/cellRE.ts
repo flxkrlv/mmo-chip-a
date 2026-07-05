@@ -16,7 +16,7 @@ interface CellREState {
   mlOpen: boolean;
   inferredOpen: boolean;
   dieViewerLayersOpen: boolean;
-  canvasTab: "image" | "schematic" | "logicSchematic";
+  canvasTab: "image" | "schematic" | "logicSchematic" | "analogSchematic";
   activeDomainId: string | null;
   clipboard: CellREClipboardItem[];
   polylineDraft: Array<{x:number;y:number}>;
@@ -37,7 +37,7 @@ interface CellREActions {
   setMlOpen: (open: boolean) => void;
   setInferredOpen: (open: boolean) => void;
   setDieViewerLayersOpen: (open: boolean) => void;
-  setCanvasTab: (tab: "image" | "schematic" | "logicSchematic") => void;
+  setCanvasTab: (tab: "image" | "schematic" | "logicSchematic" | "analogSchematic") => void;
   setActiveDomainId: (id: string | null) => void;
   setClipboard: (items: CellREClipboardItem[]) => void;
   addPolylinePoint: (pt: {x:number;y:number}) => void;
