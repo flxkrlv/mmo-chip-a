@@ -344,6 +344,32 @@ export const CellRECanvas = forwardRef<CellRECanvasHandle, Props>(function CellR
   const [, force] = useState(0);
   const redraw = useCallback(() => force((n) => n + 1), []);
 
+  // ── Subscribe to overlay prefs ────────────────────────────────────
+  // The draw effect reads overlay toggles + label scale via `getState()`
+  // inside the rAF, but the effect itself doesn't re-run on prefs change
+  // — only on `redraw` counter / fit / pan-zoom. Without this subscription
+  // toggling the toolbar checkboxes would not visibly update the canvas
+  // until the user hovers (which fires a hover-induced redraw).
+  //
+  // We fold the four overlay-relevant fields into a single tuple so the
+  // subscription fires once when ANY of them changes — three separate
+  // subscriptions would double-count when multiple fields flip in one
+  // zustand `set()` (e.g. `set({ reDeviceLabelsVisible, labelScale })`).
+  // The tuple is recreated only on change so the default Object.is
+  // equality check works.
+  const overlayKey = usePreferences((s) =>
+    `${s.reDeviceLabelsVisible ? 1 : 0}|${s.reTerminalLabelsVisible ? 1 : 0}|${s.reAnalogLabelScale}` as const,
+  );
+  // Trigger a redraw whenever any overlay-related preference flips. Using
+  // the `force` counter (not redraw directly) keeps React's render
+  // scheduling consistent with the rest of the component's draw loop.
+  useEffect(() => {
+    force((n) => n + 1);
+    // We intentionally want this to run on every change of `overlayKey`.
+    // `force` is stable; React's setState bail-out is skipped because we
+    // always pass a fresh number.
+  }, [overlayKey]);
+
   // ── Image cache ────────────────────────────────────────────────────
   const imgCacheRef = useRef(new Map<string, HTMLImageElement>());
   const getImage = useCallback(
@@ -1212,6 +1238,10 @@ export const CellRECanvas = forwardRef<CellRECanvasHandle, Props>(function CellR
       polygon: Point[];
       label?: ShapeLabel;
     }> = [];
+    // Sub-region role colouring (VCC/GND tint from diffusion P/N type) is
+    // intentionally always-on: it's the primary visual signal for the cell's
+    // power structure, and the per-device overlay toggles above already
+    // give users a way to unclutter the device labels independently.
     if (inferred) {
       // Non-diffusion shape colouring comes from the net's propagated label:
       // a metal/poly/contact/via that ended up in the VCC net should display
@@ -1509,11 +1539,22 @@ export const CellRECanvas = forwardRef<CellRECanvasHandle, Props>(function CellR
       for (const p of polylineDraft) { ctx.beginPath(); ctx.arc(p.x, p.y, dotR, 0, Math.PI * 2); ctx.fill(); }
     }
 
-    // ── Analog device terminal labels ────────────────────────────────
-    // Painted on top of everything — at sufficient zoom only.
-    if (analogDevices.length > 0 && v.zoom >= 0.8) {
-      const TERM_FONT_SIZE = 9;
-      const TERM_RADIUS = 3;
+    // ── Analog device overlay ───────────────────────────────────────
+    // Painted on top of everything — at sufficient zoom only. Composed of
+    // up to two passes, each gated by its own preference:
+    //   1. Instance labels (M1, Q12, R34…) — `reDeviceLabelsVisible`.
+    //      Anchored to a per-finger reference point: gate poly centroid
+    //      for MOS, gate terminal for BJT, bbox centre for passives.
+    //   2. Terminal labels (G/S/D/B/C/E/+/−) — `reTerminalLabelsVisible`.
+    //
+    // Both overlay toggles + label scale fold into `overlayKey` upstream
+    // so this block re-runs on every flip without a remount.
+    const prefs = usePreferences.getState();
+    const showDeviceLabels = prefs.reDeviceLabelsVisible;
+    const showTerminalLabels = prefs.reTerminalLabelsVisible;
+    if (analogDevices.length > 0 && v.zoom >= 0.8 && (showDeviceLabels || showTerminalLabels)) {
+      const TERM_FONT_SIZE_BASE = 7;
+      const TERM_RADIUS = 2.2;
       const TERM_COLORS: Record<string, string> = {
         D: "#ffcc44", S: "#66ee66", G: "#ffffff", B: "#aaaaaa",
         C: "#ff8844", E: "#44dd88",
@@ -1523,10 +1564,111 @@ export const CellRECanvas = forwardRef<CellRECanvasHandle, Props>(function CellR
         mos: "#4488ff", bjt_npn: "#22cc66", bjt_pnp: "#ff8844",
         resistor: "#ffaa44", capacitor: "#44ddff", diode: "#ff4444",
       };
+      // 0=S (0.2x), 1=M (0.5x), 2=L (1.0x). All three are intentionally
+      // smaller than the previous defaults so the overlay stays readable
+      // in dense layouts without dominating the cell image.
+      const SCALE = prefs.reAnalogLabelScale === 0 ? 0.2
+                  : prefs.reAnalogLabelScale === 2 ? 1.0
+                  : 0.5;
+      const TERM_FONT_SIZE = TERM_FONT_SIZE_BASE * SCALE;
+      const INST_FONT_SIZE = 8 * SCALE;
+      const TYPE_FONT_SIZE = 6 * SCALE;
+      // Physical-type label shared between instance-label pass and the row
+      // renderer (kept here so the canvas reads identical strings to the
+      // panel — reduces drift between the two surfaces).
+      const physicalType = (dev: AnalogDevice): string => {
+        const g = dev.geometry as unknown as Record<string, unknown>;
+        switch (dev.kind) {
+          case "mos": {
+            const t = g.mosType as string | undefined;
+            return t === "pmos" ? "pmos" : t === "nmos" ? "nmos" : "mos";
+          }
+          case "bjt_npn": return "npn";
+          case "bjt_pnp": return "pnp";
+          case "jfet_n": return "n-jfet";
+          case "jfet_p": return "p-jfet";
+          default: return dev.kind;
+        }
+      };
       for (const dev of analogDevices) {
-        const points = (dev as any)._termPoints as Array<{x:number;y:number;name:string}> | undefined;
-        if (!points || points.length === 0) continue;
         const color = DEVICE_COLORS[dev.kind] ?? "#888888";
+        const typeStr = physicalType(dev);
+        const points = (dev as any)._termPoints as Array<{x:number;y:number;name:string}> | undefined;
+
+        // ── Pass 1: instance labels (per-finger) ───────────────
+        // Pick per-finger anchor points so each finger gets its own
+        // label. MOS/BJT use terminal contact positions (G/B), passive
+        // devices (resistor/capacitor/diode) fall back to bbox centre.
+        //
+        // Naming: `extractAnalogDevicesFromCellType` already runs a
+        // global dedup pass on `instanceName` (so multi-finger sub-
+        // devices end up as `M_1`, `M_1_1`, `M_1_2`, `M_1_3`), and the
+        // same dedup logic lives in `netlist2svgFormat.ts`. Both
+        // surfaces therefore see identical strings — the canvas just
+        // prints `dev.instanceName` verbatim, no further suffixing here.
+        if (showDeviceLabels) {
+          const name = dev.instanceName ?? dev.id.slice(0, 6);
+          // Gate-name set is device-kind-specific on purpose: in MOS the
+          // terminal `B` means BULK (well-tap contact) and would be picked
+          // up by a generic {"G","B"} set, painting a stray instance label
+          // on every well tap. BJT uses `B` for base; JFET uses `G`. The
+          // set is per-kind so each device type only matches its own
+          // control terminal(s).
+          const gateNames: Set<string> = (() => {
+            switch (dev.kind) {
+              case "mos":       return new Set(["G"]);
+              case "bjt_npn":
+              case "bjt_pnp":   return new Set(["B"]);
+              case "jfet_n":
+              case "jfet_p":    return new Set(["G"]);
+              default:          return new Set();
+            }
+          })();
+          // Prefer the per-sub-device gate poly centroid when available
+          // (set by `detectMOSFromLayers` for multi-finger MOS): each
+          // finger has its own gate poly even when several fingers share
+          // a poly run and one common well-tap contact, so the centroid
+          // gives every label a unique anchor and they don't pile up on
+          // the same gate-tap point.
+          const gateAnchor = (dev as any)._gateAnchor as { x: number; y: number } | undefined;
+          const anchors: Array<{ x: number; y: number }> = [];
+          if (gateAnchor) {
+            anchors.push(gateAnchor);
+          } else if (points && points.length > 0) {
+            for (const pt of points) {
+              if (gateNames.has(pt.name)) anchors.push({ x: pt.x, y: pt.y });
+            }
+          }
+          if (anchors.length === 0 && dev.bbox) {
+            anchors.push({
+              x: dev.bbox.x + dev.bbox.width / 2,
+              y: dev.bbox.y + dev.bbox.height / 2,
+            });
+          }
+          ctx.textBaseline = "alphabetic";
+          for (const a of anchors) {
+            const labelTop = a.y - 6 / v.zoom;
+            const nameMetrics = ctx.measureText(name);
+            const typeMetrics = ctx.measureText(typeStr);
+            const padX = 3, gap = 1;
+            const w = Math.max(nameMetrics.width, typeMetrics.width) + padX * 2;
+            const h = INST_FONT_SIZE + TYPE_FONT_SIZE + gap + 3;
+            const bx = a.x + 3 / v.zoom;
+            const by = labelTop - h;
+            ctx.fillStyle = "rgba(0,0,0,0.75)";
+            ctx.fillRect(bx, by, w, h);
+            ctx.fillStyle = color;
+            ctx.font = `700 ${INST_FONT_SIZE}px monospace`;
+            ctx.fillText(name, bx + padX, by + INST_FONT_SIZE);
+            ctx.fillStyle = "rgba(255,255,255,0.75)";
+            ctx.font = `400 ${TYPE_FONT_SIZE}px monospace`;
+            ctx.fillText(typeStr, bx + padX, by + INST_FONT_SIZE + TYPE_FONT_SIZE + gap);
+          }
+        }
+
+        // ── Pass 2: terminal labels (dots + letters) ────────────
+        if (!showTerminalLabels) continue;
+        if (!points || points.length === 0) continue;
         ctx.font = `600 ${TERM_FONT_SIZE}px monospace`;
         ctx.textBaseline = "middle";
         for (const pt of points) {

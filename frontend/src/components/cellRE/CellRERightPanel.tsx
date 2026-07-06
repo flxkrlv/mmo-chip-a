@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import type { CellType, LayerShape, LayerType, ResistorType } from "shared";
+import type { CellType, LayerShape, LayerType, ResistorType, AnalogDevice } from "shared";
 import { Ic } from "../../icons";
 import type {
   CellExtraction,
@@ -1642,6 +1642,29 @@ const DEVICE_COLORS: Record<string, string> = {
   inductor: "#66aaff", unknown: "#888888",
 };
 
+/**
+ * Render the physical-type tag for an analog device. Surfaces the actual
+ * nmos/pmos/npn/pnp distinction (encoded in `geometry.mosType` /
+ * `geometry.bjtType`) instead of the raw `kind` value, so a `mos` device
+ * reads as "nmos" or "pmos" in the right panel rather than the generic
+ * "mos". Mirrors the canvas overlay's `physicalType()` helper so both
+ * surfaces agree on what to call each device.
+ */
+function analogDeviceTypeLabel(device: AnalogDevice): string {
+  const g = device.geometry as unknown as Record<string, unknown>;
+  switch (device.kind) {
+    case "mos": {
+      const t = g.mosType as string | undefined;
+      return t === "pmos" ? "pmos" : t === "nmos" ? "nmos" : "mos";
+    }
+    case "bjt_npn": return "npn";
+    case "bjt_pnp": return "pnp";
+    case "jfet_n": return "n-jfet";
+    case "jfet_p": return "p-jfet";
+    default: return device.kind;
+  }
+}
+
 /** Stable empty record used as zustand selector sentinel — avoids
  *  creating a new `{}` every render (which triggers infinite re-render
  *  via useSyncExternalStore's snapshot comparison). */
@@ -1662,7 +1685,10 @@ function AnalogDeviceRow({ device, cellTypeId, onOverride }: AnalogDeviceRowProp
   ) as Record<string, number>;
 
   const label = device.instanceName ?? device.id;
-  const subtitle = device.kind;
+  // Physical type (nmos/pmos/npn/pnp/...) rather than the raw kind value,
+  // so the panel agrees with the canvas overlay (see physicalType in
+  // CellRECanvas.tsx).
+  const subtitle = analogDeviceTypeLabel(device);
 
   // Helper: get effective value (override → extracted)
   const eff = (key: string, fallback: number): number =>

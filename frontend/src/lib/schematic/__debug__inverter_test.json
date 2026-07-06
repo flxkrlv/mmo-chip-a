@@ -1,0 +1,50 @@
+{
+  "modules": {
+    "inverter_test": {
+      "ports": {
+        "IN":  { "direction": "input",  "bits": [10] },
+        "OUT": { "direction": "output", "bits": [11] }
+      },
+      "cells": {
+        "M_PMOS": {
+          "type": "pmos_v",
+          "port_directions": { "D": "output", "G": "input", "S": "input", "B": "input" },
+          "connections": {
+            "D": [11],
+            "G": [10],
+            "S": [12],
+            "B": [12]
+          },
+          "attributes": {
+            "ref": "M_PMOS",
+            "value": "W=10.00 L=1.00"
+          }
+        },
+        "M_NMOS": {
+          "type": "nmos_v",
+          "port_directions": { "D": "output", "G": "input", "S": "input", "B": "input" },
+          "connections": {
+            "D": [11],
+            "G": [10],
+            "S": [13],
+            "B": [13]
+          },
+          "attributes": {
+            "ref": "M_NMOS",
+            "value": "W=5.00 L=1.00"
+          }
+        },
+        "VDD": {
+          "type": "vcc",
+          "connections": { "A": [12] },
+          "attributes": { "name": "VDD" }
+        },
+        "GND": {
+          "type": "gnd",
+          "connections": { "A": [13] },
+          "attributes": { "name": "GND" }
+        }
+      }
+    }
+  }
+}

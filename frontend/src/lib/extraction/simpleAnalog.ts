@@ -1356,6 +1356,24 @@ export function detectMOSFromLayers(
               { name: "B", netId: bulkNetId, shapeIds: [wellId] },
             ];
 
+            // ── Per-sub-device gate poly centroid ──────────────────
+            // Each finger has its own gate poly even when several fingers
+            // share a poly run and one common well-tap contact. The
+            // centroid gives every label a unique anchor and keeps them
+            // from piling up on the same gate-tap point on the cell image
+            // canvas. `bbox` is left at `bodyBox` (the whole diffusion)
+            // because hit-tests, die-viewer body outline, and hierarchical
+            // export all rely on the body extent, not the gate strip.
+            let gateAnchor: { x: number; y: number } | undefined;
+            {
+              const gp = shapeToPolygon(gate);
+              if (gp.length > 0) {
+                let sx = 0, sy = 0;
+                for (const pt of gp) { sx += pt.x; sy += pt.y; }
+                gateAnchor = { x: sx / gp.length, y: sy / gp.length };
+              }
+            }
+
             const geometry: DeviceGeometryMOS = {
               L_um,
               W_um,
@@ -1374,7 +1392,8 @@ export function detectMOSFromLayers(
               modelName: mosType === "pmos" ? "PMOS" : "NMOS",
               terminals,
               bbox: bodyBox,
-            });
+              ...(gateAnchor ? { _gateAnchor: gateAnchor } : {}),
+            } as unknown as AnalogDevice);
           }
           counter++; // advance counter once for all sub-devices
         } else {

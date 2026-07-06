@@ -133,6 +133,33 @@ export function extractAnalogDevicesFromCellType(
   // Propagate across multi-finger groups (S/D always alternate)
   propagateMultiFingerDS(all);
 
+  // ── Deduplicate instance names for the per-cell view ─────────────
+  // Multi-finger MOS devices emit N sub-devices with the SAME
+  // `instanceName` (e.g. `M_1`, `M_1`, `M_1`, `M_1` — the counter advances
+  // once per physical transistor, not per finger). Without dedup the
+  // canvas would paint the same label on every finger and the right
+  // panel would show four identical rows.
+  //
+  // The dedup scheme matches the netlist2svg format pass exactly: the
+  // first occurrence keeps its bare name (`M_1`); subsequent collisions
+  // get `_1`, `_2`, … appended. Order is preserved so canvas labels and
+  // the schematic view agree on which device is `M_1_1` vs `M_1_2`.
+  {
+    const used = new Set<string>();
+    for (const d of all) {
+      const base = d.instanceName ?? d.id.slice(0, 8);
+      let unique = base;
+      let c = 1;
+      while (used.has(unique)) {
+        unique = `${base}_${c++}`;
+      }
+      used.add(unique);
+      if (unique !== d.instanceName) {
+        d.instanceName = unique;
+      }
+    }
+  }
+
   return all;
 }
 

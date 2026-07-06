@@ -121,6 +121,16 @@ interface PreferencesState {
   /** Resistor body layers opacity (0..1) in the RE canvas. Default 1.
    *  Helps superimpose the drawn polyline onto the image to verify width. */
   resistorOpacity: number;
+  /** RE Cell: render the analog device instance labels (M_1, Q12, R34…).
+   *  Default true. */
+  reDeviceLabelsVisible: boolean;
+  /** RE Cell: render the terminal dots + letters (G/S/D/B/C/E/+/−).
+   *  Independent from `reDeviceLabelsVisible` so dense layouts can hide
+   *  one but keep the other readable. Default true. */
+  reTerminalLabelsVisible: boolean;
+  /** RE Cell: label size preset for analog overlay text (instance name,
+   *  terminal letters). 0=small, 1=medium, 2=large. Default 1. */
+  reAnalogLabelScale: 0 | 1 | 2;
 }
 
 interface PreferencesActions {
@@ -174,6 +184,9 @@ interface PreferencesActions {
   saveViewport: (dieId: string, viewport: Viewport) => void;
   clearSavedViewport: (dieId: string) => void;
   setResistorOpacity: (opacity: number) => void;
+  setReDeviceLabelsVisible: (visible: boolean) => void;
+  setReTerminalLabelsVisible: (visible: boolean) => void;
+  setReAnalogLabelScale: (scale: 0 | 1 | 2) => void;
 }
 
 const DEFAULT_EXPANDED_SECTIONS: AnnotationKind[] = ["net", "via", "roi"];
@@ -219,6 +232,9 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
         netNodeSize: NET_NODE_RADIUS_MULT,
         netNodeVisible: true,
         resistorOpacity: 1,
+        reDeviceLabelsVisible: true,
+        reTerminalLabelsVisible: true,
+        reAnalogLabelScale: 1,
 
         setNetWidth: (width) => set({ netWidth: width }),
         setNetColor: (color) => set({ netColor: color }),
@@ -327,7 +343,10 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
             return { savedViewports: rest };
           }),
         setResistorOpacity: (opacity) =>
-          set({ resistorOpacity: Math.min(1, Math.max(0, opacity)) })
+          set({ resistorOpacity: Math.min(1, Math.max(0, opacity)) }),
+        setReDeviceLabelsVisible: (visible) => set({ reDeviceLabelsVisible: visible }),
+        setReTerminalLabelsVisible: (visible) => set({ reTerminalLabelsVisible: visible }),
+        setReAnalogLabelScale: (scale) => set({ reAnalogLabelScale: scale }),
       }),
       {
         name: "mmo-chip-preferences",
@@ -372,7 +391,10 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
           wireLayerColors: state.wireLayerColors,
           netNodeSize: state.netNodeSize,
           netNodeVisible: state.netNodeVisible,
-          resistorOpacity: state.resistorOpacity
+          resistorOpacity: state.resistorOpacity,
+          reDeviceLabelsVisible: state.reDeviceLabelsVisible,
+          reTerminalLabelsVisible: state.reTerminalLabelsVisible,
+          reAnalogLabelScale: state.reAnalogLabelScale
         })
       }
     )

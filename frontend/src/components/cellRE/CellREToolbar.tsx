@@ -7,6 +7,13 @@ import { BigToolDivider, Tool } from "../dieViewer/DieViewerUI";
 import { ToolDivider } from "../shell/SubBar";
 import { LayerChips } from "./LayerChips";
 
+/** Three discrete label sizes. Kept in one place so canvas + toolbar agree. */
+const LABEL_SCALES = [
+  { value: 0 as const, label: "S" },
+  { value: 1 as const, label: "M" },
+  { value: 2 as const, label: "L" },
+];
+
 /** One toolbar entry: a real, selectable tool. */
 interface ToolItem {
   kind: ReToolKind;
@@ -67,6 +74,15 @@ export function CellREToolbar({
   const setPlWidth = useCellREStore((s) => s.setPolylineWidth);
   const resistorOpacity = usePreferences((s) => s.resistorOpacity);
   const setResistorOpacity = usePreferences((s) => s.setResistorOpacity);
+  // Overlay controls — kept here (not behind a per-tool gate) so they're
+  // visible regardless of the active tool: users often switch tools just
+  // to turn labels off when reading a dense layout.
+  const deviceLabelsVisible = usePreferences((s) => s.reDeviceLabelsVisible);
+  const setDeviceLabelsVisible = usePreferences((s) => s.setReDeviceLabelsVisible);
+  const terminalLabelsVisible = usePreferences((s) => s.reTerminalLabelsVisible);
+  const setTerminalLabelsVisible = usePreferences((s) => s.setReTerminalLabelsVisible);
+  const labelScale = usePreferences((s) => s.reAnalogLabelScale);
+  const setLabelScale = usePreferences((s) => s.setReAnalogLabelScale);
 
   // polylineWidth is stored in µm directly — no conversion needed.
   const currentWidthUm = Math.round(plWidth);
@@ -83,6 +99,79 @@ export function CellREToolbar({
 
   return (
     <>
+      {/* Overlay controls — always visible regardless of active tool.
+          Grouped under a "overlays" header so users can find them when the
+          canvas feels cluttered (toggle labels off, keep nets visible, etc.) */}
+      <span
+        className="u"
+        style={{ fontSize: 10, color: "var(--ink3)", margin: "0 4px 0 2px" }}
+      >
+        overlays
+      </span>
+      <label
+        className="check"
+        style={{ display: "inline-flex", alignItems: "center", gap: 4, cursor: "pointer", fontSize: 10.5 }}
+        title="Show device instance labels (M1, Q12, R34…) over the cell image"
+      >
+        <input
+          type="checkbox"
+          checked={deviceLabelsVisible}
+          onChange={(e) => setDeviceLabelsVisible(e.target.checked)}
+        />
+        Devices
+      </label>
+      <label
+        className="check"
+        style={{ display: "inline-flex", alignItems: "center", gap: 4, cursor: "pointer", fontSize: 10.5 }}
+        title="Show device terminal letters and dots (G/S/D/B/C/E/+/−)"
+      >
+        <input
+          type="checkbox"
+          checked={terminalLabelsVisible}
+          onChange={(e) => setTerminalLabelsVisible(e.target.checked)}
+        />
+        Terminals
+      </label>
+      <ToolDivider />
+      <span
+        className="m"
+        style={{ fontSize: 10, color: "var(--ink3)", marginRight: 2 }}
+      >
+        Label size:
+      </span>
+      <div
+        role="group"
+        style={{
+          display: "inline-flex",
+          border: "1px solid var(--l2)",
+          borderRadius: 3,
+          overflow: "hidden",
+        }}
+      >
+        {LABEL_SCALES.map((opt, i) => (
+          <button
+            key={opt.value}
+            type="button"
+            onClick={() => setLabelScale(opt.value)}
+            title={`Label size: ${opt.label} (${opt.value === 0 ? "0.2x" : opt.value === 2 ? "1.0x" : "0.5x"})`}
+            style={{
+              padding: "2px 7px",
+              fontSize: 10,
+              fontFamily: "var(--mono)",
+              fontWeight: 600,
+              background: labelScale === opt.value ? "var(--accent)" : "var(--bg1)",
+              color: labelScale === opt.value ? "var(--accentFg, #fff)" : "var(--ink2)",
+              border: 0,
+              borderLeft: i > 0 ? "1px solid var(--l2)" : 0,
+              cursor: "pointer",
+              lineHeight: 1.2,
+            }}
+          >
+            {opt.label}
+          </button>
+        ))}
+      </div>
+      <BigToolDivider />
       {TOOL_GROUPS.map((group, gi) => (
         <Fragment key={gi}>
           {gi > 0 && <ToolDivider />}

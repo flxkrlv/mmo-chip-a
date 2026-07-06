@@ -1,0 +1,56 @@
+{
+  "modules": {
+    "test_circuit": {
+      "ports": {
+        "VIN":  { "direction": "input",  "bits": [100] },
+        "VOUT": { "direction": "output", "bits": [200] },
+        "CLK":  { "direction": "input",  "bits": [300] }
+      },
+      "cells": {
+        "M_PMOS": {
+          "type": "pmos_v",
+          "port_directions": { "D": "output", "G": "input", "S": "input", "B": "input" },
+          "connections": { "D": [200], "G": [100], "S": [10], "B": [10] },
+          "attributes": { "ref": "M_PMOS", "value": "W=10.00 L=1.00" }
+        },
+        "M_NMOS": {
+          "type": "nmos_v",
+          "port_directions": { "D": "output", "G": "input", "S": "input", "B": "input" },
+          "connections": { "D": [200], "G": [100], "S": [20], "B": [20] },
+          "attributes": { "ref": "M_NMOS", "value": "W=5.00 L=1.00" }
+        },
+        "R_LOAD": {
+          "type": "r_v",
+          "connections": { "A": [10], "B": [200] },
+          "attributes": { "ref": "R_LOAD", "value": "10.0kΩ" }
+        },
+        "C_OUT": {
+          "type": "c_v",
+          "connections": { "A": [200], "B": [20] },
+          "attributes": { "ref": "C_OUT", "value": "100pF" }
+        },
+        "D_CLAMP": {
+          "type": "d_v",
+          "connections": { "+": [200], "-": [10] },
+          "attributes": { "ref": "D_CLAMP" }
+        },
+        "Q_NPN": {
+          "type": "q_npn",
+          "port_directions": { "C": "input", "B": "input", "E": "output" },
+          "connections": { "C": [200], "B": [300], "E": [20] },
+          "attributes": { "ref": "Q_NPN" }
+        },
+        "VDD_NET": {
+          "type": "vcc",
+          "connections": { "A": [10] },
+          "attributes": { "name": "VDD" }
+        },
+        "GND_NET": {
+          "type": "gnd",
+          "connections": { "A": [20] },
+          "attributes": { "name": "GND" }
+        }
+      }
+    }
+  }
+}
