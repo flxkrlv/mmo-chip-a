@@ -119,11 +119,13 @@ export async function exportProject(
 ): Promise<ExportProjectResult> {
   const preferences =
     includePreferences ? localStorage.getItem("mmo-chip-preferences") : null;
+  const deviceRegistry = localStorage.getItem("mmo-chip-device-registry");
+  const analogNames = localStorage.getItem("mmo-chip-analog-names");
 
   const response = await fetch(`/api/dies/${dieId}/export-project`, {
     method: "POST",
     headers: { "Content-Type": "application/json", ...authHeaders() },
-    body: JSON.stringify({ mode, preferences }),
+    body: JSON.stringify({ mode, preferences, deviceRegistry, analogNames }),
     signal
   });
 
@@ -147,6 +149,8 @@ export interface ImportProjectResult {
   ok: boolean;
   dieId: string;
   preferences: string | null;
+  deviceRegistry: string | null;
+  analogNames: string | null;
 }
 
 /**
@@ -204,6 +208,22 @@ export function useImportProject() {
           localStorage.setItem("mmo-chip-preferences", result.preferences);
         } catch {
           // localStorage might be full — silently ignore
+        }
+      }
+      // Restore device registry (instance names, overrides, identity).
+      if (result.deviceRegistry) {
+        try {
+          localStorage.setItem("mmo-chip-device-registry", result.deviceRegistry);
+        } catch {
+          // silently ignore
+        }
+      }
+      // Restore legacy analog name map.
+      if (result.analogNames) {
+        try {
+          localStorage.setItem("mmo-chip-analog-names", result.analogNames);
+        } catch {
+          // silently ignore
         }
       }
     }

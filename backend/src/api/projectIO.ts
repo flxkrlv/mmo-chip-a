@@ -86,7 +86,7 @@ class ProjectIOError extends Error {
 async function queueExport(
   dataRoot: string,
   dieId: string,
-  body: { mode?: string; preferences?: string | null }
+  body: { mode?: string; preferences?: string | null; deviceRegistry?: string | null; analogNames?: string | null }
 ): Promise<{ archive: Archiver; filename: string }> {
   const record = await readDieRecord(dataRoot, dieId);
   const mode = body.mode === "full" ? "full" : "light";
@@ -132,7 +132,17 @@ async function queueExport(
     if (body.preferences) archive.append(body.preferences, { name: "preferences.json" });
   });
 
-  // 6. Full mode extras — iterate manually for size logging
+  // 6. device-registry.json (optional) — analog device names, overrides, UUID identity
+  await measure("device-registry.json", async () => {
+    if (body.deviceRegistry) archive.append(body.deviceRegistry, { name: "device-registry.json" });
+  });
+
+  // 7. analog-names.json (optional) — legacy name map
+  await measure("analog-names.json", async () => {
+    if (body.analogNames) archive.append(body.analogNames, { name: "analog-names.json" });
+  });
+
+  // 8. Full mode extras — iterate manually for size logging
   if (mode === "full") {
     await measure("original/ die image", async () => {
       const d = path.join(dieDir, "original");
@@ -171,7 +181,7 @@ async function handleImport(
   dataRoot: string,
   zipPath: string,
   renameTo?: string
-): Promise<{ dieId: string; preferences: string | null }> {
+): Promise<{ dieId: string; preferences: string | null; deviceRegistry: string | null; analogNames: string | null }> {
   const zip = new AdmZip(zipPath);
   const entries = zip.getEntries();
 
@@ -307,7 +317,12 @@ async function handleImport(
     await fs.writeFile(path.join(overlayDir, rel), e.getData());
   }
 
-  return { dieId: targetDieId, preferences: readEntry("preferences.json") };
+  return {
+    dieId: targetDieId,
+    preferences: readEntry("preferences.json"),
+    deviceRegistry: readEntry("device-registry.json"),
+    analogNames: readEntry("analog-names.json"),
+  };
 }
 
 // ═════════════════════════════════════════════════════════════════════
@@ -439,7 +454,9 @@ export function createProjectIORouter(config: { dataRoot: string }) {
         response.json({
           ok: true,
           dieId: result.dieId,
-          preferences: result.preferences
+          preferences: result.preferences,
+          deviceRegistry: result.deviceRegistry,
+          analogNames: result.analogNames
         });
       } catch (error) {
         if (filePath) await fs.rm(filePath, { force: true }).catch(() => {});
