@@ -150,20 +150,62 @@ function fingerprintsMatch(a: Fingerprint, b: Fingerprint): boolean {
       && Math.abs(pa.byc - pb.byc) <= FUZZY_TOLERANCE_PX;
 }
 
+/** Handle fingerprints that can't be parsed (e.g. per-instance format
+ *  `${templateUuid}:${instCellId}` with only 2 colon-separated parts).
+ *  We still do exact match by the byFingerprint key so existing records
+ *  are found and resurrected.  If no match we create a proper persisted
+ *  record (not ephemeral). */
+function matchOpaqueByFingerprint(
+  fingerprint: Fingerprint,
+  data: DeviceRegistryData,
+  now: number,
+): { uuid: string; record: DeviceRecord; isNew: boolean } {
+  const existingUuid = data.byFingerprint[fingerprint];
+  if (existingUuid) {
+    const rec = data.byUUID[existingUuid];
+    if (rec) {
+      rec.lastSeenAt = now;
+      rec.deletedAt = null;
+      saveRaw(data);
+      return { uuid: rec.uuid, record: rec, isNew: false };
+    }
+  }
+  const newUuid = uuid();
+  const rec: DeviceRecord = {
+    uuid: newUuid,
+    kind: "unknown" as DeviceKind,
+    subType: null,
+    fingerprint,
+    instanceName: null,
+    overrides: {},
+    createdAt: now,
+    lastSeenAt: now,
+    deletedAt: null,
+  };
+  data.byUUID[newUuid] = rec;
+  data.byFingerprint[fingerprint] = newUuid;
+  saveRaw(data);
+  return { uuid: newUuid, record: rec, isNew: true };
+}
+
 /** Look up or create a UUID for a freshly extracted device. */
 export function matchOrCreateDevice(
   fingerprint: Fingerprint,
   legacyOverride?: Record<string, number>,
 ): { uuid: string; record: DeviceRecord; isNew: boolean } {
   const parsed = parseFingerprint(fingerprint);
-  if (!parsed) {
-    // Malformed fingerprint — assign a fresh UUID without storing a record.
-    // Better than crashing the pipeline.
-    return { uuid: uuid(), record: makeEphemeralRecord(fingerprint), isNew: true };
-  }
-  const { kind, subType } = parsed;
   const data = loadRaw();
   const now = Date.now();
+
+  if (!parsed) {
+    // Malformed or non-standard fingerprint (e.g. per-instance format
+    // `${templateUuid}:${instCellId}` which has only 2 colon-separated
+    // parts and no numeric position).  Exact match by byFingerprint key
+    // still works; we just can't do fuzzy matching, kind/subType checks
+    // or legacy override merging without parsed components.
+    return matchOpaqueByFingerprint(fingerprint, data, now);
+  }
+  const { kind, subType } = parsed;
 
   // 1. Exact fingerprint match — also resurrects soft-deleted records
   const existingUuid = data.byFingerprint[fingerprint];
@@ -227,21 +269,6 @@ export function matchOrCreateDevice(
   data.byFingerprint[fingerprint] = newUuid;
   saveRaw(data);
   return { uuid: newUuid, record: rec, isNew: true };
-}
-
-/** Build a record without persisting (used when fingerprint is malformed). */
-function makeEphemeralRecord(fingerprint: Fingerprint): DeviceRecord {
-  return {
-    uuid: "",
-    kind: "unknown" as DeviceKind,
-    subType: null,
-    fingerprint,
-    instanceName: null,
-    overrides: {},
-    createdAt: Date.now(),
-    lastSeenAt: Date.now(),
-    deletedAt: null,
-  };
 }
 
 /** Mark a device as deleted (soft). Its record stays so that:
