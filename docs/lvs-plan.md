@@ -77,3 +77,30 @@ Debounced auto-compare (300ms) when the schematic textarea content changes, so t
 - **Rust toolchain:** `~/.rustup/` — development only, ~1.5 GB
 - **Production deployment:** only the 2 MB binary needed; set `LVS_CLI_PATH` or ensure it's on PATH
 - **Source:** `cargo install --git https://github.com/vyges-tools/lvs` (public, Apache 2.0)
+
+## Setup on a fresh machine
+
+### Windows
+
+The repo includes an auto-setup script:
+
+```powershell
+scripts\setup-lvs.bat
+```
+
+It checks for vyges-lvs, installs Rust if missing, then builds vyges-lvs from source.
+
+**Manual steps:**
+1. Install Rust: `winget install Rustlang.Rustup` or https://rustup.rs
+2. `cargo install --git https://github.com/vyges-tools/lvs` (3–10 min, ~1.5 GB Rust toolchain)
+3. `cd backend && npm run dev` — бэкенд сам найдёт `~/.cargo/bin/vyges-lvs.exe`
+
+**What gets downloaded:** Rust toolchain (~1.5 GB) is one-time. vyges-lvs build pulls Cargo dependencies (~200 MB). Final binary is 2 MB. To reclaim space after build: `cargo clean`.
+
+### Linux / macOS
+
+```bash
+chmod +x scripts/setup-lvs.sh && ./scripts/setup-lvs.sh
+```
+
+The script downloads a prebuilt binary (Linux x86_64/aarch64, macOS aarch64) from GitHub releases, installs to `~/.local/bin/`. Falls back to `cargo install` if no prebuilt binary for your arch.
