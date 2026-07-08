@@ -112,8 +112,9 @@ function saveRaw(data: DeviceRegistryData): void {
  *  exact match. */
 const FUZZY_TOLERANCE_PX = 5; // 5px = 5nm at umPerPx=1
 
-/** Parse a fingerprint `kind:subTypeOrEmpty:bxc:byc` → components.
- *  subType may be "nmos" / "pmos" / "" or absent. */
+/** Parse a fingerprint `kind:bxc:byc` (3 parts, e.g. resistor:1000:2000)
+ *  or `kind:bxc:byc:subType` (4 parts, e.g. mos:1000:2000:pmos) →
+ *  components. subType is "" when absent. */
 function parseFingerprint(fp: Fingerprint): {
   kind: string;
   subType: string;
@@ -123,16 +124,18 @@ function parseFingerprint(fp: Fingerprint): {
   const parts = fp.split(":");
   if (parts.length < 3) return null;
   const kind = parts[0];
-  // subType is optional (only present for kinds with subtypes)
-  // Position is the last two numeric parts
-  const bycStr = parts[parts.length - 1];
-  const bxcStr = parts[parts.length - 2];
-  const bxc = Number(bxcStr);
-  const byc = Number(bycStr);
-  if (!Number.isFinite(bxc) || !Number.isFinite(byc)) return null;
-  // subType = everything between kind and position
-  const subType = parts.slice(1, parts.length - 2).join(":");
-  return { kind, subType, bxc, byc };
+  // Try to find two consecutive numeric parts at the tail — those are
+  // the position (bxc, byc). Anything between kind and the position is
+  // the subType (concatenated with ":").
+  for (let i = parts.length - 2; i >= 1; i--) {
+    const bxc = Number(parts[i]);
+    const byc = Number(parts[i + 1]);
+    if (Number.isFinite(bxc) && Number.isFinite(byc)) {
+      const subType = parts.slice(1, i).join(":");
+      return { kind, subType, bxc, byc };
+    }
+  }
+  return null;
 }
 
 function fingerprintsMatch(a: Fingerprint, b: Fingerprint): boolean {
