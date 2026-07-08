@@ -173,17 +173,13 @@ export function matchOrCreateDevice(
       rec.lastSeenAt = now;
       rec.deletedAt = null;  // resurrect if it was soft-deleted
       if (legacyOverride && Object.keys(legacyOverride).length > 0) {
-        let merged = false;
         for (const [k, v] of Object.entries(legacyOverride)) {
           if (rec.overrides[k] == null) {
             rec.overrides[k] = v;
-            merged = true;
           }
         }
-        if (merged) saveRaw(data);
-      } else {
-        saveRaw(data);
       }
+      saveRaw(data);
       return { uuid: rec.uuid, record: rec, isNew: false };
     }
   }
@@ -202,17 +198,13 @@ export function matchOrCreateDevice(
         data.byFingerprint[fingerprint] = rec.uuid;
         rec.lastSeenAt = now;
         if (legacyOverride && Object.keys(legacyOverride).length > 0) {
-          let merged = false;
           for (const [k, v] of Object.entries(legacyOverride)) {
             if (rec.overrides[k] == null) {
               rec.overrides[k] = v;
-              merged = true;
             }
           }
-          if (merged) saveRaw(data);
-        } else {
-          saveRaw(data);
         }
+        saveRaw(data);
         return { uuid: rec.uuid, record: rec, isNew: false };
       }
     }
