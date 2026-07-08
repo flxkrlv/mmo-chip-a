@@ -471,12 +471,6 @@ export function CellRERightPanel({
                   device={ad}
                   cellTypeId={activeCellTypeId ?? ""}
                   onOverride={(deviceKey, param, value) => {
-                    // deviceKey is the _cellLevelKey fingerprint; the device
-                    // also carries _templateUuid. We write the override
-                    // under the template UUID via the device registry
-                    // (the canonical store). Per-instance records seed
-                    // themselves from the template on first appearance,
-                    // so all instances pick up the change too.
                     const templateUuid = (ad as any)._templateUuid as string | undefined;
                     if (templateUuid) {
                       setDeviceOverride(templateUuid, param, value);

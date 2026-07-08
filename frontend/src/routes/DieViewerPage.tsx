@@ -54,7 +54,9 @@ import { AnalogDiePanel } from "../components/dieViewer/AnalogDiePanel";
 import { AnalogDeviceHighlights } from "../components/dieViewer/AnalogDeviceHighlights";
 import { DeviceInspector } from "../components/dieViewer/DeviceInspector";
 import { DeviceInstancePanel } from "../components/dieViewer/DeviceInstancePanel";
+import { applyAnalogOverrides } from "../api/analogNetlist";
 import { collectDieWideAnalogDevices } from "../api/dieWideAnalog";
+import { useRegistryVersion } from "../state/deviceRegistry";
 import { loadClipper } from "../lib/extraction";
 import { useMLJob, useMLStatus } from "../api/ml";
 import { WireDraftOverlay } from "../components/dieViewer/WireDraftOverlay";
@@ -904,23 +906,21 @@ function DieViewer({ dieId }: { dieId: string }) {
     });
   }, []);
 
-const analogMemo = useMemo(
+  // Re-compute devices when registry or annotations change.
+  const regVer = useRegistryVersion((s) => s.v);
+  const analogMemo = useMemo(
     () => {
       if (!annotations) return { devices: [], netNames: new Map<number, string>(), unconnectedCount: 0 };
       try {
-
         const r = collectDieWideAnalogDevices(annotations as any, annotations.umPerPx ?? 1);
+        applyAnalogOverrides(r.devices);
         const unconnectedCount = r.devices.reduce(
           (sum, d) => sum + d.terminals.filter((t) => t.netId >= 2000).length, 0,
         );
-
-        for (const d of r.devices) {
-
-        }
         return { devices: r.devices, netNames: r.namedNets, unconnectedCount };
       } catch { return { devices: [], netNames: new Map<number, string>(), unconnectedCount: 0 }; }
     },
-    [annotations, clipperTick]
+    [annotations, clipperTick, regVer]
   );
   const analogDevices = analogMemo.devices;
   const netNames = analogMemo.netNames;

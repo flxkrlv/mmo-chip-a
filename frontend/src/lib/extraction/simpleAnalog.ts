@@ -1413,27 +1413,6 @@ export function detectMOSFromLayers(
     }
   }
 
-  // ── Multiplier detection ────────────────────────────────────
-  // Group devices by well type + approximate W/L. Devices in the same
-  // well region with matching geometry get multiplier > 1.
-  const groups = new Map<string, AnalogDevice[]>();
-  for (const d of devices) {
-    const g = d.geometry as DeviceGeometryMOS;
-    const key = `${g.mosType}_W${Math.round(g.W_um)}_L${g.L_um.toFixed(2)}`;
-    const list = groups.get(key) ?? [];
-    list.push(d);
-    groups.set(key, list);
-  }
-  for (const [, list] of groups) {
-    if (list.length > 1) {
-      for (let i = 0; i < list.length; i++) {
-        const g = list[i].geometry as DeviceGeometryMOS;
-        g.multiplier = list.length;
-        g.totalW_um = g.W_um * g.fingers * g.multiplier;
-      }
-    }
-  }
-
   // Metal-connected D/S (MOS) and PLUS/MINUS (resistor) terminal
   // merging is handled in extractAnalogDevicesFromCellType (dieWideAnalog.ts)
   // on all devices together so inter-device connections work.

@@ -17,7 +17,7 @@ import {
 } from "../lib/export/spice";
 import { matchGeometry } from "../lib/export/matching";
 import { collectDieWideAnalogDevices, getRenameVersion } from "./dieWideAnalog";
-import { getDeviceRecord, getLegacyOverrides, setLegacyOverrides } from "../state/deviceRegistry";
+import { getDeviceRecord, getLegacyOverrides, setLegacyOverrides, useRegistryVersion } from "../state/deviceRegistry";
 
 // ── Public shapes ─────────────────────────────────────────────────
 
@@ -173,36 +173,36 @@ const NAMEMAP_KEY = "mmo-chip-analog-names";
  *   2. Template record (shared by all instances of the same cell type)
  *   3. Legacy migration entry
  */
-function applyAnalogOverrides(devices: AnalogDevice[]): void {
+export function applyAnalogOverrides(devices: AnalogDevice[]): void {
   for (const d of devices) {
     const uuid = (d as any)._uuid as string | undefined;
     const templateUuid = (d as any)._templateUuid as string | undefined;
-    let deviceOverrides: Record<string, number> | undefined;
+    // Merge: per-instance overrides first, then template overrides on top.
+    // Template (canonical user edits from Cell RE panel) always wins over
+    // stale per-instance seeds inherited at device creation time.
+    const merged: Record<string, number> = {};
     if (uuid) {
       const rec = getDeviceRecord(uuid);
-      if (rec?.overrides && Object.keys(rec.overrides).length > 0) {
-        deviceOverrides = rec.overrides;
-      }
+      if (rec?.overrides) Object.assign(merged, rec.overrides);
     }
-    if (!deviceOverrides && templateUuid) {
+    if (templateUuid) {
       const rec = getDeviceRecord(templateUuid);
-      if (rec?.overrides && Object.keys(rec.overrides).length > 0) {
-        deviceOverrides = rec.overrides;
-      }
+      if (rec?.overrides) Object.assign(merged, rec.overrides);
     }
     // Legacy fallback (one-time, until migration runs in the pipeline)
-    if (!deviceOverrides) {
+    if (Object.keys(merged).length === 0) {
       const key = (d as any)._cellLevelKey as string | undefined;
       if (key) {
         const legacy = getLegacyOverrides();
-        deviceOverrides = legacy?.[d.cellTypeId]?.[key];
+        const lo = legacy?.[d.cellTypeId]?.[key];
+        if (lo) Object.assign(merged, lo);
       }
     }
-    if (!deviceOverrides || Object.keys(deviceOverrides).length === 0) continue;
+    if (Object.keys(merged).length === 0) continue;
     const g = d.geometry as unknown as Record<string, unknown>;
     const ovParams = new Set<string>();
     (d as any)._overriddenParams = ovParams;
-    for (const [param, value] of Object.entries(deviceOverrides)) {
+    for (const [param, value] of Object.entries(merged)) {
       if (param in g) {
         (g as any)[param] = value;
         ovParams.add(param);
@@ -318,6 +318,7 @@ export function useAnalogNetlist(
   hierarchical: boolean = false,
   analogOverrides?: Record<string, Record<string, Record<string, number>>>,
 ): UseAnalogNetlist {
+  const regVer = useRegistryVersion((s) => s.v);
   const data = useMemo<AnalogNetlistResult | null>(() => {
     if (!annotations) return null;
     try {
@@ -326,10 +327,9 @@ export function useAnalogNetlist(
         analogOverrides,
       });
     } catch (e) {
-      // Surface the error; the page will show it.
       throw e;
     }
-  }, [annotations, moduleName, dialect, spiceConfig, hierarchical, analogOverrides, getRenameVersion()]);
+  }, [annotations, moduleName, dialect, spiceConfig, hierarchical, analogOverrides, getRenameVersion(), regVer]);
 
   return {
     data,

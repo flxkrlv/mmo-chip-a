@@ -28,6 +28,7 @@
  *   }
  */
 
+import { create } from "zustand";
 import { uuid } from "../lib/uuid";
 import type { DeviceKind } from "shared";
 
@@ -382,10 +383,17 @@ export function getLiveRecords(): DeviceRecord[] {
   return Object.values(loadRaw().byUUID).filter((r) => !r.deletedAt);
 }
 
+/** Zustand store — subscribe in React components for reactive re-renders
+ *  on any registry write (override, rename, clear). */
+export const useRegistryVersion = create<{ v: number }>(() => ({ v: 0 }));
+
 /** Module-level version counter — bumped on any write. Hooks can depend
  *  on `getRegistryVersion()` to re-render when the registry changes. */
 let _registryVersion = 0;
-function bumpRegistryVersion(): void { _registryVersion++; }
+function bumpRegistryVersion(): void {
+  _registryVersion++;
+  useRegistryVersion.setState({ v: _registryVersion });
+}
 export function getRegistryVersion(): number { return _registryVersion; }
 
 /** Drop all stale fingerprints (those that aren't live and don't belong to

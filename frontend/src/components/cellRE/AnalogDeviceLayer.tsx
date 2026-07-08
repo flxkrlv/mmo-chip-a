@@ -39,7 +39,8 @@ function paramLabel(device: AnalogDevice): string {
   switch (device.kind) {
     case "mos":
       return `W=${(g.W_um as number)?.toFixed(1)} L=${(g.L_um as number)?.toFixed(2)}` +
-        ((g.fingers as number) > 1 ? `/${g.fingers}` : "");
+        ((g.fingers as number) > 1 ? `/${g.fingers}` : "") +
+        ((g.multiplier as number) > 1 ? ` M=${g.multiplier}` : "");
     case "bjt_npn":
     case "bjt_pnp":
       return `AE=${(g.AE_um2 as number)?.toFixed(1)}` +

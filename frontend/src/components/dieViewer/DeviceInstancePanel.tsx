@@ -47,7 +47,8 @@ function deviceMeta(dev: AnalogDevice): string {
       const type = g.mosType === "pmos" ? "PMOS" : "NMOS";
       const W = g.W_um?.toFixed(1);
       const L = g.L_um?.toFixed(2);
-      return `${type} W=${W} L=${L}`;
+      const m = g.multiplier && g.multiplier > 1 ? ` M=${g.multiplier}` : "";
+      return `${type} W=${W} L=${L}${m}`;
     }
     case "bjt_npn":
     case "bjt_pnp": {
