@@ -56,7 +56,7 @@ function Section({ children }: { children: React.ReactNode }) {
 
 export function DeviceInspector({ device, onClose }: Props) {
   const g = device.geometry;
-  const key = (device as any)._dieLevelKey as string | undefined;
+  const uuid = (device as any)._uuid as string | undefined;
 
   const instanceLabel = device.instanceName ?? device.id;
   const kindLabel = device.kind.replace("_", " ").toUpperCase();
@@ -67,19 +67,19 @@ export function DeviceInspector({ device, onClose }: Props) {
   const [err, setErr] = useState("");
 
   const handleRename = useCallback(() => {
-    if (!key) return;
+    if (!uuid) return;
     const s = draft.trim();
     if (!s || s === instanceLabel) { setEditing(false); setErr(""); return; }
 
-    const validationErr = validateDeviceName(key, s);
+    const validationErr = validateDeviceName(uuid, s);
     if (validationErr) { setErr(validationErr); return; }
 
-    renameDeviceInstance(key, s);
+    renameDeviceInstance(uuid, s);
     // Immediate visual feedback — mutate the device object directly
     (device as any).instanceName = s;
     setEditing(false);
     setErr("");
-  }, [key, draft, instanceLabel, device]);
+  }, [uuid, draft, instanceLabel, device]);
 
   const handleCancel = useCallback(() => {
     setEditing(false);
@@ -140,7 +140,7 @@ export function DeviceInspector({ device, onClose }: Props) {
             >
               {instanceLabel}
             </span>
-            {key && (
+            {uuid && (
               <span
                 onClick={() => { setDraft(instanceLabel); setEditing(true); setErr(""); }}
                 style={{ cursor: "pointer", fontSize: 10, color: "var(--ink3, #666)", padding: "0 2px" }}

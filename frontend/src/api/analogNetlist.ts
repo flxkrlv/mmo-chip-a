@@ -17,6 +17,7 @@ import {
 } from "../lib/export/spice";
 import { matchGeometry } from "../lib/export/matching";
 import { collectDieWideAnalogDevices, getRenameVersion } from "./dieWideAnalog";
+import { getDeviceRecord, getLegacyOverrides, setLegacyOverrides } from "../state/deviceRegistry";
 
 // ── Public shapes ─────────────────────────────────────────────────
 
@@ -30,6 +31,7 @@ export interface AnalogNetlistLeaf {
   cellId: string;
   /** Stable die-level key for rename persistence. */
   dieLevelKey?: string;
+  uuid?: string;
 }
 
 export interface AnalogNetlistGroup {
@@ -115,7 +117,7 @@ function buildLineIndex(
  * instance names to source lines.
  */
 function buildOutline(
-  devices: Array<{ instanceName: string; kind: string; modelName?: string; _cellId?: string; _dieLevelKey?: string }>,
+  devices: Array<{ instanceName: string; kind: string; modelName?: string; _cellId?: string; _dieLevelKey?: string; _uuid?: string }>,
   lineIndex: Map<string, number>,
 ): AnalogNetlistGroup[] { // eslint-disable-line
   const groups = new Map<string, AnalogNetlistGroup>();
@@ -137,6 +139,7 @@ function buildOutline(
       deviceKind: d.kind,
       cellId: d._cellId ?? "",
       dieLevelKey: d._dieLevelKey,
+      uuid: d._uuid,
     });
   }
   // Sort groups by kind, leaves by instance name numerically
@@ -159,18 +162,30 @@ const NAMEMAP_KEY = "mmo-chip-analog-names";
 
 /**
  * Apply user overrides (W/L/AE/R/fingers/multiplier) to device geometry.
- * Uses _cellLevelKey (position-based, cell-local) — matches the key used
- * in CellRERightPanel when saving overrides.
+ * Looks up the override by the device's UUID (the canonical identity) in
+ * the device registry. Falls back to the legacy cellTypeId+cellLevelKey
+ * format for first-run migration; once the legacy entries are consumed
+ * they're cleared from the registry.
  */
-function applyAnalogOverrides(
-  devices: AnalogDevice[],
-  analogOverrides: Record<string, Record<string, Record<string, number>>>,
-): void {
+function applyAnalogOverrides(devices: AnalogDevice[]): void {
   for (const d of devices) {
-    const key = (d as any)._cellLevelKey as string | undefined;
-    if (!key) continue;
-    const deviceOverrides = analogOverrides[d.cellTypeId]?.[key];
-    if (!deviceOverrides) continue;
+    const uuid = (d as any)._uuid as string | undefined;
+    let deviceOverrides: Record<string, number> | undefined;
+    if (uuid) {
+      const rec = getDeviceRecord(uuid);
+      if (rec?.overrides && Object.keys(rec.overrides).length > 0) {
+        deviceOverrides = rec.overrides;
+      }
+    }
+    // Legacy fallback (one-time, until migration runs in the pipeline)
+    if (!deviceOverrides) {
+      const key = (d as any)._cellLevelKey as string | undefined;
+      if (key) {
+        const legacy = getLegacyOverrides();
+        deviceOverrides = legacy?.[d.cellTypeId]?.[key];
+      }
+    }
+    if (!deviceOverrides || Object.keys(deviceOverrides).length === 0) continue;
     const g = d.geometry as unknown as Record<string, unknown>;
     const ovParams = new Set<string>();
     (d as any)._overriddenParams = ovParams;
@@ -193,6 +208,11 @@ function applyAnalogOverrides(
 
 interface BuildOptions {
   hierarchical?: boolean;
+  /**
+   * @deprecated Overrides now live in the device registry, keyed by device
+   * UUID. This field is kept for backward-compat with callers and is
+   * migrated into the registry on the first pipeline run.
+   */
   analogOverrides?: Record<string, Record<string, Record<string, number>>>;
 }
 
@@ -203,14 +223,24 @@ function buildAnalogNetlist(
   spiceConfig?: SpiceConfig,
   options?: BuildOptions,
 ): AnalogNetlistResult {
+  // First-run migration: if callers still pass legacy analogOverrides,
+  // stash them into the registry as a one-shot backup. Subsequent runs
+  // will use the registry directly.
+  if (options?.analogOverrides && Object.keys(options.analogOverrides).length > 0) {
+    if (!getLegacyOverrides()) {
+      setLegacyOverrides(options.analogOverrides);
+    }
+  }
+
   const { devices, namedNets, warnings: deviceWarnings } = collectDieWideAnalogDevices(
     annotations,
     spiceConfig?.umPerPx ?? annotations.umPerPx ?? 1.0,
     spiceConfig,
   );
 
-  // 1. Apply user overrides (W/L/AE/R/fingers/multiplier) to geometry
-  applyAnalogOverrides(devices, options?.analogOverrides ?? {});
+  // 1. Apply user overrides (W/L/AE/R/fingers/multiplier) to geometry.
+  //    Overrides are read from the device registry (by UUID).
+  applyAnalogOverrides(devices);
 
   // 2. Devices already have stable instance names (assigned inside collectDieWideAnalogDevices)
   const named = devices;

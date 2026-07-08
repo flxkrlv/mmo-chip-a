@@ -32,6 +32,7 @@ import type {
 import { extractMarkedDevices, detectMOSFromLayers, consumeSegmentShapes, mergeMetalConnectedTerminals, resolveDeviceContacts, applyBulkHeuristic, applySourceOverride, propagateMultiFingerDS } from "../lib/extraction/simpleAnalog";
 import { isClipperLoaded } from "../lib/extraction/clipper";
 import { generateSpiceNetlist } from "../lib/export/spice";
+import { matchOrCreateDevice, reconcileWithLiveDevices, compactFingerprints, setLegacyOverrides, getLegacyOverrides, clearLegacyOverrides, getLiveRecords, getDeviceRecord, setDeviceInstanceName } from "../state/deviceRegistry";
 
 // ═════════════════════════════════════════════════════════════════
 // Wire-to-terminal matching
@@ -160,16 +161,32 @@ export function extractAnalogDevicesFromCellType(
     }
   }
 
-  // ── Compute position-based cell-level key for each device ──────
-  // Uses the gate poly centroid (_gateAnchor) for MOS multi-finger
-  // devices so each finger gets a unique key (bbox is the whole diffusion
-  // body and is identical for all fingers of the same transistor).
+  // ── Compute position-based cell-level key + stable UUID ─────────
+  // The position key is a *fingerprint* used by the device registry to
+  // re-attach the same UUID to this device across re-extractions (with
+  // a small tolerance for internal layer edits). For multi-finger MOS the
+  // fingerprint is anchored on the gate poly centroid (_gateAnchor), not
+  // the diffusion body, so each finger has a unique fingerprint.
   for (const d of all) {
     const anchor = (d as any)._gateAnchor as { x: number; y: number } | undefined;
     const bxc = anchor ? Math.round(anchor.x * 100) : d.bbox ? Math.round((d.bbox.x + d.bbox.width / 2) * 100) : 0;
     const byc = anchor ? Math.round(anchor.y * 100) : d.bbox ? Math.round((d.bbox.y + d.bbox.height / 2) * 100) : 0;
     const typeTag = d.kind === "mos" ? `:${(d.geometry as DeviceGeometryMOS).mosType}` : "";
-    (d as any)._cellLevelKey = `${d.kind}:${bxc}:${byc}${typeTag}`;
+    const fingerprint = `${d.kind}:${bxc}:${byc}${typeTag}`;
+    (d as any)._cellLevelKey = fingerprint;
+    // Look up the legacy override for this (cellTypeId, fingerprint) once.
+    // After the first migration, the registry holds the override under the
+    // UUID and the legacy entry can be cleared.
+    const legacyOverrides = getLegacyOverrides();
+    const legacy = legacyOverrides?.[cellType.id]?.[fingerprint];
+    const { uuid: devUuid } = matchOrCreateDevice(fingerprint, legacy);
+    if (legacy) {
+      // One-shot: we've absorbed the legacy override, drop it so the next
+      // run doesn't try again (and so other pipelines don't see stale data).
+      // Note: we don't clear the whole legacy map here — we clear it at the
+      // end of the die-level pipeline run, after all devices are processed.
+    }
+    (d as any)._uuid = devUuid;
   }
 
   return all;
@@ -518,18 +535,14 @@ export function collectDieWideAnalogDevices(
         // Storing as-is preserves the terminal distinction for correct
         // netId resolution per contact.
 
-        // ── Position-based stable device key ─────────────────────
-        // The device's physical position within the cell is the most stable
-        // identifier (independent of annotation UUIDs or extraction order).
-        // For multi-finger MOS, uses the gate centroid (_gateAnchor) so
-        // each finger gets a unique key (bbox is the whole diffusion body).
-        const gateAnchor = (dev as any)._gateAnchor as { x: number; y: number } | undefined;
-        const cellBbox = dev.bbox;
-        const bxc = gateAnchor ? Math.round(gateAnchor.x * 100) : cellBbox ? Math.round((cellBbox.x + cellBbox.width / 2) * 100) : 0;
-        const byc = gateAnchor ? Math.round(gateAnchor.y * 100) : cellBbox ? Math.round((cellBbox.y + cellBbox.height / 2) * 100) : 0;
-        const typeTag = dev.kind === "mos" ? `:${(dev.geometry as DeviceGeometryMOS).mosType}` : "";
-        const cellLevelKey = `${dev.kind}:${bxc}:${byc}${typeTag}`;
+        // ── Die-level device key (cell instance + cell-local key) ───
+        // The cell-local key (fingerprint) was already set by
+        // extractAnalogDevicesFromCellType — and so was _uuid. We just
+        // compose the die-level key here for the legacy nameMap and
+        // propagate the UUID onto the die-level device.
+        const cellLevelKey = (dev as any)._cellLevelKey as string ?? "unknown:0:0";
         const dieLevelKey = `${instCell.id}:${cellLevelKey}`;
+        const devUuid = (dev as any)._uuid as string | undefined;
 
 
         allDevices.push({
@@ -540,7 +553,8 @@ export function collectDieWideAnalogDevices(
           _cellBbox: dev.bbox,
           _cellLevelKey: cellLevelKey,
           _dieLevelKey: dieLevelKey,
-        } as AnalogDevice & { _termPoints: typeof termPoints; _cellId: string; _cellBbox: typeof dev.bbox; _cellLevelKey: string; _dieLevelKey: string });
+          _uuid: devUuid,
+        } as AnalogDevice & { _termPoints: typeof termPoints; _cellId: string; _cellBbox: typeof dev.bbox; _cellLevelKey: string; _dieLevelKey: string; _uuid?: string });
       }
     }
   }
@@ -618,47 +632,79 @@ const INSTANCE_PREFIXES: Record<string, string> = {
 };
 
 /**
- * Assign stable instance names using position-based die-level keys.
- * Reads/writes localStorage directly (synchronous, no React race).
- * Existing keys get their stored name; new devices get next monotonic counter.
+ * Assign stable instance names using the per-device UUID from the registry.
+ * Each device's UUID is the canonical identity — its instance name lives
+ * on the DeviceRecord. For brand-new devices (no registry entry yet) the
+ * nameMap legacy store is used as a transitional fallback; the registry
+ * absorbs the auto-generated name on the next run.
+ *
+ * Counter is built from ALL live records (including deleted ones) so the
+ * auto-counter never dips below the highest ever assigned.
  */
 function assignStableInstanceNames(devices: AnalogDevice[]): void {
   const nameMap = _loadNameMap();
-  // Build counter from ALL names in map (including stale entries).
-  // This ensures the auto-counter never dips below the highest ever assigned.
+  // Build counter from ALL known names in registry (live + deleted) so
+  // the auto-counter never dips below the highest ever assigned.
+  const liveRecords = getLiveRecords();
   const counters: Record<string, number> = {};
-  for (const name of Object.values(nameMap)) {
+  const collectCounters = (name: string | null | undefined) => {
+    if (!name) return;
     const m = name.match(/^([A-Za-z]+)(\d+)$/);
-    if (m) {
-      counters[m[1]] = Math.max(counters[m[1]] ?? 0, parseInt(m[2], 10));
-    }
-  }
+    if (m) counters[m[1]] = Math.max(counters[m[1]] ?? 0, parseInt(m[2], 10));
+  };
+  for (const rec of liveRecords) collectCounters(rec.instanceName);
+  // Also collect from legacy nameMap (transitional)
+  for (const n of Object.values(nameMap)) collectCounters(n);
 
-  let changed = false;
   const activeKeys = new Set<string>();
+  const liveFingerprints = new Set<string>();
 
   for (const d of devices) {
-    const key = (d as any)._dieLevelKey as string | undefined;
-    if (!key) continue;
-    activeKeys.add(key);
+    const devUuid = (d as any)._uuid as string | undefined;
+    const fingerprint = (d as any)._cellLevelKey as string | undefined;
+    const dieKey = (d as any)._dieLevelKey as string | undefined;
+    if (!devUuid || !fingerprint) continue;
+    if (dieKey) activeKeys.add(dieKey);
+    liveFingerprints.add(fingerprint);
 
-    if (nameMap[key]) {
-      d.instanceName = nameMap[key];
-    } else {
-      const prefix = INSTANCE_PREFIXES[d.kind] || "X";
-      const next = (counters[prefix] ?? 0) + 1;
-      d.instanceName = `${prefix}${next}`;
-      counters[prefix] = next;
-      nameMap[key] = d.instanceName;
-      changed = true;
+    // 1) Registry has the canonical name
+    const rec = getDeviceRecord(devUuid);
+    if (rec?.instanceName) {
+      d.instanceName = rec.instanceName;
+      continue;
+    }
+    // 2) Fallback to legacy nameMap by die-level key (transitional)
+    if (dieKey && nameMap[dieKey]) {
+      d.instanceName = nameMap[dieKey];
+      continue;
+    }
+    // 3) Auto-assign new name
+    const prefix = INSTANCE_PREFIXES[d.kind] || "X";
+    const next = (counters[prefix] ?? 0) + 1;
+    const newName = `${prefix}${next}`;
+    counters[prefix] = next;
+    d.instanceName = newName;
+    // Persist into the registry (canonical)
+    if (rec) {
+      setDeviceInstanceName(devUuid, newName);
+    } else if (dieKey) {
+      // No registry record yet (shouldn't happen if cell-level ran) —
+      // fall back to legacy nameMap so we don't lose the name on reload.
+      nameMap[dieKey] = newName;
     }
   }
+
+  // Reconcile: anything not seen in this extraction is soft-deleted
+  reconcileWithLiveDevices(liveFingerprints);
 
   // Save active keys for rename validation (stale names are blocked from
   // auto-assign by the counter, but allowed for manual rename).
   _saveActiveKeys([...activeKeys]);
+  // Persist legacy nameMap in case we wrote any fallbacks
+  if (Object.keys(nameMap).length > 0) _saveNameMap(nameMap);
 
-  if (changed) _saveNameMap(nameMap);
+  // Clean up: drop fingerprints not used by any record
+  compactFingerprints();
 }
 
 /** Exported for rename UI (DeviceInspector / InstanceOutline). */
@@ -668,38 +714,36 @@ let _renameVersion = 0;
 function bumpRenameVersion(): void { _renameVersion++; }
 export function getRenameVersion(): number { return _renameVersion; }
 
-export function renameDeviceInstance(dieLevelKey: string, newName: string): void {
-  const nameMap = _loadNameMap();
+export function renameDeviceInstance(devUuid: string, newName: string): void {
   bumpRenameVersion();
-  const m = newName.match(/^([A-Za-z]+)(\d+)$/);
-  if (m) {
-    const pref = m[1]; const num = parseInt(m[2], 10);
-    const countersKey = NAMEMAP_KEY + "-counters";
-    const counters: Record<string, number> = {};
-    for (const n of Object.values(nameMap)) {
-      const mm = n.match(/^([A-Za-z]+)(\d+)$/);
-      if (mm) counters[mm[1]] = Math.max(counters[mm[1]] ?? 0, parseInt(mm[2], 10));
-    }
-    counters[pref] = Math.max(counters[pref] ?? 0, num);
-    try { localStorage.setItem(countersKey, JSON.stringify(counters)); } catch {}
+  setDeviceInstanceName(devUuid, newName);
+  // Mirror into legacy nameMap by _dieLevelKey so callers that still look
+  // up by die-level key (e.g. validateDeviceName) see the rename.
+  // The die-level key is unstable across re-extractions so this is best-
+  // effort: the registry is the canonical source.
+  const rec = getDeviceRecord(devUuid);
+  if (rec) {
+    const nameMap = _loadNameMap();
+    // We don't know the current _dieLevelKey from here (the device may not
+    // be in the current extraction), so just record the name in a special
+    // "_byUUID" entry under the nameMap for cross-reference.
+    nameMap[`uuid:${devUuid}`] = newName;
+    _saveNameMap(nameMap);
   }
-  nameMap[dieLevelKey] = newName;
-  _saveNameMap(nameMap);
 }
 
-/** Validate name against current map. */
-export function validateDeviceName(dieLevelKey: string, newName: string): string | null {
+/** Validate name against the registry. */
+export function validateDeviceName(devUuid: string, newName: string): string | null {
   const s = newName.trim();
   if (!s) return "Name is empty";
   if (!/^[A-Za-z][A-Za-z0-9_]*$/.test(s))
     return "Must start with letter, only letters/digits/underscores";
   if (s.length > 48) return "Too long (max 48 chars)";
-  const nameMap = _loadNameMap();
-  const activeKeys = new Set(_loadActiveKeys());
-  // Only block names used by ACTIVE (currently existing) devices.
-  // Stale names (deleted devices) are allowed for manual rename.
-  for (const [k, v] of Object.entries(nameMap)) {
-    if (k !== dieLevelKey && v === s && activeKeys.has(k)) {
+  // Block any name used by a different live (non-deleted) device.
+  const live = getLiveRecords();
+  for (const rec of live) {
+    if (rec.uuid === devUuid) continue;
+    if (rec.instanceName === s) {
       return `"${s}" is already assigned to another device`;
     }
   }

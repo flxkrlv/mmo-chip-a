@@ -25,23 +25,59 @@
 8. **nmos и pmos на одной позиции получали одинаковое имя M{N}** — `kind === "mos"`
    у обоих, ключ `mos:posX:posY` без дискриминации типа.
 
+9. **Любое движение слоёв внутри ячейки → переименование** — даже после фиксов
+   выше, position-based ключ не переживает внутренние правки. Нужна стабильная
+   per-device identity, не зависящая от позиции.
+
 ## Архитектура решения
 
-### Position-based device identity
+### Device Registry (UUID-keyed identity)
 
-Устройство идентифицируется по физическому положению внутри cell instance:
+Создан `frontend/src/state/deviceRegistry.ts` — single source of truth для
+per-device identity, имён и override'ов. Хранится в localStorage как:
+
+```ts
+{
+  v: 1,
+  byUUID: { "<uuid>": { uuid, kind, subType, fingerprint, instanceName, overrides, ... } },
+  byFingerprint: { "<fingerprint>": "<uuid>" },
+  legacyOverrides?: { ... },   // one-time migration shim
+}
+```
+
+**UUID назначается один раз** при первом обнаружении устройства через
+`matchOrCreateDevice(fingerprint)`. На последующих extraction'ах UUID
+восстанавливается:
+
+1. **Exact match** — тот же fingerprint → тот же UUID
+2. **Fuzzy match** — тот же (kind, subType), позиция в пределах 5px → тот же UUID
+3. **No match** — новый UUID
+
+Это значит:
+- Внутренние правки слоёв (bbox сдвинулся на пару пикселей) → **тот же UUID**
+- Переэкстракция с тем же контентом → **тот же UUID**
+- Двинул слой на 50px → **новый UUID** (но counter не уменьшается)
+
+Counter для auto-имён строится из ВСЕХ records (включая deleted), так что
+новые device получают M{max+1}, M{max+2}, ... без коллизий с прошлым.
+
+### Position-based device identity (legacy fingerprint)
+
+Устройство fingerprint'ится по физическому положению внутри cell instance:
 
 ```
-cellLevelKey = `${dev.kind}:${round(cx*100)}:${round(cy*100)}[:subtype]`
-dieLevelKey  = `${instCell.id}:${cellLevelKey}`
+fingerprint = `${dev.kind}:${round(cx*100)}:${round(cy*100)}[:subtype]`
 ```
 
 Подтип (`:nmos` / `:pmos`) добавляется для MOS-девайсов — без него nmos и pmos на одной
 позиции получали одинаковый ключ и одинаковое имя.
 
-Для multi-finger MOS ключ считается от центроида gate (`_gateAnchor`), а не от
+Для multi-finger MOS fingerprint считается от центроида gate (`_gateAnchor`), а не от
 центра body-диффузии — иначе все пальцы одного транзистора имеют идентичный
-`bbox: bodyBox` и получают одинаковый ключ.
+`bbox: bodyBox` и получают одинаковый fingerprint.
+
+Fingerprint используется ТОЛЬКО для lookup в registry — не как ключ для
+override'ов. Override'ы и имена теперь идут через registry по UUID.
 
 ### Хранение: прямой localStorage
 
@@ -59,19 +95,17 @@ dieLevelKey  = `${instCell.id}:${cellLevelKey}`
 ```
 collectDieWideAnalogDevices()
   1. Cell-level extraction (extractAnalogDevicesFromCellType)
-     — вычисляет _cellLevelKey на device
+     — вычисляет fingerprint на device
+     — matchOrCreateDevice(fingerprint) → устанавливает _uuid
   2. Die-level collection (per-cell-type instance loop)
-     — вычисляет _dieLevelKey = cellLevelKey + instCell.id
+     — пробрасывает _uuid + _cellLevelKey (fingerprint) на die-level device
   3. assignStableInstanceNames()
-     — читает nameMap из localStorage
-     — для каждого device: если _dieLevelKey в map → берёт имя
-     — если нет → counter[prefix] + 1 → новое имя
-     — сохраняет activeKeys
-     — сохраняет map (только при изменениях)
+     — для каждого device: registry.byUUID[_uuid].instanceName ?? legacy nameMap ?? auto-counter
+     — reconcileWithLiveDevices() — soft-delete + resurrect
 
 buildAnalogNetlist()
   1. collectDieWideAnalogDevices() — уже со stable names
-  2. applyAnalogOverrides() — модифицирует geometry
+  2. applyAnalogOverrides() — для каждого device читает registry.byUUID[_uuid].overrides
      — сохраняет _overriddenParams = Set<paramName>
   3. matchGeometry() — averaging (опционально)
   4. generateSpiceNetlist() / generateHierarchicalNetlist()
@@ -91,13 +125,19 @@ buildAnalogNetlist()
 
 | Файл | Изменения |
 |------|-----------|
-| `dieWideAnalog.ts` | `_cellLevelKey`, `_dieLevelKey` на devices. `assignStableInstanceNames()`, `renameDeviceInstance()`, `validateDeviceName()`, `getRenameVersion()`. |
-| `analogNetlist.ts` | `applyAnalogOverrides()` с `_overriddenParams`. Передача overrides через pipeline. |
-| `spice.ts` | `normalizeBJTM()` пропускает overridden multiplier. `generateSpiceNetlist` не перезаписывает existing names. Hierarchical path — `alreadyNamed` check. |
-| `simpleAnalog.ts` | Убран пустой debug-блок в `detectMOSFromLayers()`. |
-| `CellRERightPanel.tsx` | Ключ override: `device.id` → `_cellLevelKey` (position-based). |
-| `DeviceInspector.tsx` | Rename UI, мутация `device.instanceName` для мгновенной обратной связи. |
-| `AnalogNetlistPage.tsx` | Чтение `analogOverrides` из preferences передача в pipeline. InstanceOutline rename. |
-| `NetGraphView.tsx` | `nameDevices()` сохраняет stable names. `getRenameVersion()` в deps. |
-| `SchematicViewPanel.tsx` | Удалён `assignInstanceNames()` (имена уже stable). `getRenameVersion()` в deps. |
-| `preferences.ts` | Удалены `instanceNameMap`, `instanceNameCounters`. |
+| `state/deviceRegistry.ts` (новый) | `matchOrCreateDevice()`, `setDeviceOverride()`, `setDeviceInstanceName()`, `reconcileWithLiveDevices()`, `getRegistryVersion()`. UUID-based identity + storage. |
+| `api/dieWideAnalog.ts` | `_cellLevelKey` (fingerprint), `_uuid` на devices. `assignStableInstanceNames()` через registry. `renameDeviceInstance(uuid, ...)`. |
+| `api/analogNetlist.ts` | `applyAnalogOverrides()` читает registry по `_uuid`. Legacy migration через `setLegacyOverrides()`. Outline leaves получают `uuid`. |
+| `lib/export/spice.ts` | `normalizeBJTM()` пропускает overridden multiplier. `generateSpiceNetlist` не перезаписывает existing names. Hierarchical path — `alreadyNamed` check. |
+| `lib/extraction/simpleAnalog.ts` | Убран пустой debug-блок в `detectMOSFromLayers()`. |
+| `components/cellRE/CellRERightPanel.tsx` | Override UI пишет в registry по UUID. Читает из registry (с legacy fallback). Poll `getRegistryVersion()` для re-render. |
+| `components/dieViewer/DeviceInspector.tsx` | Rename UI по `_uuid`. Мутация `device.instanceName` для мгновенной обратной связи. |
+| `routes/AnalogNetlistPage.tsx` | InstanceOutline rename по `leaf.uuid`. |
+| `components/netlist/NetGraphView.tsx` | `nameDevices()` сохраняет stable names. `getRenameVersion()` в deps. |
+| `components/netlist/SchematicViewPanel.tsx` | Удалён `assignInstanceNames()` (имена уже stable). `getRenameVersion()` в deps. |
+| `state/preferences.ts` | `analogOverrides` помечен deprecated, мигрирует в registry при первом запуске. Удалены `instanceNameMap`, `instanceNameCounters`. |
+
+## Будущие фичи
+
+- **Copy/Paste devices** в die viewer — план в `docs/future-work.md`
+- **Make unique** — отвязать один device от группы, план там же

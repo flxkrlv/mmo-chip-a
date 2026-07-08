@@ -106,8 +106,11 @@ interface PreferencesState {
   /** Per-resistor-type sheet resistance overrides (persisted). Keyed by
    *  ResistorType: poly, hsr, pb, npl, film. */
   sheetR: Record<string, number>;
-  /** Per-cell-type analog device parameter overrides.
-   *  Key: cellTypeId → deviceFingerprint → paramName → value. */
+  /** @deprecated Per-cell-type analog device parameter overrides.
+   *  Key: cellTypeId → deviceFingerprint → paramName → value.
+   *  Migrated into deviceRegistry on first pipeline run; this field is
+   *  kept only so existing localStorage payloads continue to load. New
+   *  overrides go through the registry (keyed by device UUID). */
   analogOverrides: Record<string, Record<string, Record<string, number>>>;
   /** Per-conductor-layer wire colour override (metal1, metal2, etc.).
    *  Absent = use WIRE_LAYER_COLOR defaults from style.ts. */

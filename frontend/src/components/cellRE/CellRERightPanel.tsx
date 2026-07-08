@@ -14,6 +14,7 @@ import type {
 } from "../../lib/extraction";
 import { parseShapeKey, shapeKey, useCellREStore } from "../../state/cellRE";
 import { usePreferences } from "../../state/preferences";
+import { setDeviceOverride, getDeviceRecord, getRegistryVersion } from "../../state/deviceRegistry";
 import { effectiveSheetR } from "../../lib/export/resistorDefaults";
 import {
   rowMatchesEntity,
@@ -469,14 +470,26 @@ export function CellRERightPanel({
                   key={ad.id}
                   device={ad}
                   cellTypeId={activeCellTypeId ?? ""}
-                  onOverride={(deviceId, param, value) => {
+                  onOverride={(deviceKey, param, value) => {
+                    // deviceKey is the _cellLevelKey fingerprint; the device
+                    // also carries _uuid. We write the override under the
+                    // UUID via the device registry (the canonical store).
+                    const devUuid = (ad as any)._uuid as string | undefined;
+                    if (devUuid) {
+                      setDeviceOverride(devUuid, param, value);
+                    }
+                    // Mirror into legacy preferences.analogOverrides for
+                    // first-run migration; subsequent runs read from the
+                    // registry. The legacy entry is keyed by the old
+                    // (cellTypeId, _cellLevelKey) tuple so the apply path
+                    // can find it before the device gets a UUID.
                     usePreferences.setState((s: any) => ({
                       analogOverrides: {
                         ...(s.analogOverrides ?? {}),
                         [activeCellTypeId ?? ""]: {
                           ...((s.analogOverrides ?? {})[activeCellTypeId ?? ""] ?? {}),
-                          [deviceId]: {
-                            ...(((s.analogOverrides ?? {})[activeCellTypeId ?? ""] ?? {})[deviceId] ?? {}),
+                          [deviceKey]: {
+                            ...(((s.analogOverrides ?? {})[activeCellTypeId ?? ""] ?? {})[deviceKey] ?? {}),
                             [param]: value,
                           },
                         },
@@ -1680,10 +1693,32 @@ interface AnalogDeviceRowProps {
 function AnalogDeviceRow({ device, cellTypeId, onOverride }: AnalogDeviceRowProps) {
   const color = DEVICE_COLORS[device.kind] ?? "#888";
   const g = device.geometry as unknown as Record<string, unknown>;
-  const key = (device as any)._cellLevelKey as string | undefined ?? device.id;
-  const overrides = usePreferences((s) =>
-    (s as any).analogOverrides?.[cellTypeId]?.[key] ?? NO_OVERRIDES
+  const fingerprint = (device as any)._cellLevelKey as string | undefined ?? device.id;
+  const devUuid = (device as any)._uuid as string | undefined;
+  // Subscribe to the registry version so this row re-renders when overrides
+  // change (the registry is plain localStorage, not a reactive store).
+  const [registryTick, setRegistryTick] = useState(0);
+  useEffect(() => {
+    const id = setInterval(() => {
+      // Poll the registry version — cheap integer compare. This picks up
+      // cross-component writes (e.g. DeviceInspector rename) without
+      // coupling the registry to React.
+      setRegistryTick(getRegistryVersion());
+    }, 200);
+    return () => clearInterval(id);
+  }, []);
+
+  // Prefer the device registry (UUID-keyed). Fall back to legacy
+  // preferences.analogOverrides keyed by (cellTypeId, _cellLevelKey) while
+  // migration is still pending.
+  const legacyOverrides = usePreferences((s) =>
+    (s as any).analogOverrides?.[cellTypeId]?.[fingerprint] ?? NO_OVERRIDES
   ) as Record<string, number>;
+  const overrides = devUuid
+    ? (getDeviceRecord(devUuid)?.overrides ?? legacyOverrides)
+    : legacyOverrides;
+  // Reference registryTick so React keeps the subscription alive.
+  void registryTick;
 
   const label = device.instanceName ?? device.id;
   // Physical type (nmos/pmos/npn/pnp/...) rather than the raw kind value,
@@ -1695,7 +1730,7 @@ function AnalogDeviceRow({ device, cellTypeId, onOverride }: AnalogDeviceRowProp
   const eff = (key: string, fallback: number): number =>
     overrides[key] ?? (g[key] as number) ?? fallback;
   const isOverridden = (key: string) => overrides[key] != null;
-  const setOv = (paramKey: string, val: number) => onOverride?.(key, paramKey, val);
+  const setOv = (paramKey: string, val: number) => onOverride?.(fingerprint, paramKey, val);
 
   // One-line param summary
   let paramStr = "";

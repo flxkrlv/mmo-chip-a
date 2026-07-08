@@ -676,14 +676,14 @@ function InstanceOutline({
   const [renameDraft, setRenameDraft] = useState("");
   const [renameErr, setRenameErr] = useState("");
 
-  const commitRename = useCallback((leafKey: string, oldName: string, newName: string) => {
+  const commitRename = useCallback((leafUuid: string, oldName: string, newName: string) => {
     const s = newName.trim();
     if (!s || s === oldName) { setRenamingLeaf(null); setRenameErr(""); return; }
 
-    const validationErr = validateDeviceName(leafKey, s);
+    const validationErr = validateDeviceName(leafUuid, s);
     if (validationErr) { setRenameErr(validationErr); return; }
 
-    renameDeviceInstance(leafKey, s);
+    renameDeviceInstance(leafUuid, s);
     setRenamingLeaf(null);
     setRenameErr("");
   }, []);
@@ -789,7 +789,7 @@ function InstanceOutline({
                                 value={renameDraft}
                                 onChange={(e: any) => { setRenameDraft(e.target.value); setRenameErr(""); }}
                                 onKeyDown={(e: any) => {
-                                  if (e.key === "Enter" && leaf.dieLevelKey) commitRename(leaf.dieLevelKey, leaf.label, renameDraft);
+                                  if (e.key === "Enter" && leaf.uuid) commitRename(leaf.uuid, leaf.label, renameDraft);
                                   if (e.key === "Escape") { setRenamingLeaf(null); setRenameErr(""); }
                                 }}
                                 autoFocus
@@ -799,8 +799,8 @@ function InstanceOutline({
                                   borderRadius: 3, color: "var(--ink0)", padding: "0 4px",
                                 }}
                               />
-                              {leaf.dieLevelKey && (
-                                <span onClick={() => commitRename(leaf.dieLevelKey as string, leaf.label, renameDraft)} style={{ cursor: "pointer", fontSize: 11, color: "var(--accent)" }}>✓</span>
+                              {leaf.uuid && (
+                                <span onClick={() => commitRename(leaf.uuid as string, leaf.label, renameDraft)} style={{ cursor: "pointer", fontSize: 11, color: "var(--accent)" }}>✓</span>
                               )}
                               <span onClick={() => { setRenamingLeaf(null); setRenameErr(""); }} style={{ cursor: "pointer", fontSize: 11, color: "var(--ink3)" }}>✕</span>
                             </div>
@@ -820,7 +820,7 @@ function InstanceOutline({
                                 onDoubleClick={() => onSelectDevice(leaf.label, leaf.cellId, leaf.line)}
                               />
                             </div>
-                            {leaf.dieLevelKey && (
+                            {leaf.uuid && (
                               <span
                                 onClick={() => { setRenamingLeaf(leaf.id); setRenameDraft(leaf.label); setRenameErr(""); }}
                                 style={{ cursor: "pointer", fontSize: 9, color: "var(--ink3, #666)", padding: "0 6px" }}
