@@ -14,7 +14,18 @@ import type { TileBounds } from "../types";
 
 /** Stable paint order so layer shading composites consistently. */
 export const LAYER_DRAW_ORDER: LayerType[] = [
-  // Substrate / wells (drawn first, lowest)
+  // Analog marker layers (bottommost — not selectable by click when any
+  // other shape overlaps; prevents accidental ID edits)
+  "npn_id",
+  "pnp_id",
+  "lpnp_id",
+  "vpnp",
+  "res_id",
+  "cap_id",
+  "diode_id",
+  "collector",
+  "bulk",
+  // Substrate / wells
   "deep_nwell",
   "buried_layer",
   "nwell",
@@ -46,16 +57,6 @@ export const LAYER_DRAW_ORDER: LayerType[] = [
   // Auxiliary
   "wire_hitbox",
   "device_box",
-  // Analog marker layers (topmost — most visible)
-  "npn_id",
-  "pnp_id",
-  "lpnp_id",
-  "vpnp",
-  "res_id",
-  "cap_id",
-  "diode_id",
-  "collector",
-  "bulk"
 ];
 
 /** Stroke width (CSS px) for shape outlines — kept screen-constant by

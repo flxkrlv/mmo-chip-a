@@ -110,11 +110,17 @@ function saveRaw(data: DeviceRegistryData): void {
  *  of nudge when the user redraws a shape) without confusing two distinct
  *  devices. Bump up to make matching more permissive; set to 0 to require
  *  exact match. */
-const FUZZY_TOLERANCE_PX = 5; // 5px = 5nm at umPerPx=1
+const FUZZY_TOLERANCE_PX = 10; // 10px — small enough to avoid matching different fingers
 
-/** Parse a fingerprint `kind:bxc:byc` (3 parts, e.g. resistor:1000:2000)
- *  or `kind:bxc:byc:subType` (4 parts, e.g. mos:1000:2000:pmos) →
- *  components. subType is "" when absent. */
+/** Parse a fingerprint — find two consecutive numeric parts (bxc, byc)
+ *  and extract the subType as everything else after `kind` except those
+ *  two numbers. Handles formats:
+ *    kind:bxc:byc           (3 parts)
+ *    kind:bxc:byc:subType   (4 parts)
+ *    kind:prefixB:bxc:byc   (4 parts, prefix in subType)
+ *    kind:bxc:byc:suffixA   (4 parts, suffix in subType)
+ *    kind:prefix:bxc:byc:suffix  (5+ parts)
+ *  Returns null for < 3 parts or if no two consecutive numbers found. */
 function parseFingerprint(fp: Fingerprint): {
   kind: string;
   subType: string;
@@ -124,14 +130,16 @@ function parseFingerprint(fp: Fingerprint): {
   const parts = fp.split(":");
   if (parts.length < 3) return null;
   const kind = parts[0];
-  // Try to find two consecutive numeric parts at the tail — those are
-  // the position (bxc, byc). Anything between kind and the position is
-  // the subType (concatenated with ":").
-  for (let i = parts.length - 2; i >= 1; i--) {
+  // Find the FIRST occurrence of two consecutive numeric parts.
+  // Everything between kind and those numbers (prefix) plus everything
+  // after them (suffix) becomes the subType.
+  for (let i = 1; i <= parts.length - 2; i++) {
     const bxc = Number(parts[i]);
     const byc = Number(parts[i + 1]);
     if (Number.isFinite(bxc) && Number.isFinite(byc)) {
-      const subType = parts.slice(1, i).join(":");
+      const prefix = parts.slice(1, i);
+      const suffix = parts.slice(i + 2);
+      const subType = [...prefix, ...suffix].join(":");
       return { kind, subType, bxc, byc };
     }
   }
@@ -146,8 +154,9 @@ function fingerprintsMatch(a: Fingerprint, b: Fingerprint): boolean {
   if (!pa || !pb) return false;
   if (pa.kind !== pb.kind) return false;
   if (pa.subType !== pb.subType) return false;
-  return Math.abs(pa.bxc - pb.bxc) <= FUZZY_TOLERANCE_PX
-      && Math.abs(pa.byc - pb.byc) <= FUZZY_TOLERANCE_PX;
+  // bxc/byc are Math.round(coord * 100), so multiply tolerance by 100
+  return Math.abs(pa.bxc - pb.bxc) <= FUZZY_TOLERANCE_PX * 100
+      && Math.abs(pa.byc - pb.byc) <= FUZZY_TOLERANCE_PX * 100;
 }
 
 /** Handle fingerprints that can't be parsed (e.g. per-instance format
@@ -214,6 +223,10 @@ export function matchOrCreateDevice(
     if (rec) {
       rec.lastSeenAt = now;
       rec.deletedAt = null;  // resurrect if it was soft-deleted
+      // Auto-heal stale subType from old parseFingerprint
+      if (parsed && rec.subType !== (parsed.subType || null)) {
+        rec.subType = parsed.subType || null;
+      }
       if (legacyOverride && Object.keys(legacyOverride).length > 0) {
         for (const [k, v] of Object.entries(legacyOverride)) {
           if (rec.overrides[k] == null) {
@@ -231,12 +244,19 @@ export function matchOrCreateDevice(
     for (const rec of Object.values(data.byUUID)) {
       if (rec.deletedAt) continue;
       if (rec.kind !== kind) continue;
-      if (rec.subType !== subType) continue;
+      // Re-parse the record's fingerprint for subType — the stored `rec.subType`
+      // may be stale (null) on records created before the parseFingerprint fix.
+      const recParsed = parseFingerprint(rec.fingerprint);
+      if (!recParsed || recParsed.subType !== subType) continue;
       if (fingerprintsMatch(rec.fingerprint, fingerprint)) {
         // Re-attach: old fingerprint may now point to a moved-away device.
         // Keep the old entry in byFingerprint for re-discovery if it comes back.
         rec.previousFingerprints = [...(rec.previousFingerprints ?? []), rec.fingerprint];
         rec.fingerprint = fingerprint;
+        // Auto-heal stale subType from old parseFingerprint
+        if (rec.subType !== (recParsed.subType || null)) {
+          rec.subType = recParsed.subType || null;
+        }
         data.byFingerprint[fingerprint] = rec.uuid;
         rec.lastSeenAt = now;
         if (legacyOverride && Object.keys(legacyOverride).length > 0) {
@@ -402,4 +422,42 @@ export function clearLegacyOverrides(): void {
   const data = loadRaw();
   delete data.legacyOverrides;
   saveRaw(data);
+}
+
+/** Migrate a device record from one fingerprint to another. Preserves UUID
+ *  and all record data. Used for one-time migration of old opaque instance
+ *  fingerprints (${templateUuid}:${instCell.id}) to the new parseable format.
+ *  Returns true if the old fingerprint was found and migrated. */
+export function migrateFingerprint(
+  oldFingerprint: Fingerprint,
+  newFingerprint: Fingerprint,
+): boolean {
+  const data = loadRaw();
+  const uuid = data.byFingerprint[oldFingerprint];
+  if (!uuid || !data.byUUID[uuid]) return false;
+  const rec = data.byUUID[uuid];
+  rec.previousFingerprints = [...(rec.previousFingerprints ?? []), rec.fingerprint];
+  rec.fingerprint = newFingerprint;
+  data.byFingerprint[newFingerprint] = uuid;
+  delete data.byFingerprint[oldFingerprint];
+  // Old per-instance records have kind="unknown" and subType=null
+  // (created via matchOpaqueByFingerprint). Update them so the
+  // fuzzy match in matchOrCreateDevice can find them.
+  const parsed = parseFingerprint(newFingerprint);
+  if (parsed) {
+    rec.kind = parsed.kind as DeviceKind;
+    rec.subType = parsed.subType || null;
+  }
+  saveRaw(data);
+  bumpRegistryVersion();
+  return true;
+}
+
+/** Get a device record by its fingerprint. Returns null if not found. */
+export function getDeviceRecordByFingerprint(
+  fingerprint: Fingerprint,
+): DeviceRecord | null {
+  const data = loadRaw();
+  const uuid = data.byFingerprint[fingerprint];
+  return uuid ? (data.byUUID[uuid] ?? null) : null;
 }

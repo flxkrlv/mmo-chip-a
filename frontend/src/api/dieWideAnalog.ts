@@ -533,35 +533,32 @@ export function collectDieWideAnalogDevices(
         // Storing as-is preserves the terminal distinction for correct
         // netId resolution per contact.
 
-        // ── Die-level device key (cell instance + cell-local key) ───
-        // The cell-local key (fingerprint) was already set by
-        // extractAnalogDevicesFromCellType — and so was _uuid. We just
-        // compose the die-level key here for the legacy nameMap and
-        // ── Die-level device key (cell instance + cell-local key) ───
-        // The cell-local key (fingerprint) was already set by
-        // extractAnalogDevicesFromCellType, and so was the *template* UUID
-        // (`_templateUuid`). We compose the die-level key here for the
-        // legacy nameMap and create a per-instance UUID so each instance
-        // of the same cell gets its own identity and instance name.
-        // Without per-instance UUIDs, two merged-cell instances would
-        // share the same UUID and end up with duplicate instance names
-        // (and React duplicate-key warnings in DeviceInstancePanel).
-        const cellLevelKey = (dev as any)._cellLevelKey as string ?? "unknown:0:0";
-        const dieLevelKey = `${instCell.id}:${cellLevelKey}`;
+        // ── Per-instance identity: cell-level-key-based fingerprint ──
+        // `_cellLevelKey` encodes the device kind, internal position (bxc,byc),
+        // and optional subType (mosType). By appending `instCell.id` we get a
+        // fingerprint that is:
+        //   • STABLE across cell moves on the die (cell-relative coords)
+        //   • UNIQUE per finger in multi-finger MOS (different bxc,byc)
+        //   • STABLE across small internal layer edits (≤ 100px — fuzzy match
+        //     at cell level absorbs the shift, keeping the same cellLevelKey)
+        //   • Changes when internal layers shift > 100px (new cellLevelKey)
         const templateUuid = (dev as any)._templateUuid as string | undefined;
-        // Per-instance fingerprint includes the instance id, so two
-        // instances of the same cell type end up with two distinct
-        // registry records and two distinct instance names.
-        const instanceFingerprint = templateUuid
-          ? `${templateUuid}:${instCell.id}`
-          : dieLevelKey;
-        // Seed overrides from the template record so the per-instance
-        // record starts with the cell-level overrides (shared by default).
+        const cellLevelKey = (dev as any)._cellLevelKey as string ?? "unknown:0:0";
+
+        // Build the stable instance fingerprint
+        const instanceFingerprint = `${cellLevelKey}:${instCell.id}`;
+        const dieLevelKey = `${instCell.id}:${cellLevelKey}`;
+
+        // Seed overrides from the template record
         const templateRecord = templateUuid ? getDeviceRecord(templateUuid) : null;
         const seedOverride = templateRecord?.overrides;
-        const { uuid: devUuid } = matchOrCreateDevice(instanceFingerprint, seedOverride);
-        console.log(`[dieWide] instanceFingerprint=${instanceFingerprint.slice(0,60)} → uuid=${devUuid.slice(0,8)} (template=${templateUuid?.slice(0,8)})`);
 
+        // Create or retrieve per-instance record.
+        // Exact match always finds existing record when the cell is moved
+        // (fingerprint doesn't depend on world position).
+        const result = matchOrCreateDevice(instanceFingerprint, seedOverride);
+        const devUuid = result.uuid;
+        console.log(`[dieWide] fp=${instanceFingerprint.slice(0,60)} → uuid=${devUuid.slice(0,8)} (new=${result.isNew})`);
 
         allDevices.push({
           ...dev,

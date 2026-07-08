@@ -260,6 +260,7 @@ export function extractMarkedDevices(
               { name: "MINUS", netId: terminalNet(emitters), shapeIds: emitters.map(s => s.id) },
             ],
             bbox: marker.bbox,
+            ...(marker.id ? { _markerShapeId: marker.id } : {}),
           });
           break; // done — don't fall through to BJT
         }
@@ -323,6 +324,7 @@ export function extractMarkedDevices(
             { name: "E", netId: terminalNet(emitters), shapeIds: emitters.map(s => s.id) },
           ],
           bbox: marker.bbox,
+          ...(marker.id ? { _markerShapeId: marker.id } : {}),
         });
         break;
       }
@@ -495,6 +497,7 @@ export function extractMarkedDevices(
             { name: "MINUS", netId: minusContactIds.length > 0 ? nextNet() : -1, shapeIds: minusContactIds },
           ],
           bbox: marker.bbox,
+          ...(marker.id ? { _markerShapeId: marker.id } : {}),
         });
         
         break;
@@ -523,6 +526,7 @@ export function extractMarkedDevices(
             { name: "MINUS", netId: nextNet(), shapeIds: capContactIds },
           ],
           bbox: marker.bbox,
+          ...(marker.id ? { _markerShapeId: marker.id } : {}),
         });
         
         break;
@@ -552,6 +556,7 @@ export function extractMarkedDevices(
             { name: "MINUS", netId: nextNet(), shapeIds: diodeContactIds },
           ],
           bbox: marker.bbox,
+          ...(marker.id ? { _markerShapeId: marker.id } : {}),
         });
         break;
       }
