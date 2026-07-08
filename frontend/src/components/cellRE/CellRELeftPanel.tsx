@@ -3,12 +3,14 @@ import type { Cell, DieAnnotations, LayerType } from "shared";
 import { TreeRow, TreeSep } from "../tree/TreeRow";
 import { Ic } from "../../icons";
 import {
+  selectReLayerSelectable,
   selectReLayerVisible,
   usePreferences
 } from "../../state/preferences";
 import {
   LAYER_LONG,
-  useCellREStore
+  useCellREStore,
+  type ReToolKind
 } from "../../state/cellRE";
 import {
   cellTypeById,
@@ -81,6 +83,11 @@ export function CellRELeftPanel({ annotations, onCellContextMenu }: Props) {
   const setMlOpen = useCellREStore((s) => s.setMlOpen);
   const setInferredOpen = useCellREStore((s) => s.setInferredOpen);
   const setDieViewerLayersOpen = useCellREStore((s) => s.setDieViewerLayersOpen);
+
+  const reLayerHidden = usePreferences((s) => s.reLayerHidden);
+  const reLayerSelectable = usePreferences((s) => s.reLayerSelectable);
+  const setAllReLayerHidden = usePreferences((s) => s.setAllReLayerHidden);
+  const setAllReLayerSelectable = usePreferences((s) => s.setAllReLayerSelectable);
 
   const { matched, unmatched } = useMemo(
     () => groupCellTypes(annotations),
@@ -163,7 +170,7 @@ export function CellRELeftPanel({ annotations, onCellContextMenu }: Props) {
       <div
         ref={treeRef}
         tabIndex={0}
-        style={{ overflow: "auto", flex: "1 1 55%", minHeight: 80, outline: "none" }}
+        style={{ overflow: "auto", flex: "1 1 35%", minHeight: 60, outline: "none" }}
       >
         {matched.map((ct) => {
           const open = expandedTypes.includes(ct.id);
@@ -256,8 +263,32 @@ export function CellRELeftPanel({ annotations, onCellContextMenu }: Props) {
       {/* ── Layer visibility ───────────────────────────────────── */}
       <div className="ph">
         <span className="u">Layers</span>
+        <span style={{ marginLeft: "auto", display: "inline-flex", alignItems: "center", gap: 6, fontSize: 10 }}>
+          <label className="check" style={{ gap: 3, fontSize: 10, margin: 0 }}>
+            <input
+              type="checkbox"
+              checked={ALL_TOGGLEABLE_LAYER_KEYS.every((k) => reLayerHidden[k] !== true)}
+              onChange={() => {
+                const allVis = ALL_TOGGLEABLE_LAYER_KEYS.every((k) => reLayerHidden[k] !== true);
+                setAllReLayerHidden(ALL_TOGGLEABLE_LAYER_KEYS, allVis);
+              }}
+            />
+            visible
+          </label>
+          <label className="check" style={{ gap: 3, fontSize: 10, margin: 0 }}>
+            <input
+              type="checkbox"
+              checked={ALL_TOGGLEABLE_LAYER_KEYS.every((k) => reLayerSelectable[k] !== false)}
+              onChange={() => {
+                const allSel = ALL_TOGGLEABLE_LAYER_KEYS.every((k) => reLayerSelectable[k] !== false);
+                setAllReLayerSelectable(ALL_TOGGLEABLE_LAYER_KEYS, !allSel);
+              }}
+            />
+            selectable
+          </label>
+        </span>
       </div>
-      <div style={{ overflow: "auto", flex: "1 1 45%", minHeight: 120 }}>
+      <div style={{ overflow: "auto", flex: "1 1 65%", minHeight: 150 }}>
         {/* Editable group: the cell layers the user actually draws on. */}
         {SHAPE_LAYERS.map((layer) => (
           <LayerRow key={layer} layer={layer} />
@@ -346,23 +377,40 @@ export function CellRELeftPanel({ annotations, onCellContextMenu }: Props) {
   );
 }
 
+const DRAWING_TOOLS: ReToolKind[] = ["rect", "polygon", "point", "polyline"];
+
 function LayerRow({ layer }: { layer: LayerType }) {
   const visible = usePreferences(selectReLayerVisible(layer));
+  const selectable = usePreferences(selectReLayerSelectable(layer));
   const setHidden = usePreferences((s) => s.setReLayerHidden);
-  const solo = usePreferences((s) => s.soloReLayer);
+  const setSelectable = usePreferences((s) => s.setReLayerSelectable);
+  const soloVis = usePreferences((s) => s.soloReLayer);
+  const soloSel = usePreferences((s) => s.soloReLayerSelectable);
+  const activeTool = useCellREStore((s) => s.activeTool);
+  const activeLayer = useCellREStore((s) => s.activeLayer);
+  const setActiveLayer = useCellREStore((s) => s.setActiveLayer);
   return (
     <TreeRow
       depth={0}
       swatch={COLOR_LAYER[layer]}
       label={LAYER_LONG[layer]}
-      // Double-click "solos" this layer — hides every other toggleable layer
-      // so the user can focus on a single shape stack without manually eye-
-      // clicking through the rest. Double-clicking an already-soloed row
-      // restores everything (see `soloReLayer`).
-      onDoubleClick={() => solo(layer, ALL_TOGGLEABLE_LAYER_KEYS)}
+      selected={activeLayer === layer && DRAWING_TOOLS.includes(activeTool)}
+      onSelect={
+        DRAWING_TOOLS.includes(activeTool)
+          ? () => setActiveLayer(layer)
+          : undefined
+      }
+      // Double-click "solos" layer visibility (this layer only / show all).
+      onDoubleClick={() => soloVis(layer, ALL_TOGGLEABLE_LAYER_KEYS)}
+      // Triple-click "solos" layer selectability.
+      onTripleClick={() => soloSel(layer, ALL_TOGGLEABLE_LAYER_KEYS)}
       visibility={{
         visible,
         onToggle: () => setHidden(layer, visible)
+      }}
+      selectable={{
+        selectable,
+        onToggle: () => setSelectable(layer, !selectable)
       }}
     />
   );

@@ -89,6 +89,9 @@ interface Props {
    *  die-viewer overlay rows (`_dvWires`, `_dvVias`) and the placeholder
    *  inferred / dv group rows. Absent keys = visible. */
   layerHidden: Record<string, boolean>;
+  /** Per-layer selectability (absent ⇒ selectable). When false, shapes on
+   *  that layer can't be picked by the Select tool. */
+  layerSelectable: Record<string, boolean>;
   selectedShapeIds: Set<string>;
   /** Transient highlight from right-panel row hover. Same key format as
    *  `selectedShapeIds`. The canvas paints a softer halo for these. */
@@ -200,6 +203,7 @@ export const CellRECanvas = forwardRef<CellRECanvasHandle, Props>(function CellR
     activeTool,
     activeLayer,
     layerHidden,
+    layerSelectable = {},
     selectedShapeIds,
     hoveredShapeIds,
     dimNonHovered = true,
@@ -271,6 +275,7 @@ export const CellRECanvas = forwardRef<CellRECanvasHandle, Props>(function CellR
     activeTool: Props["activeTool"];
     activeLayer: Props["activeLayer"];
     layerHidden: Props["layerHidden"];
+    layerSelectable: Props["layerSelectable"];
     selectedShapeIds: Props["selectedShapeIds"];
     hoveredShapeIds: Set<string> | undefined;
     extraction: Props["extraction"];
@@ -296,6 +301,7 @@ export const CellRECanvas = forwardRef<CellRECanvasHandle, Props>(function CellR
     activeTool,
     activeLayer,
     layerHidden,
+    layerSelectable: layerSelectable as Props["layerSelectable"],
     selectedShapeIds,
     hoveredShapeIds: hoveredShapeIds as Set<string> | undefined,
     extraction: extraction as Props["extraction"],
@@ -321,6 +327,7 @@ export const CellRECanvas = forwardRef<CellRECanvasHandle, Props>(function CellR
     activeTool,
     activeLayer,
     layerHidden,
+    layerSelectable,
     selectedShapeIds,
     hoveredShapeIds,
     extraction,
@@ -473,12 +480,13 @@ export const CellRECanvas = forwardRef<CellRECanvasHandle, Props>(function CellR
    *  paint = on top). Respects layer visibility. */
   const hitShape = useCallback(
     (pt: Point): { layer: LayerType; shape: LayerShape } | null => {
-      const { cellType, layerHidden } = propsRef.current;
+      const { cellType, layerHidden, layerSelectable } = propsRef.current;
       const tol = PICK_TOL_PX / viewRef.current.zoom;
       // Iterate in reverse paint order so the top-most shape wins.
       for (let i = LAYER_DRAW_ORDER.length - 1; i >= 0; i--) {
         const layer = LAYER_DRAW_ORDER[i];
         if (layerHidden[layer]) continue;
+        if (layerSelectable[layer] === false) continue;
         const shapes = cellType.layers?.[layer];
         if (!shapes) continue;
         for (let j = shapes.length - 1; j >= 0; j--) {
@@ -841,6 +849,7 @@ export const CellRECanvas = forwardRef<CellRECanvasHandle, Props>(function CellR
       );
       for (const layer of LAYER_DRAW_ORDER) {
         if (propsRef.current.layerHidden[layer]) continue;
+        if (propsRef.current.layerSelectable[layer] === false) continue;
         const shapes = cellType.layers?.[layer];
         if (!shapes) continue;
         for (const s of shapes) {

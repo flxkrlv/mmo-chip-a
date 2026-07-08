@@ -857,7 +857,7 @@ function ProblemsTable({
         borderTop: "2px solid var(--l2)",
         background: "var(--panel)",
         flex: "0 0 auto",
-        maxHeight: 140,
+        maxHeight: 320,
         display: "flex",
         flexDirection: "column",
       }}

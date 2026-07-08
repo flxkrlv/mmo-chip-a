@@ -17,8 +17,12 @@ export type TreeRowProps = {
   onSelect?: () => void;
   /** Double-click the row (e.g. to frame this entity in the viewport). */
   onDoubleClick?: () => void;
+  /** Triple-click the row (e.g. to solo layer selectability). */
+  onTripleClick?: () => void;
   /** Render an eye / eye-off button at the right end; click toggles visibility. */
   visibility?: { visible: boolean; onToggle: () => void };
+  /** Render a lock / unlock button next to the eye; click toggles selectability. */
+  selectable?: { selectable: boolean; onToggle: () => void };
   /** Extra controls (small action buttons) rendered before the visibility eye. */
   controls?: ReactNode;
 };
@@ -40,7 +44,9 @@ export function TreeRow({
   onToggleExpand,
   onSelect,
   onDoubleClick,
+  onTripleClick,
   visibility,
+  selectable,
   controls
 }: TreeRowProps) {
   return (
@@ -49,9 +55,18 @@ export function TreeRow({
       style={{
         paddingLeft: 4 + depth * 12,
         opacity: dimmed ? 0.58 : 1,
-        cursor: onSelect ? "pointer" : "default"
+        cursor: onSelect || onTripleClick ? "pointer" : "default"
       }}
-      onClick={onSelect ? (e) => { e.stopPropagation(); onSelect(); } : undefined}
+      onClick={
+        onSelect || onTripleClick
+          ? (e) => {
+              e.stopPropagation();
+              // Triple-click fires on the 3rd click's onClick event.
+              if (onTripleClick && e.detail === 3) onTripleClick();
+              else if (onSelect) onSelect();
+            }
+          : undefined
+      }
       onDoubleClick={onDoubleClick ? (e) => { e.stopPropagation(); onDoubleClick(); } : undefined}
     >
       <span
@@ -119,30 +134,57 @@ export function TreeRow({
           {controls}
         </span>
       )}
-      {visibility && (
-        <button
-          type="button"
-          className="trow-eye"
-          aria-label={visibility.visible ? "hide" : "show"}
-          aria-pressed={!visibility.visible}
-          onClick={(e) => {
-            e.stopPropagation();
-            visibility.onToggle();
-          }}
-          style={{
-            display: "inline-flex",
-            alignItems: "center",
-            justifyContent: "center",
-            background: "transparent",
-            border: 0,
-            padding: 0,
-            marginLeft: meta == null && !controls ? "auto" : 4,
-            color: visibility.visible ? "var(--ink3)" : "var(--muted)",
-            cursor: "pointer"
-          }}
-        >
-          {visibility.visible ? Ic.eye : Ic.eyeOff}
-        </button>
+      {(selectable || visibility) && (
+        <span style={{ display: "inline-flex", alignItems: "center", gap: 2, marginLeft: meta == null && !controls ? "auto" : 4 }}>
+          {selectable && (
+            <button
+              type="button"
+              className="trow-eye"
+              aria-label={selectable.selectable ? "lock" : "unlock"}
+              aria-pressed={!selectable.selectable}
+              onClick={(e) => {
+                e.stopPropagation();
+                selectable.onToggle();
+              }}
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                justifyContent: "center",
+                background: "transparent",
+                border: 0,
+                padding: 0,
+                color: selectable.selectable ? "var(--muted)" : "var(--ink)",
+                cursor: "pointer"
+              }}
+            >
+              {selectable.selectable ? Ic.unlock : Ic.lock}
+            </button>
+          )}
+          {visibility && (
+            <button
+              type="button"
+              className="trow-eye"
+              aria-label={visibility.visible ? "hide" : "show"}
+              aria-pressed={!visibility.visible}
+              onClick={(e) => {
+                e.stopPropagation();
+                visibility.onToggle();
+              }}
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                justifyContent: "center",
+                background: "transparent",
+                border: 0,
+                padding: 0,
+                color: visibility.visible ? "var(--ink3)" : "var(--muted)",
+                cursor: "pointer"
+              }}
+            >
+              {visibility.visible ? Ic.eye : Ic.eyeOff}
+            </button>
+          )}
+        </span>
       )}
     </div>
   );

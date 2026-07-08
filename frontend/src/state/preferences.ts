@@ -103,6 +103,10 @@ interface PreferencesState {
    *  non-editable "groups" (inferred, die-viewer overlay) use the special
    *  keys `_inferred` / `_dieViewer`. */
   reLayerHidden: Record<string, boolean>;
+  /** Cell-layer selectability on the Cells-RE page (absent ⇒ selectable).
+   *  When false, shapes on that layer can't be picked by the Select tool
+   *  (no click-select, no marquee-select, no context-menu selection). */
+  reLayerSelectable: Record<string, boolean>;
   /** Per-resistor-type sheet resistance overrides (persisted). Keyed by
    *  ResistorType: poly, hsr, pb, npl, film. */
   sheetR: Record<string, number>;
@@ -164,6 +168,11 @@ interface PreferencesActions {
   setMergeShowMlVias: (show: boolean) => void;
   setRoiClasses: (classes: AnnotationClass[]) => void;
   setReLayerHidden: (key: string, hidden: boolean) => void;
+  /** Bulk-set visibility for a set of layer keys. */
+  setAllReLayerHidden: (keys: readonly string[], hidden: boolean) => void;
+  setReLayerSelectable: (key: string, selectable: boolean) => void;
+  /** Bulk-set selectability for a set of layer keys. */
+  setAllReLayerSelectable: (keys: readonly string[], selectable: boolean) => void;
   /**
    * "Solo" toggle for the Cells-RE layer visibility list. `key` is the layer
    * being soloed; `allKeys` is the full set of toggleable keys the panel
@@ -175,6 +184,12 @@ interface PreferencesActions {
    * only paints once per double-click.
    */
   soloReLayer: (key: string, allKeys: ReadonlyArray<string>) => void;
+  /**
+   * "Solo" toggle for layer selectability. Same semantics as `soloReLayer`
+   * but operates on `reLayerSelectable`. Triple-click on a layer row calls
+   * this: makes only `key` selectable (or restore all on second triple-click).
+   */
+  soloReLayerSelectable: (key: string, allKeys: ReadonlyArray<string>) => void;
   setMlResultsHidden: (hidden: boolean) => void;
   setSnapToVias: (snap: boolean) => void;
   setWireAutoEndOnVia: (enabled: boolean) => void;
@@ -218,6 +233,11 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
         mergeShowMlVias: false,
         savedViewports: {},
         reLayerHidden: {},
+        reLayerSelectable: {
+          npn_id: false, pnp_id: false, lpnp_id: false, vpnp: false,
+          res_id: false, cap_id: false, diode_id: false,
+          collector: false, bulk: false,
+        },
         mlResultsHidden: true,
         snapToVias: false,
         wireAutoEndOnVia: false,
@@ -283,14 +303,44 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
         setRoiClasses: (classes) => set({ roiClasses: classes }),
         setReLayerHidden: (key, hidden) =>
           set((state) => {
-            // Strip the entry when the layer is visible so the map stays tidy
-            // and the persisted JSON doesn't accumulate stale keys.
             if (!hidden) {
               if (!(key in state.reLayerHidden)) return state;
               const { [key]: _, ...rest } = state.reLayerHidden;
               return { reLayerHidden: rest };
             }
             return { reLayerHidden: { ...state.reLayerHidden, [key]: true } };
+          }),
+        setAllReLayerHidden: (keys, hidden) =>
+          set((state) => {
+            if (hidden) {
+              const next = { ...state.reLayerHidden };
+              for (const k of keys) next[k] = true;
+              return { reLayerHidden: next };
+            }
+            const next = { ...state.reLayerHidden };
+            for (const k of keys) delete next[k];
+            return { reLayerHidden: next };
+          }),
+        setReLayerSelectable: (key, selectable) =>
+          set((state) => {
+            // Strip entry when selectable (default), keep only when locked.
+            if (selectable) {
+              if (!(key in state.reLayerSelectable)) return state;
+              const { [key]: _, ...rest } = state.reLayerSelectable;
+              return { reLayerSelectable: rest };
+            }
+            return { reLayerSelectable: { ...state.reLayerSelectable, [key]: false } };
+          }),
+        setAllReLayerSelectable: (keys, selectable) =>
+          set((state) => {
+            if (!selectable) {
+              const next = { ...state.reLayerSelectable };
+              for (const k of keys) next[k] = false;
+              return { reLayerSelectable: next };
+            }
+            const next = { ...state.reLayerSelectable };
+            for (const k of keys) delete next[k];
+            return { reLayerSelectable: next };
           }),
         soloReLayer: (key, allKeys) =>
           set((state) => {
@@ -312,6 +362,24 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
               else next[k] = true;
             }
             return { reLayerHidden: next };
+          }),
+        soloReLayerSelectable: (key, allKeys) =>
+          set((state) => {
+            const isOtherSelectable = (k: string) => state.reLayerSelectable[k] !== false;
+            const others = allKeys.filter((k) => k !== key);
+            const alreadySoloed =
+              isOtherSelectable(key) && others.length > 0 && others.every((k) => !isOtherSelectable(k));
+            if (alreadySoloed) {
+              const next = { ...state.reLayerSelectable };
+              for (const k of allKeys) delete next[k];
+              return { reLayerSelectable: next };
+            }
+            const next = { ...state.reLayerSelectable };
+            for (const k of allKeys) {
+              if (k === key) delete next[k];
+              else next[k] = false;
+            }
+            return { reLayerSelectable: next };
           }),
         setMlResultsHidden: (hidden) => set({ mlResultsHidden: hidden }),
         setSnapToVias: (snap) => set({ snapToVias: snap }),
@@ -380,6 +448,7 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
           mergeShowMlVias: state.mergeShowMlVias,
           savedViewports: state.savedViewports,
           reLayerHidden: state.reLayerHidden,
+          reLayerSelectable: state.reLayerSelectable,
           netColors: state.netColors,
           mlResultsHidden: state.mlResultsHidden,
           snapToVias: state.snapToVias,
@@ -434,4 +503,9 @@ export function selectBaseImageOpacity(id: string) {
  *  (`_inferred`, `_dieViewer`) shown in the visibility list. */
 export function selectReLayerVisible(key: LayerType | "_inferred" | "_dieViewer") {
   return (state: PreferencesState) => state.reLayerHidden[key] !== true;
+}
+
+/** Cells-RE layer selectability (defaults to selectable when never toggled). */
+export function selectReLayerSelectable(key: LayerType) {
+  return (state: PreferencesState) => state.reLayerSelectable[key] !== false;
 }

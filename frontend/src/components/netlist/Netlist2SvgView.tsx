@@ -287,7 +287,6 @@ function annotateDeviceData(svg: SVGSVGElement, netlistJson: unknown): void {
       }
     } catch (_) {}
   }
-  console.log(`[Tooltips] annotated ${annotated}/${groups.length} groups`);
 }
 
 function humanType(type: string): string {
@@ -357,13 +356,11 @@ function fixBlockLabels(svg: SVGSVGElement): void {
     const parts = cls.trim().split(/\s+/).filter(Boolean);
     // After $cell_id replacement, class should be "nodelabel <blockName>"
     const name = parts.find(p => p !== "nodelabel" && p !== "$cell_id" && p !== txt);
-    console.log("[fixBlockLabels] found sub text:", { txt, cls, parts, name });
     if (name && name.length > 1) {
       textEl.textContent = name;
       fixed++;
     }
   }
-  console.log(`[fixBlockLabels] fixed ${fixed} labels`);
 }
 
 // ── Loading indicator ───────────────────────────────────────────

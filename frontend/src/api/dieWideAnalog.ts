@@ -558,7 +558,6 @@ export function collectDieWideAnalogDevices(
         // (fingerprint doesn't depend on world position).
         const result = matchOrCreateDevice(instanceFingerprint, seedOverride);
         const devUuid = result.uuid;
-        console.log(`[dieWide] fp=${instanceFingerprint.slice(0,60)} → uuid=${devUuid.slice(0,8)} (new=${result.isNew})`);
 
         allDevices.push({
           ...dev,
@@ -688,11 +687,9 @@ function assignStableInstanceNames(devices: AnalogDevice[]): void {
     // 1) Registry has the canonical name
     const rec = getDeviceRecord(devUuid);
     if (rec?.instanceName) {
-      console.log(`[assign] uuid=${devUuid.slice(0,8)} → registry hit → ${rec.instanceName}`);
       d.instanceName = rec.instanceName;
       continue;
     }
-    console.log(`[assign] uuid=${devUuid.slice(0,8)} — no registry name (rec=${!!rec}, instanceName=${rec?.instanceName}), auto-assigning`);
     // 2) Fallback to legacy nameMap by die-level key (transitional)
     if (dieKey && nameMap[dieKey]) {
       d.instanceName = nameMap[dieKey];
@@ -736,8 +733,7 @@ export function getRenameVersion(): number { return _renameVersion; }
 
 export function renameDeviceInstance(devUuid: string, newName: string): void {
   bumpRenameVersion();
-  console.log(`[rename] uuid=${devUuid ? devUuid.slice(0,8) : '(empty)'} → ${newName}`);
-  if (!devUuid) { console.warn(`[rename] EMPTY uuid for rename to ${newName}`); return; }
+  if (!devUuid) { return; }
   setDeviceInstanceName(devUuid, newName);
   // Mirror into legacy nameMap by _dieLevelKey so callers that still look
   // up by die-level key (e.g. validateDeviceName) see the rename.

@@ -136,6 +136,7 @@ function RE({ dieId }: { dieId: string }) {
   const setCanvasTab = useCellREStore((s) => s.setCanvasTab);
 
   const layerHidden = usePreferences((s) => s.reLayerHidden);
+  const layerSelectable = usePreferences((s) => s.reLayerSelectable);
 
   const canvasRef = useRef<CellRECanvasHandle | null>(null);
   const [menu, setMenu] = useState<ReContextMenuState | null>(null);
@@ -762,6 +763,7 @@ function RE({ dieId }: { dieId: string }) {
                 activeTool={activeTool}
                 activeLayer={activeLayer}
                 layerHidden={layerHidden}
+                layerSelectable={layerSelectable}
                 selectedShapeIds={selectedShapeIds}
                 hoveredShapeIds={imageHoverKeys}
                 // Dim only when the hover came from outside the canvas

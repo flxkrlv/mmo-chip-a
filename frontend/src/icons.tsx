@@ -168,6 +168,12 @@ export const Ic = {
       <path d="M5.5 7V5a2.5 2.5 0 015 0v2" />
     </>
   ),
+  unlock: Icon(
+    <>
+      <rect x="3.5" y="7" width="9" height="6.5" />
+      <path d="M5.5 7V5a2.5 2.5 0 015 0v2" />
+    </>
+  ),
   search: Icon(
     <>
       <circle cx="7" cy="7" r="4" />

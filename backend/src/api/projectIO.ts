@@ -97,10 +97,7 @@ async function queueExport(
   const filename = `mmochip-${dieName}-${mode}.zip`;
 
   async function measure(label: string, fn: () => Promise<void>) {
-    const t0 = Date.now();
-    console.log(`[export:${dieId}] ${label}...`);
     await fn();
-    console.log(`[export:${dieId}] ${label} ✓ (${Date.now() - t0}ms)`);
   }
 
   // 1. metadata.json
@@ -149,8 +146,6 @@ async function queueExport(
       if (await fileExists(d)) {
         for (const f of await fs.readdir(d)) {
           const fp = path.join(d, f);
-          const st = await fs.stat(fp);
-          console.log(`[export:${dieId}]   queued original/${f} (${(st.size / 1024 / 1024).toFixed(1)} MB)`);
           archive.file(fp, { name: `original/${f}` });
         }
       }
@@ -161,9 +156,6 @@ async function queueExport(
       if (await fileExists(d)) {
         for (const f of await fs.readdir(d)) {
           const fp = path.join(d, f);
-          const st = await fs.stat(fp).catch(() => null);
-          if (!st || !st.isFile()) continue;
-          console.log(`[export:${dieId}]   queued overlay-images/${f} (${(st.size / 1024 / 1024).toFixed(1)} MB)`);
           archive.file(fp, { name: `overlay-images/${f}` });
         }
       }
@@ -227,7 +219,6 @@ async function handleImport(
       suffix += 1;
       candidate = `${targetName} (${suffix})`;
     }
-    console.log(`[import:${targetDieId}] name "${targetName}" already exists — auto-renamed to "${candidate}"`);
     targetName = candidate;
   }
 
@@ -293,9 +284,6 @@ async function handleImport(
     console.warn(`[import:${targetDieId}] ⚠️ no original image found — base image won't load. Re-import with full export or add the image manually.`);
   } else if (!(await fileExists(resolvedOriginalPath))) {
     console.warn(`[import:${targetDieId}] ⚠️ originalPath resolved but file missing: ${resolvedOriginalPath}`);
-  } else {
-    const st = await fs.stat(resolvedOriginalPath);
-    console.log(`[import:${targetDieId}] original image: ${(st.size / 1024 / 1024).toFixed(1)} MB at ${resolvedOriginalPath}`);
   }
 
   // Update die record with correct originalPath
@@ -356,23 +344,9 @@ export function createProjectIORouter(config: { dataRoot: string }) {
         await ensureDir(tempDir);
         const writeStream = createWriteStream(tempPath);
 
-        // Log write progress every 5 seconds
-        let bytes = 0;
-        let lastLog = Date.now();
-        archive.on("data", (chunk: Buffer) => {
-          bytes += chunk.length;
-          const now = Date.now();
-          if (now - lastLog >= 5000) {
-            lastLog = now;
-            const mb = (bytes / 1024 / 1024).toFixed(1);
-            console.log(`[export:${dieId}] writing ZIP: ${mb} MB`);
-          }
-        });
-
         // Pipe archive into temp file
         archive.pipe(writeStream);
 
-        const finalizeT0 = Date.now();
         await archive.finalize();
 
         // Wait for write stream to flush
@@ -380,11 +354,6 @@ export function createProjectIORouter(config: { dataRoot: string }) {
           writeStream.on("finish", resolve);
           writeStream.on("error", reject);
         });
-
-        const stat = await fs.stat(tempPath);
-        const totalMb = (stat.size / 1024 / 1024).toFixed(1);
-        const elapsed = Date.now() - finalizeT0;
-        console.log(`[export:${dieId}] ZIP ready — ${totalMb} MB in ${elapsed}ms`);
 
         // Serve via Express download
         await new Promise<void>((resolve, reject) => {
