@@ -264,8 +264,14 @@ export function markDeviceDeleted(uuid: string): void {
   bumpRegistryVersion();
 }
 
-/** Sweep: mark all devices not in `liveFingerprints` as deleted. */
-export function reconcileWithLiveDevices(liveFingerprints: Set<Fingerprint>): string[] {
+/** Sweep: mark all devices not in `liveFingerprints` as deleted.
+ *  `liveUuidsAdditional` is a set of UUIDs to explicitly keep alive,
+ *  used for per-instance records whose fingerprint differs from the
+ *  cell-level fingerprint (and is not available in the assign-scan). */
+export function reconcileWithLiveDevices(
+  liveFingerprints: Set<Fingerprint>,
+  liveUuidsAdditional?: Set<string>,
+): string[] {
   const data = loadRaw();
   const now = Date.now();
   const resurrected: string[] = [];
@@ -274,6 +280,9 @@ export function reconcileWithLiveDevices(liveFingerprints: Set<Fingerprint>): st
   for (const fp of liveFingerprints) {
     const u = data.byFingerprint[fp];
     if (u) liveUuids.add(u);
+  }
+  if (liveUuidsAdditional) {
+    for (const u of liveUuidsAdditional) liveUuids.add(u);
   }
   // 1) Delete records not in liveUuids
   for (const rec of Object.values(data.byUUID)) {

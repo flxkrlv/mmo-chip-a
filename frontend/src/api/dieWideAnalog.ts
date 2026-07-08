@@ -676,6 +676,7 @@ function assignStableInstanceNames(devices: AnalogDevice[]): void {
 
   const activeKeys = new Set<string>();
   const liveFingerprints = new Set<string>();
+  const liveUuids = new Set<string>();
 
   for (const d of devices) {
     const devUuid = (d as any)._uuid as string | undefined;
@@ -684,6 +685,7 @@ function assignStableInstanceNames(devices: AnalogDevice[]): void {
     if (!devUuid || !fingerprint) continue;
     if (dieKey) activeKeys.add(dieKey);
     liveFingerprints.add(fingerprint);
+    liveUuids.add(devUuid);
 
     // 1) Registry has the canonical name
     const rec = getDeviceRecord(devUuid);
@@ -713,7 +715,7 @@ function assignStableInstanceNames(devices: AnalogDevice[]): void {
   }
 
   // Reconcile: anything not seen in this extraction is soft-deleted
-  reconcileWithLiveDevices(liveFingerprints);
+  reconcileWithLiveDevices(liveFingerprints, liveUuids);
 
   // Save active keys for rename validation (stale names are blocked from
   // auto-assign by the counter, but allowed for manual rename).
