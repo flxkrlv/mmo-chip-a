@@ -165,12 +165,13 @@ export function matchOrCreateDevice(
   const data = loadRaw();
   const now = Date.now();
 
-  // 1. Exact fingerprint match
+  // 1. Exact fingerprint match — also resurrects soft-deleted records
   const existingUuid = data.byFingerprint[fingerprint];
   if (existingUuid) {
     const rec = data.byUUID[existingUuid];
-    if (rec && !rec.deletedAt) {
+    if (rec) {
       rec.lastSeenAt = now;
+      rec.deletedAt = null;  // resurrect if it was soft-deleted
       if (legacyOverride && Object.keys(legacyOverride).length > 0) {
         let merged = false;
         for (const [k, v] of Object.entries(legacyOverride)) {
