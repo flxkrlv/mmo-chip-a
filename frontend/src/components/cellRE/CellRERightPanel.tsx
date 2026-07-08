@@ -472,11 +472,14 @@ export function CellRERightPanel({
                   cellTypeId={activeCellTypeId ?? ""}
                   onOverride={(deviceKey, param, value) => {
                     // deviceKey is the _cellLevelKey fingerprint; the device
-                    // also carries _uuid. We write the override under the
-                    // UUID via the device registry (the canonical store).
-                    const devUuid = (ad as any)._uuid as string | undefined;
-                    if (devUuid) {
-                      setDeviceOverride(devUuid, param, value);
+                    // also carries _templateUuid. We write the override
+                    // under the template UUID via the device registry
+                    // (the canonical store). Per-instance records seed
+                    // themselves from the template on first appearance,
+                    // so all instances pick up the change too.
+                    const templateUuid = (ad as any)._templateUuid as string | undefined;
+                    if (templateUuid) {
+                      setDeviceOverride(templateUuid, param, value);
                     }
                     // Mirror into legacy preferences.analogOverrides for
                     // first-run migration; subsequent runs read from the
@@ -1694,7 +1697,10 @@ function AnalogDeviceRow({ device, cellTypeId, onOverride }: AnalogDeviceRowProp
   const color = DEVICE_COLORS[device.kind] ?? "#888";
   const g = device.geometry as unknown as Record<string, unknown>;
   const fingerprint = (device as any)._cellLevelKey as string | undefined ?? device.id;
-  const devUuid = (device as any)._uuid as string | undefined;
+  // Cell RE works at the cell-type level, so it uses the *template* UUID
+  // (one identity per device-in-cell-type). Per-instance UUIDs are
+  // created later by the die-level pipeline and live in their own records.
+  const templateUuid = (device as any)._templateUuid as string | undefined;
   // Subscribe to the registry version so this row re-renders when overrides
   // change (the registry is plain localStorage, not a reactive store).
   const [registryTick, setRegistryTick] = useState(0);
@@ -1714,8 +1720,8 @@ function AnalogDeviceRow({ device, cellTypeId, onOverride }: AnalogDeviceRowProp
   const legacyOverrides = usePreferences((s) =>
     (s as any).analogOverrides?.[cellTypeId]?.[fingerprint] ?? NO_OVERRIDES
   ) as Record<string, number>;
-  const overrides = devUuid
-    ? (getDeviceRecord(devUuid)?.overrides ?? legacyOverrides)
+  const overrides = templateUuid
+    ? (getDeviceRecord(templateUuid)?.overrides ?? legacyOverrides)
     : legacyOverrides;
   // Reference registryTick so React keeps the subscription alive.
   void registryTick;

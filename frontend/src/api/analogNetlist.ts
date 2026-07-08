@@ -162,17 +162,30 @@ const NAMEMAP_KEY = "mmo-chip-analog-names";
 
 /**
  * Apply user overrides (W/L/AE/R/fingers/multiplier) to device geometry.
- * Looks up the override by the device's UUID (the canonical identity) in
- * the device registry. Falls back to the legacy cellTypeId+cellLevelKey
- * format for first-run migration; once the legacy entries are consumed
- * they're cleared from the registry.
+ * Overrides are stored on the *template* record (one per device-in-cell-
+ * type) so all instances of the same cell type share them by default.
+ * Each per-instance record also carries a snapshot of the template's
+ * overrides at the time it was first seen, which is what the die-level
+ * pipeline actually mutates during a run.
+ *
+ * Lookup order:
+ *   1. Per-instance record (allows per-instance overrides in the future)
+ *   2. Template record (shared by all instances of the same cell type)
+ *   3. Legacy migration entry
  */
 function applyAnalogOverrides(devices: AnalogDevice[]): void {
   for (const d of devices) {
     const uuid = (d as any)._uuid as string | undefined;
+    const templateUuid = (d as any)._templateUuid as string | undefined;
     let deviceOverrides: Record<string, number> | undefined;
     if (uuid) {
       const rec = getDeviceRecord(uuid);
+      if (rec?.overrides && Object.keys(rec.overrides).length > 0) {
+        deviceOverrides = rec.overrides;
+      }
+    }
+    if (!deviceOverrides && templateUuid) {
+      const rec = getDeviceRecord(templateUuid);
       if (rec?.overrides && Object.keys(rec.overrides).length > 0) {
         deviceOverrides = rec.overrides;
       }

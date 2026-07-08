@@ -161,12 +161,19 @@ export function extractAnalogDevicesFromCellType(
     }
   }
 
-  // ── Compute position-based cell-level key + stable UUID ─────────
+  // ── Compute position-based cell-level key + template UUID ─────────
   // The position key is a *fingerprint* used by the device registry to
   // re-attach the same UUID to this device across re-extractions (with
   // a small tolerance for internal layer edits). For multi-finger MOS the
   // fingerprint is anchored on the gate poly centroid (_gateAnchor), not
   // the diffusion body, so each finger has a unique fingerprint.
+  //
+  // The UUID assigned here is the *template UUID* — it identifies the
+  // device in the cell type. It is used by Cell RE for override storage
+  // (overrides are shared across all instances of the same cell type by
+  // default). The die-level pipeline creates a separate per-instance UUID
+  // in `collectDieWideAnalogDevices` so each cell instance gets its own
+  // identity and instance name.
   for (const d of all) {
     const anchor = (d as any)._gateAnchor as { x: number; y: number } | undefined;
     const bxc = anchor ? Math.round(anchor.x * 100) : d.bbox ? Math.round((d.bbox.x + d.bbox.width / 2) * 100) : 0;
@@ -174,19 +181,10 @@ export function extractAnalogDevicesFromCellType(
     const typeTag = d.kind === "mos" ? `:${(d.geometry as DeviceGeometryMOS).mosType}` : "";
     const fingerprint = `${d.kind}:${bxc}:${byc}${typeTag}`;
     (d as any)._cellLevelKey = fingerprint;
-    // Look up the legacy override for this (cellTypeId, fingerprint) once.
-    // After the first migration, the registry holds the override under the
-    // UUID and the legacy entry can be cleared.
     const legacyOverrides = getLegacyOverrides();
     const legacy = legacyOverrides?.[cellType.id]?.[fingerprint];
-    const { uuid: devUuid } = matchOrCreateDevice(fingerprint, legacy);
-    if (legacy) {
-      // One-shot: we've absorbed the legacy override, drop it so the next
-      // run doesn't try again (and so other pipelines don't see stale data).
-      // Note: we don't clear the whole legacy map here — we clear it at the
-      // end of the die-level pipeline run, after all devices are processed.
-    }
-    (d as any)._uuid = devUuid;
+    const { uuid: templateUuid } = matchOrCreateDevice(fingerprint, legacy);
+    (d as any)._templateUuid = templateUuid;
   }
 
   return all;
@@ -539,10 +537,29 @@ export function collectDieWideAnalogDevices(
         // The cell-local key (fingerprint) was already set by
         // extractAnalogDevicesFromCellType — and so was _uuid. We just
         // compose the die-level key here for the legacy nameMap and
-        // propagate the UUID onto the die-level device.
+        // ── Die-level device key (cell instance + cell-local key) ───
+        // The cell-local key (fingerprint) was already set by
+        // extractAnalogDevicesFromCellType, and so was the *template* UUID
+        // (`_templateUuid`). We compose the die-level key here for the
+        // legacy nameMap and create a per-instance UUID so each instance
+        // of the same cell gets its own identity and instance name.
+        // Without per-instance UUIDs, two merged-cell instances would
+        // share the same UUID and end up with duplicate instance names
+        // (and React duplicate-key warnings in DeviceInstancePanel).
         const cellLevelKey = (dev as any)._cellLevelKey as string ?? "unknown:0:0";
         const dieLevelKey = `${instCell.id}:${cellLevelKey}`;
-        const devUuid = (dev as any)._uuid as string | undefined;
+        const templateUuid = (dev as any)._templateUuid as string | undefined;
+        // Per-instance fingerprint includes the instance id, so two
+        // instances of the same cell type end up with two distinct
+        // registry records and two distinct instance names.
+        const instanceFingerprint = templateUuid
+          ? `${templateUuid}:${instCell.id}`
+          : dieLevelKey;
+        // Seed overrides from the template record so the per-instance
+        // record starts with the cell-level overrides (shared by default).
+        const templateRecord = templateUuid ? getDeviceRecord(templateUuid) : null;
+        const seedOverride = templateRecord?.overrides;
+        const { uuid: devUuid } = matchOrCreateDevice(instanceFingerprint, seedOverride);
 
 
         allDevices.push({
@@ -553,8 +570,9 @@ export function collectDieWideAnalogDevices(
           _cellBbox: dev.bbox,
           _cellLevelKey: cellLevelKey,
           _dieLevelKey: dieLevelKey,
+          _templateUuid: templateUuid,
           _uuid: devUuid,
-        } as AnalogDevice & { _termPoints: typeof termPoints; _cellId: string; _cellBbox: typeof dev.bbox; _cellLevelKey: string; _dieLevelKey: string; _uuid?: string });
+        } as AnalogDevice & { _termPoints: typeof termPoints; _cellId: string; _cellBbox: typeof dev.bbox; _cellLevelKey: string; _dieLevelKey: string; _templateUuid?: string; _uuid?: string });
       }
     }
   }
