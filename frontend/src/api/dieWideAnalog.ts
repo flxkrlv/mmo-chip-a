@@ -161,13 +161,15 @@ export function extractAnalogDevicesFromCellType(
   }
 
   // ── Compute position-based cell-level key for each device ──────
-  // Used by CellRERightPanel for override storage and by
-  // applyAnalogOverrides for lookup. Position is the most stable
-  // device identifier (independent of annotation UUIDs).
+  // Uses the gate poly centroid (_gateAnchor) for MOS multi-finger
+  // devices so each finger gets a unique key (bbox is the whole diffusion
+  // body and is identical for all fingers of the same transistor).
   for (const d of all) {
-    const bxc = d.bbox ? Math.round((d.bbox.x + d.bbox.width / 2) * 100) : 0;
-    const byc = d.bbox ? Math.round((d.bbox.y + d.bbox.height / 2) * 100) : 0;
-    (d as any)._cellLevelKey = `${d.kind}:${bxc}:${byc}`;
+    const anchor = (d as any)._gateAnchor as { x: number; y: number } | undefined;
+    const bxc = anchor ? Math.round(anchor.x * 100) : d.bbox ? Math.round((d.bbox.x + d.bbox.width / 2) * 100) : 0;
+    const byc = anchor ? Math.round(anchor.y * 100) : d.bbox ? Math.round((d.bbox.y + d.bbox.height / 2) * 100) : 0;
+    const typeTag = d.kind === "mos" ? `:${(d.geometry as DeviceGeometryMOS).mosType}` : "";
+    (d as any)._cellLevelKey = `${d.kind}:${bxc}:${byc}${typeTag}`;
   }
 
   return all;
@@ -519,10 +521,14 @@ export function collectDieWideAnalogDevices(
         // ── Position-based stable device key ─────────────────────
         // The device's physical position within the cell is the most stable
         // identifier (independent of annotation UUIDs or extraction order).
+        // For multi-finger MOS, uses the gate centroid (_gateAnchor) so
+        // each finger gets a unique key (bbox is the whole diffusion body).
+        const gateAnchor = (dev as any)._gateAnchor as { x: number; y: number } | undefined;
         const cellBbox = dev.bbox;
-        const bxc = cellBbox ? Math.round((cellBbox.x + cellBbox.width / 2) * 100) : 0;
-        const byc = cellBbox ? Math.round((cellBbox.y + cellBbox.height / 2) * 100) : 0;
-        const cellLevelKey = `${dev.kind}:${bxc}:${byc}`;
+        const bxc = gateAnchor ? Math.round(gateAnchor.x * 100) : cellBbox ? Math.round((cellBbox.x + cellBbox.width / 2) * 100) : 0;
+        const byc = gateAnchor ? Math.round(gateAnchor.y * 100) : cellBbox ? Math.round((cellBbox.y + cellBbox.height / 2) * 100) : 0;
+        const typeTag = dev.kind === "mos" ? `:${(dev.geometry as DeviceGeometryMOS).mosType}` : "";
+        const cellLevelKey = `${dev.kind}:${bxc}:${byc}${typeTag}`;
         const dieLevelKey = `${instCell.id}:${cellLevelKey}`;
 
 

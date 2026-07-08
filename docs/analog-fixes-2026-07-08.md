@@ -19,6 +19,12 @@
 6. **normalizeBJTM затирал override multiplier** — override применялся, но
    normalizeBJTM пересчитывал multiplier из AE_um2/minAE и перезаписывал.
 
+7. **Multi-finger MOS: все пальцы получали одно имя M{N}** — `bbox` у всех
+   пальцев общий (`bodyBox`), `_cellLevelKey` совпадал → React duplicate key.
+
+8. **nmos и pmos на одной позиции получали одинаковое имя M{N}** — `kind === "mos"`
+   у обоих, ключ `mos:posX:posY` без дискриминации типа.
+
 ## Архитектура решения
 
 ### Position-based device identity
@@ -26,11 +32,16 @@
 Устройство идентифицируется по физическому положению внутри cell instance:
 
 ```
-cellLevelKey = `${dev.kind}:${round(cx*100)}:${round(cy*100)}`
+cellLevelKey = `${dev.kind}:${round(cx*100)}:${round(cy*100)}[:subtype]`
 dieLevelKey  = `${instCell.id}:${cellLevelKey}`
 ```
 
-Это стабильно — зависит только от позиции аннотаций, не от UUID или счётчика.
+Подтип (`:nmos` / `:pmos`) добавляется для MOS-девайсов — без него nmos и pmos на одной
+позиции получали одинаковый ключ и одинаковое имя.
+
+Для multi-finger MOS ключ считается от центроида gate (`_gateAnchor`), а не от
+центра body-диффузии — иначе все пальцы одного транзистора имеют идентичный
+`bbox: bodyBox` и получают одинаковый ключ.
 
 ### Хранение: прямой localStorage
 
@@ -83,6 +94,7 @@ buildAnalogNetlist()
 | `dieWideAnalog.ts` | `_cellLevelKey`, `_dieLevelKey` на devices. `assignStableInstanceNames()`, `renameDeviceInstance()`, `validateDeviceName()`, `getRenameVersion()`. |
 | `analogNetlist.ts` | `applyAnalogOverrides()` с `_overriddenParams`. Передача overrides через pipeline. |
 | `spice.ts` | `normalizeBJTM()` пропускает overridden multiplier. `generateSpiceNetlist` не перезаписывает existing names. Hierarchical path — `alreadyNamed` check. |
+| `simpleAnalog.ts` | Убран пустой debug-блок в `detectMOSFromLayers()`. |
 | `CellRERightPanel.tsx` | Ключ override: `device.id` → `_cellLevelKey` (position-based). |
 | `DeviceInspector.tsx` | Rename UI, мутация `device.instanceName` для мгновенной обратной связи. |
 | `AnalogNetlistPage.tsx` | Чтение `analogOverrides` из preferences передача в pipeline. InstanceOutline rename. |

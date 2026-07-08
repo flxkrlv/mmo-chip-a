@@ -1433,15 +1433,6 @@ export function detectMOSFromLayers(
   // merging is handled in extractAnalogDevicesFromCellType (dieWideAnalog.ts)
   // on all devices together so inter-device connections work.
 
-  // Debug: итоговые device gate nets
-
-  for (const d of devices) {
-    const gTerm = d.terminals.find((t) => t.name === "G");
-    const sTerm = d.terminals.find((t) => t.name === "S");
-    const dTerm = d.terminals.find((t) => t.name === "D");
-
-  }
-
   return devices;
 }
 
