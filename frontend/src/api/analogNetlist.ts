@@ -11,13 +11,12 @@ import { useMemo } from "react";
 import type { AnalogDevice, DieAnnotations, SpiceConfig, SpiceDialect } from "shared";
 import { apiGet, apiPost } from "./client";
 import {
-  assignInstanceNames,
   generateSpiceNetlist,
   generateHierarchicalNetlist,
   type SpiceNetlist,
 } from "../lib/export/spice";
 import { matchGeometry } from "../lib/export/matching";
-import { collectDieWideAnalogDevices } from "./dieWideAnalog";
+import { collectDieWideAnalogDevices, getRenameVersion } from "./dieWideAnalog";
 
 // ── Public shapes ─────────────────────────────────────────────────
 
@@ -29,6 +28,8 @@ export interface AnalogNetlistLeaf {
   deviceKind: string;
   /** Cell instance ID this device belongs to (for framing). */
   cellId: string;
+  /** Stable die-level key for rename persistence. */
+  dieLevelKey?: string;
 }
 
 export interface AnalogNetlistGroup {
@@ -114,8 +115,7 @@ function buildLineIndex(
  * instance names to source lines.
  */
 function buildOutline(
-  devices: Array<{ instanceName: string; kind: string; modelName?: string; _cellId?: string }>,
-    // instanceName guaranteed by assignInstanceNames()
+  devices: Array<{ instanceName: string; kind: string; modelName?: string; _cellId?: string; _dieLevelKey?: string }>,
   lineIndex: Map<string, number>,
 ): AnalogNetlistGroup[] { // eslint-disable-line
   const groups = new Map<string, AnalogNetlistGroup>();
@@ -136,6 +136,7 @@ function buildOutline(
       line: lineIndex.get(d.instanceName) ?? 1,
       deviceKind: d.kind,
       cellId: d._cellId ?? "",
+      dieLevelKey: d._dieLevelKey,
     });
   }
   // Sort groups by kind, leaves by instance name numerically
@@ -150,10 +151,49 @@ function buildOutline(
   return sorted;
 }
 
+// ── Direct localStorage for name map (synchronous, no React races) ──
+
+const NAMEMAP_KEY = "mmo-chip-analog-names";
+
+// ── Override application ──────────────────────────────────────────
+
+/**
+ * Apply user overrides (W/L/AE/R/fingers/multiplier) to device geometry.
+ * Uses _cellLevelKey (position-based, cell-local) — matches the key used
+ * in CellRERightPanel when saving overrides.
+ */
+function applyAnalogOverrides(
+  devices: AnalogDevice[],
+  analogOverrides: Record<string, Record<string, Record<string, number>>>,
+): void {
+  for (const d of devices) {
+    const key = (d as any)._cellLevelKey as string | undefined;
+    if (!key) continue;
+    const deviceOverrides = analogOverrides[d.cellTypeId]?.[key];
+    if (!deviceOverrides) continue;
+    const g = d.geometry as unknown as Record<string, unknown>;
+    const ovParams = new Set<string>();
+    (d as any)._overriddenParams = ovParams;
+    for (const [param, value] of Object.entries(deviceOverrides)) {
+      if (param in g) {
+        (g as any)[param] = value;
+        ovParams.add(param);
+      }
+    }
+    if (d.kind === "mos" && typeof g.W_um === "number" && typeof g.fingers === "number" && typeof g.multiplier === "number") {
+      (g as any).totalW_um = (g.W_um as number) * (g.fingers as number) * (g.multiplier as number);
+    }
+    if ((d.kind === "bjt_npn" || d.kind === "bjt_pnp") && typeof g.AE_um2 === "number" && typeof g.multiplier === "number") {
+      (g as any).totalAE_um2 = (g.AE_um2 as number) * (g.multiplier as number);
+    }
+  }
+}
+
 // ── Synchronous build ─────────────────────────────────────────────
 
 interface BuildOptions {
   hierarchical?: boolean;
+  analogOverrides?: Record<string, Record<string, Record<string, number>>>;
 }
 
 function buildAnalogNetlist(
@@ -169,49 +209,35 @@ function buildAnalogNetlist(
     spiceConfig,
   );
 
-  // Assign instance names (M1, Q1, R1, …)
-  const named = assignInstanceNames(devices);
+  // 1. Apply user overrides (W/L/AE/R/fingers/multiplier) to geometry
+  applyAnalogOverrides(devices, options?.analogOverrides ?? {});
 
-  // Optional geometry matching (averaging similar devices)
+  // 2. Devices already have stable instance names (assigned inside collectDieWideAnalogDevices)
+  const named = devices;
+
+  // 3. Optional geometry matching (averaging similar devices)
   const matchWarnings = matchGeometry(named as (AnalogDevice & { instanceName: string })[], spiceConfig ?? {}, namedNets);
 
   const config: SpiceConfig = spiceConfig ?? {};
-
   const isHierarchical = options?.hierarchical ?? false;
 
+  // 4. Generate netlist (devices already have instanceName)
   const result: SpiceNetlist = isHierarchical
-    ? generateHierarchicalNetlist(
-        named,
-        moduleName,
-        config,
-        dialect,
-        namedNets,
-        annotations.floorplanRegions,
-      )
-    : generateSpiceNetlist(
-        named,
-        moduleName,
-        config,
-        dialect,
-        namedNets,
-      );
+    ? generateHierarchicalNetlist(named, moduleName, config, dialect, namedNets, annotations.floorplanRegions)
+    : generateSpiceNetlist(named, moduleName, config, dialect, namedNets);
 
-  // Build line index + outline (assignInstanceNames guarantees instanceName)
+  // Build line index + outline
   const namedSafe = named as Array<AnalogDevice & { instanceName: string }>;
   const lineIndex = buildLineIndex(result.text, namedSafe);
   const outline = buildOutline(namedSafe, lineIndex);
 
-  // instanceName → cellId lookup
   const deviceCellMap = new Map<string, string>();
   for (const d of named) {
     const cellId = (d as any)._cellId as string | undefined;
     if (cellId && d.instanceName) deviceCellMap.set(d.instanceName, cellId);
   }
 
-  // Count unconnected terminals (netId >= 2000 = fresh IDs when wire matching failed)
-  const unconnectedCount = named.reduce((sum, d) => {
-    return sum + d.terminals.filter((t) => t.netId >= 2000).length;
-  }, 0);
+  const unconnectedCount = named.reduce((sum, d) => sum + d.terminals.filter((t) => t.netId >= 2000).length, 0);
   const totalCells = annotations.cells?.length ?? 0;
   const totalNets = annotations.nets?.length ?? 0;
 
@@ -247,16 +273,20 @@ export function useAnalogNetlist(
   dialect: SpiceDialect = "cdl",
   spiceConfig?: SpiceConfig,
   hierarchical: boolean = false,
+  analogOverrides?: Record<string, Record<string, Record<string, number>>>,
 ): UseAnalogNetlist {
   const data = useMemo<AnalogNetlistResult | null>(() => {
     if (!annotations) return null;
     try {
-      return buildAnalogNetlist(annotations, moduleName, dialect, spiceConfig, { hierarchical });
+      return buildAnalogNetlist(annotations, moduleName, dialect, spiceConfig, {
+        hierarchical,
+        analogOverrides,
+      });
     } catch (e) {
       // Surface the error; the page will show it.
       throw e;
     }
-  }, [annotations, moduleName, dialect, spiceConfig, hierarchical]);
+  }, [annotations, moduleName, dialect, spiceConfig, hierarchical, analogOverrides, getRenameVersion()]);
 
   return {
     data,

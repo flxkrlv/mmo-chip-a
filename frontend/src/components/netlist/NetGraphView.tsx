@@ -10,7 +10,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import cytoscape, { type Core, type ElementDefinition } from "cytoscape";
 import type { DieAnnotations } from "shared";
-import { collectDieWideAnalogDevices } from "../../api/dieWideAnalog";
+import { collectDieWideAnalogDevices, getRenameVersion } from "../../api/dieWideAnalog";
 import { useNavigate } from "react-router-dom";
 import { useSession } from "../../state/session";
 
@@ -91,15 +91,26 @@ function nameDevices(raw: ReturnType<typeof collectDieWideAnalogDevices>["device
     resistor: "R", capacitor: "C", diode: "D", zener: "DZ", schottky: "DS",
     inductor: "L", unknown: "X",
   };
+  const usedNames = new Set<string>();
   return raw.map(d => {
+    // Preserve stable instanceName if already set (from assignStableInstanceNames)
+    if (d.instanceName && !usedNames.has(d.instanceName)) {
+      let kl = KIND_LABEL[d.kind] ?? "?";
+      if (d.kind === "mos" && d.geometry && "mosType" in d.geometry) {
+        kl = (d.geometry as any).mosType === "pmos" ? "PMOS" : "NMOS";
+      }
+      usedNames.add(d.instanceName);
+      return { ...d, instanceName: d.instanceName, kindLabel: kl };
+    }
     const p = pre[d.kind] ?? "X";
     c[p] = (c[p] ?? 0) + 1;
-    // Build a short type tag: mos → NMOS/PMOS, bjt_npn → NPN, etc.
     let kl = KIND_LABEL[d.kind] ?? "?";
     if (d.kind === "mos" && d.geometry && "mosType" in d.geometry) {
       kl = (d.geometry as any).mosType === "pmos" ? "PMOS" : "NMOS";
     }
-    return { ...d, instanceName: `${p}${c[p]}`, kindLabel: kl };
+    const name = `${p}${c[p]}`;
+    usedNames.add(name);
+    return { ...d, instanceName: name, kindLabel: kl };
   });
 }
 
@@ -352,7 +363,7 @@ export function NetGraphView({ annotations, onDeviceClick, vddNet, gndNet, highl
   const collected = useMemo(() => {
     if (!annotations) return null;
     return collectDieWideAnalogDevices(annotations);
-  }, [annotations]);
+  }, [annotations, getRenameVersion()]);
 
   const collAnn = useMemo(() => annotations, [annotations]);
 

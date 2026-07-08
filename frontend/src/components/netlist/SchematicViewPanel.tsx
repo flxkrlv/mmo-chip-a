@@ -21,8 +21,7 @@ import { Netlist2SvgView, type Netlist2SvgHandle } from "./Netlist2SvgView";
 import { LAYOUT_STRATEGIES, LAYOUT_DIRECTIONS, COMPACTION_LEVELS, type LayoutStrategy, type LayoutDirection, type CompactionLevel } from "../../lib/schematic/netlist2svgSkin";
 import { formatDevicesAsNetlist2Svg } from "../../lib/schematic/netlist2svgFormat";
 import { generateBlockDiagram } from "../../lib/schematic/blockDiagramFormat";
-import { collectDieWideAnalogDevices } from "../../api/dieWideAnalog";
-import { assignInstanceNames } from "../../lib/export/spice";
+import { collectDieWideAnalogDevices, getRenameVersion } from "../../api/dieWideAnalog";
 import { matchGeometry } from "../../lib/export/matching";
 
 // ── Props ───────────────────────────────────────────────────────
@@ -71,7 +70,9 @@ export function SchematicViewPanel({
       spiceConfig?.umPerPx ?? annotations.umPerPx ?? 1.0,
       config,
     );
-    const named = assignInstanceNames(devices);
+    // Devices already have stable instance names from assignStableInstanceNames
+    // inside collectDieWideAnalogDevices. No need to call assignInstanceNames.
+    const named = devices;
     matchGeometry(named as any[], config, namedNets);
 
     // Build hierarchical (per-region) device lists
@@ -114,7 +115,7 @@ export function SchematicViewPanel({
     );
 
     return { flatJson: flat, floorplanDevices, namedNets, ioNetIds };
-  }, [annotations, moduleName, spiceConfig, hierarchical, floorplanRegions]);
+  }, [annotations, moduleName, spiceConfig, hierarchical, floorplanRegions, getRenameVersion()]);
 
   // ══ Functional block diagram ═════════════════════════════════
   const blockDiagramJson = useMemo(() => {

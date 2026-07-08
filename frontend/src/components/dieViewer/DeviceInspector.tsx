@@ -9,9 +9,11 @@
  *   - SPICE model name
  */
 
+import { useState, useCallback, type ChangeEvent } from "react";
 import type { AnalogDevice, ResistorType } from "shared";
 import { effectiveSheetR } from "../../lib/export/resistorDefaults";
 import { usePreferences } from "../../state/preferences";
+import { renameDeviceInstance, validateDeviceName } from "../../api/dieWideAnalog";
 
 interface Props {
   device: AnalogDevice;
@@ -54,9 +56,36 @@ function Section({ children }: { children: React.ReactNode }) {
 
 export function DeviceInspector({ device, onClose }: Props) {
   const g = device.geometry;
+  const key = (device as any)._dieLevelKey as string | undefined;
 
   const instanceLabel = device.instanceName ?? device.id;
   const kindLabel = device.kind.replace("_", " ").toUpperCase();
+
+  // ── Rename state ──────────────────────────────────────────────
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(instanceLabel);
+  const [err, setErr] = useState("");
+
+  const handleRename = useCallback(() => {
+    if (!key) return;
+    const s = draft.trim();
+    if (!s || s === instanceLabel) { setEditing(false); setErr(""); return; }
+
+    const validationErr = validateDeviceName(key, s);
+    if (validationErr) { setErr(validationErr); return; }
+
+    renameDeviceInstance(key, s);
+    // Immediate visual feedback — mutate the device object directly
+    (device as any).instanceName = s;
+    setEditing(false);
+    setErr("");
+  }, [key, draft, instanceLabel, device]);
+
+  const handleCancel = useCallback(() => {
+    setEditing(false);
+    setDraft(instanceLabel);
+    setErr("");
+  }, [instanceLabel]);
 
   return (
     <div style={{
@@ -82,9 +111,46 @@ export function DeviceInspector({ device, onClose }: Props) {
             flexShrink: 0,
           }}
         />
-        <span style={{ fontWeight: 600, fontSize: 13, flex: 1 }}>
-          {instanceLabel}
-        </span>
+        {editing ? (
+          <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 2 }}>
+            <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
+              <input
+                type="text"
+                value={draft}
+                onChange={(e: ChangeEvent<HTMLInputElement>) => { setDraft(e.target.value); setErr(""); }}
+                onKeyDown={(e) => { if (e.key === "Enter") handleRename(); if (e.key === "Escape") handleCancel(); }}
+                autoFocus
+                style={{
+                  flex: 1, height: 22, fontSize: 12, fontFamily: "var(--mono)",
+                  background: "var(--bg1)", border: "1px solid var(--accent)",
+                  borderRadius: 3, color: "var(--ink0)", padding: "0 4px",
+                }}
+              />
+              <span onClick={handleRename} style={{ cursor: "pointer", fontSize: 12, color: "var(--accent)" }}>✓</span>
+              <span onClick={handleCancel} style={{ cursor: "pointer", fontSize: 12, color: "var(--ink3)" }}>✕</span>
+            </div>
+            {err && <div style={{ fontSize: 9, color: "var(--err)" }}>{err}</div>}
+          </div>
+        ) : (
+          <>
+            <span
+              style={{ fontWeight: 600, fontSize: 13, flex: 1, cursor: "pointer" }}
+              onDoubleClick={() => { setDraft(instanceLabel); setEditing(true); setErr(""); }}
+              title="Double-click to rename"
+            >
+              {instanceLabel}
+            </span>
+            {key && (
+              <span
+                onClick={() => { setDraft(instanceLabel); setEditing(true); setErr(""); }}
+                style={{ cursor: "pointer", fontSize: 10, color: "var(--ink3, #666)", padding: "0 2px" }}
+                title="Rename"
+              >
+                ✎
+              </span>
+            )}
+          </>
+        )}
         <span style={{ fontSize: 10, color: "var(--ink3, #666)" }}>
           {kindLabel}
         </span>

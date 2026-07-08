@@ -440,13 +440,14 @@ function normalizeBJTM(devices: AnalogDevice[]): AnalogDevice[] {
   }
 
   return devices.map((d) => {
-    if (d.kind === "bjt_npn" && minNpnAE > 0 && isFinite(minNpnAE)) {
+    const overriddenParams = (d as any)._overriddenParams as Set<string> | undefined;
+    if (d.kind === "bjt_npn" && minNpnAE > 0 && isFinite(minNpnAE) && !overriddenParams?.has("multiplier")) {
       const bg = { ...d.geometry } as DeviceGeometryBJT;
       const raw = bg.AE_um2 / minNpnAE;
       const m = Math.max(1, Math.round(raw * 100) / 100);
       return { ...d, geometry: { ...bg, multiplier: m } };
     }
-    if (d.kind === "bjt_pnp" && minPnpPE > 0 && isFinite(minPnpPE)) {
+    if (d.kind === "bjt_pnp" && minPnpPE > 0 && isFinite(minPnpPE) && !overriddenParams?.has("multiplier")) {
       const bg = { ...d.geometry } as DeviceGeometryBJT;
       const raw = bg.PE_um / minPnpPE;
       const m = Math.max(1, Math.round(raw * 100) / 100);
@@ -476,7 +477,10 @@ export function generateSpiceNetlist(
   // BJT multiplier normalisation (must happen before instance naming so
   // the unit-size BJT becomes the reference — its m=1, larger ones scale)
   const normalised = normalizeBJTM(devices);
-  const named = assignInstanceNames(normalised);
+  // If devices already have instanceName (stable naming from pipeline),
+  // preserve them, otherwise auto-assign (backward compat for direct callers).
+  const alreadyNamed = normalised.some((d) => d.instanceName);
+  const named = alreadyNamed ? normalised : assignInstanceNames(normalised);
   const nl = buildNetNameMap(named, netLookup ?? new Map());
   const vdd = config.vdd ?? "VDD";
   const gnd = config.gnd ?? "GND";
@@ -927,7 +931,8 @@ export function generateHierarchicalNetlist(
 
     // Local instance numbering for this subcircuit
     const norm = normalizeBJTM(insideDevices);
-    const localNamed = assignInstanceNames(norm);
+    const alreadyNamed = norm.some((d) => d.instanceName);
+    const localNamed = alreadyNamed ? norm : assignInstanceNames(norm);
 
     const portList = [...portNames, vdd, gnd].filter(Boolean);
 
@@ -1042,7 +1047,8 @@ export function generateHierarchicalNetlist(
   // Unassigned devices (flat in top-level)
   if (unassigned.length > 0) {
     const norm = normalizeBJTM(unassigned);
-    const flatNamed = assignInstanceNames(norm);
+    const alreadyNamed = norm.some((d) => d.instanceName);
+    const flatNamed = alreadyNamed ? norm : assignInstanceNames(norm);
     for (const d of flatNamed) {
       lines.push(deviceLine(d, nl, vdd, gnd, dialect, indent, config));
     }

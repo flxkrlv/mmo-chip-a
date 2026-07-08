@@ -107,7 +107,7 @@ interface PreferencesState {
    *  ResistorType: poly, hsr, pb, npl, film. */
   sheetR: Record<string, number>;
   /** Per-cell-type analog device parameter overrides.
-   *  Key: cellTypeId → deviceId → paramName → value. */
+   *  Key: cellTypeId → deviceFingerprint → paramName → value. */
   analogOverrides: Record<string, Record<string, Record<string, number>>>;
   /** Per-conductor-layer wire colour override (metal1, metal2, etc.).
    *  Absent = use WIRE_LAYER_COLOR defaults from style.ts. */

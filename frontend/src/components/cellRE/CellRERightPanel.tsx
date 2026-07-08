@@ -1680,8 +1680,9 @@ interface AnalogDeviceRowProps {
 function AnalogDeviceRow({ device, cellTypeId, onOverride }: AnalogDeviceRowProps) {
   const color = DEVICE_COLORS[device.kind] ?? "#888";
   const g = device.geometry as unknown as Record<string, unknown>;
+  const key = (device as any)._cellLevelKey as string | undefined ?? device.id;
   const overrides = usePreferences((s) =>
-    (s as any).analogOverrides?.[cellTypeId]?.[device.id] ?? NO_OVERRIDES
+    (s as any).analogOverrides?.[cellTypeId]?.[key] ?? NO_OVERRIDES
   ) as Record<string, number>;
 
   const label = device.instanceName ?? device.id;
@@ -1694,7 +1695,7 @@ function AnalogDeviceRow({ device, cellTypeId, onOverride }: AnalogDeviceRowProp
   const eff = (key: string, fallback: number): number =>
     overrides[key] ?? (g[key] as number) ?? fallback;
   const isOverridden = (key: string) => overrides[key] != null;
-  const setOv = (key: string, val: number) => onOverride?.(device.id, key, val);
+  const setOv = (paramKey: string, val: number) => onOverride?.(key, paramKey, val);
 
   // One-line param summary
   let paramStr = "";

@@ -160,6 +160,16 @@ export function extractAnalogDevicesFromCellType(
     }
   }
 
+  // ── Compute position-based cell-level key for each device ──────
+  // Used by CellRERightPanel for override storage and by
+  // applyAnalogOverrides for lookup. Position is the most stable
+  // device identifier (independent of annotation UUIDs).
+  for (const d of all) {
+    const bxc = d.bbox ? Math.round((d.bbox.x + d.bbox.width / 2) * 100) : 0;
+    const byc = d.bbox ? Math.round((d.bbox.y + d.bbox.height / 2) * 100) : 0;
+    (d as any)._cellLevelKey = `${d.kind}:${bxc}:${byc}`;
+  }
+
   return all;
 }
 
@@ -506,12 +516,25 @@ export function collectDieWideAnalogDevices(
         // Storing as-is preserves the terminal distinction for correct
         // netId resolution per contact.
 
+        // ── Position-based stable device key ─────────────────────
+        // The device's physical position within the cell is the most stable
+        // identifier (independent of annotation UUIDs or extraction order).
+        const cellBbox = dev.bbox;
+        const bxc = cellBbox ? Math.round((cellBbox.x + cellBbox.width / 2) * 100) : 0;
+        const byc = cellBbox ? Math.round((cellBbox.y + cellBbox.height / 2) * 100) : 0;
+        const cellLevelKey = `${dev.kind}:${bxc}:${byc}`;
+        const dieLevelKey = `${instCell.id}:${cellLevelKey}`;
+
+
         allDevices.push({
           ...dev,
           instanceName: instName, terminals: matchedTerms, bbox: worldBbox,
           _termPoints: termPoints,
           _cellId: instCell.id,
-        } as AnalogDevice & { _termPoints: typeof termPoints; _cellId: string });
+          _cellBbox: dev.bbox,
+          _cellLevelKey: cellLevelKey,
+          _dieLevelKey: dieLevelKey,
+        } as AnalogDevice & { _termPoints: typeof termPoints; _cellId: string; _cellBbox: typeof dev.bbox; _cellLevelKey: string; _dieLevelKey: string });
       }
     }
   }
@@ -557,7 +580,124 @@ export function collectDieWideAnalogDevices(
   const devWarn = detectDeviceWarnings(allDevices, namedNets, _spiceConfig);
   warnings.push(...devWarn);
 
+  // ── Assign stable instance names (all consumers benefit) ─────────
+  assignStableInstanceNames(allDevices);
+
   return { devices: allDevices, namedNets, netIdMap, warnings, ioNetIds };
+}
+
+// ── Stable instance naming using position-based keys + localStorage ──
+// Lives here so ALL consumers (DieViewer, AnalogNetlistPage) get stable names.
+
+const NAMEMAP_KEY = "mmo-chip-analog-names";
+const ACTIVE_KEYS_KEY = NAMEMAP_KEY + "-active";
+
+function _loadNameMap(): Record<string, string> {
+  try { return JSON.parse(localStorage.getItem(NAMEMAP_KEY) ?? "{}"); } catch { return {}; }
+}
+function _saveNameMap(map: Record<string, string>): void {
+  try { localStorage.setItem(NAMEMAP_KEY, JSON.stringify(map)); } catch {}
+}
+function _loadActiveKeys(): string[] {
+  try { return JSON.parse(localStorage.getItem(ACTIVE_KEYS_KEY) ?? "[]"); } catch { return []; }
+}
+function _saveActiveKeys(keys: string[]): void {
+  try { localStorage.setItem(ACTIVE_KEYS_KEY, JSON.stringify(keys)); } catch {}
+}
+
+const INSTANCE_PREFIXES: Record<string, string> = {
+  mos: "M", bjt_npn: "Q", bjt_pnp: "Q", jfet_n: "J", jfet_p: "J",
+  resistor: "R", capacitor: "C", diode: "D", zener: "D", schottky: "D",
+  inductor: "L", unknown: "X",
+};
+
+/**
+ * Assign stable instance names using position-based die-level keys.
+ * Reads/writes localStorage directly (synchronous, no React race).
+ * Existing keys get their stored name; new devices get next monotonic counter.
+ */
+function assignStableInstanceNames(devices: AnalogDevice[]): void {
+  const nameMap = _loadNameMap();
+  // Build counter from ALL names in map (including stale entries).
+  // This ensures the auto-counter never dips below the highest ever assigned.
+  const counters: Record<string, number> = {};
+  for (const name of Object.values(nameMap)) {
+    const m = name.match(/^([A-Za-z]+)(\d+)$/);
+    if (m) {
+      counters[m[1]] = Math.max(counters[m[1]] ?? 0, parseInt(m[2], 10));
+    }
+  }
+
+  let changed = false;
+  const activeKeys = new Set<string>();
+
+  for (const d of devices) {
+    const key = (d as any)._dieLevelKey as string | undefined;
+    if (!key) continue;
+    activeKeys.add(key);
+
+    if (nameMap[key]) {
+      d.instanceName = nameMap[key];
+    } else {
+      const prefix = INSTANCE_PREFIXES[d.kind] || "X";
+      const next = (counters[prefix] ?? 0) + 1;
+      d.instanceName = `${prefix}${next}`;
+      counters[prefix] = next;
+      nameMap[key] = d.instanceName;
+      changed = true;
+    }
+  }
+
+  // Save active keys for rename validation (stale names are blocked from
+  // auto-assign by the counter, but allowed for manual rename).
+  _saveActiveKeys([...activeKeys]);
+
+  if (changed) _saveNameMap(nameMap);
+}
+
+/** Exported for rename UI (DeviceInspector / InstanceOutline). */
+// Module-level version counter — incremented on every rename.
+// Hooks can depend on `getRenameVersion()` to force pipeline re-computation.
+let _renameVersion = 0;
+function bumpRenameVersion(): void { _renameVersion++; }
+export function getRenameVersion(): number { return _renameVersion; }
+
+export function renameDeviceInstance(dieLevelKey: string, newName: string): void {
+  const nameMap = _loadNameMap();
+  bumpRenameVersion();
+  const m = newName.match(/^([A-Za-z]+)(\d+)$/);
+  if (m) {
+    const pref = m[1]; const num = parseInt(m[2], 10);
+    const countersKey = NAMEMAP_KEY + "-counters";
+    const counters: Record<string, number> = {};
+    for (const n of Object.values(nameMap)) {
+      const mm = n.match(/^([A-Za-z]+)(\d+)$/);
+      if (mm) counters[mm[1]] = Math.max(counters[mm[1]] ?? 0, parseInt(mm[2], 10));
+    }
+    counters[pref] = Math.max(counters[pref] ?? 0, num);
+    try { localStorage.setItem(countersKey, JSON.stringify(counters)); } catch {}
+  }
+  nameMap[dieLevelKey] = newName;
+  _saveNameMap(nameMap);
+}
+
+/** Validate name against current map. */
+export function validateDeviceName(dieLevelKey: string, newName: string): string | null {
+  const s = newName.trim();
+  if (!s) return "Name is empty";
+  if (!/^[A-Za-z][A-Za-z0-9_]*$/.test(s))
+    return "Must start with letter, only letters/digits/underscores";
+  if (s.length > 48) return "Too long (max 48 chars)";
+  const nameMap = _loadNameMap();
+  const activeKeys = new Set(_loadActiveKeys());
+  // Only block names used by ACTIVE (currently existing) devices.
+  // Stale names (deleted devices) are allowed for manual rename.
+  for (const [k, v] of Object.entries(nameMap)) {
+    if (k !== dieLevelKey && v === s && activeKeys.has(k)) {
+      return `"${s}" is already assigned to another device`;
+    }
+  }
+  return null;
 }
 
 // ═════════════════════════════════════════════════════════════════

@@ -496,6 +496,7 @@ export function extractMarkedDevices(
           ],
           bbox: marker.bbox,
         });
+        
         break;
       }
 
@@ -523,6 +524,7 @@ export function extractMarkedDevices(
           ],
           bbox: marker.bbox,
         });
+        
         break;
       }
 
@@ -791,7 +793,6 @@ export function extractMarkedDevices(
         ],
         bbox: gBbox,
       });
-
 
     }
   }
@@ -1394,6 +1395,7 @@ export function detectMOSFromLayers(
               bbox: bodyBox,
               ...(gateAnchor ? { _gateAnchor: gateAnchor } : {}),
             } as unknown as AnalogDevice);
+            
           }
           counter++; // advance counter once for all sub-devices
         } else {

@@ -28,6 +28,7 @@ import {
   loadSpiceConfig,
   saveSpiceConfigToBackend,
 } from "../api/analogNetlist";
+import { renameDeviceInstance, validateDeviceName } from "../api/dieWideAnalog";
 import { loadClipper } from "../lib/extraction";
 import { ANALOG_NETLIST_HOTKEYS, ANALOG_NETLIST_ALT_HOTKEYS } from "../lib/hotkeys";
 import { isTypingTarget } from "../lib/keyboard";
@@ -95,6 +96,7 @@ function AnalogNetlist({ dieId }: { dieId: string }) {
 
   // Reactive sheetR from preferences (set in Die Viewer → AnalogDiePanel → SheetRConfigPanel)
   const sheetRPrefs = usePreferences((s) => (s as any).sheetR ?? {});
+  const analogOverrides = usePreferences((s) => (s as any).analogOverrides ?? {});
 
   const spiceConfig: SpiceConfig = useMemo(
     () => ({
@@ -168,7 +170,7 @@ function AnalogNetlist({ dieId }: { dieId: string }) {
     return () => clearTimeout(timer);
   }, [vddNet, gndNet, resistorFormat, dieId]);
 
-  const netlist = useAnalogNetlist(annotations, moduleName, dialect, spiceConfig, hierarchical);
+  const netlist = useAnalogNetlist(annotations, moduleName, dialect, spiceConfig, hierarchical, analogOverrides);
 
   // ── UI state ────────────────────────────────────────────────────
   const [rightView, setRightView] = useState<"code" | "graph" | "schematic">("code");
@@ -670,6 +672,21 @@ function InstanceOutline({
   totalDevices: number;
 }) {
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
+  const [renamingLeaf, setRenamingLeaf] = useState<string | null>(null);
+  const [renameDraft, setRenameDraft] = useState("");
+  const [renameErr, setRenameErr] = useState("");
+
+  const commitRename = useCallback((leafKey: string, oldName: string, newName: string) => {
+    const s = newName.trim();
+    if (!s || s === oldName) { setRenamingLeaf(null); setRenameErr(""); return; }
+
+    const validationErr = validateDeviceName(leafKey, s);
+    if (validationErr) { setRenameErr(validationErr); return; }
+
+    renameDeviceInstance(leafKey, s);
+    setRenamingLeaf(null);
+    setRenameErr("");
+  }, []);
   const toggle = (kind: string) => {
     setCollapsed((prev) => {
       const next = new Set(prev);
@@ -760,19 +777,61 @@ function InstanceOutline({
                   onSelect={() => toggle(g.kind)}
                 />
                 {!isCollapsed &&
-                  g.leaves.map((leaf) => (
-                    <TreeRow
-                      key={leaf.id}
-                      depth={1}
-                      swatch={kindSwatch[leaf.deviceKind] ?? "#666"}
-                      label={leaf.label}
-                      meta={leaf.meta}
-                      monoLabel
-                      selected={selectedLeafId === leaf.id}
-                      onSelect={() => { onGoToLine(leaf.line); onSelectInstance(leaf.label); }}
-                      onDoubleClick={() => onSelectDevice(leaf.label, leaf.cellId, leaf.line)}
-                    />
-                  ))}
+                  g.leaves.map((leaf) => {
+                    const isRenaming = renamingLeaf === leaf.id;
+                    return (
+                      <div key={leaf.id}>
+                        {isRenaming ? (
+                          <div style={{ display: "flex", flexDirection: "column", padding: "2px 12px 2px 32px", gap: 2 }}>
+                            <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
+                              <input
+                                type="text"
+                                value={renameDraft}
+                                onChange={(e: any) => { setRenameDraft(e.target.value); setRenameErr(""); }}
+                                onKeyDown={(e: any) => {
+                                  if (e.key === "Enter" && leaf.dieLevelKey) commitRename(leaf.dieLevelKey, leaf.label, renameDraft);
+                                  if (e.key === "Escape") { setRenamingLeaf(null); setRenameErr(""); }
+                                }}
+                                autoFocus
+                                style={{
+                                  flex: 1, height: 20, fontSize: 10, fontFamily: "var(--mono)",
+                                  background: "var(--bg1)", border: "1px solid var(--accent)",
+                                  borderRadius: 3, color: "var(--ink0)", padding: "0 4px",
+                                }}
+                              />
+                              {leaf.dieLevelKey && (
+                                <span onClick={() => commitRename(leaf.dieLevelKey as string, leaf.label, renameDraft)} style={{ cursor: "pointer", fontSize: 11, color: "var(--accent)" }}>✓</span>
+                              )}
+                              <span onClick={() => { setRenamingLeaf(null); setRenameErr(""); }} style={{ cursor: "pointer", fontSize: 11, color: "var(--ink3)" }}>✕</span>
+                            </div>
+                            {renameErr && <div style={{ fontSize: 9, color: "var(--err)" }}>{renameErr}</div>}
+                          </div>
+                        ) : (
+                          <div style={{ display: "flex", alignItems: "center" }}>
+                            <div style={{ flex: 1 }}>
+                              <TreeRow
+                                depth={1}
+                                swatch={kindSwatch[leaf.deviceKind] ?? "#666"}
+                                label={leaf.label}
+                                meta={leaf.meta}
+                                monoLabel
+                                selected={selectedLeafId === leaf.id}
+                                onSelect={() => { onGoToLine(leaf.line); onSelectInstance(leaf.label); }}
+                                onDoubleClick={() => onSelectDevice(leaf.label, leaf.cellId, leaf.line)}
+                              />
+                            </div>
+                            {leaf.dieLevelKey && (
+                              <span
+                                onClick={() => { setRenamingLeaf(leaf.id); setRenameDraft(leaf.label); setRenameErr(""); }}
+                                style={{ cursor: "pointer", fontSize: 9, color: "var(--ink3, #666)", padding: "0 6px" }}
+                                title="Rename"
+                              >✎</span>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
               </div>
             );
           })
