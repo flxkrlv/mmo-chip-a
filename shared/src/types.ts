@@ -903,6 +903,68 @@ export interface AnalogExportResponse {
   warnings: string[];
 }
 
+// ── LVS comparison ──────────────────────────────────────────────
+
+export interface LvsCompareRequest {
+  layoutNetlist: string;
+  schematicNetlist: string;
+  dialect?: SpiceDialect;
+  moduleName?: string;
+}
+
+/** Unbalanced class from vyges-lvs `unbalanced[]` */
+export interface LvsUnbalancedClass {
+  what: "device" | "net";
+  a_count: number;    // how many in layout side
+  b_count: number;    // how many in schematic side
+  a: string[];        // instance/net names on layout side
+  b: string[];        // instance/net names on schematic side
+}
+
+/** Property diff from vyges-lvs `property_diffs[]` */
+export interface LvsPropertyDiff {
+  kind: string;            // device kind: "M", "R", "C", etc
+  a_device: string;        // instance name on layout side
+  b_device: string;        // instance name on schematic side
+  param: string;           // parameter name: "w", "l", "nf", "m", "r", "c"
+  a_value: number;         // value on layout side
+  b_value: number;         // value on schematic side
+}
+
+/** Top-level result from vyges-lvs --json */
+export interface LvsRawResult {
+  matched: boolean;
+  verified: boolean;
+  note?: string;
+  a_devices: number;
+  b_devices: number;
+  a_nets: number;
+  b_nets: number;
+  iterations: number;
+  only_in_a_ports: string[];
+  only_in_b_ports: string[];
+  unbalanced: LvsUnbalancedClass[];
+  property_diffs: LvsPropertyDiff[];
+}
+
+/** Combined response: both JSON data + text report */
+export interface LvsCombinedResult {
+  matched: boolean;
+  json: LvsRawResult;
+  report: string;
+}
+
+export interface LvsResponse {
+  ok: true;
+  data: LvsCombinedResult;
+}
+
+export interface LvsErrorResponse {
+  ok: false;
+  error: string;
+  detail?: string;
+}
+
 // ── Analog device detection job ─────────────────────────────────
 
 export interface AnalogDetectionJob {

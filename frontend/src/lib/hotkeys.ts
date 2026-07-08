@@ -93,7 +93,8 @@ export type AnalogNetlistAction =
   | "toggleMatch"     // M — toggle device geometry matching
   | "viewCode"        // Alt+1 — Code view
   | "viewGraph"       // Alt+2 — Graph view
-  | "viewSchematic";  // Alt+3 — Schematic view
+  | "viewSchematic"   // Alt+3 — Schematic view
+  | "viewLvs";        // Alt+4 — LVS compare view
 
 export const ANALOG_NETLIST_HOTKEYS: Record<string, AnalogNetlistAction> = {
   "g": "toggleGraph",
@@ -111,6 +112,7 @@ export const ANALOG_NETLIST_ALT_HOTKEYS: Record<string, AnalogNetlistAction> = {
   "1": "viewCode",
   "2": "viewGraph",
   "3": "viewSchematic",
+  "4": "viewLvs",
 };
 
 // ── Overlay hotkeys (shared across Die viewer / Merge / RE Cell) ─

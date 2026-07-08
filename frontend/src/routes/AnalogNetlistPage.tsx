@@ -12,6 +12,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { NetGraphView } from "../components/netlist/NetGraphView";
 import { SchematicViewPanel } from "../components/netlist/SchematicViewPanel";
+import LVSComparePanel from "../components/netlist/LVSComparePanel";
 import type { SpiceConfig, SpiceDialect } from "shared";
 import { AppShell } from "../components/shell/AppShell";
 import { StatusBar } from "../components/shell/StatusBar";
@@ -173,7 +174,7 @@ function AnalogNetlist({ dieId }: { dieId: string }) {
   const netlist = useAnalogNetlist(annotations, moduleName, dialect, spiceConfig, hierarchical, analogOverrides);
 
   // ── UI state ────────────────────────────────────────────────────
-  const [rightView, setRightView] = useState<"code" | "graph" | "schematic">("code");
+  const [rightView, setRightView] = useState<"code" | "graph" | "schematic" | "lvs">("code");
   const [selectedRegion, setSelectedRegion] = useState<string | null>(null);
   const viewerRef = useRef<CodeViewerHandle | null>(null);
   const [selectedLine, setSelectedLine] = useState<number | null>(null);
@@ -205,7 +206,7 @@ function AnalogNetlist({ dieId }: { dieId: string }) {
         const altAction = ANALOG_NETLIST_ALT_HOTKEYS[e.key];
         if (altAction) {
           e.preventDefault();
-          setRightView(altAction === "viewCode" ? "code" : altAction === "viewGraph" ? "graph" : "schematic");
+          setRightView(altAction === "viewCode" ? "code" : altAction === "viewGraph" ? "graph" : altAction === "viewSchematic" ? "schematic" : "lvs");
           return;
         }
       }
@@ -231,6 +232,10 @@ function AnalogNetlist({ dieId }: { dieId: string }) {
         case "viewSchematic":
           e.preventDefault();
           setRightView("schematic");
+          break;
+        case "viewLvs":
+          e.preventDefault();
+          setRightView("lvs");
           break;
         case "toggleHierarchy":
           e.preventDefault();
@@ -389,6 +394,15 @@ function AnalogNetlist({ dieId }: { dieId: string }) {
                 title="Schematic view"
               >
                 Schematic
+              </button>
+              <button
+                type="button"
+                className={"btn sm" + (rightView === "lvs" ? " on" : "")}
+                onClick={() => setRightView("lvs")}
+                style={{ fontSize: 10, fontWeight: 600 }}
+                title="LVS compare [Alt+4]"
+              >
+                LVS
               </button>
             </div>
             {/* Hierarchical toggle (only in code view — schematic uses it by default) */}
@@ -603,7 +617,14 @@ function AnalogNetlist({ dieId }: { dieId: string }) {
             background: "var(--card)",
           }}
         >
-          {rightView === "schematic" && annotations ? (
+          {rightView === "lvs" ? (
+            <LVSComparePanel
+              dieId={dieId}
+              layoutNetlist={netlist.data?.source ?? null}
+              dialect={dialect}
+              moduleName={moduleName}
+            />
+          ) : rightView === "schematic" && annotations ? (
             <SchematicViewPanel
               annotations={annotations}
               moduleName={moduleName}
