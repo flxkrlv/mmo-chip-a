@@ -195,45 +195,13 @@ function stripSide(name: string): string {
   return name.replace(/^[AB]\//, "").replace(/\(\+\d+\)$/, "").replace(/\(×\d+\)$/, "");
 }
 
-// ── Direct netlist parsing (cascade-free) ────────────────────
-
-/** Extract net → connection count from a netlist, skipping 0 (ground). */
-function extractNetCounts(netlist: string): Map<string, number> {
-  const counts = new Map<string, number>();
-  for (const raw of netlist.split("\n")) {
-    const line = raw.trim();
-    if (!line || line.startsWith("*") || line.startsWith(".") || line.startsWith("//")) continue;
-    const parenStart = line.indexOf("(");
-    const parenEnd = line.lastIndexOf(")");
-    if (parenStart === -1 || parenEnd === -1) continue;
-    const nets = line.slice(parenStart + 1, parenEnd).split(/\s+/);
-    for (const n of nets) {
-      if (!n || n === "0") continue;
-      counts.set(n, (counts.get(n) ?? 0) + 1);
-    }
-  }
-  return counts;
-}
-
-interface NetDiffEntry {
-  name: string;
-  layoutCount: number;
-  schematicCount: number;
-}
-
-/** Compare nets between two netlists by connection count — cascade-free. */
-function computeNetDiffs(layoutNetlist: string, schematicNetlist: string): NetDiffEntry[] {
-  const lNets = extractNetCounts(layoutNetlist);
-  const sNets = extractNetCounts(schematicNetlist);
-  const all = new Set([...lNets.keys(), ...sNets.keys()]);
-  const diffs: NetDiffEntry[] = [];
-  for (const name of all) {
-    const lc = lNets.get(name) ?? 0;
-    const sc = sNets.get(name) ?? 0;
-    if (lc !== sc) diffs.push({ name, layoutCount: lc, schematicCount: sc });
-  }
-  diffs.sort((a, b) => Math.abs(b.layoutCount - b.schematicCount) - Math.abs(a.layoutCount - a.schematicCount));
-  return diffs;
+/** Count shared terminal names between two device lines — for overlap pairing */
+function terminalOverlap(lLine: string, sLine: string): number {
+  const lTerms = new Set(parseTerminals(lLine));
+  const sTerms = new Set(parseTerminals(sLine));
+  let shared = 0;
+  for (const t of lTerms) if (sTerms.has(t)) shared++;
+  return shared;
 }
 
 /** Extract terminal nets from a device line */
@@ -376,7 +344,39 @@ function buildDiffs(layoutNetlist: string, schematicNetlist: string, json: LvsRa
     for (const d of sDevices) diffs.push({ name: d.name, category: "s-only", layoutLine: "", schematicLine: d.line });
   }
 
-  // ── Phase 3: type mismatches vyges-lvs matched (e.g. npn vs pnp) ──
+  // ── Phase 2c: overlap-based pairing for renamed-terminal devices (Q10↔Q100) ──
+  // After exact signature match, try to pair remaining L-only/S-only by terminal overlap.
+  // Two devices are likely the same if >50% of their terminal net names match.
+  const lRemaining = [...lOnlyByName.entries()]
+    .filter(([name]) => !seen.has(name));
+  const sRemaining = [...sOnlyByName.entries()]
+    .filter(([name]) => !seen.has(name));
+
+  for (const [lName, lLine] of lRemaining) {
+    if (seen.has(lName)) continue;
+    let best: { name: string; line: string; overlap: number } | null = null;
+    for (const [sName, sLine] of sRemaining) {
+      if (seen.has(sName)) continue;
+      if (parseModelType(lLine) !== parseModelType(sLine)) continue;
+      const lTerms = parseTerminals(lLine);
+      const sTerms = parseTerminals(sLine);
+      if (lTerms.length !== sTerms.length) continue;
+      const overlap = terminalOverlap(lLine, sLine);
+      const maxLen = Math.max(lTerms.length, sTerms.length);
+      if (maxLen === 0) continue;
+      const ratio = overlap / maxLen;
+      if (ratio > 0.5 && (!best || overlap > best.overlap)) {
+        best = { name: sName, line: sLine, overlap };
+      }
+    }
+    if (best) {
+      diffs.push({ name: lName, category: "mismatch", layoutLine: lLine, schematicLine: best.line });
+      seen.add(lName);
+      seen.add(best.name);
+    }
+  }
+
+  // ── Phase 3: type mismatches with cross-check for name swaps (Q7↔Q9) ──
   for (const [name, lLine] of layoutMap) {
     if (seen.has(name)) continue;
     const sLine = schematicMap.get(name);
@@ -384,9 +384,25 @@ function buildDiffs(layoutNetlist: string, schematicNetlist: string, json: LvsRa
     if (lLine === sLine) continue;
     const lType = parseModelType(lLine);
     const sType = parseModelType(sLine);
-    if (lType && sType && lType !== sType) {
-      diffs.push({ name, category: "type-mismatch", layoutLine: lLine, schematicLine: sLine });
-      seen.add(name);
+    if (!lType || !sType) continue;
+    if (lType !== sType) {
+      // Cross-check: could Q7 layout(pnp, Net_9) match Q9 schematic(pnp, Net_9)?
+      const lTerms = parseTerminals(lLine).sort().join(",");
+      let swapped = false;
+      for (const [sName2, sLine2] of schematicMap) {
+        if (sName2 === name || seen.has(sName2)) continue;
+        if (parseModelType(sLine2) === lType && parseTerminals(sLine2).sort().join(",") === lTerms) {
+          diffs.push({ name, category: "name-mismatch", layoutLine: lLine, schematicLine: sLine2, note: `S name: ${sName2}` });
+          seen.add(name);
+          seen.add(sName2);
+          swapped = true;
+          break;
+        }
+      }
+      if (!swapped) {
+        diffs.push({ name, category: "type-mismatch", layoutLine: lLine, schematicLine: sLine });
+        seen.add(name);
+      }
     }
   }
 
@@ -416,20 +432,6 @@ function fmtVal(n: number): string {
   if (abs >= 1e-9) return (n * 1e9).toFixed(2) + "n";
   if (abs >= 1e-12) return (n * 1e12).toFixed(2) + "p";
   return n.toExponential(2);
-}
-
-function unbalancedNets(json: LvsRawResult) {
-  return json.unbalanced.filter((c) => c.what === "net");
-}
-
-function countByWhat(json: LvsRawResult, what: string): { a: number; b: number } {
-  let a = 0, b = 0;
-  for (const c of json.unbalanced) {
-    if (c.what !== what) continue;
-    a += c.a_count;
-    b += c.b_count;
-  }
-  return { a, b };
 }
 
 function matchRate(totalSideA: number, totalSideB: number, unbalancedA: number, unbalancedB: number): { matched: number; total: number; rate: number } {
@@ -763,103 +765,7 @@ export default function LVSComparePanel({ dieId, layoutNetlist, dialect, moduleN
     );
   };
 
-  function isCascadeArtifact(nets: { a_count: number; b_count: number }[]): boolean {
-    let totalA = 0, totalB = 0;
-    for (const n of nets) {
-      totalA += n.a_count;
-      totalB += n.b_count;
-    }
-    const matched = state.phase === "done" && state.data.matched;
-    return !matched && totalA === totalB;
-  }
-
-  function cleanNetName(n: string): string {
-    return n.replace(/^[AB]\//, "").replace(/[()]/g, "");
-  }
-
-  /** Render net diffs from engine's unbalanced (name-based) or cascade-free compute (vyges-lvs) */
-  const renderNetTable = () => {
-    if (state.phase !== "done") return null;
-    const json = state.data.json;
-    const currentEngine = state.data.engine;
-
-    if (currentEngine === "vyges-lvs" || currentEngine === "all") {
-      // vyges-lvs: cascade-free direct netlist parsing
-      const netDiffs = computeNetDiffs(layoutNetlist ?? "", schematicNetlist);
-      if (netDiffs.length > 0) {
-        const label = currentEngine === "all" ? "vyges-lvs " : "";
-        return (
-          <div style={{ margin: "0 10px 8px" }}>
-            <div style={sectionTitle}>{label}Net Connection Diffs ({netDiffs.length})</div>
-            <table style={tableSm}>
-              <thead>
-                <tr style={{ color: "var(--ink3)", textAlign: "left" }}>
-                  <th style={{ padding: "2px 6px", width: 24 }}>#</th>
-                  <th style={{ padding: "2px 6px" }}>Net</th>
-                  <th style={{ padding: "2px 6px", textAlign: "right" }}>Conns (L)</th>
-                  <th style={{ padding: "2px 6px", textAlign: "right" }}>Conns (S)</th>
-                  <th style={{ padding: "2px 6px" }}>Δ</th>
-                </tr>
-              </thead>
-              <tbody>
-                {netDiffs.map((d, i) => {
-                  const moreInL = d.layoutCount > d.schematicCount;
-                  return (
-                    <tr key={i} style={{ ...panelBase, marginTop: i > 0 ? 1 : 0 }}>
-                      <td style={{ padding: "2px 6px", color: "var(--ink3)" }}>{i + 1}</td>
-                      <td style={{ padding: "2px 6px", fontWeight: 600, color: "var(--ink)" }}>{d.name}</td>
-                      <td style={{ padding: "2px 6px", textAlign: "right", color: moreInL ? "#f55" : "var(--ink2)" }}>{d.layoutCount}</td>
-                      <td style={{ padding: "2px 6px", textAlign: "right", color: !moreInL ? "#48f" : "var(--ink2)" }}>{d.schematicCount}</td>
-                      <td style={{ padding: "2px 6px", textAlign: "right", color: "var(--ink3)" }}>
-                        {moreInL ? `+${d.layoutCount - d.schematicCount}` : `-${d.schematicCount - d.layoutCount}`}
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        );
-      }
-    }
-
-    if (currentEngine === "name-based" || currentEngine === "all") {
-      // name-based: net imbalances from engine's unbalanced[]
-      const netUnbal = json.unbalanced.filter((u) => u.what === "net");
-      if (netUnbal.length > 0) {
-        const label = currentEngine === "all" ? "name-based " : "";
-        return (
-          <div style={{ margin: "0 10px 8px" }}>
-            <div style={sectionTitle}>{label}Net Imbalances ({netUnbal.length})</div>
-            <table style={tableSm}>
-              <thead>
-                <tr style={{ color: "var(--ink3)", textAlign: "left" }}>
-                  <th style={{ padding: "2px 6px", width: 24 }}>#</th>
-                  <th style={{ padding: "2px 6px" }}>L Nets</th>
-                  <th style={{ padding: "2px 6px" }}>S Nets</th>
-                  <th style={{ padding: "2px 6px", textAlign: "right" }}>Count L</th>
-                  <th style={{ padding: "2px 6px", textAlign: "right" }}>Count S</th>
-                </tr>
-              </thead>
-              <tbody>
-                {netUnbal.map((u, i) => (
-                  <tr key={i} style={{ ...panelBase, marginTop: i > 0 ? 1 : 0 }}>
-                    <td style={{ padding: "2px 6px", color: "var(--ink3)" }}>{i + 1}</td>
-                    <td style={{ padding: "2px 6px", fontWeight: 600, color: "var(--ink)", fontFamily: "var(--mono)", fontSize: 10 }}>{u.a.join(", ") || "—"}</td>
-                    <td style={{ padding: "2px 6px", fontWeight: 600, color: "var(--ink)", fontFamily: "var(--mono)", fontSize: 10 }}>{u.b.join(", ") || "—"}</td>
-                    <td style={{ padding: "2px 6px", textAlign: "right", color: u.a_count > u.b_count ? "#f55" : "var(--ink2)" }}>{u.a_count}</td>
-                    <td style={{ padding: "2px 6px", textAlign: "right", color: u.b_count > u.a_count ? "#48f" : "var(--ink2)" }}>{u.b_count}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        );
-      }
-    }
-
-    return null;
-  };
+  // (net-level diffs removed — noise for renamed nets)
 
   const renderPortChips = () => {
     if (state.phase !== "done") return null;
@@ -1007,7 +913,6 @@ export default function LVSComparePanel({ dieId, layoutNetlist, dialect, moduleN
           <>
             <div style={{ display: "flex", gap: 10, flex: "1 1 auto", minHeight: 0, overflow: "hidden", padding: "6px 10px 0" }}>
               <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "auto", minWidth: 0 }}>
-                {renderNetTable()}
                 {renderPortChips()}
                 {renderPropertyTable()}
               </div>

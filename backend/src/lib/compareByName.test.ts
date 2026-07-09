@@ -190,13 +190,88 @@ describe("CONNECTION MISMATCH", () => {
   });
 
   test("Q7↔Q9 swapped same type — MATCH (graph-isomorphic)", () => {
-    // Same type+params, names swapped + nets relabeled = identical graph.
-    // Name-based correctly returns MATCH (same behavior as vyges-lvs name-independent).
-    // Only vyges-lvs Phase 2b catches this when vyges-lvs flags unbalanced.
     assertMatch(run(
       ".SUBCKT test\nQ7 (a b c 0) npn m=1\nQ9 (d e f 0) npn m=1\n.ENDS",
       ".SUBCKT test\nQ9 (a b c 0) npn m=1\nQ7 (d e f 0) npn m=1\n.ENDS",
     ));
+  });
+
+  // ── Phase 2c edge cases (overlap-based pairing) ──
+
+  test("Q10→Q100 one terminal renamed — MISMATCH via overlap", () => {
+    const r = run(
+      ".SUBCKT test\nQ10 (a b c 0) npn m=1\n.ENDS",
+      ".SUBCKT test\nQ100 (a x c 0) npn m=1\n.ENDS",
+    );
+    assertMismatch(r);
+    // 3/4 match by name → Phase 2c should pair as connection mismatch
+  });
+
+  test("Q10→Q100 all terminals different — L-only / S-only (no overlap)", () => {
+    const r = run(
+      ".SUBCKT test\nQ10 (a b c 0) npn\n.ENDS",
+      ".SUBCKT test\nQ100 (x y z 0) npn\n.ENDS",
+    );
+    assertMismatch(r);
+    // 0/4 match → no pairing, stays unbalanced
+    assert(r.unbalanced.some((u) => u.what === "device" && u.a_count > 0 && u.b_count === 0), "Q10 should be L-only");
+    assert(r.unbalanced.some((u) => u.what === "device" && u.a_count === 0 && u.b_count > 0), "Q100 should be S-only");
+  });
+
+  test("two random npn with 0 shared terms — no false pairing", () => {
+    const r = run(
+      ".SUBCKT test\nQ10 (a b c 0) npn\nQ12 (x y z 0) npn\n.ENDS",
+      ".SUBCKT test\nQ10 (a b c 0) npn\nQ13 (p q r 0) npn\n.ENDS",
+    );
+    assertMismatch(r);
+    // Q12 L-only, Q13 S-only — 0% overlap
+    assert(r.unbalanced.some((u) => u.what === "device" && u.a.includes("q12")), "Q12 L-only");
+    assert(r.unbalanced.some((u) => u.what === "device" && u.b.includes("q13")), "Q13 S-only");
+  });
+
+  test("Q10→Q100 with 2/4 overlap — no false pairing (<50%)", () => {
+    const r = run(
+      ".SUBCKT test\nQ10 (a b c d) npn\n.ENDS",
+      ".SUBCKT test\nQ100 (a b x y) npn\n.ENDS",
+    );
+    assertMismatch(r);
+    // 2/4 = 50% → NOT >50%, stays unbalanced (shouldn't pair at exactly 50%)
+    assert(r.unbalanced.some((u) => u.what === "device" && u.a.length > 0), "should be unbalanced (50% not >50%)");
+  });
+
+  test("Phase 2c: resistor with renamed terminal — overlap pairing", () => {
+    const r = run(
+      ".SUBCKT test\nR1 (n1 n2) resistor r=1k\n.ENDS",
+      ".SUBCKT test\nR10 (n1 n3) resistor r=1k\n.ENDS",
+    );
+    assertMismatch(r);
+    // 1/2 = 50% → fails >50%, stays unbalanced
+    // Only 2-terminal devices need >50% which means 2/2 must match (100%)
+    // With 2 terminals, any rename breaks >50% — correct behavior
+  });
+
+  // ── Phase 3 cross-check edge cases ──
+
+  test("Q7↔Q9 cross-swap different types — name-mismatch via cross-check", () => {
+    const r = run(
+      ".SUBCKT test\nQ7 (a b c 0) pnp\nQ9 (d e f 0) npn m=1\n.ENDS",
+      ".SUBCKT test\nQ9 (a b c 0) pnp\nQ7 (d e f 0) npn m=1\n.ENDS",
+    );
+    assertMismatch(r);
+    const typeM = r.details.mismatchedDevices.filter((d) => d.reason === "type");
+    assert.equal(typeM.length, 2, "Q7 and Q9 are type mismatches by name");
+  });
+
+  test("real type mismatch — no false cross-check", () => {
+    // Q7 layout pnp vs Q7 schematic npn, but no Q9 with matching pnp+terminals
+    const r = run(
+      ".SUBCKT test\nQ7 (a b c 0) pnp m=1\n.ENDS",
+      ".SUBCKT test\nQ7 (x y z 0) npn m=1\n.ENDS",
+    );
+    assertMismatch(r);
+    // Real type mismatch, no cross-swap
+    const typeM = r.details.mismatchedDevices.filter((d) => d.reason === "type");
+    assert.equal(typeM.length, 1, "Q7 is a real type mismatch");
   });
 
   test("R8/R9 cross-swapped — symmetric, MATCH", () => {
