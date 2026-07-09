@@ -117,6 +117,20 @@ async function runVygesLvs(
 }
 
 function nameBasedToRawResult(nb: NameBasedResult): LvsRawResult {
+  // Copy unbalanced as-is (device-only, net-count imbalances)
+  const unbalanced = [...nb.unbalanced];
+
+  // Add type/connection mismatches as unbalanced device entries
+  // so buildDiffs() Phase 2a can pick them up and compare lines
+  for (const md of nb.details.mismatchedDevices) {
+    if (md.reason === "param") continue;
+    unbalanced.push({
+      what: "device",
+      a_count: 1, b_count: 1,
+      a: [md.name], b: [md.name],
+    });
+  }
+
   return {
     matched: nb.matched,
     verified: true,
@@ -127,7 +141,7 @@ function nameBasedToRawResult(nb: NameBasedResult): LvsRawResult {
     iterations: 1,
     only_in_a_ports: [],
     only_in_b_ports: [],
-    unbalanced: nb.unbalanced,
+    unbalanced,
     property_diffs: nb.property_diffs,
   };
 }
@@ -137,25 +151,125 @@ function runNameBasedEngine(
   schematicNetlist: string,
 ): LvsEngineResult {
   const nb = compareByName(layoutNetlist, schematicNetlist);
-  const unmatched = nb.details.mismatchedDevices.filter((d) => d.reason !== "param");
-  const details = nb.details.mismatchedDevices
-    .map((d) => `  ${d.name}: ${d.reason} (${d.layout.modelType} vs ${d.schematic.modelType})`)
-    .join("\n");
-  const unbalLines = nb.unbalanced
-    .map((u) => u.what === "device"
-      ? `  ${u.a_count > u.b_count ? "L-only" : "S-only"}: [${u.a.concat(u.b).join(", ")}]`
-      : `  net count: L=${u.a_count} S=${u.b_count}`)
-    .join("\n");
-  const report = [
-    `name-based LVS — ${nb.matched ? "MATCH" : "MISMATCH"}`,
-    `  devices  L ${nb.a_devices}  S ${nb.b_devices}`,
-    `  nets     L ${nb.a_nets}  S ${nb.b_nets}`,
-    ...(unbalLines ? ["", "unbalanced:", unbalLines] : []),
-    ...(details ? ["", "device diffs:", details] : []),
-    ...(nb.property_diffs.length > 0 ? ["", "property diffs:"] : []),
-    ...nb.property_diffs.map((d) => `  ${d.a_device}: ${d.param} ${d.a_value} → ${d.b_value}`),
-    ...(unmatched.length === 0 && unbalLines === "" ? ["", "  netlists match (name-based: topology + type + connections)"] : []),
-  ].join("\n");
+  const mismatches = nb.details.mismatchedDevices;
+  const unmatched = mismatches.filter((d) => d.reason !== "param");
+  const typeMismatches = mismatches.filter((d) => d.reason === "type");
+  const connMismatches = mismatches.filter((d) => d.reason === "connection");
+  const paramMismatches = mismatches.filter((d) => d.reason === "param");
+
+  // Detect name variants: different names, same signature
+  // (Phase 2b already handles this via buildDiffs on frontend)
+  const nameVariants = nb.details.mismatchedDevices
+    .filter((d) => d.layout.modelType === d.schematic.modelType);
+
+  // Build Calibre-like report
+  const lines: string[] = [];
+  lines.push(`${"=".repeat(70)}`);
+  lines.push(`  NAME-BASED LVS REPORT`);
+  lines.push(`${"=".repeat(70)}`);
+  lines.push(``);
+  lines.push(`  Verdict: ${nb.matched ? "CORRECT" : "INCORRECT"}`);
+  lines.push(`  Devices: L ${nb.a_devices}  S ${nb.b_devices}`);
+  lines.push(`  Nets:    L ${nb.a_nets}  S ${nb.b_nets}`);
+  lines.push(``);
+
+  if (nb.matched && nb.property_diffs.length === 0 && mismatches.length === 0) {
+    lines.push(`  ✅ The two netlists match structurally.`);
+    lines.push(`  (name-based: names + types + connections identical)`);
+  }
+
+  // Per-type breakdown (Calibre-style)
+  if (!nb.matched || nb.property_diffs.length > 0) {
+    lines.push(``);
+    lines.push(`  INITIAL NUMBERS OF OBJECTS`);
+    lines.push(`  ${"-".repeat(50)}`);
+    lines.push(`                   Layout    Source`);
+    lines.push(`                   ------    ------`);
+    lines.push(`  Nets:               ${String(nb.a_nets).padStart(4)}    ${String(nb.b_nets).padStart(5)}`);
+    lines.push(`  Instances:          ${String(nb.a_devices).padStart(4)}    ${String(nb.b_devices).padStart(5)}`);
+    lines.push(``);
+  }
+
+  // Net imbalances
+  const netImbalances = nb.unbalanced.filter(u => u.what === "net");
+  if (netImbalances.length > 0) {
+    lines.push(`  INCORRECT NETS (${netImbalances.length} classes)`);
+    lines.push(`  ${"-".repeat(50)}`);
+    for (const ni of netImbalances) {
+      lines.push(`    L ${ni.a_count} connections  S ${ni.b_count} connections`);
+      if (ni.a.length) lines.push(`      L: ${ni.a.join(", ")}`);
+      if (ni.b.length) lines.push(`      S: ${ni.b.join(", ")}`);
+    }
+    lines.push(``);
+  }
+
+  // Device-only imbalances
+  const devOnly = nb.unbalanced.filter(u => u.what === "device" && (u.a_count === 0 || u.b_count === 0));
+  if (devOnly.length > 0) {
+    lines.push(`  INCORRECT DEVICES (${devOnly.length})`);
+    lines.push(`  ${"-".repeat(50)}`);
+    for (const d of devOnly) {
+      if (d.a_count > 0 && d.b_count === 0) {
+        lines.push(`    L-only: ${d.a.join(", ")}`);
+      } else if (d.a_count === 0 && d.b_count > 0) {
+        lines.push(`    S-only: ${d.b.join(", ")}`);
+      }
+    }
+    lines.push(``);
+  }
+
+  // Device diffs
+  if (unmatched.length > 0) {
+    lines.push(`  INCORRECT DEVICES — MISMATCH (${unmatched.length})`);
+    lines.push(`  ${"-".repeat(50)}`);
+    for (const d of unmatched) {
+      const reasonLabel =
+        d.reason === "type" ? "TYPE MISMATCH" :
+        d.reason === "connection" ? "CONNECTION MISMATCH" :
+        d.reason === "param" ? "PARAM CHANGED" : "MISMATCH";
+      lines.push(`    ${d.name} — ${reasonLabel}`);
+      lines.push(`      L: ${d.layout.modelType}  [${d.layout.terminals.join(", ")}]`);
+      lines.push(`      S: ${d.schematic.modelType}  [${d.schematic.terminals.join(", ")}]`);
+      // Name variant hint
+      if (d.reason === "connection" && d.layout.modelType === d.schematic.modelType) {
+        lines.push(`      ⚠ Same type, different connections`);
+      }
+    }
+    lines.push(``);
+  }
+
+  // Property diffs
+  if (nb.property_diffs.length > 0) {
+    lines.push(`  PROPERTY DIFFS (${nb.property_diffs.length})`);
+    lines.push(`  ${"-".repeat(50)}`);
+    for (const pd of nb.property_diffs) {
+      lines.push(`    ${pd.a_device}: ${pd.param}  ${pd.a_value} → ${pd.b_value}`);
+    }
+    lines.push(``);
+  }
+
+  // Name-variant warning: detect pairs of L-only + S-only names that
+  // could be the same device with different names (e.g., R6 vs R66)
+  const lOnlyNames = nb.unbalanced
+    .filter(u => u.what === "device" && u.a_count > 0 && u.b_count === 0)
+    .flatMap(u => u.a);
+  const sOnlyNames = nb.unbalanced
+    .filter(u => u.what === "device" && u.a_count === 0 && u.b_count > 0)
+    .flatMap(u => u.b);
+  if (lOnlyNames.length > 0 && sOnlyNames.length > 0) {
+    lines.push(`  ⚠ Possible name variants detected: ${lOnlyNames.length} L-only + ${sOnlyNames.length} S-only`);
+    lines.push(`    Devices with the same topology but different names may have been`);
+    lines.push(`    renamed between layout and schematic (e.g., R6 → R66).`);
+    lines.push(`    Check the list above for L-only / S-only entries.`);
+    lines.push(``);
+  }
+
+  // Overall
+  if (!nb.matched) {
+    lines.push(`  ⚠ Netlists differ. Check INCORRECT sections above.`);
+  }
+
+  const report = lines.join("\n");
 
   return {
     engine: "name-based",
@@ -180,12 +294,16 @@ function buildAllResponse(engines: LvsEngineResult[]): LvsCombinedResult {
   const map: Record<string, LvsEngineResult> = {};
   for (const e of engines) map[e.engine] = e;
   const allMatch = engines.every((e) => e.matched);
+  const allSame = engines.every((e) => e.matched === engines[0]!.matched);
   const reports = engines.map((e) => `${e.engine}: ${e.matched ? "MATCH" : "MISMATCH"}`);
+  const agreement = allSame
+    ? `✅ Engines agree: ${allMatch ? "MATCH" : "MISMATCH"}`
+    : "⚠️ Engines disagree!";
   return {
     engine: "all",
     matched: allMatch,
     json: engines[0]!.json,
-    report: reports.join("\n") + "\n" + (allMatch ? "✅ All engines agree: MATCH" : "⚠️ Engines disagree!"),
+    report: reports.join("\n") + "\n" + agreement,
     engines: map,
   };
 }

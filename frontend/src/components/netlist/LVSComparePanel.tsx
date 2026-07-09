@@ -879,6 +879,7 @@ export default function LVSComparePanel({ dieId, layoutNetlist, dialect, moduleN
   const renderReport = () => {
     if (state.phase !== "done" || !state.data.report) return null;
     const engName = state.data.engine === "all" ? "vyges-lvs + name-based" : (ENGINE_LABELS[state.data.engine] ?? state.data.engine);
+    const engines = (state.data as any).engines as Record<string, { engine: string; report: string }> | undefined;
     return (
       <div style={{ margin: "0 10px 8px" }}>
         <div
@@ -886,15 +887,32 @@ export default function LVSComparePanel({ dieId, layoutNetlist, dialect, moduleN
           onClick={() => setShowReport((v) => !v)}
         >
           <span style={{ transform: showReport ? "rotate(90deg)" : "none", display: "inline-block", fontSize: 8 }}>{Ic.chev}</span>
-          {engName} Report
+          Reports
         </div>
         {showReport && (
-          <textarea
-            readOnly
-            value={state.data.report}
-            style={{ ...textareaBase, minHeight: 100, cursor: "default", whiteSpace: "pre", fontFamily: "var(--mono)" }}
-            spellCheck={false}
-          />
+          <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+            {/* Combined/single report */}
+            <textarea
+              readOnly
+              value={state.data.report}
+              style={{ ...textareaBase, minHeight: engines ? 60 : 100, cursor: "default", whiteSpace: "pre", fontFamily: "var(--mono)" }}
+              spellCheck={false}
+            />
+            {/* Per-engine reports in "both" mode */}
+            {engines && Object.entries(engines).map(([ek, er]) => (
+              <details key={ek} style={{ fontSize: 10 }}>
+                <summary style={{ cursor: "pointer", color: "var(--ink2)", fontWeight: 600 }}>
+                  {ENGINE_LABELS[ek] ?? ek} full report
+                </summary>
+                <textarea
+                  readOnly
+                  value={er.report}
+                  style={{ ...textareaBase, minHeight: 80, cursor: "default", whiteSpace: "pre", fontFamily: "var(--mono)", marginTop: 2 }}
+                  spellCheck={false}
+                />
+              </details>
+            ))}
+          </div>
         )}
       </div>
     );
