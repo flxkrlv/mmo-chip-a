@@ -3,7 +3,7 @@
 **Branch:** `analog-re-wip`
 **Engine:** `vyges-lvs` v0.1.11 (Rust, Apache 2.0)
 
-## Current status (MVP — Jul 9)
+## Current status (Jul 2026)
 
 | Feature | Status |
 |---------|--------|
@@ -14,32 +14,15 @@
 | Schematic netlist paste area | ✅ |
 | Compare button + loading state | ✅ |
 | MATCH/MISMATCH verdict badge | ✅ |
-| Device-diff table (post-processed, 4 categories) | ✅ L-only / S-only / Type Mismatch / Param + Conn |
-| Net connection diff table | ✅ direct netlist parsing (cascade-free) |
-| Full vyges-lvs text report (collapsible) | ✅ |
+| Device-diff table (buildDiffs Phase 1+2a) | ✅ L-only / S-only / Type Mismatch / Connection Mismatch |
+| Report inline (left column) | ✅ no accordion |
+| Engine selector (vyges-lvs / name-based / both) | ✅ |
+| Cascade noise warning | ✅ |
 | vyges-lvs auto-detect (PATH, ~/.cargo/bin) | ✅ |
 | Error handling (ENOENT, timeout, SPICE parse error) | ✅ |
 | Copy report button | ✅ |
 
-**Verdict correctness:** proven — name-independent graph isomorphism (1-WL + bijection).
-A renamed/reordered netlist that is structurally identical returns MATCH (verified: 100 devices,
-all names changed → MATCH). See `docs/reference/netlists/report.txt` for full validation.
-
-**Test harnesses:**
-- `test_lvs_categories.ps1` — 23 tests, vyges-lvs CLI directly (9 categories)
-- `backend/src/lib/compareByName.test.ts` — 35 tests, name-based engine
-- `npm test` — backend integration tests (app, importer, svg import)
-
-**Engines:**
-| Engine | Type | When to use |
-|--------|------|-------------|
-| `vyges-lvs` | Graph-isomorphism (1-WL) | Default. Name-independent, catches pin swaps |
-| `name-based` | Net-signature matching | Device names must match. Catches R811 that vyges-lvs misses |
-| `both` | Cross-validation | Run both, compare verdicts. Detects engine-specific blind spots |
-
----
-
-## Pipeline
+## Architecture
 
 ```
 Layout netlist ─┐                    ┌─ vyges-lvs ──┬─ raw JSON ──┐
@@ -48,7 +31,7 @@ Schematic netlist┘                    └─ vyges-lvs ──┴─ text ─�
                                                                    │
                           ┌────────────────────────────────────────┘
                           ↓
-                   buildDiffs() — 5-phase post-processor
+                   buildDiffs() — Phase 1 + 2a
                    (LVSComparePanel.tsx)
 ```
 
@@ -62,7 +45,7 @@ Applied identically to both sides before vyges-lvs.
 4. Preserve device instances and `parameters`/`.PARAM`
 5. Wrap both sides in matching `.SUBCKT ${name}` / `.ENDS ${name}` (no port decl)
 
-`.GLOBAL` nets (always `0`, plus `GND`/`VCC`/`VDD`/`VSS` auto-detected from both netlists)
+`.GLOBAL` nets (always `0`, plus `GND`/`VCC`/`VDD`/`VSS` auto-detected)
 are emitted before `.SUBCKT` so vyges-lvs anchors supply nets and prevents 1-WL
 cascade across power rails.
 
@@ -72,187 +55,131 @@ vyges-lvs runs with `--json` and as text report:
 - Parses both sides as SPICE graphs (name-independent 1-WL colour refinement)
 - Confirms match with explicit device/net bijection
 - Returns `unbalanced[]` (colour classes that didn't balance) and `property_diffs[]`
-  (matched devices with different params — `r=`, `w=`, `l=`, etc.)
 
 **Known vyges-lvs v0.1.11 limitations:**
-- 1-WL cascade: a single connectivity change propagates colour through the entire
-  connected component → MANY false positives in `unbalanced[]`
-- Does NOT report `m=` (BJT multiplier) or `c=` (capacitor value) in `property_diffs[]`
-- Does NOT detect extra devices with identical topology (R811 parallel to R81)
+- 1-WL cascade: single connectivity change propagates through entire component → many false positives in `unbalanced[]`
+- Does NOT report `property_diffs[]` (always empty)
+- Does NOT detect extra parallel resistors (R811 case)
 - Does NOT distinguish device types (npn vs pnp) — matches them as "same"
 
-### Step 3: Post-processing — buildDiffs() 5-phase filter
+### Step 3: Post-processing — buildDiffs() Phase 1 + 2a
 
 `frontend/src/components/netlist/LVSComparePanel.tsx:buildDiffs()`
 
-Takes raw vyges-lvs JSON + original netlist lines and produces a clean diff list:
+Takes raw vyges-lvs JSON + original netlist lines:
 
-| Phase | What | Technique |
-|-------|------|-----------|
-| **1** | Collect unbalanced | Parse `unbalanced[]` device names |
-| **2a** | Name-based check | For each unbalanced name: if same-name device exists on other side, compare lines. Identical → cascade artifact (drop). Different → classify as type/param/conn mismatch |
-| **2b** | Signature match | For remaining L-only/S-only: group by **signature** (`modelType:sorted(terminals)`). Match by-signature across sides → cascade artifact. Count mismatch → extra devices flagged. **Catches name variants** (Q37 vs Q370, R80 vs R800) |
-| **3** | Type mismatch | For devices vyges-lvs matched but with different model type (npn vs pnp) |
-| **4** | Parameter scan | For all matched devices: if same type + same terminals but different params (`m=`, `c=`, `r=`) → Param Changed. Catches what vyges-lvs misses in `property_diffs[]` |
+| Phase | What | How |
+|-------|------|-----|
+| **1** | Collect unbalanced | Parse `unbalanced[]` device names from vyges-lvs JSON |
+| **2a** | Name-based check | For each unbalanced name: if name exists on BOTH sides, compare raw lines. Identical → cascade artifact (skip). Different → classify as type-mismatch or mismatch (connection/param). If name on ONE side only → L-only / S-only. |
 
-**Signature** = `modelType:sortedTerminals` — e.g. `npn:0,GND,Net_19,Net_54` or
-`resistor:GND,Net_127`. Completely name-independent; derived purely from device
-line content.
+**Cascade noise filter:** if `lLine === sLine`, device is same on both sides — cascade artifact from 1-WL refinement. Skipped.
+
+**Known limitation:** when device names are globally renamed between layout and schematic (R1→R100), ALL unbalanced devices show as L-only/S-only. True errors are mixed with cascade noise. GUI shows warning.
 
 ### Step 4: Display
 
-- Summary bar: device count, diff count per category, net count delta, iteration count
-- Device Diffs: grouped as **L-only** / **S-only** / **Device Type Mismatch** /
-  **Param Changed** / **Connection Mismatch** with side-by-side line comparison
-- Net Connection Diffs: cascade-free (computed by direct netlist line parsing,
-  not from vyges-lvs unbalanced)
-- Collapsible raw vyges-lvs text report
-- Copy Report button
+- Summary bar: engine selector, verdict badge, device/net stats
+- Device Diffs: grouped as **L-only** / **S-only** / **Type Mismatch** / **Connection Mismatch**
+- Report (inline, left column): text report from engine
+- Warning when cascade noise may be present
 
----
+## Engine selector
 
-## Validation results
+| Engine | How it works | When to use |
+|--------|-------------|-------------|
+| `vyges-lvs` | Graph-isomorphism (1-WL) | Default, general case |
+| `name-based` | Net-signature matching | Device names must match. Catches R811 |
+| `both` | Run both, compare verdicts | Cross-validation |
 
-Two test series with 5 intentional errors each (see `docs/reference/netlists/report.txt`):
+**Key difference:** name-based engine uses net mapping (layout_net → schematic_net) through signature analysis. This gives it an advantage for renamed terminals (Q10→Q100) and parallel resistors (R811). However, it does NOT work when device names differ.
 
-### Series 1 — Structural + param errors
+## Known limitations
 
-| # | Error | Expected | Result |
-|---|-------|----------|--------|
-| 1 | Q1 npn → pnp | Type Mismatch | ✅ Found |
-| 2 | R7 13Ω → 19.5Ω | Param Changed | ✅ Found |
-| 3 | R8/R9 swapped | Connection Mismatch | ✅ Found |
-| 4 | R811 added (parallel) | Only in Schematic | ❌ Missed (vyges-lvs v0.1.11 limitation — parallel combine) |
-| 5 | C1 34570f → 40000f | Param Changed | ✅ Found |
+### When device names are globally renamed (R1→R100)
 
-False positives: 23 → **0** after buildDiffs.
+This is the hardest case for LVS:
+- vyges-lvs: MISMATCH + unbalanced with cascade noise (some real errors mixed with spurious matches)
+- name-based: doesn't work (requires same device names)
+- buildDiffs: shows L-only/S-only for all devices (can't distinguish real errors from renames)
 
-### Series 2 — Param + deletion + addition errors
+GUI shows warning: "some diffs may be cascade noise".
 
-| # | Error | Expected | Result |
-|---|-------|----------|--------|
-| 1 | Q1 m=3.6 → 5.0 | Param Changed | ✅ Found (Phase 4) |
-| 2 | R7 deleted | Only in Layout | ✅ Found |
-| 3 | D1 pins swapped | Connection Mismatch | ✅ Found |
-| 4 | C1 c=-100f | Param Changed | ✅ Found (Phase 4) |
-| 5 | Q33 added | Only in Schematic | ✅ Found |
-
-False positives: **0**.
-
-**Overall: 9/10 detected.** The only blind spot (#4 in series 1) is vyges-lvs's
-parallel-resistor combination: vyges-lvs combines parallel resistors into a single
-virtual device before matching, so an extra parallel resistor (R811) is absorbed
-rather than flagged. This requires a vyges-lvs engine change to fix.
-
----
-
-## Known remaining limitations
-
-### vyges-lvs v0.1.11 engine limits
+### vyges-lvs v0.1.11
 
 | Limitation | Impact | Workaround |
 |-----------|--------|-----------|
-| 1-WL cascade | → false positives in unbalanced[] | buildDiffs Phase 2a/2b filters by line + signature |
-| **No property_diffs at all** | `r=`, `m=`, `c=` never reported | buildDiffs Phase 4 scans all matched devices by netlist line (critical!) |
-| No npn vs pnp distinction | → type changes missed | buildDiffs Phase 3 catches it |
-| Parallel combine (Spectre) | → R811 extra parallel resistor absorbed, FALSE MATCH | requires engine change |
-| CDL positional params treated as identity | → `R1 n1 n2 1k` vs `2k` = MISMATCH (wrong) | always use Spectre named params (`r=1k`) |
-| .SUBCKT port names NOT name-independent | → `test a b c` vs `test x y z` = MISMATCH | strip ports, use `.SUBCKT test` (no ports) on both sides (already done by normalizeNetlist.ts) |
-| Renamed devices (Q37→Q370) cascade | → different colours → spurious L/S-only | buildDiffs Phase 2b matches by signature |
+| 1-WL cascade | False positives in unbalanced[] | buildDiffs Phase 2a filters by identical line |
+| No property_diffs | `r=`, `m=`, `c=` never reported | Use name-based engine |
+| Parallel combine (Spectre) | R811 extra absorbed → FALSE MATCH | Use name-based engine |
+| CDL positional params | `R1 n1 n2 1k` vs `2k` = MISMATCH | Use Spectre format (`r=1k`) |
+| .SUBCKT port names | Not name-independent | normalizeNetlist.ts strips ports |
 
-### What buildDiffs CAN'T fix
-
-- R811-style extras in Spectre format (parallel combine in vyges-lvs absorbs them,
-  no property_diffs emitted → FALSE MATCH)
-- Genuine graph-isomorphic differences (two circuits with identical topology but
-  different parameters)
-
-### vyges-lvs findings (test_lvs_categories.ps1, 23 tests)
-
-| Category | Tests | Pass | Notes |
-|----------|-------|------|-------|
-| **MATCH** (identical) | 3 | 3 | Works. Renumbered devices (R1→R99) and renamed internal nets OK |
-| **Type Mismatch** | 3 | 3 | npn/pnp, resistor/capacitor, diode model all detected |
-| **Param Changed (Spectre)** | 2 | 2 | topo MATCH correct; property_diffs always empty in v0.1.11 |
-| **Param Changed (CDL)** | 1 | 1 | positional = identity → MISMATCH (known limitation) |
-| **Connection Mismatch** | 3 | 3 | Swapped terminals detected for R, D, Q |
-| **Extra/Missing** | 3 | 3 | Detected for R, C, Q |
-| **GLOBAL nets** | 2 | 2 | VCC/GND anchoring works; VCC vs VDD mismatch detected |
-| **Parallel resistor** | 2 | 1 | **Spectre: FALSE MATCH** (blind spot). CDL: detected via value combine |
-| **Spectre syntax** | 2 | 2 | Parenthesized ports OK, r= param changed detected as topo MATCH |
-
-**vyges-lvs: 22/23 pass. 1 expected fail = Spectre parallel resistor blind spot.**
-
-### Name-based engine findings (compareByName.test.ts, 35 tests)
-
-| Category | Tests | Pass | Notes |
-|----------|-------|------|-------|
-| **MATCH** | 5 | 5 | Renamed nets OK; renamed device numbers = MISMATCH (by design) |
-| **Type Mismatch** | 3 | 3 | Same-name devices with different types caught |
-| **Param Changed** | 3 | 3 | topology MATCH with property_diffs reported |
-| **Connection Mismatch** | 4 | 4 | Symmetric (=MATCH) vs ordered (=MISMATCH) handled correctly |
-| **Extra/Missing** | 3 | 3 | All detected |
-| **Parallel Resistor** | 2 | 2 | **Blind spot FIXED**: R811 detected by different name |
-| **GLOBAL nets** | 1 | 1 | Works |
-| **Spectre syntax** | 2 | 2 | Works |
-| **CDL format** | 2 | 2 | Positional format handled |
-| **Complex/Realistic** | 4 | 4 | Full circuits with renamed nets and multiple errors |
-| **Edge Cases** | 6 | 6 | Empty, case-insensitive, duplicate names, etc. |
-
-**Name-based: 35/35 pass. Key advantage: R811 parallel resistor detected.**
-
-### Known name-based limitations
+### Name-based engine
 
 | Limitation | Cause | Workaround |
 |------------|-------|------------|
 | Renamed devices (R1→R99) | Matches by name, not topology | Use vyges-lvs |
-| Isolated ordered pin swaps (D1 alone, pins swapped) | Graph-theoretic ambiguity in isolated net pairs | Add a distinguishing device, or use vyges-lvs |
-| Duplicate device names | Map overwrites last occurrence | Ensure unique names |
+| Isolated ordered pin swaps | Graph-theoretic ambiguity | Add distinguishing device |
 
----
+## Test results
 
-## Netlist normalizer
+### Test harnesses
+- `backend/src/lib/compareByName.test.ts` — 44 unit tests (name-based)
+- `backend/src/lib/compareByName.comprehensive.test.ts` — 25 realistic scenarios (both engines)
+- `test_lvs_categories.ps1` — 25 tests, vyges-lvs CLI directly
+- `npm test` — backend integration tests
 
-`backend/src/lib/normalizeNetlist.ts` — Spectre/CDL normalizer for vyges-lvs.
+### Comprehensive test results (25 scenarios)
 
-**What it does:**
-1. Strips simulation directives (`simulator lang`, `tran`, `dc`, `save`, `global`, etc.)
-2. Preserves `.GLOBAL` net declarations from input (or accepts via `globalNets` param)
-3. Strips existing `.subckt`/`.ends` boundaries (flat output)
-4. Preserves device instances and `parameters` / `.PARAM`
-5. Wraps everything in identical `.SUBCKT ${name}` / `.ENDS ${name}` (no ports)
+| # | Scenario | name-based | vyges-lvs |
+|---|----------|-----------|-----------|
+| 1 | Identical netlist | MATCH ✅ | MATCH ✅ |
+| 2 | Single net renamed | MATCH ✅ | MATCH ✅ |
+| 3 | Q7 pnp→npn | MISMATCH ✅ | MISMATCH ✅ |
+| 4 | R1→capacitor | MISMATCH ✅ | MISMATCH ✅ |
+| 5 | Q3 pnp→npn | MISMATCH ✅ | MISMATCH ✅ |
+| 6 | R2 terminals swapped (symmetric) | MATCH ✅ | MATCH ✅ |
+| 7 | Q10 terminal changed | MISMATCH ✅ | MISMATCH ✅ |
+| 8 | Q7 collector/emitter swapped | MISMATCH ✅ | MISMATCH ✅ |
+| 9 | Q7↔Q9 attributes swapped | MISMATCH ✅ | MISMATCH ✅ |
+| 10 | R6 removed | MISMATCH ✅ | MISMATCH ✅ |
+| 11 | R99 added | MISMATCH ✅ | MISMATCH ✅ |
+| 12 | R2 removed | MISMATCH ✅ | MISMATCH ✅ |
+| 13 | R1 r=3981→5000 | MATCH ✅ | MATCH ✅ |
+| 14 | Q3 m=5→10 | MATCH ✅ | MATCH ✅ |
+| 15 | C1 c=34.5p→40p | MATCH ✅ | MATCH ✅ |
+| 16 | Q10→Q100 + terminal | MISMATCH ✅ | MISMATCH ✅ |
+| 17 | R6→R66 same nets | MISMATCH ✅ | MISMATCH ✅ |
+| 18 | R1 terminal renamed | MISMATCH ✅ | MISMATCH ✅ |
+| 19 | Combined 3 errors | MISMATCH ✅ | MISMATCH ✅ |
+| 20 | Empty schematic | MISMATCH ✅ | MISMATCH ✅ |
+| 21 | R8→R88 same nets | MISMATCH ✅ | MISMATCH ✅ |
+| 22 | Q101 m param | MATCH ✅ | MATCH ✅ |
+| 23 | R6→R66 + R8→R88 | MISMATCH ✅ | MISMATCH ✅ |
+| 24 | Q7 terminal swap | MISMATCH ✅ | MISMATCH ✅ |
+| 25 | R9 r param | MATCH ✅ | MATCH ✅ |
 
-**Global net detection** (`backend/src/api/lvs.ts:extractGlobals()`):
-- Always adds `0` (universal SPICE ground)
-- Parses explicit `.GLOBAL` directives from both sides
-- Auto-detects common power nets (`GND`, `VCC`, `VDD`, `VSS`, `VEE`, `VBB`,
-  `VSUB`, `AVDD`, `AVSS`, `DVDD`, `DVSS`) by scanning standalone tokens in
-  both netlists
-- All detected globals are merged and applied identically to both sides
+**25/25 for both engines. All 69 unit+comprehensive tests pass.**
 
----
+## Key findings
 
-## vyges-lvs binary
+1. **Net connection diffs removed** — comparing net names between different netlists is noise (they're always different)
+2. **Phase 2b removed** — signature matching included net names → unreliable when nets are renamed
+3. **Ordered device swaps** — exclusive net swaps (Q6 net2110↔net2111) are graph-isomorphic → MATCH correctly
+4. **Parallel resistors** — R811 detected by name-based (different name), missed by vyges-lvs (parallel combine)
+5. **property_diffs always empty** in vyges-lvs v0.1.11
+6. **Cascade noise** — when device names differ between sides, 1-WL cascade creates spurious unbalanced entries
 
-- **Binary location:** `~/.cargo/bin/vyges-lvs.exe` (2 MB)
-- **Source:** `cargo install --git https://github.com/vyges-tools/lvs` (Apache 2.0)
-- **Docs:** https://docs.vyges.com/engines/lvs.html
-- **Version:** v0.1.11
+## Files changed
 
-## Setup on a fresh machine
-
-### Windows
-
-```powershell
-scripts\setup-lvs.ps1
-```
-
-Installs Rust via rustup if missing, then builds vyges-lvs from source.
-
-### Linux / macOS
-
-```bash
-chmod +x scripts/setup-lvs.sh && ./scripts/setup-lvs.sh
-```
-
-Downloads prebuilt binary (Linux x86_64/aarch64, macOS aarch64) from GitHub releases.
+| File | Role |
+|------|------|
+| `backend/src/lib/compareByName.ts` | Name-based engine |
+| `backend/src/lib/compareByName.test.ts` | 44 unit tests |
+| `backend/src/lib/compareByName.comprehensive.test.ts` | 25 realistic scenarios |
+| `backend/src/api/lvs.ts` | Engine multiplexer |
+| `shared/src/types.ts` | LvsEngine, LvsEngineResult types |
+| `frontend/src/api/lvs.ts` | API client |
+| `frontend/src/components/netlist/LVSComparePanel.tsx` | buildDiffs, engine selector, report inline |
+| `test_lvs_categories.ps1` | vyges-lvs CLI tests |
