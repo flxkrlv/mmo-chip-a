@@ -62,11 +62,21 @@ function generateReportText(data: LvsResultData, devices: DeviceDiff[]): string 
 
   lines.push(`LVS Report`);
   lines.push(`Status: ${matched ? "MATCH" : "MISMATCH"}`);
-  const unbalancedD = countByWhat(json, "device");
-  const unbalancedN = countByWhat(json, "net");
-  const dr = matchRate(json.a_devices, json.b_devices, unbalancedD.a, unbalancedD.b);
-  const nr = matchRate(json.a_nets, json.b_nets, unbalancedN.a, unbalancedN.b);
-  lines.push(`Devices: ${dr.matched}/${dr.total} (${pct(dr.rate)})  Nets: ${nr.matched}/${nr.total} (${pct(nr.rate)})`);
+  const totalDev = Math.max(json.a_devices, json.b_devices);
+  const devs = devices.length;
+  lines.push(`Devices: ${totalDev} — ${devs} diff${devs !== 1 ? "s" : ""}  Nets: ${json.a_nets}/${json.b_nets}`);
+  const parts: string[] = [];
+  const stLOnly = devices.filter(d => d.category === "l-only").length;
+  const stSOnly = devices.filter(d => d.category === "s-only").length;
+  const stTypeM = devices.filter(d => d.category === "type-mismatch").length;
+  const stParamC = devices.filter(d => d.category === "mismatch" && !terminalsDiffer(d.layoutLine, d.schematicLine)).length;
+  const stConnM = devices.filter(d => d.category === "mismatch" && terminalsDiffer(d.layoutLine, d.schematicLine)).length;
+  if (stLOnly) parts.push(`L-only:${stLOnly}`);
+  if (stSOnly) parts.push(`S-only:${stSOnly}`);
+  if (stTypeM) parts.push(`Type:${stTypeM}`);
+  if (stParamC) parts.push(`Param:${stParamC}`);
+  if (stConnM) parts.push(`Conn:${stConnM}`);
+  if (parts.length) lines.push(`  diffs — ${parts.join(" ")}`);
   lines.push(`Iterations: ${json.iterations}`);
   if (json.only_in_a_ports.length) lines.push(`Extra L ports: ${json.only_in_a_ports.join(", ")}`);
   if (json.only_in_b_ports.length) lines.push(`Extra S ports: ${json.only_in_b_ports.join(", ")}`);
@@ -236,13 +246,28 @@ function parseModelType(line: string): string {
   return line.slice(e + 1).trim().split(/\s+/)[0] || "";
 }
 
+/** Strip device name (first token) for content comparison */
+function lineBody(line: string): string {
+  return line.replace(/^\S+\s+/, "");
+}
+
+/** Build a topology signature: modelType + sorted terminals (name-independent) */
+function deviceSignature(line: string): string {
+  const type = parseModelType(line);
+  const s = line.indexOf("(");
+  const e = line.lastIndexOf(")");
+  if (s === -1 || e === -1) return "";
+  const nets = line.slice(s + 1, e).split(/\s+/).filter(Boolean).sort().join(",");
+  return type + ":" + nets;
+}
+
 function buildDiffs(layoutNetlist: string, schematicNetlist: string, json: LvsRawResult): DeviceDiff[] {
   const layoutMap = buildDeviceMap(layoutNetlist);
   const schematicMap = buildDeviceMap(schematicNetlist);
   const diffs: DeviceDiff[] = [];
   const seen = new Set<string>();
 
-  // Phase 1: collect all device names vyges-lvs marked as unbalanced
+  // ── Phase 1: collect unbalanced names from vyges-lvs ──
   const unbalancedNames = new Set<string>();
   for (const cls of json.unbalanced) {
     if (cls.what !== "device") continue;
@@ -250,25 +275,84 @@ function buildDiffs(layoutNetlist: string, schematicNetlist: string, json: LvsRa
     for (const n of cls.b) unbalancedNames.add(stripSide(n).toLowerCase());
   }
 
-  // Phase 2: for each unbalanced name, check if it really differs
+  // ── Phase 2a: name-based check on unbalanced devices ──
+  const tempLOnly: { name: string; line: string }[] = [];
+  const tempSOnly: { name: string; line: string }[] = [];
+
   for (const name of unbalancedNames) {
     const lLine = layoutMap.get(name);
     const sLine = schematicMap.get(name);
     if (lLine === undefined && sLine === undefined) continue;
 
     if (lLine !== undefined && sLine !== undefined) {
-      if (lLine === sLine) continue; // cascade artifact
+      if (lLine === sLine) continue; // cascade artifact (same name + same line)
       const cat = parseModelType(lLine) !== parseModelType(sLine) ? "type-mismatch" : "mismatch";
       diffs.push({ name, category: cat, layoutLine: lLine, schematicLine: sLine });
     } else if (lLine !== undefined) {
-      diffs.push({ name, category: "l-only", layoutLine: lLine, schematicLine: "" });
+      tempLOnly.push({ name, line: lLine }); // maybe matched by signature later
     } else {
-      diffs.push({ name, category: "s-only", layoutLine: "", schematicLine: sLine });
+      tempSOnly.push({ name, line: sLine });
     }
     seen.add(name);
   }
 
-  // Phase 3: catch type mismatches vyges-lvs matched (e.g. npn vs pnp with same connectivity)
+  // ── Phase 2b: signature-based match for name-variant devices (Q37↔Q370, R80↔R800) ──
+  function sortKey(line: string): string {
+    return lineBody(line); // sort by type+terminals+params for deterministic pairing
+  }
+
+  // Collect ALL one-sided-by-name devices (from unbalanced + any vyges-lvs missed)
+  const lOnlyByName = new Map<string, string>(); // name → line
+  const sOnlyByName = new Map<string, string>();
+
+  for (const d of tempLOnly) lOnlyByName.set(d.name.toLowerCase(), d.line);
+  for (const d of tempSOnly) sOnlyByName.set(d.name.toLowerCase(), d.line);
+
+  // Add devices that exist on only ONE side by name but vyges-lvs didn't flag
+  for (const [name, line] of layoutMap) if (!seen.has(name) && !schematicMap.has(name)) { lOnlyByName.set(name, line); seen.add(name); }
+  for (const [name, line] of schematicMap) if (!seen.has(name) && !layoutMap.has(name)) { sOnlyByName.set(name, line); seen.add(name); }
+
+  const lBySig = new Map<string, { name: string; line: string }[]>();
+  const sBySig = new Map<string, { name: string; line: string }[]>();
+
+  for (const [name, line] of lOnlyByName) {
+    const sig = deviceSignature(line);
+    if (!sig) continue;
+    const arr = lBySig.get(sig) ?? []; arr.push({ name, line }); lBySig.set(sig, arr);
+  }
+  for (const [name, line] of sOnlyByName) {
+    const sig = deviceSignature(line);
+    if (!sig) continue;
+    const arr = sBySig.get(sig) ?? []; arr.push({ name, line }); sBySig.set(sig, arr);
+  }
+
+  for (const [sig, lDevices] of lBySig) {
+    const sDevices = sBySig.get(sig);
+    if (!sDevices) {
+      for (const d of lDevices) diffs.push({ name: d.name, category: "l-only", layoutLine: d.line, schematicLine: "" });
+      continue;
+    }
+
+    lDevices.sort((a, b) => sortKey(a.line).localeCompare(sortKey(b.line)));
+    sDevices.sort((a, b) => sortKey(a.line).localeCompare(sortKey(b.line)));
+
+    const n = Math.min(lDevices.length, sDevices.length);
+    for (let i = 0; i < n; i++) {
+      const l = lDevices[i], s = sDevices[i];
+      if (lineBody(l.line) === lineBody(s.line)) continue; // cascade artifact (names vary, body identical)
+      const cat = parseModelType(l.line) !== parseModelType(s.line) ? "type-mismatch" : "mismatch";
+      diffs.push({ name: l.name, category: cat, layoutLine: l.line, schematicLine: s.line });
+    }
+    for (let i = n; i < lDevices.length; i++) diffs.push({ name: lDevices[i].name, category: "l-only", layoutLine: lDevices[i].line, schematicLine: "" });
+    for (let i = n; i < sDevices.length; i++) diffs.push({ name: sDevices[i].name, category: "s-only", layoutLine: "", schematicLine: sDevices[i].line });
+
+    sBySig.delete(sig);
+  }
+  for (const [, sDevices] of sBySig) {
+    for (const d of sDevices) diffs.push({ name: d.name, category: "s-only", layoutLine: "", schematicLine: d.line });
+  }
+
+  // ── Phase 3: type mismatches vyges-lvs matched (e.g. npn vs pnp) ──
   for (const [name, lLine] of layoutMap) {
     if (seen.has(name)) continue;
     const sLine = schematicMap.get(name);
@@ -278,7 +362,20 @@ function buildDiffs(layoutNetlist: string, schematicNetlist: string, json: LvsRa
     const sType = parseModelType(sLine);
     if (lType && sType && lType !== sType) {
       diffs.push({ name, category: "type-mismatch", layoutLine: lLine, schematicLine: sLine });
+      seen.add(name);
     }
+  }
+
+  // ── Phase 4: param scan — matched devices with same type/terminals but different params ──
+  for (const [name, lLine] of layoutMap) {
+    if (seen.has(name)) continue;
+    const sLine = schematicMap.get(name);
+    if (sLine === undefined) continue;
+    if (lLine === sLine) continue;
+    if (parseModelType(lLine) !== parseModelType(sLine)) continue;
+    if (terminalsDiffer(lLine, sLine)) continue;
+    diffs.push({ name, category: "mismatch", layoutLine: lLine, schematicLine: sLine });
+    seen.add(name);
   }
 
   return diffs;
@@ -413,19 +510,22 @@ export default function LVSComparePanel({ dieId, layoutNetlist, dialect, moduleN
 
         {/* Stats — only when done */}
         {data && (() => {
-          const { json } = data;
-          const unbalancedD = countByWhat(json, "device");
-          const unbalancedN = countByWhat(json, "net");
-          const devRate = matchRate(json.a_devices, json.b_devices, unbalancedD.a, unbalancedD.b);
-          const netRate = matchRate(json.a_nets, json.b_nets, unbalancedN.a, unbalancedN.b);
+          const { json, devices } = data;
+          const totalDev = Math.max(json.a_devices, json.b_devices);
+          const devDiffs = devices.length;
+          const lOnly = devices.filter(d => d.category === "l-only").length;
+          const sOnly = devices.filter(d => d.category === "s-only").length;
+          const typeM = devices.filter(d => d.category === "type-mismatch").length;
+          const paramC = devices.filter(d => d.category === "mismatch" && !terminalsDiffer(d.layoutLine, d.schematicLine)).length;
+          const connM = devices.filter(d => d.category === "mismatch" && terminalsDiffer(d.layoutLine, d.schematicLine)).length;
+          const netD = Math.abs(json.a_nets - json.b_nets);
           return (
             <span style={{ fontSize: 10, color: "var(--ink)", display: "flex", gap: 12, fontWeight: 500, flexWrap: "wrap" }}>
-              <span>Devices: <b>{devRate.matched}/{devRate.total}</b> <span style={{ color: rateColor(devRate.rate) }}>({pct(devRate.rate)})</span></span>
-              <span>Nets: <b>{netRate.matched}/{netRate.total}</b> <span style={{ color: rateColor(netRate.rate) }}>({pct(netRate.rate)})</span></span>
-              {json.only_in_a_ports.length > 0 && <span style={{ color: "#f66" }}>Extra L ports: {json.only_in_a_ports.length}</span>}
-              {json.only_in_b_ports.length > 0 && <span style={{ color: "#6af" }}>Extra S ports: {json.only_in_b_ports.length}</span>}
-              {json.property_diffs.length > 0 && <span style={{ color: "#fd0" }}>Property diffs: {json.property_diffs.length}</span>}
-              <span style={{ color: "var(--ink3)" }}>{json.iterations} iters</span>
+              <span>Devices: <b>{totalDev}</b> — <span style={{ color: devDiffs ? "#fd0" : "var(--okFg, #4f4)" }}>{devDiffs} diff{devDiffs !== 1 ? "s" : ""}</span></span>
+              {devDiffs > 0 && <span style={{ color: "var(--ink3)" }}>
+                L-only:{lOnly} S-only:{sOnly} Type:{typeM} Param:{paramC} Conn:{connM}
+              </span>}
+              <span style={{ color: "var(--ink3)" }}>Nets {json.a_nets}/{json.b_nets}{netD > 0 ? ` (Δ${netD})` : ""} | {json.iterations} iters</span>
             </span>
           );
         })()}

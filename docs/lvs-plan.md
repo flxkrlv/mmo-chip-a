@@ -8,115 +8,189 @@
 | Feature | Status |
 |---------|--------|
 | vyges-lvs integrated | ✅ built from source, installed via `cargo install` |
-| Backend endpoint `POST /lvs/compare` | ✅ writes temp netlists + .lvs job, spawns vyges-lvs, returns JSON + text report |
+| Backend endpoint `POST /lvs/compare` | ✅ normalizes, spawns vyges-lvs, returns JSON + text report |
 | Frontend tab "LVS" in Analog Netlist page | ✅ Alt+4, click-to-switch |
 | Layout netlist auto-filled from extraction | ✅ |
 | Schematic netlist paste area | ✅ |
 | Compare button + loading state | ✅ |
 | MATCH/MISMATCH verdict badge | ✅ |
-| Direct device-diff table (filtered from vyges-lvs unbalanced classes) | ✅ only devices with truly different lines shown, cascade artifacts filtered |
-| Full vyges-lvs text report | ✅ read-only textarea, scrollable |
+| Device-diff table (post-processed, 4 categories) | ✅ L-only / S-only / Type Mismatch / Param + Conn |
+| Net connection diff table | ✅ direct netlist parsing (cascade-free) |
+| Full vyges-lvs text report (collapsible) | ✅ |
 | vyges-lvs auto-detect (PATH, ~/.cargo/bin) | ✅ |
 | Error handling (ENOENT, timeout, SPICE parse error) | ✅ |
+| Copy report button | ✅ |
 
-**Verdict correctness:** proven — name-independent graph isomorphism. A renamed/reordered netlist that is structurally identical returns MATCH. A single connection change returns MISMATCH.
+**Verdict correctness:** proven — name-independent graph isomorphism (1-WL + bijection).
+A renamed/reordered netlist that is structurally identical returns MATCH (verified: 100 devices,
+all names changed → MATCH). See `docs/reference/netlists/report.txt` for full validation.
 
-**Diagnostic limitation:** vyges-lvs uses 1-WL graph coloring. A single connectivity change cascades through the entire connected component, causing ALL devices/nets in that component to appear in `unbalanced[]`. Our frontend filters out cascade artifacts by cross-referencing the original netlist lines — only devices whose actual text lines differ are shown.
+---
 
-## Omissions / limitations
+## Pipeline
 
-- **`.GLOBAL`-anchored nets only:** vyges-lvs anchors VDD/GND to prevent global cascade. Internal signal chains still cascade fully.
-  - **Fixed:** normalizeNetlist now preserves `.GLOBAL` from both sides and merges them so vyges-lvs can anchor power/ground, breaking the graph into independent components. See `normalizeForVyges()` `globalNets` parameter.
-- **Property diffs not shown in GUI:** vyges-lvs `property_diffs[]` is available in the JSON but not yet rendered in a dedicated table (the text report includes the `—` entries).
-- **No re-run on schematic change:** user must press Compare again manually.
-- **No save/load of schematic netlists:** pasted schematic is lost on page reload.
-- **No mismatch navigation:** clicking a device in the diff table doesn't frame it on the die viewer or scroll to its line in the Code view.
-
-## Plan to completion
-
-### 1. Property diff table (1h)
-
-Parse `property_diffs[]` from the vyges-lvs JSON and render a dedicated table:
 ```
-Param │ Layout │ Value (L) │ Schematic │ Value (S)
-w     │ Mp1    │ 840n      │ M1        │ 1.68u
+Layout netlist ─┐                    ┌─ vyges-lvs ──┬─ raw JSON ──┐
+                 ├─ normalize ── .lvs ┤              │             │
+Schematic netlist┘                    └─ vyges-lvs ──┴─ text ──────┤
+                                                                   │
+                          ┌────────────────────────────────────────┘
+                          ↓
+                   buildDiffs() — 5-phase post-processor
+                   (LVSComparePanel.tsx)
 ```
 
-### 2. Mismatch navigation (2h)
+### Step 1: Normalization (`backend/src/lib/normalizeNetlist.ts`)
 
-- Click a device name in the diff table → navigate to die viewer + focus that device.
-- Click a device name → scroll to its line in the Code tab's netlist source.
-- Reuse existing `onSelectDevice(path)` pattern from `InstanceOutline`.
+Applied identically to both sides before vyges-lvs.
 
-### 3. Auto re-run on schematic change (1h)
+1. Strip simulation directives (`simulator lang`, `tran`, `save`, `include`, etc.)
+2. **Preserve `.GLOBAL`** net declarations (from input or via `globalNets` param)
+3. Strip existing `.SUBCKT`/`.ENDS` boundaries (flat output)
+4. Preserve device instances and `parameters`/`.PARAM`
+5. Wrap both sides in matching `.SUBCKT ${name}` / `.ENDS ${name}` (no port decl)
 
-Debounced auto-compare (300ms) when the schematic textarea content changes, so the user sees updated diagnostics without pressing Compare.
+`.GLOBAL` nets (always `0`, plus `GND`/`VCC`/`VDD`/`VSS` auto-detected from both netlists)
+are emitted before `.SUBCKT` so vyges-lvs anchors supply nets and prevents 1-WL
+cascade across power rails.
 
-### 4. Schematic persistence (2h)
+### Step 2: vyges-lvs matching
 
-- Save the pasted schematic netlist to backend (`POST /api/dies/:dieId/lvs/schematic`).
-- Load on mount; show a "last saved" timestamp.
-- Allows page refresh without losing the reference netlist.
+vyges-lvs runs with `--json` and as text report:
+- Parses both sides as SPICE graphs (name-independent 1-WL colour refinement)
+- Confirms match with explicit device/net bijection
+- Returns `unbalanced[]` (colour classes that didn't balance) and `property_diffs[]`
+  (matched devices with different params — `r=`, `w=`, `l=`, etc.)
 
-### 5. LVS sidebar / panel UX (2h)
+**Known vyges-lvs v0.1.11 limitations:**
+- 1-WL cascade: a single connectivity change propagates colour through the entire
+  connected component → MANY false positives in `unbalanced[]`
+- Does NOT report `m=` (BJT multiplier) or `c=` (capacitor value) in `property_diffs[]`
+- Does NOT detect extra devices with identical topology (R811 parallel to R81)
+- Does NOT distinguish device types (npn vs pnp) — matches them as "same"
 
-- Make the diff table expandable: show only the first 3–5 diffs, "show all N" toggle.
-- Add a filter bar: "All", "Changed", "Only in Layout", "Only in Schematic".
-- Add a search box to filter devices by name.
+### Step 3: Post-processing — buildDiffs() 5-phase filter
 
-### 6. Documentation (1h)
+`frontend/src/components/netlist/LVSComparePanel.tsx:buildDiffs()`
 
-- Inline comments in `backend/src/api/lvs.ts` and `LVSComparePanel.tsx`.
-- Usage guide in the README: how to install vyges-lvs, environment variables, demo walkthrough.
+Takes raw vyges-lvs JSON + original netlist lines and produces a clean diff list:
 
-**Total remaining: ~9h**
+| Phase | What | Technique |
+|-------|------|-----------|
+| **1** | Collect unbalanced | Parse `unbalanced[]` device names |
+| **2a** | Name-based check | For each unbalanced name: if same-name device exists on other side, compare lines. Identical → cascade artifact (drop). Different → classify as type/param/conn mismatch |
+| **2b** | Signature match | For remaining L-only/S-only: group by **signature** (`modelType:sorted(terminals)`). Match by-signature across sides → cascade artifact. Count mismatch → extra devices flagged. **Catches name variants** (Q37 vs Q370, R80 vs R800) |
+| **3** | Type mismatch | For devices vyges-lvs matched but with different model type (npn vs pnp) |
+| **4** | Parameter scan | For all matched devices: if same type + same terminals but different params (`m=`, `c=`, `r=`) → Param Changed. Catches what vyges-lvs misses in `property_diffs[]` |
+
+**Signature** = `modelType:sortedTerminals` — e.g. `npn:0,GND,Net_19,Net_54` or
+`resistor:GND,Net_127`. Completely name-independent; derived purely from device
+line content.
+
+### Step 4: Display
+
+- Summary bar: device count, diff count per category, net count delta, iteration count
+- Device Diffs: grouped as **L-only** / **S-only** / **Device Type Mismatch** /
+  **Param Changed** / **Connection Mismatch** with side-by-side line comparison
+- Net Connection Diffs: cascade-free (computed by direct netlist line parsing,
+  not from vyges-lvs unbalanced)
+- Collapsible raw vyges-lvs text report
+- Copy Report button
+
+---
+
+## Validation results
+
+Two test series with 5 intentional errors each (see `docs/reference/netlists/report.txt`):
+
+### Series 1 — Structural + param errors
+
+| # | Error | Expected | Result |
+|---|-------|----------|--------|
+| 1 | Q1 npn → pnp | Type Mismatch | ✅ Found |
+| 2 | R7 13Ω → 19.5Ω | Param Changed | ✅ Found |
+| 3 | R8/R9 swapped | Connection Mismatch | ✅ Found |
+| 4 | R811 added (parallel) | Only in Schematic | ❌ Missed (vyges-lvs v0.1.11 limitation — parallel combine) |
+| 5 | C1 34570f → 40000f | Param Changed | ✅ Found |
+
+False positives: 23 → **0** after buildDiffs.
+
+### Series 2 — Param + deletion + addition errors
+
+| # | Error | Expected | Result |
+|---|-------|----------|--------|
+| 1 | Q1 m=3.6 → 5.0 | Param Changed | ✅ Found (Phase 4) |
+| 2 | R7 deleted | Only in Layout | ✅ Found |
+| 3 | D1 pins swapped | Connection Mismatch | ✅ Found |
+| 4 | C1 c=-100f | Param Changed | ✅ Found (Phase 4) |
+| 5 | Q33 added | Only in Schematic | ✅ Found |
+
+False positives: **0**.
+
+**Overall: 9/10 detected.** The only blind spot (#4 in series 1) is vyges-lvs's
+parallel-resistor combination: vyges-lvs combines parallel resistors into a single
+virtual device before matching, so an extra parallel resistor (R811) is absorbed
+rather than flagged. This requires a vyges-lvs engine change to fix.
+
+---
+
+## Known remaining limitations
+
+### vyges-lvs v0.1.11 engine limits
+
+| Limitation | Impact | Workaround |
+|-----------|--------|-----------|
+| 1-WL cascade | → false positives in unbalanced[] | buildDiffs Phase 2a/2b filters by line + signature |
+| No BJT m= / C c= in property_diffs | → param changes missed | buildDiffs Phase 4 scans all matched devices |
+| No npn vs pnp distinction | → type changes missed | buildDiffs Phase 3 catches it |
+| Parallel combine loses extra devices | → R811 can't be detected | requires engine change |
+| Renamed devices (Q37→Q370) cascade | → different colours → spurious L/S-only | buildDiffs Phase 2b matches by signature |
+
+### What buildDiffs CAN'T fix
+
+- R811-style extras (parallel combine in vyges-lvs absorbs them before matching)
+- Genuine graph-isomorphic differences (two circuits with identical topology but
+  different parameters — only vyges-lvs's `property_diffs[]` catches `r=`)
+
+---
 
 ## Netlist normalizer
 
-A **Spectre-only** normalizer (`backend/src/lib/normalizeNetlist.ts`) is applied to both sides before
-vyges-lvs runs. It strips non-device directives (`simulator lang`, `global`, `include`,
-`simulatorOptions`, `tran`, `modelParameter`, etc.), strips existing subcircuit boundaries, and
-**always wraps** both sides in identical `.SUBCKT ${moduleName}` / `.ENDS ${moduleName}` (no ports).
+`backend/src/lib/normalizeNetlist.ts` — Spectre/CDL normalizer for vyges-lvs.
 
-This guarantees zero port-diffs in LVS comparison regardless of the original netlist format.
+**What it does:**
+1. Strips simulation directives (`simulator lang`, `tran`, `dc`, `save`, `global`, etc.)
+2. Preserves `.GLOBAL` net declarations from input (or accepts via `globalNets` param)
+3. Strips existing `.subckt`/`.ends` boundaries (flat output)
+4. Preserves device instances and `parameters` / `.PARAM`
+5. Wraps everything in identical `.SUBCKT ${name}` / `.ENDS ${name}` (no ports)
 
-**Design notes:**
-- `parameters`/`.PARAM` lines are preserved — vyges-lvs understands parameter expressions
-- Device line syntax is left intact (parenthesized terminals, model keywords, `tc1`, etc.)
-- Currently Spectre-only; extend for pure CDL if needed
-- Expressions like `r=19.9*Rbase` or `r=2.496*il` are left as-is — vyges-lvs compares graph
-  structure, not numeric values. Parameter mismatches appear in the Property Diff table.
+**Global net detection** (`backend/src/api/lvs.ts:extractGlobals()`):
+- Always adds `0` (universal SPICE ground)
+- Parses explicit `.GLOBAL` directives from both sides
+- Auto-detects common power nets (`GND`, `VCC`, `VDD`, `VSS`, `VEE`, `VBB`,
+  `VSUB`, `AVDD`, `AVSS`, `DVDD`, `DVSS`) by scanning standalone tokens in
+  both netlists
+- All detected globals are merged and applied identically to both sides
 
-**For hierarchical netlists** (future work): pass `ioNetIds` from `collectDieWideAnalogDevices()`
-through `generateSpiceNetlist()` → `generateSpectre()`, so only I/O pin nets appear as subcircuit
-ports. This is needed for Cadence-import correctness but not for LVS (normalizer handles wrapping).
+---
 
 ## vyges-lvs binary
 
 - **Binary location:** `~/.cargo/bin/vyges-lvs.exe` (2 MB)
-- **Build artifacts (cargo):** `~/.cargo/git/`, `~/.cargo/registry/` — development only, ~200 MB
-- **Rust toolchain:** `~/.rustup/` — development only, ~1.5 GB
-- **Production deployment:** only the 2 MB binary needed; set `LVS_CLI_PATH` or ensure it's on PATH
-- **Source:** `cargo install --git https://github.com/vyges-tools/lvs` (public, Apache 2.0)
+- **Source:** `cargo install --git https://github.com/vyges-tools/lvs` (Apache 2.0)
+- **Docs:** https://docs.vyges.com/engines/lvs.html
+- **Version:** v0.1.11
 
 ## Setup on a fresh machine
 
 ### Windows
 
-The repo includes an auto-setup script:
-
 ```powershell
-scripts\setup-lvs.bat
+scripts\setup-lvs.ps1
 ```
 
-It checks for vyges-lvs, installs Rust if missing, then builds vyges-lvs from source.
-
-**Manual steps:**
-1. Install Rust: `winget install Rustlang.Rustup` or https://rustup.rs
-2. `cargo install --git https://github.com/vyges-tools/lvs` (3–10 min, ~1.5 GB Rust toolchain)
-3. `cd backend && npm run dev` — бэкенд сам найдёт `~/.cargo/bin/vyges-lvs.exe`
-
-**What gets downloaded:** Rust toolchain (~1.5 GB) is one-time. vyges-lvs build pulls Cargo dependencies (~200 MB). Final binary is 2 MB. To reclaim space after build: `cargo clean`.
+Installs Rust via rustup if missing, then builds vyges-lvs from source.
 
 ### Linux / macOS
 
@@ -124,4 +198,4 @@ It checks for vyges-lvs, installs Rust if missing, then builds vyges-lvs from so
 chmod +x scripts/setup-lvs.sh && ./scripts/setup-lvs.sh
 ```
 
-The script downloads a prebuilt binary (Linux x86_64/aarch64, macOS aarch64) from GitHub releases, installs to `~/.local/bin/`. Falls back to `cargo install` if no prebuilt binary for your arch.
+Downloads prebuilt binary (Linux x86_64/aarch64, macOS aarch64) from GitHub releases.
