@@ -253,6 +253,14 @@ function buildDiffs(layoutNetlist: string, schematicNetlist: string, json: LvsRa
     for (const n of cls.b) unbalancedNames.add(stripSide(n).toLowerCase());
   }
 
+  // ── DEBUG LOG ──
+  console.log("=== buildDiffs ===");
+  console.log("json.matched:", json.matched);
+  console.log("json.unbalanced count:", json.unbalanced.length);
+  console.log("unbalancedNames:", [...unbalancedNames]);
+  console.log("layoutMap keys:", [...layoutMap.keys()].slice(0, 10), "...");
+  console.log("schematicMap keys:", [...schematicMap.keys()].slice(0, 10), "...");
+
   // ── Phase 2a: name-based check on unbalanced devices ──
   const tempLOnly: { name: string; line: string }[] = [];
   const tempSOnly: { name: string; line: string }[] = [];
@@ -260,19 +268,26 @@ function buildDiffs(layoutNetlist: string, schematicNetlist: string, json: LvsRa
   for (const name of unbalancedNames) {
     const lLine = layoutMap.get(name);
     const sLine = schematicMap.get(name);
-    if (lLine === undefined && sLine === undefined) continue;
+    if (lLine === undefined && sLine === undefined) { console.log(`  ${name}: both MISS`); continue; }
 
+    console.log(`  ${name}: L=${lLine !== undefined} S=${sLine !== undefined} match=${lLine === sLine}`);
     if (lLine !== undefined && sLine !== undefined) {
       if (lLine === sLine) continue;
       const cat = parseModelType(lLine) !== parseModelType(sLine) ? "type-mismatch" : "mismatch";
+      console.log(`    → ${cat}`);
       diffs.push({ name, category: cat, layoutLine: lLine, schematicLine: sLine });
     } else if (lLine !== undefined) {
+      console.log(`    → tempLOnly`);
       tempLOnly.push({ name, line: lLine });
     } else if (sLine !== undefined) {
+      console.log(`    → tempSOnly`);
       tempSOnly.push({ name, line: sLine });
     }
     seen.add(name);
   }
+
+  console.log("tempLOnly:", tempLOnly.map(d => d.name));
+  console.log("tempSOnly:", tempSOnly.map(d => d.name));
 
   // ── Phase 2b: signature-based match for name-variant devices (Q37↔Q370, R80↔R800) ──
   function sortKey(line: string): string {
@@ -331,6 +346,8 @@ function buildDiffs(layoutNetlist: string, schematicNetlist: string, json: LvsRa
     for (const d of sDevices) diffs.push({ name: d.name, category: "s-only", layoutLine: "", schematicLine: d.line });
   }
 
+  console.log("final diffs:", diffs.map(d => `${d.name}:${d.category}`));
+  console.log("=== buildDiffs end ===");
   return diffs;
 }
 
