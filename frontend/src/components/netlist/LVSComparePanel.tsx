@@ -857,21 +857,21 @@ export default function LVSComparePanel({ dieId, layoutNetlist, dialect, moduleN
     const engines = (state.data as any).engines as Record<string, { engine: string; report: string }> | undefined;
 
     return (
-      <div style={{ margin: "0 0 8px" }}>
+      <div style={{ margin: "0 0 8px", display: "flex", flexDirection: "column", flex: "1 1 auto", minHeight: 0 }}>
         <div style={sectionTitle}>{engName} report</div>
         <textarea
           readOnly
           value={state.data.report}
-          style={{ ...textareaBase, minHeight: 60, cursor: "default", whiteSpace: "pre", fontFamily: "var(--mono)", fontSize: 9 }}
+          style={{ ...textareaBase, flex: 1, cursor: "default", whiteSpace: "pre", fontFamily: "var(--mono)", fontSize: 9 }}
           spellCheck={false}
         />
         {engines && Object.entries(engines).map(([ek, er]) => (
-          <div key={ek} style={{ marginTop: 4 }}>
+          <div key={ek} style={{ marginTop: 4, display: "flex", flexDirection: "column", flex: "1 1 auto", minHeight: 0 }}>
             <div style={{ ...sectionTitle, fontSize: 9 }}>{ENGINE_LABELS[ek] ?? ek} full report</div>
             <textarea
               readOnly
               value={er.report}
-              style={{ ...textareaBase, minHeight: 60, cursor: "default", whiteSpace: "pre", fontFamily: "var(--mono)", fontSize: 9 }}
+              style={{ ...textareaBase, flex: 1, cursor: "default", whiteSpace: "pre", fontFamily: "var(--mono)", fontSize: 9 }}
               spellCheck={false}
             />
           </div>
