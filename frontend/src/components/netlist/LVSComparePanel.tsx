@@ -26,13 +26,14 @@ const tableSm: React.CSSProperties = { width: "100%", fontSize: 11, borderCollap
 
 // ── Types ────────────────────────────────────────────────────
 
-type DiffCategory = "l-only" | "s-only" | "mismatch" | "type-mismatch";
+type DiffCategory = "l-only" | "s-only" | "mismatch" | "type-mismatch" | "name-mismatch";
 
 interface DeviceDiff {
   name: string;
   category: DiffCategory;
   layoutLine: string;
   schematicLine: string;
+  note?: string; // extra info (e.g., actual schematic name for name-mismatch)
 }
 
 interface LvsResultData {
@@ -77,11 +78,13 @@ function generateReportText(data: LvsResultData, devices: DeviceDiff[]): string 
   const stLOnly = devices.filter(d => d.category === "l-only").length;
   const stSOnly = devices.filter(d => d.category === "s-only").length;
   const stTypeM = devices.filter(d => d.category === "type-mismatch").length;
+  const stNameM = devices.filter(d => d.category === "name-mismatch").length;
   const stParamC = devices.filter(d => d.category === "mismatch" && !terminalsDiffer(d.layoutLine, d.schematicLine)).length;
   const stConnM = devices.filter(d => d.category === "mismatch" && terminalsDiffer(d.layoutLine, d.schematicLine)).length;
   if (stLOnly) parts.push(`L-only:${stLOnly}`);
   if (stSOnly) parts.push(`S-only:${stSOnly}`);
   if (stTypeM) parts.push(`Type:${stTypeM}`);
+  if (stNameM) parts.push(`Name:${stNameM}`);
   if (stParamC) parts.push(`Param:${stParamC}`);
   if (stConnM) parts.push(`Conn:${stConnM}`);
   if (parts.length) lines.push(`  diffs — ${parts.join(" ")}`);
@@ -94,6 +97,7 @@ function generateReportText(data: LvsResultData, devices: DeviceDiff[]): string 
   const lOnly = devices.filter((d) => d.category === "l-only");
   const sOnly = devices.filter((d) => d.category === "s-only");
   const typeMism = devices.filter((d) => d.category === "type-mismatch");
+  const nameMism = devices.filter((d) => d.category === "name-mismatch");
   const mism = devices.filter((d) => d.category === "mismatch");
 
   if (devices.length) {
@@ -107,6 +111,13 @@ function generateReportText(data: LvsResultData, devices: DeviceDiff[]): string 
     if (sOnly.length) {
       lines.push(`Only in Schematic (${sOnly.length}):`);
       for (const d of sOnly) lines.push(`  ${d.name}  ${d.schematicLine}`);
+      lines.push("");
+    }
+    if (nameMism.length) {
+      lines.push(`Name Swapped (${nameMism.length}) — same type+connections, different names:`);
+      for (const d of nameMism) {
+        lines.push(`  ${d.name}  ${d.layoutLine}  ↔  ${d.note ?? d.schematicLine}`);
+      }
       lines.push("");
     }
     if (typeMism.length) {
@@ -347,6 +358,11 @@ function buildDiffs(layoutNetlist: string, schematicNetlist: string, json: LvsRa
     const n = Math.min(lDevices.length, sDevices.length);
     for (let i = 0; i < n; i++) {
       const l = lDevices[i], s = sDevices[i];
+      // Same body but different names → name swap (Q7↔Q9, identical type+conn+params)
+      if (l.name !== s.name && lineBody(l.line) === lineBody(s.line)) {
+        diffs.push({ name: l.name, category: "name-mismatch", layoutLine: l.line, schematicLine: s.line, note: `S name: ${s.name}` });
+        continue;
+      }
       if (lineBody(l.line) === lineBody(s.line)) continue; // cascade artifact (names vary, body identical)
       const cat = parseModelType(l.line) !== parseModelType(s.line) ? "type-mismatch" : "mismatch";
       diffs.push({ name: l.name, category: cat, layoutLine: l.line, schematicLine: s.line });
@@ -622,6 +638,7 @@ export default function LVSComparePanel({ dieId, layoutNetlist, dialect, moduleN
           const lOnly = devices.filter(d => d.category === "l-only").length;
           const sOnly = devices.filter(d => d.category === "s-only").length;
           const typeM = devices.filter(d => d.category === "type-mismatch").length;
+          const nameM = devices.filter(d => d.category === "name-mismatch").length;
           const paramC = devices.filter(d => d.category === "mismatch" && !terminalsDiffer(d.layoutLine, d.schematicLine)).length;
           const connM = devices.filter(d => d.category === "mismatch" && terminalsDiffer(d.layoutLine, d.schematicLine)).length;
           const netD = Math.abs(json.a_nets - json.b_nets);
@@ -629,7 +646,7 @@ export default function LVSComparePanel({ dieId, layoutNetlist, dialect, moduleN
             <span style={{ fontSize: 10, color: "var(--ink)", display: "flex", gap: 12, fontWeight: 500, flexWrap: "wrap" }}>
               <span>Devices: <b>{totalDev}</b> — <span style={{ color: devDiffs ? "#fd0" : "var(--okFg, #4f4)" }}>{devDiffs} diff{devDiffs !== 1 ? "s" : ""}</span></span>
               {devDiffs > 0 && <span style={{ color: "var(--ink3)" }}>
-                L-only:{lOnly} S-only:{sOnly} Type:{typeM} Param:{paramC} Conn:{connM}
+                L-only:{lOnly} S-only:{sOnly} Type:{typeM} Name:{nameM} Param:{paramC} Conn:{connM}
               </span>}
               <span style={{ color: "var(--ink3)" }}>Nets {json.a_nets}/{json.b_nets}{netD > 0 ? ` (Δ${netD})` : ""} | {json.iterations} iters</span>
             </span>
@@ -885,8 +902,8 @@ export default function LVSComparePanel({ dieId, layoutNetlist, dialect, moduleN
     const lOnly = devices.filter((d) => d.category === "l-only");
     const sOnly = devices.filter((d) => d.category === "s-only");
     const typeMism = devices.filter((d) => d.category === "type-mismatch");
+    const nameMism = devices.filter((d) => d.category === "name-mismatch");
     const mismatches = devices.filter((d) => d.category === "mismatch");
-    // Split mismatch by type
     const paramOnly = mismatches.filter(d => !terminalsDiffer(d.layoutLine, d.schematicLine));
     const connMism = mismatches.filter(d => terminalsDiffer(d.layoutLine, d.schematicLine));
 
@@ -897,7 +914,10 @@ export default function LVSComparePanel({ dieId, layoutNetlist, dialect, moduleN
           <div style={{ ...sectionTitle, color }}>{title} ({items.length}){sub && <span style={{ color: "var(--ink3)", fontWeight: 400 }}> — {sub}</span>}</div>
           {items.map((d, i) => (
             <div key={i} style={{ ...panelBase, borderLeft: `3px solid ${color}` }}>
-              <div style={{ fontWeight: 600, color: "var(--ink0)" }}>{d.name}</div>
+              <div style={{ fontWeight: 600, color: "var(--ink0)" }}>
+                {d.name}
+                {d.category === "name-mismatch" && d.note && <span style={{ color: "var(--ink3)", fontWeight: 400, fontSize: 10 }}> ↔ {d.note.replace("S name: ", "")}</span>}
+              </div>
               <table style={{ width: "100%", fontSize: 11, borderCollapse: "collapse", marginTop: 2 }}>
                 <tbody>
                   <tr><td style={{ color: "#f55", paddingRight: 8, verticalAlign: "top", whiteSpace: "nowrap", width: 16 }}>L</td>
@@ -919,6 +939,7 @@ export default function LVSComparePanel({ dieId, layoutNetlist, dialect, moduleN
         <div style={{ ...sectionTitle, fontSize: 12 }}>Device Diffs{engLabel} ({devices.length})</div>
         {catBlock("Only in Layout", lOnly, "#f55")}
         {catBlock("Only in Schematic", sOnly, "#48f")}
+        {catBlock("Name Swapped", nameMism, "#b4f", "same type+connections, different names")}
         {catBlock("Device Type Mismatch", typeMism, "#f0f", "different model type (e.g. npn vs pnp)")}
         {catBlock("Param Changed", paramOnly, "#fd0", "same topology, different W/L/R/m")}
         {catBlock("Connection Mismatch", connMism, "#f80", "different terminal connections")}

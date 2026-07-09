@@ -177,6 +177,28 @@ describe("CONNECTION MISMATCH", () => {
     ));
   });
 
+  test("Q7↔Q9 swapped — different types, MISMATCH", () => {
+    const r = run(
+      ".SUBCKT test\nQ7 (a b c 0) pnp\nQ9 (d e f 0) npn m=1.29\n.ENDS",
+      ".SUBCKT test\nQ9 (a b c 0) pnp\nQ7 (d e f 0) npn m=1.29\n.ENDS",
+    );
+    assertMismatch(r);
+    // Q7 on layout is pnp, but Q7 on schematic is npn → type mismatch
+    // Q9 on layout is npn, but Q9 on schematic is pnp → type mismatch
+    const typeM = r.details.mismatchedDevices.filter((d) => d.reason === "type");
+    assert.equal(typeM.length, 2, "should detect Q7 and Q9 as type mismatches");
+  });
+
+  test("Q7↔Q9 swapped same type — MATCH (graph-isomorphic)", () => {
+    // Same type+params, names swapped + nets relabeled = identical graph.
+    // Name-based correctly returns MATCH (same behavior as vyges-lvs name-independent).
+    // Only vyges-lvs Phase 2b catches this when vyges-lvs flags unbalanced.
+    assertMatch(run(
+      ".SUBCKT test\nQ7 (a b c 0) npn m=1\nQ9 (d e f 0) npn m=1\n.ENDS",
+      ".SUBCKT test\nQ9 (a b c 0) npn m=1\nQ7 (d e f 0) npn m=1\n.ENDS",
+    ));
+  });
+
   test("R8/R9 cross-swapped — symmetric, MATCH", () => {
     assertMatch(run(
       ".SUBCKT test\nR8 (n1 n2) resistor r=1k\nR9 (n2 n3) resistor r=1k\n.ENDS",
