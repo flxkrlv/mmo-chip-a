@@ -51,20 +51,13 @@ describe("MATCH — identical netlists", () => {
     assertMatch(run(n, n));
   });
 
-  test("renamed nets — name-independent MATCH", () => {
-    const layout = [
-      ".SUBCKT test",
-      "R1 (net_a net_b) resistor r=1k",
-      "Q1 (net_a net_b net_c) npn m=3.6",
-      ".ENDS",
-    ].join("\n");
-    const schematic = [
-      ".SUBCKT test",
-      "R1 (foo bar) resistor r=1k",
-      "Q1 (foo bar baz) npn m=3.6",
-      ".ENDS",
-    ].join("\n");
-    assertMatch(run(layout, schematic));
+  test("renamed nets — consistent rename (no swap) → MATCH", () => {
+    // All nets renamed consistently (a→foo, b→bar, c→baz). No swap detected.
+    // Cross-check: each net appears at the same position on both sides → MATCH.
+    assertMatch(run(
+      ".SUBCKT test\nR1 (net_a net_b) resistor r=1k\nQ1 (net_a net_b net_c) npn m=3.6\n.ENDS",
+      ".SUBCKT test\nR1 (foo bar) resistor r=1k\nQ1 (foo bar baz) npn m=3.6\n.ENDS",
+    ));
   });
 
   test("renamed device numbers — MISMATCH (name-based limitation)", () => {
@@ -159,19 +152,17 @@ describe("CONNECTION MISMATCH", () => {
     ));
   });
 
-  // NOTE: For ordered devices with swapped pins that are the ONLY devices
-  // on their terminals, net signature IS ambiguous — graph isomorphism
-  // can't distinguish which net is which without a reference. This is
-  // correct graph-theoretic behavior. Use vyges-lvs for pin-level check.
-  test("diode pins swapped — ambiguous without reference net", () => {
-    assertMatch(run(
+  // Ordered devices (Q, D, M) compare raw terminal names position-by-position.
+  // A pin swap is ALWAYS detected — no longer "ambiguous" as with net mapping.
+  test("diode pins swapped — DETECTED (ordered raw check)", () => {
+    assertMismatch(run(
       ".SUBCKT test\nD1 (n1 n2) diode\n.ENDS",
       ".SUBCKT test\nD1 (n2 n1) diode\n.ENDS",
     ));
   });
 
-  test("BJT collector/emitter swapped — ambiguous without reference", () => {
-    assertMatch(run(
+  test("BJT collector/emitter swapped — DETECTED (ordered raw check)", () => {
+    assertMismatch(run(
       ".SUBCKT test\nQ1 (n1 n2 n3) npn\n.ENDS",
       ".SUBCKT test\nQ1 (n3 n2 n1) npn\n.ENDS",
     ));
@@ -189,7 +180,11 @@ describe("CONNECTION MISMATCH", () => {
     assert.equal(typeM.length, 2, "should detect Q7 and Q9 as type mismatches");
   });
 
-  test("Q7↔Q9 swapped same type — MATCH (graph-isomorphic)", () => {
+  test("Q7↔Q9 swapped same type — all nets differ, no overlap → MATCH (rename)", () => {
+    // Q7 layout (a,b,c,0) vs Q7 schematic (d,e,f,0). No net overlap → cross-check
+    // sees consistent rename at each position, no swap detected → MATCH.
+    // Limitation: when NO nets overlap, can't distinguish "all renamed" from
+    // "all different". Use vyges-lvs for exhaustive cross-device checking.
     assertMatch(run(
       ".SUBCKT test\nQ7 (a b c 0) npn m=1\nQ9 (d e f 0) npn m=1\n.ENDS",
       ".SUBCKT test\nQ9 (a b c 0) npn m=1\nQ7 (d e f 0) npn m=1\n.ENDS",
@@ -396,7 +391,7 @@ describe("CDL POSITIONAL FORMAT", () => {
     assertMatch(run(n, n));
   });
 
-  test("CDL renamed nets MATCH", () => {
+  test("CDL renamed nets — consistent rename → MATCH", () => {
     assertMatch(run(
       ".SUBCKT test\nR1 net_a net_b 1k\nQ1 net_a net_b net_c npn\n.ENDS",
       ".SUBCKT test\nR1 foo bar 1k\nQ1 foo bar baz npn\n.ENDS",
@@ -424,7 +419,9 @@ describe("COMPLEX / REALISTIC", () => {
     assertMatch(run(circuit, circuit));
   });
 
-  test("renamed nets MATCH", () => {
+  test("renamed nets — consistent rename on all devices → MATCH", () => {
+    // All nets consistently renamed across all devices. Cross-check on each
+    // ordered device: no swap detected (each net appears at same position).
     assertMatch(run(
       [
         ".SUBCKT lm2937_stud",
