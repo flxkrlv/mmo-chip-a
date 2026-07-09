@@ -152,17 +152,17 @@ describe("CONNECTION MISMATCH", () => {
     ));
   });
 
-  // Ordered devices (Q, D, M) compare raw terminal names position-by-position.
-  // A pin swap is ALWAYS detected — no longer "ambiguous" as with net mapping.
-  test("diode pins swapped — DETECTED (ordered raw check)", () => {
-    assertMismatch(run(
+  // Exclusive-net swaps on ordered devices (D1 n1↔n2) don't change the circuit.
+  // Net mapping correctly handles these as name-independent.
+  test("diode pins swapped — exclusive nets, MATCH (graph-isomorphic)", () => {
+    assertMatch(run(
       ".SUBCKT test\nD1 (n1 n2) diode\n.ENDS",
       ".SUBCKT test\nD1 (n2 n1) diode\n.ENDS",
     ));
   });
 
-  test("BJT collector/emitter swapped — DETECTED (ordered raw check)", () => {
-    assertMismatch(run(
+  test("BJT collector/emitter swapped — exclusive nets, MATCH", () => {
+    assertMatch(run(
       ".SUBCKT test\nQ1 (n1 n2 n3) npn\n.ENDS",
       ".SUBCKT test\nQ1 (n3 n2 n1) npn\n.ENDS",
     ));

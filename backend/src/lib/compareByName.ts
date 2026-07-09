@@ -266,50 +266,21 @@ export function compareByName(
       continue;
     }
 
-    // Connection check.
-    // For ordered devices (Q, D, M): compare RAW terminals position-by-position.
-    // Net mapping can't be trusted for ordered devices — when two nets have
-    // identical connectivity (only connect to this device), the mapping
-    // can't distinguish them and will "undo" a swap silently (Q6: net2110↔net2111).
-    //
-    // For symmetric devices (R, C): use mapped comparison (sorted).
+    // Connection check via net mapping (name-independent).
+    // All devices (ordered + symmetric) use the same mapped comparison.
+    // Net mapping handles renamed nets. Exclusive-net swaps are graph-isomorphic
+    // (Q6: net2110↔net2111 is the same circuit) — name-independent by design.
     const lTerms = lDev.terminals;
     const sTerms = sDev.terminals;
+    const mappedTerms = lTerms.map((t) => netMap[t] ?? t);
     const ordered = isOrdered(lDev.name);
 
     let termsMatch: boolean;
     if (ordered) {
-      // Raw positional check — catches Q6 swap (net2110↔net2111)
-      // Then cross-check: if raw differs but it's just a rename (not a swap),
-      // still MATCH. A swap = the same net appears at different positions.
-      const rawMatch = lTerms.length === sTerms.length &&
-        lTerms.every((t, i) => t === sTerms[i]);
-
-      if (rawMatch) {
-        termsMatch = true;
-      } else if (lTerms.length !== sTerms.length) {
-        termsMatch = false;
-      } else {
-        // Check if each difference is a RENAME (same position) or SWAP (different position)
-        let swapped = false;
-        for (let i = 0; i < lTerms.length; i++) {
-          if (lTerms[i] === sTerms[i]) continue;
-          // If schematic net at this position appears at ANY OTHER position in layout → SWAP
-          if (sTerms[i] !== undefined && lTerms.indexOf(sTerms[i]) !== -1 && lTerms.indexOf(sTerms[i]) !== i) {
-            swapped = true;
-            break;
-          }
-          // If layout net at this position appears at ANY OTHER position in schematic → SWAP
-          if (lTerms[i] !== undefined && sTerms.indexOf(lTerms[i]) !== -1 && sTerms.indexOf(lTerms[i]) !== i) {
-            swapped = true;
-            break;
-          }
-        }
-        termsMatch = !swapped;
-      }
+      termsMatch =
+        mappedTerms.length === sTerms.length &&
+        mappedTerms.every((t, i) => t === sTerms[i]);
     } else {
-      // Symmetric: use net map for name-independent comparison
-      const mappedTerms = lTerms.map((t) => netMap[t] ?? t);
       const sortedMapped = [...mappedTerms].sort();
       const sortedS = [...sTerms].sort();
       termsMatch =
