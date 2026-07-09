@@ -5,6 +5,37 @@ import { tmpdir, homedir } from "node:os";
 import { spawn } from "node:child_process";
 import { Router } from "express";
 import type { LvsCompareRequest, LvsRawResult } from "shared";
+import { normalizeForVyges } from "../lib/normalizeNetlist.js";
+
+// Nets always treated as global (universal SPICE convention)
+const ALWAYS_GLOBAL = new Set(["0"]);
+// Common power/ground names — auto-detected if present in either netlist
+const POWER_NET_NAMES = new Set(["GND", "VCC", "VDD", "VSS", "VEE", "VBB", "VSUB", "AVDD", "AVSS", "DVDD", "DVSS"]);
+
+function extractGlobals(layout: string, schematic: string): string[] {
+  const globals = new Set(ALWAYS_GLOBAL);
+
+  // Parse explicit .GLOBAL directives from both sides
+  for (const netlist of [layout, schematic]) {
+    for (const line of netlist.split("\n")) {
+      const trimmed = line.trim();
+      if (/^global\s+/i.test(trimmed)) {
+        const nets = trimmed.replace(/^global\s+/i, "").trim().split(/\s+/);
+        for (const n of nets.filter(Boolean)) globals.add(n);
+      }
+    }
+  }
+
+  // Auto-detect common power/ground nets present in either netlist
+  // (splits on whitespace/parens/comma to catch standalone tokens like (GND Net_42))
+  const tokens = (layout + "\n" + schematic).split(/[\s(),]+/);
+  const tokenSet = new Set(tokens);
+  for (const name of POWER_NET_NAMES) {
+    if (tokenSet.has(name)) globals.add(name);
+  }
+
+  return [...globals];
+}
 
 function resolveLvsCli(): string {
   if (process.env.LVS_CLI_PATH) return process.env.LVS_CLI_PATH;
@@ -73,8 +104,11 @@ export function createLvsRouter(_config: { dataRoot: string }) {
       const jobPath = path.join(tmpDir, "compare.lvs");
 
       try {
-        await fsp.writeFile(layoutPath, layoutNetlist, "utf-8");
-        await fsp.writeFile(schematicPath, schematicNetlist, "utf-8");
+        const allGlobals = extractGlobals(layoutNetlist, schematicNetlist);
+        const layoutNorm = normalizeForVyges(layoutNetlist, moduleName, allGlobals);
+        const schematicNorm = normalizeForVyges(schematicNetlist, moduleName, allGlobals);
+        await fsp.writeFile(layoutPath, layoutNorm, "utf-8");
+        await fsp.writeFile(schematicPath, schematicNorm, "utf-8");
 
         let jobContent = `layout:    ${layoutPath}\nschematic: ${schematicPath}\n`;
         if (moduleName) jobContent += `top:       ${moduleName}\n`;

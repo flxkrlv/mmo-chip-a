@@ -26,6 +26,7 @@
 ## Omissions / limitations
 
 - **`.GLOBAL`-anchored nets only:** vyges-lvs anchors VDD/GND to prevent global cascade. Internal signal chains still cascade fully.
+  - **Fixed:** normalizeNetlist now preserves `.GLOBAL` from both sides and merges them so vyges-lvs can anchor power/ground, breaking the graph into independent components. See `normalizeForVyges()` `globalNets` parameter.
 - **Property diffs not shown in GUI:** vyges-lvs `property_diffs[]` is available in the JSON but not yet rendered in a dedicated table (the text report includes the `—` entries).
 - **No re-run on schematic change:** user must press Compare again manually.
 - **No save/load of schematic netlists:** pasted schematic is lost on page reload.
@@ -69,6 +70,26 @@ Debounced auto-compare (300ms) when the schematic textarea content changes, so t
 - Usage guide in the README: how to install vyges-lvs, environment variables, demo walkthrough.
 
 **Total remaining: ~9h**
+
+## Netlist normalizer
+
+A **Spectre-only** normalizer (`backend/src/lib/normalizeNetlist.ts`) is applied to both sides before
+vyges-lvs runs. It strips non-device directives (`simulator lang`, `global`, `include`,
+`simulatorOptions`, `tran`, `modelParameter`, etc.), strips existing subcircuit boundaries, and
+**always wraps** both sides in identical `.SUBCKT ${moduleName}` / `.ENDS ${moduleName}` (no ports).
+
+This guarantees zero port-diffs in LVS comparison regardless of the original netlist format.
+
+**Design notes:**
+- `parameters`/`.PARAM` lines are preserved — vyges-lvs understands parameter expressions
+- Device line syntax is left intact (parenthesized terminals, model keywords, `tc1`, etc.)
+- Currently Spectre-only; extend for pure CDL if needed
+- Expressions like `r=19.9*Rbase` or `r=2.496*il` are left as-is — vyges-lvs compares graph
+  structure, not numeric values. Parameter mismatches appear in the Property Diff table.
+
+**For hierarchical netlists** (future work): pass `ioNetIds` from `collectDieWideAnalogDevices()`
+through `generateSpiceNetlist()` → `generateSpectre()`, so only I/O pin nets appear as subcircuit
+ports. This is needed for Cadence-import correctness but not for LVS (normalizer handles wrapping).
 
 ## vyges-lvs binary
 
