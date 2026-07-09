@@ -195,15 +195,6 @@ function stripSide(name: string): string {
   return name.replace(/^[AB]\//, "").replace(/\(\+\d+\)$/, "").replace(/\(×\d+\)$/, "");
 }
 
-/** Count shared terminal names between two device lines — for overlap pairing */
-function terminalOverlap(lLine: string, sLine: string): number {
-  const lTerms = new Set(parseTerminals(lLine));
-  const sTerms = new Set(parseTerminals(sLine));
-  let shared = 0;
-  for (const t of lTerms) if (sTerms.has(t)) shared++;
-  return shared;
-}
-
 /** Extract terminal nets from a device line */
 function parseTerminals(line: string): string[] {
   const s = line.indexOf("(");
@@ -288,16 +279,12 @@ function buildDiffs(layoutNetlist: string, schematicNetlist: string, json: LvsRa
     return lineBody(line); // sort by type+terminals+params for deterministic pairing
   }
 
-  // Collect ALL one-sided-by-name devices (from unbalanced + any vyges-lvs missed)
-  const lOnlyByName = new Map<string, string>(); // name → line
+  // One-sided devices from vyges-lvs unbalanced only
+  const lOnlyByName = new Map<string, string>();
   const sOnlyByName = new Map<string, string>();
 
   for (const d of tempLOnly) lOnlyByName.set(d.name.toLowerCase(), d.line);
   for (const d of tempSOnly) sOnlyByName.set(d.name.toLowerCase(), d.line);
-
-  // Add devices that exist on only ONE side by name but vyges-lvs didn't flag
-  for (const [name, line] of layoutMap) if (!seen.has(name) && !schematicMap.has(name)) { lOnlyByName.set(name, line); seen.add(name); }
-  for (const [name, line] of schematicMap) if (!seen.has(name) && !layoutMap.has(name)) { sOnlyByName.set(name, line); seen.add(name); }
 
   const lBySig = new Map<string, { name: string; line: string }[]>();
   const sBySig = new Map<string, { name: string; line: string }[]>();
@@ -344,80 +331,6 @@ function buildDiffs(layoutNetlist: string, schematicNetlist: string, json: LvsRa
     for (const d of sDevices) diffs.push({ name: d.name, category: "s-only", layoutLine: "", schematicLine: d.line });
   }
 
-  // ── Phase 2c: overlap-based pairing for renamed-terminal devices (Q10↔Q100) ──
-  // After exact signature match, try to pair remaining L-only/S-only by terminal overlap.
-  // Two devices are likely the same if >50% of their terminal net names match.
-  const lRemaining = [...lOnlyByName.entries()]
-    .filter(([name]) => !seen.has(name));
-  const sRemaining = [...sOnlyByName.entries()]
-    .filter(([name]) => !seen.has(name));
-
-  for (const [lName, lLine] of lRemaining) {
-    if (seen.has(lName)) continue;
-    let best: { name: string; line: string; overlap: number } | null = null;
-    for (const [sName, sLine] of sRemaining) {
-      if (seen.has(sName)) continue;
-      if (parseModelType(lLine) !== parseModelType(sLine)) continue;
-      const lTerms = parseTerminals(lLine);
-      const sTerms = parseTerminals(sLine);
-      if (lTerms.length !== sTerms.length) continue;
-      const overlap = terminalOverlap(lLine, sLine);
-      const maxLen = Math.max(lTerms.length, sTerms.length);
-      if (maxLen === 0) continue;
-      const ratio = overlap / maxLen;
-      if (ratio > 0.5 && (!best || overlap > best.overlap)) {
-        best = { name: sName, line: sLine, overlap };
-      }
-    }
-    if (best) {
-      diffs.push({ name: lName, category: "mismatch", layoutLine: lLine, schematicLine: best.line });
-      seen.add(lName);
-      seen.add(best.name);
-    }
-  }
-
-  // ── Phase 3: type mismatches with cross-check for name swaps (Q7↔Q9) ──
-  for (const [name, lLine] of layoutMap) {
-    if (seen.has(name)) continue;
-    const sLine = schematicMap.get(name);
-    if (sLine === undefined) continue;
-    if (lLine === sLine) continue;
-    const lType = parseModelType(lLine);
-    const sType = parseModelType(sLine);
-    if (!lType || !sType) continue;
-    if (lType !== sType) {
-      // Cross-check: could Q7 layout(pnp, Net_9) match Q9 schematic(pnp, Net_9)?
-      const lTerms = parseTerminals(lLine).sort().join(",");
-      let swapped = false;
-      for (const [sName2, sLine2] of schematicMap) {
-        if (sName2 === name || seen.has(sName2)) continue;
-        if (parseModelType(sLine2) === lType && parseTerminals(sLine2).sort().join(",") === lTerms) {
-          diffs.push({ name, category: "name-mismatch", layoutLine: lLine, schematicLine: sLine2, note: `S name: ${sName2}` });
-          seen.add(name);
-          seen.add(sName2);
-          swapped = true;
-          break;
-        }
-      }
-      if (!swapped) {
-        diffs.push({ name, category: "type-mismatch", layoutLine: lLine, schematicLine: sLine });
-        seen.add(name);
-      }
-    }
-  }
-
-  // ── Phase 4: param scan — matched devices with same type/terminals but different params ──
-  for (const [name, lLine] of layoutMap) {
-    if (seen.has(name)) continue;
-    const sLine = schematicMap.get(name);
-    if (sLine === undefined) continue;
-    if (lLine === sLine) continue;
-    if (parseModelType(lLine) !== parseModelType(sLine)) continue;
-    if (terminalsDiffer(lLine, sLine)) continue;
-    diffs.push({ name, category: "mismatch", layoutLine: lLine, schematicLine: sLine });
-    seen.add(name);
-  }
-
   return diffs;
 }
 
@@ -432,23 +345,6 @@ function fmtVal(n: number): string {
   if (abs >= 1e-9) return (n * 1e9).toFixed(2) + "n";
   if (abs >= 1e-12) return (n * 1e12).toFixed(2) + "p";
   return n.toExponential(2);
-}
-
-function matchRate(totalSideA: number, totalSideB: number, unbalancedA: number, unbalancedB: number): { matched: number; total: number; rate: number } {
-  const maxTotal = Math.max(totalSideA, totalSideB);
-  if (maxTotal === 0) return { matched: 0, total: 0, rate: 1 };
-  const matched = maxTotal - Math.max(unbalancedA, unbalancedB);
-  return { matched, total: maxTotal, rate: matched / maxTotal };
-}
-
-function rateColor(rate: number): string {
-  if (rate >= 1) return "var(--okFg, #4f4)";
-  if (rate >= 0.9) return "#fd0";
-  return "#f44";
-}
-
-function pct(rate: number): string {
-  return (rate * 100).toFixed(0) + "%";
 }
 
 function fallbackCopy(text: string): void {
