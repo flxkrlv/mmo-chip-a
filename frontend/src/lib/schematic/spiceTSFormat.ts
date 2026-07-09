@@ -35,13 +35,13 @@ import { matchGeometry } from "../export/matching";
 const DEFAULT_MODELS: Record<string, string> = {
   MOS_N: ".MODEL NMOS NMOS (VTO=0.7 KP=120u LAMBDA=0.01 GAMMA=0.4 PHI=0.7)",
   MOS_P: ".MODEL PMOS PMOS (VTO=-0.7 KP=40u LAMBDA=0.02 GAMMA=0.4 PHI=0.7)",
-  BJT_NPN: ".MODEL NPN_GEN NPN (BF=200 IS=1e-14 VAF=100)",
-  BJT_PNP: ".MODEL PNP_GEN PNP (BF=100 IS=1e-14 VAF=50)",
-  DIODE: ".MODEL D_GEN D (IS=1e-14 BV=50 N=1)",
-  ZENER: ".MODEL DZ_GEN D (IS=1e-14 BV=5.6 N=1)",
-  SCHOTTKY: ".MODEL DS_GEN D (IS=1e-10 N=1.05)",
-  JFET_N: ".MODEL NJF_GEN NJF (VTO=-2 BETA=1e-3)",
-  JFET_P: ".MODEL PJF_GEN PJF (VTO=2 BETA=1e-3)",
+  BJT_NPN: ".MODEL npn NPN (BF=200 IS=1e-14 VAF=100)",
+  BJT_PNP: ".MODEL pnp PNP (BF=100 IS=1e-14 VAF=50)",
+  DIODE: ".MODEL diode D (IS=1e-14 BV=50 N=1)",
+  ZENER: ".MODEL zener D (IS=1e-14 BV=5.6 N=1)",
+  SCHOTTKY: ".MODEL diode D (IS=1e-10 N=1.05)",
+  JFET_N: ".MODEL njf NJF (VTO=-2 BETA=1e-3)",
+  JFET_P: ".MODEL pjf PJF (VTO=2 BETA=1e-3)",
 };
 
 // ── Value formatting ──────────────────────────────────────────────
@@ -62,13 +62,13 @@ function modelForDevice(d: AnalogDevice): string {
   const modelMap: Record<string, string> = {
     mos_n: "NMOS",
     mos_p: "PMOS",
-    bjt_npn: "NPN_GEN",
-    bjt_pnp: "PNP_GEN",
-    diode: "D_GEN",
-    zener: "DZ_GEN",
-    schottky: "DS_GEN",
-    jfet_n: "NJF_GEN",
-    jfet_p: "PJF_GEN",
+    bjt_npn: "npn",
+    bjt_pnp: "pnp",
+    diode: "diode",
+    zener: "zener",
+    schottky: "diode",
+    jfet_n: "njf",
+    jfet_p: "pjf",
   };
   if (d.kind === "mos") {
     const g = d.geometry as DeviceGeometryMOS;

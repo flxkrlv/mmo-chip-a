@@ -1,0 +1,424 @@
+
+
+
+                  ##################################################
+                  ##                                              ##
+                  ##         C A L I B R E    S Y S T E M         ##
+                  ##                                              ##
+                  ##             L V S   R E P O R T              ##
+                  ##                                              ##
+                  ##################################################
+
+
+
+REPORT FILE NAME:         v_5V.lvs.report
+LAYOUT NAME:              /home/user/LM2937/CALIBRE/v_5V.sp ('v_5V')
+SOURCE NAME:              /home/user/LM2937/CALIBRE/schematic.src.net ('schematic')
+RULE FILE:                /home/user/LM2937/CALIBRE/_LVS_bipolar_v6.rul_
+CREATION TIME:            Wed Oct  9 18:41:06 2024
+CURRENT DIRECTORY:        /home/user/LM2937/CALIBRE
+USER NAME:                user
+CALIBRE VERSION:          v2021.2_28.15    Tue May 4 15:24:23 PDT 2021
+
+
+
+                               OVERALL COMPARISON RESULTS
+
+
+
+                  #   #         #####################  
+                   # #          #                   #  
+                    #           #     INCORRECT     #  
+                   # #          #                   #  
+                  #   #         #####################  
+
+
+  Error:    Different numbers of ports.
+  Error:    Different numbers of nets.
+  Error:    Different numbers of instances.
+  Error:    Connectivity errors.
+  Error:    Instances of different types or subtypes were matched.
+  Warning:  Ambiguity points were found and resolved arbitrarily.
+
+
+**************************************************************************************************************
+                                      CELL  SUMMARY
+**************************************************************************************************************
+
+  Result         Layout                        Source
+  -----------    -----------                   --------------
+  INCORRECT      v_5V                          schematic
+
+
+
+**************************************************************************************************************
+                                      LVS PARAMETERS
+**************************************************************************************************************
+
+
+o LVS Setup:
+
+   // LVS COMPONENT TYPE PROPERTY
+   // LVS COMPONENT SUBTYPE PROPERTY
+   // LVS PIN NAME PROPERTY
+   LVS POWER NAME                         "vcc" "Vin"
+   LVS GROUND NAME                        "gnd"
+   LVS CELL SUPPLY                        NO
+   LVS RECOGNIZE GATES                    ALL
+   // LVS HCELL REPORT
+   LVS IGNORE PORTS                       NO
+   LVS CHECK PORT NAMES                   NO
+   LVS IGNORE TRIVIAL NAMED PORTS         NO
+   LVS BUILTIN DEVICE PIN SWAP            YES
+   LVS ALL CAPACITOR PINS SWAPPABLE       NO
+   LVS DISCARD PINS BY DEVICE             NO
+   LVS SOFT SUBSTRATE PINS                NO
+   LVS INJECT LOGIC                       YES
+   LVS EXPAND UNBALANCED CELLS            YES
+   LVS FLATTEN INSIDE CELL                NO
+   LVS EXPAND SEED PROMOTIONS             NO
+   LVS PRESERVE PARAMETERIZED CELLS       NO
+   LVS GLOBALS ARE PORTS                  YES
+   LVS REVERSE WL                         NO
+   LVS SPICE PREFER PINS                  NO
+   LVS SPICE SLASH IS SPACE               YES
+   LVS SPICE ALLOW FLOATING PINS          YES
+   // LVS SPICE ALLOW INLINE PARAMETERS     
+   LVS SPICE ALLOW UNQUOTED STRINGS       NO
+   LVS SPICE CONDITIONAL LDD              NO
+   LVS SPICE CULL PRIMITIVE SUBCIRCUITS   NO
+   // LVS SPICE EXCLUDE CELL SOURCE
+   // LVS SPICE EXCLUDE CELL LAYOUT
+   LVS SPICE IMPLIED MOS AREA             NO
+   // LVS SPICE MULTIPLIER NAME
+   LVS SPICE OVERRIDE GLOBALS             NO
+   LVS SPICE REDEFINE PARAM               NO
+   LVS SPICE REPLICATE DEVICES            NO
+   LVS SPICE SCALE X PARAMETERS           NO
+   LVS SPICE STRICT WL                    NO
+   // LVS SPICE OPTION
+   LVS STRICT SUBTYPES                    NO
+   LVS EXACT SUBTYPES                     NO
+   LAYOUT CASE                            NO
+   SOURCE CASE                            NO
+   LVS COMPARE CASE                       NO
+   LVS COMPARE CASE STRICT                NO
+   LVS DOWNCASE DEVICE                    NO
+   LVS REPORT MAXIMUM                     50
+   LVS PROPERTY RESOLUTION MAXIMUM        32
+   // LVS SIGNATURE MAXIMUM
+   // LVS FILTER UNUSED OPTION
+   // LVS REPORT OPTION
+   LVS REPORT UNITS                       YES
+   // LVS NON USER NAME PORT
+   // LVS NON USER NAME NET
+   // LVS NON USER NAME INSTANCE
+   // LVS IGNORE DEVICE PIN
+   // LVS PREFER NETS FILTER SOURCE
+   // LVS PREFER NETS FILTER LAYOUT
+   LVS PREFER PORT NETS                   NO
+   LVS EXPAND ON ERROR                    NO
+
+   // Reduction
+
+   LVS REDUCE SERIES MOS                  NO
+   LVS REDUCE PARALLEL MOS                YES
+   LVS REDUCE SEMI SERIES MOS             NO
+   LVS REDUCE SPLIT GATES                 YES
+   LVS REDUCE PARALLEL BIPOLAR            YES
+   LVS REDUCE SERIES CAPACITORS           YES
+   LVS REDUCE PARALLEL CAPACITORS         YES
+   LVS REDUCE SERIES RESISTORS            YES
+   LVS REDUCE PARALLEL RESISTORS          YES
+   LVS REDUCE PARALLEL DIODES             YES
+   LVS REDUCTION PRIORITY                 PARALLEL
+   
+   LVS SHORT EQUIVALENT NODES             NO
+
+
+
+                   CELL COMPARISON RESULTS ( TOP LEVEL )
+
+
+
+                  #   #         #####################  
+                   # #          #                   #  
+                    #           #     INCORRECT     #  
+                   # #          #                   #  
+                  #   #         #####################  
+
+
+  Error:    Different numbers of ports (see below).
+  Error:    Different numbers of nets (see below).
+  Error:    Different numbers of instances (see below).
+  Error:    Connectivity errors.
+  Error:    Instances of different types or subtypes were matched.
+  Warning:  Ambiguity points were found and resolved arbitrarily.
+
+LAYOUT CELL NAME:         v_5V
+SOURCE CELL NAME:         schematic
+
+--------------------------------------------------------------------------------------------------------------
+
+INITIAL NUMBERS OF OBJECTS
+--------------------------
+
+                Layout    Source         Component Type
+                ------    ------         --------------
+ Ports:              4         3    *
+
+ Nets:              90        61    *
+
+ Instances:        422        46    *    Q (3 pins)
+                     2         3    *    C (2 pins)
+                    70        39    *    R (2 pins)
+                     8         8         D (2 pins)
+                ------    ------
+ Total Inst:       502        96
+
+
+NUMBERS OF OBJECTS AFTER TRANSFORMATION
+---------------------------------------
+
+                Layout    Source         Component Type
+                ------    ------         --------------
+ Ports:              4         3    *
+
+ Nets:              64        56    *
+
+ Instances:         52        46    *    Q (3 pins)
+                     2         3    *    C (2 pins)
+                    36        34    *    R (2 pins)
+                     8         8         D (2 pins)
+                ------    ------
+ Total Inst:        98        91
+
+
+       * = Number of objects in layout different from number in source.
+
+
+
+**************************************************************************************************************
+                                 INCORRECT OBJECTS
+**************************************************************************************************************
+
+
+LEGEND:
+-------
+
+  ne  = Naming Error (same layout name found in source
+        circuit, but object was matched otherwise).
+
+
+**************************************************************************************************************
+                                   INCORRECT NETS
+
+DISC#  LAYOUT NAME                                               SOURCE NAME
+**************************************************************************************************************
+
+  1    Net GND                                                   GND!
+       --- 29 Connections On This Net ---                        --- 29 Connections On This Net ---
+       --------------------------                                --------------------------
+       
+       R190(1284.500,719.500):neg                                ** missing connection **
+       
+       ** missing connection **                                  CC3:pos
+       
+
+--------------------------------------------------------------------------------------------------------------
+
+  2    Net VOUT                                                  VOUT
+       --- 4 Connections On This Net ---                         --- 8 Connections On This Net ---
+       --------------------------                                --------------------------
+       
+       ** missing connection **                                  CC3:neg
+       ** missing connection **                                  RR5:pos
+       ** missing connection **                                  RR11:pos
+       ** missing connection **                                  RR_load:pos
+       
+
+--------------------------------------------------------------------------------------------------------------
+
+  3    Net SENSE                                                 ** missing net **
+
+--------------------------------------------------------------------------------------------------------------
+
+  4    Net 86                                                    ** missing net **
+
+--------------------------------------------------------------------------------------------------------------
+
+  5    Net 88                                                    ** missing net **
+
+--------------------------------------------------------------------------------------------------------------
+
+  6    Net 90                                                    ** missing net **
+
+--------------------------------------------------------------------------------------------------------------
+
+  7    Net 93                                                    ** missing net **
+
+--------------------------------------------------------------------------------------------------------------
+
+  8    Net 9                                                     ** missing net **
+
+--------------------------------------------------------------------------------------------------------------
+
+  9    Net 51                                                    ** missing net **
+
+--------------------------------------------------------------------------------------------------------------
+
+ 10    Net 49                                                    ** missing net **
+
+
+**************************************************************************************************************
+                                   INCORRECT PORTS
+
+DISC#  LAYOUT NAME                                               SOURCE NAME
+**************************************************************************************************************
+
+ 11    SENSE on net: SENSE                                       ** missing port **
+
+
+**************************************************************************************************************
+                                 INCORRECT INSTANCES
+
+DISC#  LAYOUT NAME                                               SOURCE NAME
+**************************************************************************************************************
+
+ 12    R210(361.000,771.500)  R(JF)                              RR41  R(RP)
+         bad component subtype
+
+--------------------------------------------------------------------------------------------------------------
+
+ 13    Q26(1086.500,819.000)  Q(NP)                              ** missing instance **
+
+--------------------------------------------------------------------------------------------------------------
+
+ 14    Q29(1117.000,819.000)  Q(NP)                              ** missing instance **
+
+--------------------------------------------------------------------------------------------------------------
+
+ 15    Q32(1147.500,819.000)  Q(NP)                              ** missing instance **
+
+--------------------------------------------------------------------------------------------------------------
+
+ 16    Q34(1178.000,819.000)  Q(NP)                              ** missing instance **
+
+--------------------------------------------------------------------------------------------------------------
+
+ 17    Q37(78.000,399.555)  Q(PN)                                ** missing instance **
+
+--------------------------------------------------------------------------------------------------------------
+
+ 18    Q58(544.000,480.555)  Q(PN)                               ** missing instance **
+
+--------------------------------------------------------------------------------------------------------------
+
+ 19    R174(653.000,600.500)  R(RP)                              ** missing instance **
+
+--------------------------------------------------------------------------------------------------------------
+
+ 20    X252/R0(573.000,379.000)  R(RP)                           ** missing instance **
+
+--------------------------------------------------------------------------------------------------------------
+
+ 21    ** missing instance **                                    CC3  C(CP)
+
+
+
+**************************************************************************************************************
+                               INFORMATION AND WARNINGS
+**************************************************************************************************************
+
+
+                  Matched    Matched    Unmatched    Unmatched    Component
+                   Layout     Source       Layout       Source    Type
+                  -------    -------    ---------    ---------    ---------
+   Ports:               3          3            1            0
+
+   Nets:               56         56            8            0
+
+   Instances:          24         24            4            0    Q(NP)
+                       22         22            2            0    Q(PN)
+                        2          2            0            1    C(CP)
+                       34         34            2            0    R(RP)
+                        8          8            0            0    D(DP)
+                  -------    -------    ---------    ---------
+   Total Inst:         90         90            8            1
+
+
+o Statistics:
+
+   377 parallel layout bipolar transistors were reduced to 7.
+
+   51 series/parallel layout resistors were reduced to 17.  26 connecting nets were deleted.
+   7 series source resistors were reduced to 2.  5 connecting nets were deleted.
+
+   2 nets were matched arbitrarily.
+
+
+o Layout Names That Are Missing In The Source:
+
+   Ports:        gnd SENSE
+   Nets:         gnd SENSE
+
+
+o Initial Correspondence Points:
+
+   Ports:        Vin VOUT
+
+
+o Ambiguity Resolution Points:
+
+      (Each one of the following objects belongs to a group of indistinguishable objects.
+       The listed objects were matched arbitrarily by the Ambiguity Resolution feature of LVS.
+       Arbitrary matching may be prevented by assigning names to these objects or to adjacent nets).
+
+       Layout                                                    Source
+       ------                                                    ------
+
+                                     Nets
+                                     ----
+
+       70                                                        net55
+       64                                                        net56
+
+
+
+**************************************************************************************************************
+                             DETAILED INSTANCE CONNECTIONS
+
+       LAYOUT NAME                                               SOURCE NAME
+**************************************************************************************************************
+
+          (This section contains detailed information about connections of
+           matched instances that are involved in net discrepancies).
+
+--------------------------------------------------------------------------------------------------------------
+
+       R167(78.000,565.500)  R(RP)                               RR5  R(RP)
+         pos: 85                                                   neg: net26
+         neg: SENSE                                                ** missing net **
+         ** VOUT **                                                pos: VOUT
+
+--------------------------------------------------------------------------------------------------------------
+
+       R170(193.500,387.500)  R(RP)                              RR11  R(RP)
+         neg: 27                                                   neg: net34
+         pos: SENSE                                                ** missing net **
+         ** VOUT **                                                pos: VOUT
+
+--------------------------------------------------------------------------------------------------------------
+
+       R190(1284.500,719.500)  R(RP)                             RR_load  R(RP)
+         pos: GND                                                  neg: GND!
+         neg: GND                                                  ** GND! **
+         ** VOUT **                                                pos: VOUT
+
+
+**************************************************************************************************************
+                                         SUMMARY
+**************************************************************************************************************
+
+Total CPU Time:      0 sec
+Total Elapsed Time:  0 sec

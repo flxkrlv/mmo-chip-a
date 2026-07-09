@@ -10,6 +10,7 @@ import { createOverlayImagesRouter } from "./api/overlayImages.js";
 import { createMLExportRouter } from "./api/mlExport.js";
 import { createAnalogExportRouter } from "./api/analogExport.js";
 import { createLvsRouter } from "./api/lvs.js";
+import { createDebugRouter } from "./api/debug.js";
 import { createAuthRouter } from "./api/auth.js";
 import { createProjectIORouter } from "./api/projectIO.js";
 import { createTilesRouter } from "./api/tiles.js";
@@ -104,6 +105,7 @@ export function createApp(config: {
     broadcaster: config.broadcaster
   }));
   app.use(createProjectIORouter({ dataRoot: config.dataRoot }));
+  app.use(createDebugRouter({ dataRoot: config.dataRoot }));
 
   app.use(
     (

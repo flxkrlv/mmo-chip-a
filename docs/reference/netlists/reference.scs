@@ -1,0 +1,123 @@
+// Point Netlist Generated on: Jul  9 12:15:30 2026
+// Generated for: spectre
+// Design Netlist Generated on: Jul  9 12:15:30 2026
+// Design library name: LM2937
+// Design cell name: schematic
+// Design view name: schematic
+simulator lang=spectre
+global 0
+parameters il=2600 pb=200
+include "/home/user/LM2937/RESOURCES/mos_1.mdl.scs"
+
+// Library name: LM2937
+// Cell name: schematic
+// View name: schematic
+Q37 (net51 net51 net27 0) pnp m=1
+Q36 (net35 net51 net27 0) pnp m=0.5
+Q35 (net49 net51 net27 0) pnp m=0.5
+Q34 (0 net11 net45 0) pnp m=1.5
+Q33 (net47 net11 net45 0) pnp m=0.5
+Q32 (0 net14 net44 0) pnp m=1.5
+Q31 (net50 net14 net44 0) pnp m=0.5
+Q28 (net47 net32 net27 0) pnp m=1
+Q21 (net6 net36 net29 0) pnp m=16
+Q18 (net28 net29 Vout 0) pnp m=1
+Q17 (Vout net29 Vin 0) pnp m=330
+Q16 (net29 net29 Vin 0) pnp m=3
+Q13 (net24 net23 net22 0) pnp m=1
+Q8 (net12 net10 net2 0) pnp m=1
+Q7 (net41 net10 net3 0) pnp m=1
+Q6 (net29 net1 Vin 0) pnp m=1
+Q5 (net7 net7 Vin 0) pnp m=1
+Q4 (net29 net2 Vin 0) pnp m=1
+Q3 (net5 net2 Vin 0) pnp m=1
+Q2 (net2 net2 Vin 0) pnp m=1
+Q1 (net4 net2 Vin 0) pnp m=1
+Q0 (net3 net2 Vin 0) pnp m=5
+DQ5 (net7 net41 net27 0) npn m=1
+Q46 (net40 net086 GND 0) npn m=1
+Q45 (net27 net35 net40 0) npn m=1
+Q44 (net48 net48 net46 0) npn m=6.7
+Q43 (net43 net43 GND 0) npn m=1
+Q42 (net53 net43 net26 0) npn m=1
+Q41 (net53 net43 net54 0) npn m=1
+Q40 (net53 net43 net33 0) npn m=1
+Q39 (net17 net53 GND 0) npn m=1
+Q30 (net50 net50 GND 0) npn m=1
+Q29 (net47 net50 GND 0) npn m=1
+Q27 (net32 net42 GND 0) npn m=1
+Q26 (net27 net17 net14 0) npn m=1
+Q25 (net27 net17 net56 0) npn m=1
+Q24 (net35 net47 GND 0) npn
+Q23 (net35 net37 GND 0) npn
+Q22 (net6 net6 Vout 0) npn m=14
+Q20 (net36 net19 net25 0) npn m=32
+Q19 (net19 net28 GND 0) npn m=1
+Q14 (net23 net16 GND 0) npn m=1
+Q12 (net13 net5 0 0) npn m=1
+Q11 (net4 net12 net48 0) npn m=1
+Q10 (net12 net48 GND 0) npn m=1
+Q9 (net7 net13 net12 0) npn m=1
+R41 (net7 net13) resistor r=500K
+R37 (net42 GND) resistor r=2.496*il tc1=0.004
+R36 (net24 net086) resistor r=4.94*il tc1=0.004
+R35 (net40 net19) resistor r=1.88*pb tc1=0.0015
+R34 (net46 GND) resistor r=6*pb tc1=0.0015
+R32 (net17 net11) resistor r=(5.4+7.4)*pb tc1=0.0015
+R31 (net17 net43) resistor r=2*16.67*pb tc1=0.0015
+R30 (net17 net30) resistor r=77.5*pb tc1=0.0015
+R29_80mv (net30 net30) resistor r=2.4K tc1=0.0015
+R28_40mv (net30 net57) resistor r=1.2K
+R27_20mv (net57 net31) resistor r=600 tc1=0.0015
+R26_10mv (net31 net31) resistor r=300 tc1=0.0015
+R25 (net31 net53) resistor r=10.89*pb tc1=0.0015
+R24 (net26 GND) resistor r=16.9*2*pb tc1=0.0015
+R23 (net54 GND) resistor r=16.9*2*pb tc1=0.0015
+R22 (net33 GND) resistor r=16.9*2*pb tc1=0.0015
+R21 (net52 net35) resistor r=10*il tc1=0.004
+R20 (net51 GND) resistor r=17*il tc1=0.004
+R19 (net49 net44) resistor r=3*18.78*pb tc1=0.0015
+R18 (net49 net45) resistor r=3*18.78*pb tc1=0.0015
+R17 (net27 net32) resistor r=6.153*il*1 tc1=0.004
+R16 (net56 net42) resistor r=((2.1875)*il) tc1=0.004
+R15 (net23 GND) resistor r=30.4*il tc1=0.004
+R14 (net24 net16) resistor r=4.94*il tc1=0.004
+R13 (net37 net24) resistor r=4.94*il tc1=0.004
+R12 (net24 GND) resistor r=14.82*il tc1=0.004
+R11 (Vout net34) resistor r=8.36*pb tc1=0.0015
+R10 (net36 net29) resistor r=(1.45)*pb tc1=0.0015
+R9 (net19 net25) resistor r=(7.314)*il tc1=0.0015
+R8 (net25 GND) resistor r=(1.48*1.85)/(1.48+1.85)*pb tc1=0.0015
+R7 (net28 GND) resistor r=(29.24)*il tc1=0.004
+R6 (net14 GND) resistor r=9*pb tc1=0.0015
+R5 (Vout net14) resistor r=(10+8.958+7.708)*pb tc1=0.0015
+R4 (net22 net23) resistor r=9.62*il tc1=0.004
+R3 (net21 net22) resistor r=16*pb tc1=0.004
+R2 (net20 net21) resistor r=15*il tc1=0.004
+R1 (net18 net20) resistor r=15*il tc1=0.004
+R0 (net5 0) resistor r=4.44*8K
+D3 (net18 net15) zener
+D2 (net15 net8) zener
+D0 (net9 net1) zener
+D1 (net8 net9) zener
+C1 (net47 net52) capacitor c=20p
+C0 (net34 net47) capacitor c=26.38p
+D8 (net39 net17) ndiod
+D7 (net38 net39) ndiod
+D6 (net41 net38) ndiod
+D4 (net10 net4) ndiod
+simulatorOptions options psfversion="1.4.0" reltol=1e-3 vabstol=1e-6 \
+    iabstol=1e-12 temp=27 tnom=27 scalem=1.0 scale=1.0 gmin=1e-12 rforce=1 \
+    maxnotes=5 maxwarns=5 digits=5 cols=80 pivrel=1e-3 \
+    sensfile="../psf/sens.output" checklimitdest=psf 
+tran tran stop=100u write="spectre.ic" writefinal="spectre.fc" \
+    annotate=status maxiters=5 
+finalTimeOP info what=oppoint where=rawfile
+modelParameter info what=models where=rawfile
+element info what=inst where=rawfile
+outputParameter info what=output where=rawfile
+designParamVals info what=parameters where=rawfile
+primitives info what=primitives where=rawfile
+subckts info what=subckts where=rawfile
+save Vin net40 
+saveOptions options save=allpub currents=all

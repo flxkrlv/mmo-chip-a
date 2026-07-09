@@ -254,7 +254,7 @@ export function extractMarkedDevices(
             },
             cellTypeId,
             instanceName: `${prefixMap.diode}${counter}`,
-            modelName: "D_GEN",
+            modelName: "diode",
             terminals: [
               { name: "PLUS", netId: terminalNet(bases), shapeIds: bases.map(s => s.id) },
               { name: "MINUS", netId: terminalNet(emitters), shapeIds: emitters.map(s => s.id) },
@@ -317,7 +317,7 @@ export function extractMarkedDevices(
           },
           cellTypeId,
           instanceName: `${prefix}${counter}`,
-          modelName: marker.kind === "bjt_npn" ? "NPN_GEN" : "PNP_GEN",
+          modelName: marker.kind === "bjt_npn" ? "npn" : "pnp",
           terminals: [
             { name: "C", netId: terminalNet(collectors), shapeIds: collectors.map(s => s.id) },
             { name: "B", netId: terminalNet(bases), shapeIds: bases.map(s => s.id) },
@@ -491,7 +491,7 @@ export function extractMarkedDevices(
           },
           cellTypeId,
           instanceName: `${prefix}${counter}`,
-          modelName: "RES_GEN",
+          modelName: "resistor",
           terminals: [
             { name: "PLUS", netId: plusContactIds.length > 0 ? nextNet() : -1, shapeIds: plusContactIds },
             { name: "MINUS", netId: minusContactIds.length > 0 ? nextNet() : -1, shapeIds: minusContactIds },
@@ -550,7 +550,7 @@ export function extractMarkedDevices(
           },
           cellTypeId,
           instanceName: `${prefix}${counter}`,
-          modelName: "D_GEN",
+          modelName: "diode",
           terminals: [
             { name: "PLUS", netId: nextNet(), shapeIds: diodeContactIds },
             { name: "MINUS", netId: nextNet(), shapeIds: diodeContactIds },
@@ -791,7 +791,7 @@ export function extractMarkedDevices(
         },
         cellTypeId,
         instanceName: `R${counter}`,
-        modelName: "RES_GEN",
+        modelName: "resistor",
         terminals: [
           { name: "PLUS", netId: nextNet(), shapeIds: plusTermIds },
           { name: "MINUS", netId: nextNet(), shapeIds: minusTermIds },
