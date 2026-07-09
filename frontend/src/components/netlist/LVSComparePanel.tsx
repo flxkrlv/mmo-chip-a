@@ -482,7 +482,6 @@ const ENGINE_LABELS: Record<string, string> = {
 export default function LVSComparePanel({ dieId, layoutNetlist, dialect, moduleName }: Props) {
   const [schematicNetlist, setSchematicNetlist] = useState("");
   const [state, setState] = useState<PanelPhase>({ phase: "idle" });
-  const [showReport, setShowReport] = useState(false);
   const [engine, setEngine] = useState<LvsEngine>("vyges-lvs");
   const [engineVerdicts, setEngineVerdicts] = useState<EngineVerdict[]>([]);
   const reportRef = useRef<HTMLDivElement>(null);
@@ -520,7 +519,6 @@ export default function LVSComparePanel({ dieId, layoutNetlist, dialect, moduleN
           const devices = buildDiffs(layoutNetlist, schematicNetlist, json);
           setState({ phase: "done", data: { engine: engine, matched: data.matched, json, report: data.report, devices } });
         }
-        setShowReport(false);
         // Save snapshot with first engine's data
         const snapData = state.phase === "done" ? (state as any).data : null;
         const snapJson = snapData?.json ?? data.json;
@@ -853,44 +851,31 @@ export default function LVSComparePanel({ dieId, layoutNetlist, dialect, moduleN
     );
   };
 
-  const renderReport = () => {
+  const renderReportInline = () => {
     if (state.phase !== "done" || !state.data.report) return null;
     const engName = state.data.engine === "all" ? "vyges-lvs + name-based" : (ENGINE_LABELS[state.data.engine] ?? state.data.engine);
     const engines = (state.data as any).engines as Record<string, { engine: string; report: string }> | undefined;
+
     return (
-      <div style={{ margin: "0 10px 8px" }}>
-        <div
-          style={{ ...sectionTitle, cursor: "pointer", userSelect: "none", display: "flex", alignItems: "center", gap: 4 }}
-          onClick={() => setShowReport((v) => !v)}
-        >
-          <span style={{ transform: showReport ? "rotate(90deg)" : "none", display: "inline-block", fontSize: 8 }}>{Ic.chev}</span>
-          Reports
-        </div>
-        {showReport && (
-          <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-            {/* Combined/single report */}
+      <div style={{ margin: "0 0 8px" }}>
+        <div style={sectionTitle}>{engName} report</div>
+        <textarea
+          readOnly
+          value={state.data.report}
+          style={{ ...textareaBase, minHeight: 60, cursor: "default", whiteSpace: "pre", fontFamily: "var(--mono)", fontSize: 9 }}
+          spellCheck={false}
+        />
+        {engines && Object.entries(engines).map(([ek, er]) => (
+          <div key={ek} style={{ marginTop: 4 }}>
+            <div style={{ ...sectionTitle, fontSize: 9 }}>{ENGINE_LABELS[ek] ?? ek} full report</div>
             <textarea
               readOnly
-              value={state.data.report}
-              style={{ ...textareaBase, minHeight: engines ? 60 : 100, cursor: "default", whiteSpace: "pre", fontFamily: "var(--mono)" }}
+              value={er.report}
+              style={{ ...textareaBase, minHeight: 60, cursor: "default", whiteSpace: "pre", fontFamily: "var(--mono)", fontSize: 9 }}
               spellCheck={false}
             />
-            {/* Per-engine reports in "both" mode */}
-            {engines && Object.entries(engines).map(([ek, er]) => (
-              <details key={ek} style={{ fontSize: 10 }}>
-                <summary style={{ cursor: "pointer", color: "var(--ink2)", fontWeight: 600 }}>
-                  {ENGINE_LABELS[ek] ?? ek} full report
-                </summary>
-                <textarea
-                  readOnly
-                  value={er.report}
-                  style={{ ...textareaBase, minHeight: 80, cursor: "default", whiteSpace: "pre", fontFamily: "var(--mono)", marginTop: 2 }}
-                  spellCheck={false}
-                />
-              </details>
-            ))}
           </div>
-        )}
+        ))}
       </div>
     );
   };
@@ -915,13 +900,11 @@ export default function LVSComparePanel({ dieId, layoutNetlist, dialect, moduleN
               <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "auto", minWidth: 0 }}>
                 {renderPortChips()}
                 {renderPropertyTable()}
+                {renderReportInline()}
               </div>
               <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "auto", minWidth: 0 }}>
                 {renderDeviceDiffs()}
               </div>
-            </div>
-            <div style={{ margin: "0 10px" }}>
-              {renderReport()}
             </div>
           </>
         )}
