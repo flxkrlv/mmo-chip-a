@@ -905,33 +905,36 @@ export interface AnalogExportResponse {
 
 // ── LVS comparison ──────────────────────────────────────────────
 
+export type LvsEngine = "vyges-lvs" | "name-based" | "all";
+
 export interface LvsCompareRequest {
   layoutNetlist: string;
   schematicNetlist: string;
   dialect?: SpiceDialect;
   moduleName?: string;
+  engine?: LvsEngine;
 }
 
-/** Unbalanced class from vyges-lvs `unbalanced[]` */
+/** Unbalanced class — device or net count differs */
 export interface LvsUnbalancedClass {
   what: "device" | "net";
-  a_count: number;    // how many in layout side
-  b_count: number;    // how many in schematic side
-  a: string[];        // instance/net names on layout side
-  b: string[];        // instance/net names on schematic side
+  a_count: number;
+  b_count: number;
+  a: string[];
+  b: string[];
 }
 
-/** Property diff from vyges-lvs `property_diffs[]` */
+/** Property diff — parameter value differs */
 export interface LvsPropertyDiff {
-  kind: string;            // device kind: "M", "R", "C", etc
-  a_device: string;        // instance name on layout side
-  b_device: string;        // instance name on schematic side
-  param: string;           // parameter name: "w", "l", "nf", "m", "r", "c"
-  a_value: number;         // value on layout side
-  b_value: number;         // value on schematic side
+  kind: string;
+  a_device: string;
+  b_device: string;
+  param: string;
+  a_value: number;
+  b_value: number;
 }
 
-/** Top-level result from vyges-lvs --json */
+/** Top-level result from any LVS engine */
 export interface LvsRawResult {
   matched: boolean;
   verified: boolean;
@@ -947,11 +950,21 @@ export interface LvsRawResult {
   property_diffs: LvsPropertyDiff[];
 }
 
-/** Combined response: both JSON data + text report */
-export interface LvsCombinedResult {
+/** Per-engine result */
+export interface LvsEngineResult {
+  engine: LvsEngine;
   matched: boolean;
   json: LvsRawResult;
   report: string;
+}
+
+/** Combined response */
+export interface LvsCombinedResult {
+  engine: LvsEngine;
+  matched: boolean;
+  json: LvsRawResult;
+  report: string;
+  engines?: Record<string, LvsEngineResult>; // present only when engine="all"
 }
 
 export interface LvsResponse {

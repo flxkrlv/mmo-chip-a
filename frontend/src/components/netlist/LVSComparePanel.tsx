@@ -1,5 +1,6 @@
 import { useCallback, useState, useRef, useEffect } from "react";
-import type { SpiceDialect, LvsRawResult } from "shared";
+import type { SpiceDialect, LvsRawResult, LvsEngine, LvsCombinedResult } from "shared";
+import type { LvsEngineResult } from "shared";
 import { compareNetlists, saveLvsSnapshot } from "../../api/lvs";
 import { Ic } from "../../icons";
 
@@ -35,10 +36,17 @@ interface DeviceDiff {
 }
 
 interface LvsResultData {
+  engine: LvsEngine;
   matched: boolean;
   json: LvsRawResult;
   report: string;
   devices: DeviceDiff[];
+}
+
+interface EngineVerdict {
+  engine: LvsEngine;
+  matched: boolean;
+  report: string;
 }
 
 type PanelPhase =
@@ -285,12 +293,12 @@ function buildDiffs(layoutNetlist: string, schematicNetlist: string, json: LvsRa
     if (lLine === undefined && sLine === undefined) continue;
 
     if (lLine !== undefined && sLine !== undefined) {
-      if (lLine === sLine) continue; // cascade artifact (same name + same line)
+      if (lLine === sLine) continue;
       const cat = parseModelType(lLine) !== parseModelType(sLine) ? "type-mismatch" : "mismatch";
       diffs.push({ name, category: cat, layoutLine: lLine, schematicLine: sLine });
     } else if (lLine !== undefined) {
-      tempLOnly.push({ name, line: lLine }); // maybe matched by signature later
-    } else {
+      tempLOnly.push({ name, line: lLine });
+    } else if (sLine !== undefined) {
       tempSOnly.push({ name, line: sLine });
     }
     seen.add(name);
@@ -441,25 +449,65 @@ function fallbackCopy(text: string): void {
 
 // ── Component ────────────────────────────────────────────────
 
+const ENGINE_OPTIONS: { value: LvsEngine; label: string }[] = [
+  { value: "vyges-lvs", label: "vyges-lvs (name-independent)" },
+  { value: "name-based", label: "name-based" },
+  { value: "all", label: "both" },
+];
+
+const ENGINE_LABELS: Record<string, string> = {
+  "vyges-lvs": "vyges-lvs",
+  "name-based": "name-based",
+  all: "both engines",
+};
+
 export default function LVSComparePanel({ dieId, layoutNetlist, dialect, moduleName }: Props) {
   const [schematicNetlist, setSchematicNetlist] = useState("");
   const [state, setState] = useState<PanelPhase>({ phase: "idle" });
   const [showReport, setShowReport] = useState(false);
+  const [engine, setEngine] = useState<LvsEngine>("vyges-lvs");
+  const [engineVerdicts, setEngineVerdicts] = useState<EngineVerdict[]>([]);
   const reportRef = useRef<HTMLDivElement>(null);
 
   const handleCompare = useCallback(async () => {
     if (!schematicNetlist.trim() || !layoutNetlist) return;
     setState({ phase: "loading" });
+    setEngineVerdicts([]);
     try {
       const res = await compareNetlists(dieId, {
-        layoutNetlist, schematicNetlist, dialect, moduleName,
+        layoutNetlist, schematicNetlist, dialect, moduleName, engine,
       });
       if (res.ok && "json" in res.data) {
-        const json = res.data.json;
-        const devices = buildDiffs(layoutNetlist, schematicNetlist, json);
-        setState({ phase: "done", data: { matched: res.data.matched, json, report: res.data.report, devices } });
+        const data = res.data as LvsCombinedResult;
+
+        if (data.engines) {
+          // Multi-engine mode — use first engine for detailed diffs
+          const primaryEngine = data.engines["vyges-lvs"] ?? data.engines["name-based"];
+          const verdicts: EngineVerdict[] = [];
+          for (const [eng, er] of Object.entries(data.engines)) {
+            verdicts.push({ engine: eng as LvsEngine, matched: er.matched, report: er.report });
+          }
+          setEngineVerdicts(verdicts);
+
+          if (primaryEngine) {
+            const json = primaryEngine.json;
+            const devices = buildDiffs(layoutNetlist, schematicNetlist, json);
+            setState({ phase: "done", data: { engine: "all", matched: data.matched, json, report: data.report, devices } });
+          } else {
+            setState({ phase: "error", error: "No engine results" });
+          }
+        } else {
+          // Single engine mode
+          const json = data.json;
+          const devices = buildDiffs(layoutNetlist, schematicNetlist, json);
+          setState({ phase: "done", data: { engine: engine, matched: data.matched, json, report: data.report, devices } });
+        }
         setShowReport(false);
-        saveLvsSnapshot({ layoutNetlist, schematicNetlist, matched: res.data.matched, json, report: res.data.report, devices });
+        // Save snapshot with first engine's data
+        const snapData = state.phase === "done" ? (state as any).data : null;
+        const snapJson = snapData?.json ?? data.json;
+        const snapDevices = snapData?.devices ?? [];
+        saveLvsSnapshot({ layoutNetlist, schematicNetlist, matched: data.matched, json: snapJson, report: data.report, devices: snapDevices });
       } else if (res.ok) {
         setState({ phase: "error", error: "Unexpected response format" });
       } else {
@@ -468,7 +516,7 @@ export default function LVSComparePanel({ dieId, layoutNetlist, dialect, moduleN
     } catch (err: unknown) {
       setState({ phase: "error", error: err instanceof Error ? err.message : "Network error" });
     }
-  }, [schematicNetlist, layoutNetlist, dieId, dialect, moduleName]);
+  }, [schematicNetlist, layoutNetlist, dieId, dialect, moduleName, engine]);
 
   useEffect(() => {
     if (state.phase === "done" && reportRef.current) {
@@ -486,6 +534,67 @@ export default function LVSComparePanel({ dieId, layoutNetlist, dialect, moduleN
 
   // ── Render sections ────────────────────────────────────────
 
+  const renderEngineSelector = () => (
+    <div style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 10 }}>
+      <span style={{ color: "var(--ink3)" }}>Engine:</span>
+      {ENGINE_OPTIONS.map((opt) => (
+        <label key={opt.value} style={{
+          display: "inline-flex", alignItems: "center", gap: 2, cursor: "pointer",
+          padding: "2px 6px", borderRadius: 3,
+          background: engine === opt.value ? "var(--accent)" : "var(--l1)",
+          color: engine === opt.value ? "var(--accentFg, #fff)" : "var(--ink2)",
+          fontWeight: engine === opt.value ? 600 : 400,
+        }}>
+          <input type="radio" name="lvs-engine" value={opt.value}
+            checked={engine === opt.value}
+            onChange={() => { setEngine(opt.value); if (state.phase !== "idle") setState({ phase: "idle" }); }}
+            style={{ display: "none" }} />
+          {opt.label}
+        </label>
+      ))}
+    </div>
+  );
+
+  const renderVerdictBadge = (matched: boolean, label?: string) => (
+    <span style={{
+      display: "inline-flex", alignItems: "center", gap: 4,
+      fontSize: 12, fontWeight: 700, padding: "3px 10px", borderRadius: 4,
+      background: matched ? "var(--okBg)" : "var(--errBg)",
+      color: matched ? "var(--okFg, #4f4)" : "var(--errFg, #f44)",
+    }}>
+      {label ? `${label}: ` : ""}{matched ? "MATCH" : "MISMATCH"}
+    </span>
+  );
+
+  const renderMultiVerdict = () => {
+    if (!engineVerdicts.length) return null;
+    const allMatch = engineVerdicts.every((v) => v.matched);
+    const agree = engineVerdicts.length > 1 && engineVerdicts.every((v) => v.matched === engineVerdicts[0].matched);
+    return (
+      <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 11 }}>
+        {engineVerdicts.map((v) => (
+          <span key={v.engine} style={{
+            display: "inline-flex", alignItems: "center", gap: 4,
+            fontSize: 10, fontWeight: 600, padding: "2px 8px", borderRadius: 3,
+            background: v.matched ? "var(--okBg)" : "var(--errBg)",
+            color: v.matched ? "var(--okFg, #4f4)" : "var(--errFg, #f44)",
+          }}>
+            {ENGINE_LABELS[v.engine] ?? v.engine}: {v.matched ? "MATCH" : "MISMATCH"}
+          </span>
+        ))}
+        {engineVerdicts.length > 1 && (
+          <span style={{
+            fontSize: 10, fontWeight: 600, padding: "2px 6px", borderRadius: 3,
+            background: agree ? "var(--okBg)" : "#fd0",
+            color: agree ? "var(--okFg, #4f4)" : "#000",
+          }}>
+            {agree ? "✓ AGREE" : "✗ DISCREPANCY"}
+          </span>
+        )}
+      </div>
+    );
+  };
+
   const renderSummary = () => {
     const done = state.phase === "done";
     const data = done ? state.data : null;
@@ -496,21 +605,18 @@ export default function LVSComparePanel({ dieId, layoutNetlist, dialect, moduleN
         padding: "6px 10px", flexWrap: "wrap", borderBottom: "1px solid var(--l2)",
         background: "var(--card)",
       }}>
-        {/* Verdict badge — only when done */}
-        {data && (
-          <span style={{
-            display: "inline-flex", alignItems: "center", gap: 4,
-            fontSize: 12, fontWeight: 700, padding: "3px 10px", borderRadius: 4,
-            background: data.matched ? "var(--okBg)" : "var(--errBg)",
-            color: data.matched ? "var(--okFg, #4f4)" : "var(--errFg, #f44)",
-          }}>
-            {data.matched ? "✓ MATCH" : "✗ MISMATCH"}
-          </span>
-        )}
+        {/* Engine selector */}
+        {renderEngineSelector()}
+
+        {/* Multi-engine verdicts */}
+        {renderMultiVerdict()}
+
+        {/* Verdict badge — single engine mode */}
+        {data && engine !== "all" && renderVerdictBadge(data.matched)}
 
         {/* Stats — only when done */}
         {data && (() => {
-          const { json, devices } = data;
+          const { json, devices, engine: eng } = data;
           const totalDev = Math.max(json.a_devices, json.b_devices);
           const devDiffs = devices.length;
           const lOnly = devices.filter(d => d.category === "l-only").length;
@@ -538,7 +644,7 @@ export default function LVSComparePanel({ dieId, layoutNetlist, dialect, moduleN
           color: canCompare ? "var(--accentFg, #fff)" : "var(--ink3)",
           opacity: canCompare ? 1 : 0.5,
         }}>
-          {state.phase === "loading" ? "Running vyges-lvs..." : "Compare"}
+          {state.phase === "loading" ? `Running ${ENGINE_LABELS[engine] ?? engine}...` : "Compare"}
         </button>
 
         {/* Copy Report button — only when done */}
@@ -772,6 +878,7 @@ export default function LVSComparePanel({ dieId, layoutNetlist, dialect, moduleN
 
   const renderReport = () => {
     if (state.phase !== "done" || !state.data.report) return null;
+    const engName = state.data.engine === "all" ? "vyges-lvs + name-based" : (ENGINE_LABELS[state.data.engine] ?? state.data.engine);
     return (
       <div style={{ margin: "0 10px 8px" }}>
         <div
@@ -779,7 +886,7 @@ export default function LVSComparePanel({ dieId, layoutNetlist, dialect, moduleN
           onClick={() => setShowReport((v) => !v)}
         >
           <span style={{ transform: showReport ? "rotate(90deg)" : "none", display: "inline-block", fontSize: 8 }}>{Ic.chev}</span>
-          Full vyges-lvs Report
+          {engName} Report
         </div>
         {showReport && (
           <textarea
@@ -803,7 +910,7 @@ export default function LVSComparePanel({ dieId, layoutNetlist, dialect, moduleN
       <div ref={reportRef} style={sbStyles}>
         {state.phase === "loading" && (
           <div className="m" style={{ padding: 20, fontSize: 11, color: "var(--ink3)", textAlign: "center" }}>
-            running vyges-lvs...
+            running {ENGINE_LABELS[engine] ?? engine}...
           </div>
         )}
 

@@ -25,6 +25,18 @@
 A renamed/reordered netlist that is structurally identical returns MATCH (verified: 100 devices,
 all names changed → MATCH). See `docs/reference/netlists/report.txt` for full validation.
 
+**Test harnesses:**
+- `test_lvs_categories.ps1` — 23 tests, vyges-lvs CLI directly (9 categories)
+- `backend/src/lib/compareByName.test.ts` — 35 tests, name-based engine
+- `npm test` — backend integration tests (app, importer, svg import)
+
+**Engines:**
+| Engine | Type | When to use |
+|--------|------|-------------|
+| `vyges-lvs` | Graph-isomorphism (1-WL) | Default. Name-independent, catches pin swaps |
+| `name-based` | Net-signature matching | Device names must match. Catches R811 that vyges-lvs misses |
+| `both` | Cross-validation | Run both, compare verdicts. Detects engine-specific blind spots |
+
 ---
 
 ## Pipeline
@@ -141,16 +153,61 @@ rather than flagged. This requires a vyges-lvs engine change to fix.
 | Limitation | Impact | Workaround |
 |-----------|--------|-----------|
 | 1-WL cascade | → false positives in unbalanced[] | buildDiffs Phase 2a/2b filters by line + signature |
-| No BJT m= / C c= in property_diffs | → param changes missed | buildDiffs Phase 4 scans all matched devices |
+| **No property_diffs at all** | `r=`, `m=`, `c=` never reported | buildDiffs Phase 4 scans all matched devices by netlist line (critical!) |
 | No npn vs pnp distinction | → type changes missed | buildDiffs Phase 3 catches it |
-| Parallel combine loses extra devices | → R811 can't be detected | requires engine change |
+| Parallel combine (Spectre) | → R811 extra parallel resistor absorbed, FALSE MATCH | requires engine change |
+| CDL positional params treated as identity | → `R1 n1 n2 1k` vs `2k` = MISMATCH (wrong) | always use Spectre named params (`r=1k`) |
+| .SUBCKT port names NOT name-independent | → `test a b c` vs `test x y z` = MISMATCH | strip ports, use `.SUBCKT test` (no ports) on both sides (already done by normalizeNetlist.ts) |
 | Renamed devices (Q37→Q370) cascade | → different colours → spurious L/S-only | buildDiffs Phase 2b matches by signature |
 
 ### What buildDiffs CAN'T fix
 
-- R811-style extras (parallel combine in vyges-lvs absorbs them before matching)
+- R811-style extras in Spectre format (parallel combine in vyges-lvs absorbs them,
+  no property_diffs emitted → FALSE MATCH)
 - Genuine graph-isomorphic differences (two circuits with identical topology but
-  different parameters — only vyges-lvs's `property_diffs[]` catches `r=`)
+  different parameters)
+
+### vyges-lvs findings (test_lvs_categories.ps1, 23 tests)
+
+| Category | Tests | Pass | Notes |
+|----------|-------|------|-------|
+| **MATCH** (identical) | 3 | 3 | Works. Renumbered devices (R1→R99) and renamed internal nets OK |
+| **Type Mismatch** | 3 | 3 | npn/pnp, resistor/capacitor, diode model all detected |
+| **Param Changed (Spectre)** | 2 | 2 | topo MATCH correct; property_diffs always empty in v0.1.11 |
+| **Param Changed (CDL)** | 1 | 1 | positional = identity → MISMATCH (known limitation) |
+| **Connection Mismatch** | 3 | 3 | Swapped terminals detected for R, D, Q |
+| **Extra/Missing** | 3 | 3 | Detected for R, C, Q |
+| **GLOBAL nets** | 2 | 2 | VCC/GND anchoring works; VCC vs VDD mismatch detected |
+| **Parallel resistor** | 2 | 1 | **Spectre: FALSE MATCH** (blind spot). CDL: detected via value combine |
+| **Spectre syntax** | 2 | 2 | Parenthesized ports OK, r= param changed detected as topo MATCH |
+
+**vyges-lvs: 22/23 pass. 1 expected fail = Spectre parallel resistor blind spot.**
+
+### Name-based engine findings (compareByName.test.ts, 35 tests)
+
+| Category | Tests | Pass | Notes |
+|----------|-------|------|-------|
+| **MATCH** | 5 | 5 | Renamed nets OK; renamed device numbers = MISMATCH (by design) |
+| **Type Mismatch** | 3 | 3 | Same-name devices with different types caught |
+| **Param Changed** | 3 | 3 | topology MATCH with property_diffs reported |
+| **Connection Mismatch** | 4 | 4 | Symmetric (=MATCH) vs ordered (=MISMATCH) handled correctly |
+| **Extra/Missing** | 3 | 3 | All detected |
+| **Parallel Resistor** | 2 | 2 | **Blind spot FIXED**: R811 detected by different name |
+| **GLOBAL nets** | 1 | 1 | Works |
+| **Spectre syntax** | 2 | 2 | Works |
+| **CDL format** | 2 | 2 | Positional format handled |
+| **Complex/Realistic** | 4 | 4 | Full circuits with renamed nets and multiple errors |
+| **Edge Cases** | 6 | 6 | Empty, case-insensitive, duplicate names, etc. |
+
+**Name-based: 35/35 pass. Key advantage: R811 parallel resistor detected.**
+
+### Known name-based limitations
+
+| Limitation | Cause | Workaround |
+|------------|-------|------------|
+| Renamed devices (R1→R99) | Matches by name, not topology | Use vyges-lvs |
+| Isolated ordered pin swaps (D1 alone, pins swapped) | Graph-theoretic ambiguity in isolated net pairs | Add a distinguishing device, or use vyges-lvs |
+| Duplicate device names | Map overwrites last occurrence | Ensure unique names |
 
 ---
 
