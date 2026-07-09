@@ -698,12 +698,13 @@ export default function LVSComparePanel({ dieId, layoutNetlist, dialect, moduleN
 
   const renderPropertyTable = () => {
     if (state.phase !== "done") return null;
+    const curEngine = state.data.engine;
     const pd = state.data.json.property_diffs;
     if (!pd.length) return null;
-
+    const engLabel = curEngine === "all" ? " (vyges-lvs)" : "";
     return (
       <div style={{ margin: "0 10px 8px" }}>
-        <div style={sectionTitle}>Property Diffs ({pd.length})</div>
+        <div style={sectionTitle}>Property Diffs{engLabel} ({pd.length})</div>
         <table style={tableSm}>
           <thead>
             <tr style={{ color: "var(--ink3)", textAlign: "left" }}>
@@ -759,54 +760,101 @@ export default function LVSComparePanel({ dieId, layoutNetlist, dialect, moduleN
     return n.replace(/^[AB]\//, "").replace(/[()]/g, "");
   }
 
+  /** Render net diffs from engine's unbalanced (name-based) or cascade-free compute (vyges-lvs) */
   const renderNetTable = () => {
     if (state.phase !== "done") return null;
-    // Use direct netlist parsing instead of vyges-lvs unbalanced — cascade-free
-    const netDiffs = computeNetDiffs(layoutNetlist ?? "", schematicNetlist);
-    if (!netDiffs.length) return null;
+    const json = state.data.json;
+    const currentEngine = state.data.engine;
 
-    return (
-      <div style={{ margin: "0 10px 8px" }}>
-        <div style={sectionTitle}>Net Connection Diffs ({netDiffs.length})</div>
-        <table style={tableSm}>
-          <thead>
-            <tr style={{ color: "var(--ink3)", textAlign: "left" }}>
-              <th style={{ padding: "2px 6px", width: 24 }}>#</th>
-              <th style={{ padding: "2px 6px" }}>Net</th>
-              <th style={{ padding: "2px 6px", textAlign: "right" }}>Conns (L)</th>
-              <th style={{ padding: "2px 6px", textAlign: "right" }}>Conns (S)</th>
-              <th style={{ padding: "2px 6px" }}>Δ</th>
-            </tr>
-          </thead>
-          <tbody>
-            {netDiffs.map((d, i) => {
-              const moreInL = d.layoutCount > d.schematicCount;
-              return (
-                <tr key={i} style={{ ...panelBase, marginTop: i > 0 ? 1 : 0 }}>
-                  <td style={{ padding: "2px 6px", color: "var(--ink3)" }}>{i + 1}</td>
-                  <td style={{ padding: "2px 6px", fontWeight: 600, color: "var(--ink)" }}>{d.name}</td>
-                  <td style={{ padding: "2px 6px", textAlign: "right", color: moreInL ? "#f55" : "var(--ink2)" }}>{d.layoutCount}</td>
-                  <td style={{ padding: "2px 6px", textAlign: "right", color: !moreInL ? "#48f" : "var(--ink2)" }}>{d.schematicCount}</td>
-                  <td style={{ padding: "2px 6px", textAlign: "right", color: "var(--ink3)" }}>
-                    {moreInL ? `+${d.layoutCount - d.schematicCount}` : `-${d.schematicCount - d.layoutCount}`}
-                  </td>
+    if (currentEngine === "vyges-lvs" || currentEngine === "all") {
+      // vyges-lvs: cascade-free direct netlist parsing
+      const netDiffs = computeNetDiffs(layoutNetlist ?? "", schematicNetlist);
+      if (netDiffs.length > 0) {
+        const label = currentEngine === "all" ? "vyges-lvs " : "";
+        return (
+          <div style={{ margin: "0 10px 8px" }}>
+            <div style={sectionTitle}>{label}Net Connection Diffs ({netDiffs.length})</div>
+            <table style={tableSm}>
+              <thead>
+                <tr style={{ color: "var(--ink3)", textAlign: "left" }}>
+                  <th style={{ padding: "2px 6px", width: 24 }}>#</th>
+                  <th style={{ padding: "2px 6px" }}>Net</th>
+                  <th style={{ padding: "2px 6px", textAlign: "right" }}>Conns (L)</th>
+                  <th style={{ padding: "2px 6px", textAlign: "right" }}>Conns (S)</th>
+                  <th style={{ padding: "2px 6px" }}>Δ</th>
                 </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      </div>
-    );
+              </thead>
+              <tbody>
+                {netDiffs.map((d, i) => {
+                  const moreInL = d.layoutCount > d.schematicCount;
+                  return (
+                    <tr key={i} style={{ ...panelBase, marginTop: i > 0 ? 1 : 0 }}>
+                      <td style={{ padding: "2px 6px", color: "var(--ink3)" }}>{i + 1}</td>
+                      <td style={{ padding: "2px 6px", fontWeight: 600, color: "var(--ink)" }}>{d.name}</td>
+                      <td style={{ padding: "2px 6px", textAlign: "right", color: moreInL ? "#f55" : "var(--ink2)" }}>{d.layoutCount}</td>
+                      <td style={{ padding: "2px 6px", textAlign: "right", color: !moreInL ? "#48f" : "var(--ink2)" }}>{d.schematicCount}</td>
+                      <td style={{ padding: "2px 6px", textAlign: "right", color: "var(--ink3)" }}>
+                        {moreInL ? `+${d.layoutCount - d.schematicCount}` : `-${d.schematicCount - d.layoutCount}`}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        );
+      }
+    }
+
+    if (currentEngine === "name-based" || currentEngine === "all") {
+      // name-based: net imbalances from engine's unbalanced[]
+      const netUnbal = json.unbalanced.filter((u) => u.what === "net");
+      if (netUnbal.length > 0) {
+        const label = currentEngine === "all" ? "name-based " : "";
+        return (
+          <div style={{ margin: "0 10px 8px" }}>
+            <div style={sectionTitle}>{label}Net Imbalances ({netUnbal.length})</div>
+            <table style={tableSm}>
+              <thead>
+                <tr style={{ color: "var(--ink3)", textAlign: "left" }}>
+                  <th style={{ padding: "2px 6px", width: 24 }}>#</th>
+                  <th style={{ padding: "2px 6px" }}>L Nets</th>
+                  <th style={{ padding: "2px 6px" }}>S Nets</th>
+                  <th style={{ padding: "2px 6px", textAlign: "right" }}>Count L</th>
+                  <th style={{ padding: "2px 6px", textAlign: "right" }}>Count S</th>
+                </tr>
+              </thead>
+              <tbody>
+                {netUnbal.map((u, i) => (
+                  <tr key={i} style={{ ...panelBase, marginTop: i > 0 ? 1 : 0 }}>
+                    <td style={{ padding: "2px 6px", color: "var(--ink3)" }}>{i + 1}</td>
+                    <td style={{ padding: "2px 6px", fontWeight: 600, color: "var(--ink)", fontFamily: "var(--mono)", fontSize: 10 }}>{u.a.join(", ") || "—"}</td>
+                    <td style={{ padding: "2px 6px", fontWeight: 600, color: "var(--ink)", fontFamily: "var(--mono)", fontSize: 10 }}>{u.b.join(", ") || "—"}</td>
+                    <td style={{ padding: "2px 6px", textAlign: "right", color: u.a_count > u.b_count ? "#f55" : "var(--ink2)" }}>{u.a_count}</td>
+                    <td style={{ padding: "2px 6px", textAlign: "right", color: u.b_count > u.a_count ? "#48f" : "var(--ink2)" }}>{u.b_count}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        );
+      }
+    }
+
+    return null;
   };
 
   const renderPortChips = () => {
     if (state.phase !== "done") return null;
+    const curEngine = state.data.engine;
+    // Only vyges-lvs reports port diffs; name-based has no port concept
+    if (curEngine === "name-based") return null;
     const { only_in_a_ports, only_in_b_ports } = state.data.json;
     if (!only_in_a_ports.length && !only_in_b_ports.length) return null;
 
     return (
       <div style={{ margin: "0 10px 8px" }}>
-        <div style={sectionTitle}>Port Diffs</div>
+        <div style={sectionTitle}>Port Diffs {(curEngine === "all") ? "(vyges-lvs)" : ""}</div>
         <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
           {only_in_a_ports.map((p) => (
             <span key={p} style={{
@@ -864,9 +912,11 @@ export default function LVSComparePanel({ dieId, layoutNetlist, dialect, moduleN
       );
     };
 
+    const curEngine = state.data.engine;
+    const engLabel = curEngine === "all" ? " (via buildDiffs)" : ` (${ENGINE_LABELS[curEngine] ?? curEngine})`;
     return (
       <div style={{ flex: "0 0 auto", margin: "0 10px 8px" }}>
-        <div style={{ ...sectionTitle, fontSize: 12 }}>Device Diffs ({devices.length})</div>
+        <div style={{ ...sectionTitle, fontSize: 12 }}>Device Diffs{engLabel} ({devices.length})</div>
         {catBlock("Only in Layout", lOnly, "#f55")}
         {catBlock("Only in Schematic", sOnly, "#48f")}
         {catBlock("Device Type Mismatch", typeMism, "#f0f", "different model type (e.g. npn vs pnp)")}
