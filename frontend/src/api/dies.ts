@@ -140,12 +140,7 @@ export async function exportProject(
   }
 
   const blob = await response.blob();
-  let filename = `mmochip-${dieId}.zip`;
-  const disposition = response.headers.get("Content-Disposition");
-  if (disposition) {
-    const match = disposition.match(/filename="([^"]+)"/);
-    if (match) filename = match[1];
-  }
+  const filename = response.headers.get("X-Filename") || `mmochip-${dieId}.zip`;
 
   return { blob, filename };
 }

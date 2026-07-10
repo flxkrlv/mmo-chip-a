@@ -14,7 +14,7 @@
  */
 
 import { createHash } from "node:crypto";
-import { createWriteStream } from "node:fs";
+import { createReadStream, createWriteStream } from "node:fs";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { Router } from "express";
@@ -353,12 +353,20 @@ export function createProjectIORouter(config: { dataRoot: string }) {
           archive.finalize();
         });
 
-        // Serve via Express download
+        // Serve file with explicit streaming (avoid download/attachment issues)
+        const stat = await fs.stat(tempPath);
+        response.writeHead(200, {
+          "Content-Type": "application/zip",
+          "Content-Length": stat.size,
+          "Access-Control-Allow-Origin": "*",
+          "X-Filename": filename
+        });
+
+        const readStream = createReadStream(tempPath);
         await new Promise<void>((resolve, reject) => {
-          response.download(tempPath, filename, (err: unknown) => {
-            if (err) return reject(err);
-            resolve();
-          });
+          readStream.pipe(response);
+          readStream.on("end", resolve);
+          readStream.on("error", reject);
         });
 
         await fs.rm(tempPath, { force: true }).catch(() => {});
