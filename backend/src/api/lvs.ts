@@ -17,7 +17,7 @@ function extractGlobals(layout: string, schematic: string): string[] {
   for (const netlist of [layout, schematic]) {
     for (const line of netlist.split("\n")) {
       const trimmed = line.trim();
-      if (/^global\s+/i.test(trimmed)) {
+      if (/^\.?global\s+/i.test(trimmed)) {
         const nets = trimmed.replace(/^global\s+/i, "").trim().split(/\s+/);
         for (const n of nets.filter(Boolean)) globals.add(n);
       }
@@ -95,6 +95,14 @@ async function runVygesLvs(
     const allGlobals = extractGlobals(layoutNetlist, schematicNetlist);
     const layoutNorm = normalizeForVyges(layoutNetlist, moduleName, allGlobals);
     const schematicNorm = normalizeForVyges(schematicNetlist, moduleName, allGlobals);
+
+    // Debug: dump normalized netlists count
+    const layoutDevCount = layoutNorm.split("\n").filter(l => /^[A-Za-z_]/.test(l.trim()) && !/^\.(SUBCKT|ENDS|GLOBAL)/i.test(l.trim())).length;
+    const schematicDevCount = schematicNorm.split("\n").filter(l => /^[A-Za-z_]/.test(l.trim()) && !/^\.(SUBCKT|ENDS|GLOBAL)/i.test(l.trim())).length;
+    if (process.env.NODE_ENV !== "test") {
+      console.log(`[lvs] normalized device count: layout=${layoutDevCount} schematic=${schematicDevCount} globals=[${allGlobals.join(",")}]`);
+    }
+
     await fsp.writeFile(layoutPath, layoutNorm, "utf-8");
     await fsp.writeFile(schematicPath, schematicNorm, "utf-8");
 
@@ -103,14 +111,27 @@ async function runVygesLvs(
     await fsp.writeFile(jobPath, jobContent, "utf-8");
 
     const [jsonResult, textResult] = await Promise.all([
-      runCli(LVS_CLI, ["run", jobPath, "--json"], LVS_TIMEOUT_MS),
-      runCli(LVS_CLI, ["run", jobPath], LVS_TIMEOUT_MS),
+      runCli(LVS_CLI, ["run", jobPath, "--json", "-v"], LVS_TIMEOUT_MS),
+      runCli(LVS_CLI, ["run", jobPath, "-v"], LVS_TIMEOUT_MS),
     ]);
 
     const json = JSON.parse(jsonResult.stdout) as LvsRawResult;
     const firstLine = textResult.stdout.split("\n")[0] ?? "";
     const matched = /\bMATCH\b/.test(firstLine) && !/\bMISMATCH\b/.test(firstLine);
-    return { engine: "vyges-lvs", matched, json, report: textResult.stdout };
+
+    // Device count check: vyges-lvs collapses parallel/series resistors
+    let note = "";
+    if (json.a_devices !== layoutDevCount) {
+      note = `vyges-lvs sees ${json.a_devices} devices (raw netlist has ${layoutDevCount}). Parallel/series resistors may be collapsed — connection mismatches may be hidden. Use name-based engine for verification.`;
+    }
+
+    // Append stderr to note for diagnostic capture
+    const stderrCombined = [...new Set([jsonResult.stderr, textResult.stderr].filter(Boolean))].join(" | ");
+    if (stderrCombined) {
+      note = (note ? note + "\n" : "") + `vyges-lvs stderr: ${stderrCombined}`;
+    }
+
+    return { engine: "vyges-lvs", matched, json, report: textResult.stdout + (note ? "\n\n" + note : ""), stderr: stderrCombined };
   } finally {
     await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
   }
@@ -290,31 +311,13 @@ function buildSingleResponse(result: LvsEngineResult): LvsCombinedResult {
   };
 }
 
-function buildAllResponse(engines: LvsEngineResult[]): LvsCombinedResult {
-  const map: Record<string, LvsEngineResult> = {};
-  for (const e of engines) map[e.engine] = e;
-  const allMatch = engines.every((e) => e.matched);
-  const allSame = engines.every((e) => e.matched === engines[0]!.matched);
-  const reports = engines.map((e) => `${e.engine}: ${e.matched ? "MATCH" : "MISMATCH"}`);
-  const agreement = allSame
-    ? `✅ Engines agree: ${allMatch ? "MATCH" : "MISMATCH"}`
-    : "⚠️ Engines disagree!";
-  return {
-    engine: "all",
-    matched: allMatch,
-    json: engines[0]!.json,
-    report: reports.join("\n") + "\n" + agreement,
-    engines: map,
-  };
-}
-
 export function createLvsRouter(_config: { dataRoot: string }) {
   const router = Router();
 
   router.post("/api/dies/:dieId/lvs/compare", async (request, response, next) => {
     try {
       const { layoutNetlist, schematicNetlist, dialect, moduleName, engine } = (request.body ?? {}) as LvsCompareRequest;
-
+  
       if (!layoutNetlist || !schematicNetlist) {
         response.status(400).json({ ok: false, error: "Both layoutNetlist and schematicNetlist are required" });
         return;
@@ -328,17 +331,6 @@ export function createLvsRouter(_config: { dataRoot: string }) {
       } else if (requestedEngine === "name-based") {
         const result = runNameBasedEngine(layoutNetlist, schematicNetlist);
         response.json({ ok: true, data: buildSingleResponse(result) });
-      } else if (requestedEngine === "all") {
-        const [vygesResult, nameResult] = await Promise.all([
-          runVygesLvs(layoutNetlist, schematicNetlist, dialect, moduleName).catch((err) => ({
-            engine: "vyges-lvs" as const,
-            matched: false,
-            json: { matched: false, verified: false, a_devices: 0, b_devices: 0, a_nets: 0, b_nets: 0, iterations: 0, only_in_a_ports: [], only_in_b_ports: [], unbalanced: [], property_diffs: [] } as LvsRawResult,
-            report: `ERROR: ${err.message}`,
-          })),
-          Promise.resolve().then(() => runNameBasedEngine(layoutNetlist, schematicNetlist)),
-        ]);
-        response.json({ ok: true, data: buildAllResponse([vygesResult, nameResult]) });
       } else {
         response.status(400).json({ ok: false, error: `Unknown engine: ${requestedEngine}` });
       }

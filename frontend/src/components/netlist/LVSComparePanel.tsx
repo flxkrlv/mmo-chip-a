@@ -33,6 +33,8 @@ interface DeviceDiff {
   category: DiffCategory;
   layoutLine: string;
   schematicLine: string;
+  collapsedLayout?: number;
+  collapsedSchematic?: number;
 }
 
 interface LvsResultData {
@@ -41,12 +43,6 @@ interface LvsResultData {
   json: LvsRawResult;
   report: string;
   devices: DeviceDiff[];
-}
-
-interface EngineVerdict {
-  engine: LvsEngine;
-  matched: boolean;
-  report: string;
 }
 
 type PanelPhase =
@@ -60,6 +56,7 @@ interface Props {
   layoutNetlist: string | null;
   dialect: SpiceDialect;
   moduleName: string;
+  deviceToHighlight?: string | null;
 }
 
 // ── Report text generator ───────────────────────────────────
@@ -180,8 +177,25 @@ function buildDeviceMap(netlist: string): Map<string, string> {
   return map;
 }
 
+/** Strip vyges-lvs side prefix (A/, B/) and collapsed suffix (+N, ⨯-N) */
 function stripSide(name: string): string {
-  return name.replace(/^[AB]\//, "").replace(/\(\+\d+\)$/, "").replace(/\(×\d+\)$/, "");
+  return name
+    .replace(/^[AB]\//, "")
+    .replace(/\(\+\d+\)$/, "")
+    .replace(/\([×⨯]\-?\d+\)$/, "")
+    .replace(/\(�-\d+\)$/, "");
+}
+
+/** Parse collapsed count from vyges-lvs name suffix: (+N) or (⨯-N) */
+function parseCollapsedCount(name: string): { clean: string; count: number | null } {
+  const clean = stripSide(name);
+  // (+N) → collapsed with N+1 devices total
+  const mPlus = name.match(/\(\+(\d+)\)$/);
+  if (mPlus) return { clean, count: parseInt(mPlus[1]) + 1 };
+  // (⨯-N), (×-N), (�-N) → collapsed N times
+  const mMult = name.match(/\([×⨯�]\-?(\d+)\)$/);
+  if (mMult) return { clean, count: parseInt(mMult[1]) };
+  return { clean, count: null };
 }
 
 /** Extract terminal nets from a device line */
@@ -207,6 +221,25 @@ function terminalsDiffer(layoutLine: string, schematicLine: string): boolean {
   return parseTerminals(layoutLine).join(" ") !== parseTerminals(schematicLine).join(" ");
 }
 
+/** Detect netlist dialect from content */
+function detectDialect(netlist: string): SpiceDialect | "unknown" {
+  for (const raw of netlist.split("\n")) {
+    const line = raw.trim();
+    if (!line || line.startsWith("//") || line.startsWith("*")) continue;
+    if (/^simulator\s+lang\s*=\s*spectre/i.test(line)) return "spectre";
+    if (/^\.?\s*(subckt|SUBCKT)\b/.test(line)) {
+      return line.includes("(") && line.includes(")") ? "spectre" : "cdl";
+    }
+  }
+  for (const raw of netlist.split("\n")) {
+    const line = raw.trim();
+    if (!line || line.startsWith("//") || line.startsWith("*") || line.startsWith(".")) continue;
+    if (/^\w+\s+\(/.test(line)) return "spectre";
+    if (/^\w+\s+\S+\s+\S+/.test(line)) return "cdl";
+  }
+  return "unknown";
+}
+
 function parseModelType(line: string): string {
   const e = line.lastIndexOf(")");
   if (e === -1) return "";
@@ -217,6 +250,26 @@ function buildDiffs(layoutNetlist: string, schematicNetlist: string, json: LvsRa
   const layoutMap = buildDeviceMap(layoutNetlist);
   const schematicMap = buildDeviceMap(schematicNetlist);
   const diffs: DeviceDiff[] = [];
+
+  // Extract collapsed counts from raw unbalanced names (before stripSide)
+  const collapsedMap = new Map<string, { collapsedLayout?: number; collapsedSchematic?: number }>();
+  for (const cls of json.unbalanced) {
+    if (cls.what !== "device") continue;
+    for (const n of cls.a) {
+      const { clean, count } = parseCollapsedCount(n);
+      if (count !== null) {
+        if (!collapsedMap.has(clean)) collapsedMap.set(clean, {});
+        collapsedMap.get(clean)!.collapsedLayout = count;
+      }
+    }
+    for (const n of cls.b) {
+      const { clean, count } = parseCollapsedCount(n);
+      if (count !== null) {
+        if (!collapsedMap.has(clean)) collapsedMap.set(clean, {});
+        collapsedMap.get(clean)!.collapsedSchematic = count;
+      }
+    }
+  }
 
   // Phase 1: collect unbalanced device names from vyges-lvs
   const unbalancedNames = new Set<string>();
@@ -232,14 +285,16 @@ function buildDiffs(layoutNetlist: string, schematicNetlist: string, json: LvsRa
     const sLine = schematicMap.get(name);
     if (lLine === undefined && sLine === undefined) continue;
 
+    const collapsed = collapsedMap.get(name);
+
     if (lLine !== undefined && sLine !== undefined) {
       if (lLine === sLine) continue; // cascade artifact (same line both sides)
       const cat = parseModelType(lLine) !== parseModelType(sLine) ? "type-mismatch" : "mismatch";
-      diffs.push({ name, category: cat, layoutLine: lLine, schematicLine: sLine });
+      diffs.push({ name, category: cat, layoutLine: lLine, schematicLine: sLine, ...collapsed });
     } else if (lLine !== undefined) {
-      diffs.push({ name, category: "l-only", layoutLine: lLine, schematicLine: "" });
+      diffs.push({ name, category: "l-only", layoutLine: lLine, schematicLine: "", ...collapsed });
     } else {
-      diffs.push({ name, category: "s-only", layoutLine: "", schematicLine: sLine! });
+      diffs.push({ name, category: "s-only", layoutLine: "", schematicLine: sLine!, ...collapsed });
     }
   }
 
@@ -278,60 +333,55 @@ function fallbackCopy(text: string): void {
 const ENGINE_OPTIONS: { value: LvsEngine; label: string }[] = [
   { value: "vyges-lvs", label: "vyges-lvs (name-independent)" },
   { value: "name-based", label: "name-based" },
-  { value: "all", label: "both" },
 ];
 
 const ENGINE_LABELS: Record<string, string> = {
   "vyges-lvs": "vyges-lvs",
   "name-based": "name-based",
-  all: "both engines",
 };
 
-export default function LVSComparePanel({ dieId, layoutNetlist, dialect, moduleName }: Props) {
+export default function LVSComparePanel({ dieId, layoutNetlist, dialect, moduleName, deviceToHighlight }: Props) {
   const [schematicNetlist, setSchematicNetlist] = useState("");
+  const [layoutNetlistOverride, setLayoutNetlistOverride] = useState<string | null>(null);
+  const [layoutLocked, setLayoutLocked] = useState(true);
   const [state, setState] = useState<PanelPhase>({ phase: "idle" });
   const [engine, setEngine] = useState<LvsEngine>("vyges-lvs");
-  const [engineVerdicts, setEngineVerdicts] = useState<EngineVerdict[]>([]);
+  const [highlightedLine, setHighlightedLine] = useState<number | null>(null);
+  const [highlightedSchematicLine, setHighlightedSchematicLine] = useState<number | null>(null);
+  const [vygesClassLayout, setVygesClassLayout] = useState<string[]>([]);
+  const [vygesClassSchematic, setVygesClassSchematic] = useState<string[]>([]);
   const reportRef = useRef<HTMLDivElement>(null);
+  const layoutScrollRef = useRef<HTMLDivElement>(null);
+  const schematicScrollRef = useRef<HTMLDivElement>(null);
+
+  const displayLayout = layoutNetlistOverride ?? layoutNetlist;
 
   const handleCompare = useCallback(async () => {
-    if (!schematicNetlist.trim() || !layoutNetlist) return;
+    if (!schematicNetlist.trim() || !displayLayout) return;
     setState({ phase: "loading" });
-    setEngineVerdicts([]);
     try {
       const res = await compareNetlists(dieId, {
-        layoutNetlist, schematicNetlist, dialect, moduleName, engine,
+        layoutNetlist: displayLayout, schematicNetlist, dialect, moduleName, engine,
       });
       if (res.ok && "json" in res.data) {
         const data = res.data as LvsCombinedResult;
 
-        if (data.engines) {
-          // Multi-engine mode — use first engine for detailed diffs
-          const primaryEngine = data.engines["vyges-lvs"] ?? data.engines["name-based"];
-          const verdicts: EngineVerdict[] = [];
-          for (const [eng, er] of Object.entries(data.engines)) {
-            verdicts.push({ engine: eng as LvsEngine, matched: er.matched, report: er.report });
-          }
-          setEngineVerdicts(verdicts);
+        const snapshotJson = data.json;
+        // For vyges-lvs: raw unbalanced classes only (no name-matching)
+        // For name-based: use buildDiffs which correctly uses device names
+        const snapshotDevices = engine === "name-based"
+          ? buildDiffs(displayLayout, schematicNetlist, snapshotJson)
+          : [];
 
-          if (primaryEngine) {
-            const json = primaryEngine.json;
-            const devices = buildDiffs(layoutNetlist, schematicNetlist, json);
-            setState({ phase: "done", data: { engine: "all", matched: data.matched, json, report: data.report, devices } });
-          } else {
-            setState({ phase: "error", error: "No engine results" });
-          }
-        } else {
-          // Single engine mode
-          const json = data.json;
-          const devices = buildDiffs(layoutNetlist, schematicNetlist, json);
-          setState({ phase: "done", data: { engine: engine, matched: data.matched, json, report: data.report, devices } });
+        // Debug: log property_diffs count
+        if (snapshotJson.property_diffs && snapshotJson.property_diffs.length > 0) {
+          console.log(`[LVS] property_diffs (${snapshotJson.property_diffs.length}):`,
+            snapshotJson.property_diffs.map(d => `${d.a_device} ${d.param} ${d.a_value}→${d.b_value}`).join(", "));
         }
-        // Save snapshot with first engine's data
-        const snapData = state.phase === "done" ? (state as any).data : null;
-        const snapJson = snapData?.json ?? data.json;
-        const snapDevices = snapData?.devices ?? [];
-        saveLvsSnapshot({ layoutNetlist, schematicNetlist, matched: data.matched, json: snapJson, report: data.report, devices: snapDevices });
+
+        setState({ phase: "done", data: { engine: engine, matched: data.matched, json: snapshotJson, report: data.report, devices: snapshotDevices } });
+
+        saveLvsSnapshot({ layoutNetlist: displayLayout, schematicNetlist, matched: data.matched, json: snapshotJson, report: data.report, devices: snapshotDevices });
       } else if (res.ok) {
         setState({ phase: "error", error: "Unexpected response format" });
       } else {
@@ -340,7 +390,7 @@ export default function LVSComparePanel({ dieId, layoutNetlist, dialect, moduleN
     } catch (err: unknown) {
       setState({ phase: "error", error: err instanceof Error ? err.message : "Network error" });
     }
-  }, [schematicNetlist, layoutNetlist, dieId, dialect, moduleName, engine]);
+  }, [schematicNetlist, displayLayout, dieId, dialect, moduleName, engine]);
 
   useEffect(() => {
     if (state.phase === "done" && reportRef.current) {
@@ -348,7 +398,79 @@ export default function LVSComparePanel({ dieId, layoutNetlist, dialect, moduleN
     }
   }, [state.phase]);
 
-  const canCompare = schematicNetlist.trim().length > 0 && !!layoutNetlist && state.phase !== "loading";
+  // Scroll and highlight device when selected from parent
+  useEffect(() => {
+    if (!deviceToHighlight || !layoutLocked) return;
+
+    const searchName = deviceToHighlight.toLowerCase();
+
+    const findLine = (text: string | null): number => {
+      if (!text) return -1;
+      const lines = text.split("\n");
+      const totalLines = lines.length;
+
+      // For vyges-lvs with results: check unbalanced classes
+      if (engine === "vyges-lvs" && state.phase === "done") {
+        for (const cls of state.data.json.unbalanced) {
+          if (cls.what !== "device") continue;
+          const names = [...cls.a, ...cls.b].map(n => stripSide(n).toLowerCase());
+          if (names.includes(searchName)) {
+            for (let i = 0; i < totalLines; i++) {
+              const first = lines[i].trim().split(/\s+/)[0];
+              if (first && names.includes(first.toLowerCase())) { return i; }
+            }
+          }
+        }
+      }
+
+      // Fallback: direct name search
+      for (let i = 0; i < totalLines; i++) {
+        const first = lines[i].trim().split(/\s+/)[0];
+        if (first && first.toLowerCase() === searchName) { return i; }
+      }
+      return -1;
+    };
+
+    const layoutLine = findLine(displayLayout);
+    const schematicLine = engine === "name-based" ? findLine(schematicNetlist) : -1;
+
+    setHighlightedLine(layoutLine);
+    setHighlightedSchematicLine(engine === "name-based" ? schematicLine : null);
+
+    // For vyges-lvs: find class membership and highlight ALL devices in the class
+    let vygesLayoutNames: string[] = [];
+    let vygesSchematicNames: string[] = [];
+    if (engine === "vyges-lvs" && state.phase === "done") {
+      for (const cls of state.data.json.unbalanced) {
+        if (cls.what !== "device") continue;
+        const allNames = [...cls.a, ...cls.b].map(n => stripSide(n).toLowerCase());
+        if (allNames.includes(searchName)) {
+          vygesLayoutNames = cls.a.map(n => stripSide(n).toLowerCase());
+          vygesSchematicNames = cls.b.map(n => stripSide(n).toLowerCase());
+          break;
+        }
+      }
+    }
+    setVygesClassLayout(vygesLayoutNames);
+    setVygesClassSchematic(vygesSchematicNames);
+
+    // Center in viewport: scrollTarget = line * lineHeight - viewportHeight/2 + lineHeight/2
+    const centerScroll = (el: HTMLElement, line: number, totalLines: number) => {
+      const lineHeight = el.scrollHeight / totalLines;
+      el.scrollTop = Math.max(0, line * lineHeight - el.clientHeight / 2 + lineHeight / 2);
+    };
+
+    requestAnimationFrame(() => {
+      if (layoutLine >= 0 && layoutScrollRef.current && displayLayout) {
+        centerScroll(layoutScrollRef.current, layoutLine, displayLayout.split("\n").length);
+      }
+      if (schematicLine >= 0 && schematicScrollRef.current && schematicNetlist) {
+        centerScroll(schematicScrollRef.current, schematicLine, schematicNetlist.split("\n").length);
+      }
+    });
+  }, [deviceToHighlight, state.phase, engine, layoutLocked, displayLayout, schematicNetlist]);
+
+  const canCompare = schematicNetlist.trim().length > 0 && !!displayLayout && state.phase !== "loading";
 
   const sbStyles: React.CSSProperties = state.phase === "done" ? {
     borderTop: "1px solid var(--l2)", display: "flex", flexDirection: "column", flex: "1 1 auto", minHeight: 0,
@@ -390,38 +512,16 @@ export default function LVSComparePanel({ dieId, layoutNetlist, dialect, moduleN
     </span>
   );
 
-  const renderMultiVerdict = () => {
-    if (!engineVerdicts.length) return null;
-    const allMatch = engineVerdicts.every((v) => v.matched);
-    const agree = engineVerdicts.length > 1 && engineVerdicts.every((v) => v.matched === engineVerdicts[0].matched);
-    return (
-      <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 11 }}>
-        {engineVerdicts.map((v) => (
-          <span key={v.engine} style={{
-            display: "inline-flex", alignItems: "center", gap: 4,
-            fontSize: 10, fontWeight: 600, padding: "2px 8px", borderRadius: 3,
-            background: v.matched ? "var(--okBg)" : "var(--errBg)",
-            color: v.matched ? "var(--okFg, #4f4)" : "var(--errFg, #f44)",
-          }}>
-            {ENGINE_LABELS[v.engine] ?? v.engine}: {v.matched ? "MATCH" : "MISMATCH"}
-          </span>
-        ))}
-        {engineVerdicts.length > 1 && (
-          <span style={{
-            fontSize: 10, fontWeight: 600, padding: "2px 6px", borderRadius: 3,
-            background: agree ? "var(--okBg)" : "#fd0",
-            color: agree ? "var(--okFg, #4f4)" : "#000",
-          }}>
-            {agree ? "✓ AGREE" : "✗ DISCREPANCY"}
-          </span>
-        )}
-      </div>
-    );
-  };
-
   const renderSummary = () => {
     const done = state.phase === "done";
     const data = done ? state.data : null;
+
+    // Device count warning: vyges-lvs may collapse parallel/series resistors
+    const devCountWarning = data && data.engine === "vyges-lvs"
+      ? data.report.includes("vyges-lvs sees") && data.report.match(/vyges-lvs sees (\d+) devices/)
+      : null;
+    const showDevCountWarning = devCountWarning && data
+      && data.json.a_devices < Math.max(data.json.a_devices, data.json.b_devices) + 1;
 
     return (
       <div style={{
@@ -432,15 +532,27 @@ export default function LVSComparePanel({ dieId, layoutNetlist, dialect, moduleN
         {/* Engine selector */}
         {renderEngineSelector()}
 
-        {/* Multi-engine verdicts */}
-        {renderMultiVerdict()}
+        {/* Verdict badge */}
+        {data && renderVerdictBadge(data.matched)}
 
-        {/* Verdict badge — single engine mode */}
-        {data && engine !== "all" && renderVerdictBadge(data.matched)}
+        {/* Device count warning (vyges-lvs) */}
+        {data && data.engine === "vyges-lvs" && (() => {
+          const rawDev = displayLayout?.split("\n")
+            .filter(l => /^\s*[A-Za-z_]/.test(l) && !/^\s*\./.test(l))
+            .length ?? 0;
+          if (data.json.a_devices < rawDev) {
+            return (
+              <div style={{ fontSize: 9, color: "#fd0", lineHeight: 1.4, width: "100%" }}>
+                ⚠ vyges-lvs sees {data.json.a_devices} devices (raw netlist has {rawDev}). Resistors sharing nets may be collapsed — connection mismatches between active devices (BJTs, diodes) may be hidden. Use <strong>name-based</strong> engine for detailed verification.
+              </div>
+            );
+          }
+          return null;
+        })()}
 
         {/* Stats — only when done */}
         {data && (() => {
-          const { json, devices, engine: eng } = data;
+          const { json, devices } = data;
           const totalDev = Math.max(json.a_devices, json.b_devices);
           const devDiffs = devices.length;
           const lOnly = devices.filter(d => d.category === "l-only").length;
@@ -489,43 +601,186 @@ export default function LVSComparePanel({ dieId, layoutNetlist, dialect, moduleN
     );
   };
 
-  const renderSideBySide = () => (
-    <div style={{
-      display: "flex", gap: 8, padding: "6px 10px", flex: "0 0 40%", minHeight: 0,
-      borderBottom: "1px solid var(--l2)",
-    }}>
-      <div style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0 }}>
-        <div style={{ fontSize: 9, fontWeight: 600, color: "var(--ink2)", marginBottom: 2 }}>
-          Layout Netlist ({layoutNetlist?.split("\n").length ?? 0} lines)
+  const renderSideBySide = () => {
+    const layoutDialect = displayLayout ? detectDialect(displayLayout) : null;
+    const schematicDialect = schematicNetlist ? detectDialect(schematicNetlist) : null;
+    const dialectMismatch = layoutDialect && schematicDialect && layoutDialect !== "unknown" && schematicDialect !== "unknown" && layoutDialect !== schematicDialect;
+
+    const dialectBadge = (dialect: SpiceDialect | "unknown" | null) => {
+      if (!dialect || dialect === "unknown") return null;
+      const color = dialect === "spectre" ? "#48f" : dialect === "cdl" ? "#f80" : "#aaa";
+      return (
+        <span style={{
+          fontSize: 8, fontWeight: 700, padding: "1px 5px", borderRadius: 3,
+          background: color, color: "#fff", marginLeft: 6, letterSpacing: 0.5,
+        }}>
+          {dialect.toUpperCase()}
+        </span>
+      );
+    };
+
+    return (
+      <div style={{
+        display: "flex", gap: 8, padding: "6px 10px", flex: "0 0 40%", minHeight: 0,
+        borderBottom: "1px solid var(--l2)", position: "relative",
+      }}>
+        {dialectMismatch && (
+          <div style={{
+            position: "absolute", top: 33, left: "50%", transform: "translateX(-50%)",
+            zIndex: 2, fontSize: 9, fontWeight: 600, color: "#fd0",
+            background: "var(--card)", padding: "2px 8px", borderRadius: 3,
+            border: "1px solid #fd0", whiteSpace: "nowrap",
+          }}>
+            ⚠ Dialect mismatch: {layoutDialect} vs {schematicDialect}
+          </div>
+        )}
+        <div style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0 }}>
+          <div style={{ fontSize: 9, fontWeight: 600, color: "var(--ink2)", marginBottom: 2, display: "flex", alignItems: "center", gap: 4 }}>
+            Layout Netlist ({displayLayout?.split("\n").length ?? 0} lines)
+            {dialectBadge(layoutDialect)}
+            <span
+              onClick={() => {
+                if (layoutLocked) {
+                  setLayoutNetlistOverride(displayLayout);
+                  setLayoutLocked(false);
+                } else {
+                  setLayoutNetlistOverride(null);
+                  setLayoutLocked(true);
+                }
+              }}
+              style={{
+                cursor: "pointer", fontSize: 10, opacity: 0.6, marginLeft: "auto",
+                userSelect: "none", padding: "1px 4px", borderRadius: 2,
+                background: layoutLocked ? "transparent" : "var(--l1)",
+              }}
+              title={layoutLocked ? "Unlock to edit (debug)" : "Lock (revert to original)"}
+            >
+              {layoutLocked ? "🔒" : "🔓"}
+            </span>
+          </div>
+          {!layoutLocked && (
+            <div style={{ fontSize: 9, color: "#fd0", marginBottom: 4, lineHeight: 1.4, display: "flex", alignItems: "center", gap: 4 }}>
+              ⚠ Layout was modified — debug use only
+            </div>
+          )}
+          {layoutLocked ? (
+            <div ref={layoutScrollRef} style={{
+              ...textareaBase, flex: 1, overflow: "auto", cursor: "default", padding: "4px 0",
+              fontFamily: "var(--mono)", fontSize: 10, lineHeight: 1.4, whiteSpace: "pre-wrap", wordBreak: "break-all",
+              maxWidth: "100%", boxSizing: "border-box",
+            }}>
+              {(displayLayout ?? "").split("\n").map((line, i) => {
+                const lineDevName = line.trim().split(/\s+/)[0]?.toLowerCase();
+                const isExact = highlightedLine === i;
+                const isClass = engine === "vyges-lvs" && lineDevName && vygesClassLayout.includes(lineDevName) && !isExact;
+                return (
+                  <div key={i} style={{
+                    padding: "0 6px",
+                    background: isExact ? "var(--accentBg)" : isClass ? "rgba(100,150,255,0.08)" : "transparent",
+                    borderLeft: isExact
+                      ? "3px solid var(--accent)"
+                      : isClass ? "3px dashed var(--accent)" : "3px solid transparent",
+                  }}>
+                    {line || " "}
+                  </div>
+                );
+              })}
+            </div>
+          ) : (
+            <textarea
+              readOnly={false}
+              value={displayLayout ?? ""}
+              onChange={(e) => {
+                setLayoutNetlistOverride(e.target.value);
+                if (state.phase !== "idle") setState({ phase: "idle" });
+              }}
+              style={{
+                ...textareaBase, flex: 1, resize: "none",
+                cursor: "text", border: "1px solid #fd0",
+              }}
+              spellCheck={false}
+            />
+          )}
         </div>
-        <textarea
-          readOnly
-          value={layoutNetlist ?? ""}
-          style={{ ...textareaBase, flex: 1, resize: "none", cursor: "default" }}
-          spellCheck={false}
-        />
-      </div>
-      <div style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0 }}>
-        <div style={{ fontSize: 9, fontWeight: 600, color: "var(--ink2)", marginBottom: 2 }}>
-          Schematic Netlist
+        <div style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0 }}>
+          <div style={{ fontSize: 9, fontWeight: 600, color: "var(--ink2)", marginBottom: 2, display: "flex", alignItems: "center" }}>
+            Schematic Netlist
+            {dialectBadge(schematicDialect)}
+          </div>
+          {engine === "name-based" && deviceToHighlight ? (
+            <div ref={schematicScrollRef} style={{
+              ...textareaBase, flex: 1, overflow: "auto", cursor: "default", padding: "4px 0",
+              fontFamily: "var(--mono)", fontSize: 10, lineHeight: 1.4, whiteSpace: "pre-wrap", wordBreak: "break-all",
+              maxWidth: "100%", boxSizing: "border-box",
+            }}>
+              {schematicNetlist.split("\n").map((line, i) => {
+                const sdName = line.trim().split(/\s+/)[0]?.toLowerCase();
+                const isSExact = highlightedSchematicLine === i;
+                const isSClass = engine === "name-based" ? false : (!!sdName && vygesClassSchematic.includes(sdName) && !isSExact);
+                return (
+                  <div key={i} style={{
+                    padding: "0 6px",
+                    background: isSExact ? "var(--accentBg)" : isSClass ? "rgba(100,150,255,0.08)" : "transparent",
+                    borderLeft: isSExact
+                      ? "3px solid var(--accent)"
+                      : isSClass ? "3px dashed var(--accent)" : "3px solid transparent",
+                  }}>
+                    {line || " "}
+                  </div>
+                );
+              })}
+            </div>
+          ) : engine === "vyges-lvs" && vygesClassSchematic.length > 0 ? (
+            <div ref={schematicScrollRef} style={{
+              ...textareaBase, flex: 1, overflow: "auto", cursor: "default", padding: "4px 0",
+              fontFamily: "var(--mono)", fontSize: 10, lineHeight: 1.4, whiteSpace: "pre-wrap", wordBreak: "break-all",
+              maxWidth: "100%", boxSizing: "border-box",
+            }}>
+              {schematicNetlist.split("\n").map((line, i) => {
+                const sdName = line.trim().split(/\s+/)[0]?.toLowerCase();
+                const isSClass = !!sdName && vygesClassSchematic.includes(sdName);
+                return (
+                  <div key={i} style={{
+                    padding: "0 6px",
+                    background: isSClass ? "rgba(100,150,255,0.08)" : "transparent",
+                    borderLeft: isSClass ? "3px dashed var(--accent)" : "3px solid transparent",
+                  }}>
+                    {line || " "}
+                  </div>
+                );
+              })}
+            </div>
+          ) : (
+            <textarea
+              placeholder="Ctrl+V reference SPICE netlist..."
+              value={schematicNetlist}
+              onChange={(e) => { setSchematicNetlist(e.target.value); if (state.phase !== "idle") setState({ phase: "idle" }); }}
+              style={{ ...textareaBase, flex: 1, resize: "none" }}
+              spellCheck={false}
+            />
+          )}
         </div>
-        <textarea
-          placeholder="Ctrl+V reference SPICE netlist..."
-          value={schematicNetlist}
-          onChange={(e) => { setSchematicNetlist(e.target.value); if (state.phase !== "idle") setState({ phase: "idle" }); }}
-          style={{ ...textareaBase, flex: 1, resize: "none" }}
-          spellCheck={false}
-        />
       </div>
-    </div>
-  );
+    );
+  };
+
+  const renderJsonNote = () => {
+    if (state.phase !== "done") return null;
+    const note = state.data.json.note;
+    if (!note) return null;
+    return (
+      <div style={{ margin: "0 10px 8px", fontSize: 10, color: "#fd0", lineHeight: 1.5, whiteSpace: "pre-wrap" }}>
+        ⓘ {note}
+      </div>
+    );
+  };
 
   const renderPropertyTable = () => {
     if (state.phase !== "done") return null;
     const curEngine = state.data.engine;
     const pd = state.data.json.property_diffs;
-    if (!pd.length) return null;
-    const engLabel = curEngine === "all" ? " (vyges-lvs)" : "";
+    if (!pd || !pd.length) return null;
+    const engLabel = ` (${ENGINE_LABELS[curEngine] ?? curEngine})`;
     return (
       <div style={{ margin: "0 10px 8px" }}>
         <div style={sectionTitle}>Property Diffs{engLabel} ({pd.length})</div>
@@ -551,9 +806,9 @@ export default function LVSComparePanel({ dieId, layoutNetlist, dialect, moduleN
                 <tr key={i} style={{ ...panelBase, marginTop: i > 0 ? 1 : 0 }}>
                   <td style={{ padding: "2px 6px", color: "var(--ink)" }}>{d.kind}</td>
                   <td style={{ padding: "2px 6px", fontWeight: 600 }}>{d.param}</td>
-                  <td style={{ padding: "2px 6px", color: "var(--ink2)" }}>{d.a_device}</td>
+                  <td style={{ padding: "2px 6px", color: "var(--ink2)" }}>{stripSide(d.a_device)}{parseCollapsedCount(d.a_device).count ? ` (×${parseCollapsedCount(d.a_device).count})` : ""}</td>
                   <td style={{ padding: "2px 6px", textAlign: "right", color: isChange ? "#f55" : "var(--ink2)", fontFamily: "var(--mono)" }}>{fmtVal(d.a_value)}</td>
-                  <td style={{ padding: "2px 6px", color: "var(--ink2)" }}>{d.b_device}</td>
+                  <td style={{ padding: "2px 6px", color: "var(--ink2)" }}>{stripSide(d.b_device)}{parseCollapsedCount(d.b_device).count ? ` (×${parseCollapsedCount(d.b_device).count})` : ""}</td>
                   <td style={{ padding: "2px 6px", textAlign: "right", color: isChange ? "#48f" : "var(--ink2)", fontFamily: "var(--mono)" }}>{fmtVal(d.b_value)}</td>
                   <td style={{
                     padding: "2px 6px", textAlign: "right", fontFamily: "var(--mono)",
@@ -570,6 +825,49 @@ export default function LVSComparePanel({ dieId, layoutNetlist, dialect, moduleN
     );
   };
 
+  const renderCombinedDevices = () => {
+    if (state.phase !== "done" || state.data.json.unbalanced.length === 0) return null;
+
+    // Collect all devices with collapsed info from unbalanced
+    const combined: { name: string; side: "L" | "S"; collapsedCount: number; what: string }[] = [];
+    for (const cls of state.data.json.unbalanced) {
+      for (const n of cls.a) {
+        const { clean, count } = parseCollapsedCount(n);
+        if (count !== null) combined.push({ name: clean, side: "L", collapsedCount: count, what: cls.what });
+      }
+      for (const n of cls.b) {
+        const { clean, count } = parseCollapsedCount(n);
+        if (count !== null) combined.push({ name: clean, side: "S", collapsedCount: count, what: cls.what });
+      }
+    }
+    if (combined.length === 0) return null;
+
+    return (
+      <div style={{ margin: "0 10px 8px" }}>
+        <div style={sectionTitle}>Combined Devices</div>
+        <div style={{ display: "flex", flexDirection: "column", gap: 1 }}>
+          {combined.map((c, i) => (
+            <div key={i} style={{ ...panelBase, display: "flex", alignItems: "center", gap: 6 }}>
+              <span style={{
+                fontSize: 9, fontWeight: 700, padding: "1px 4px", borderRadius: 2,
+                background: c.side === "L" ? "var(--errBg)" : "var(--accentBg)",
+                color: c.side === "L" ? "#f55" : "#48f",
+              }}>{c.side}</span>
+              <span style={{ fontWeight: 600, color: "var(--ink0)" }}>{c.name}</span>
+              <span style={{ fontSize: 9, color: "var(--ink3)" }}>
+                {c.what === "device" ? `×${c.collapsedCount}` : `net(×${c.collapsedCount})`}
+              </span>
+            </div>
+          ))}
+        </div>
+        <div style={{ fontSize: 9, color: "var(--ink3)", marginTop: 4, lineHeight: 1.4 }}>
+          vyges-lvs collapsed these devices/nets (parallel/series combination).
+          Device-level diffs use the individual names; combined info is shown for reference.
+        </div>
+      </div>
+    );
+  };
+
   // (net-level diffs removed — noise for renamed nets)
 
   const renderPortChips = () => {
@@ -582,7 +880,7 @@ export default function LVSComparePanel({ dieId, layoutNetlist, dialect, moduleN
 
     return (
       <div style={{ margin: "0 10px 8px" }}>
-        <div style={sectionTitle}>Port Diffs {(curEngine === "all") ? "(vyges-lvs)" : ""}</div>
+        <div style={sectionTitle}>Port Diffs</div>
         <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
           {only_in_a_ports.map((p) => (
             <span key={p} style={{
@@ -624,7 +922,11 @@ export default function LVSComparePanel({ dieId, layoutNetlist, dialect, moduleN
           <div style={{ ...sectionTitle, color }}>{title} ({items.length}){sub && <span style={{ color: "var(--ink3)", fontWeight: 400 }}> — {sub}</span>}</div>
           {items.map((d, i) => (
             <div key={i} style={{ ...panelBase, borderLeft: `3px solid ${color}` }}>
-              <div style={{ fontWeight: 600, color: "var(--ink0)" }}>{d.name}</div>
+              <div style={{ fontWeight: 600, color: "var(--ink0)", display: "flex", alignItems: "center", gap: 4 }}>
+                {d.name}
+                {d.collapsedLayout && <span style={{ fontSize: 8, fontWeight: 700, padding: "1px 4px", borderRadius: 2, background: "#f55", color: "#fff" }}>L×{d.collapsedLayout}</span>}
+                {d.collapsedSchematic && <span style={{ fontSize: 8, fontWeight: 700, padding: "1px 4px", borderRadius: 2, background: "#48f", color: "#fff" }}>S×{d.collapsedSchematic}</span>}
+              </div>
               <table style={{ width: "100%", fontSize: 11, borderCollapse: "collapse", marginTop: 2 }}>
                 <tbody>
                   <tr><td style={{ color: "#f55", paddingRight: 8, verticalAlign: "top", whiteSpace: "nowrap", width: 16 }}>L</td>
@@ -640,15 +942,22 @@ export default function LVSComparePanel({ dieId, layoutNetlist, dialect, moduleN
     };
 
     const curEngine = state.data.engine;
-    const engLabel = curEngine === "all" ? " (via buildDiffs)" : ` (${ENGINE_LABELS[curEngine] ?? curEngine})`;
+    const engLabel = ` (${ENGINE_LABELS[curEngine] ?? curEngine})`;
     // Cascade warning only for vyges-lvs — name-based engine matches by name, no cascade issue
     const hasCascadeNoise = curEngine !== "name-based" && lOnly.length > 0 && sOnly.length > 0;
+    // High iterations warning: 1-WL may struggle on complex graphs
+    const highIters = curEngine !== "name-based" && state.data.json.iterations > 4;
     return (
       <div style={{ flex: "0 0 auto", margin: "0 10px 8px" }}>
         <div style={{ ...sectionTitle, fontSize: 12 }}>Device Diffs{engLabel} ({devices.length})</div>
         {hasCascadeNoise && (
           <div style={{ fontSize: 9, color: "#fd0", marginBottom: 6, lineHeight: 1.4 }}>
             ⚠ For circuits with renamed devices/nets, some diffs below may be cascade noise from the 1-WL algorithm, not real errors. Compare with the report for details.
+          </div>
+        )}
+        {highIters && (
+          <div style={{ fontSize: 9, color: "#fd0", marginBottom: 6, lineHeight: 1.4 }}>
+            ⚠ {state.data.json.iterations} refinement iterations (high) — 1-WL may struggle on this graph. Cross-check with name-based engine.
           </div>
         )}
         {catBlock("Only in Layout", lOnly, "#f55")}
@@ -660,10 +969,75 @@ export default function LVSComparePanel({ dieId, layoutNetlist, dialect, moduleN
     );
   };
 
+  /** Render vyges-lvs unbalanced classes directly (no name-matching) */
+  const renderUnbalancedVyges = () => {
+    if (state.phase !== "done" || state.data.engine !== "vyges-lvs") return null;
+    const unbalanced = state.data.json.unbalanced.filter(c => c.what === "device");
+    if (!unbalanced.length) return null;
+
+    const lOnly = unbalanced.filter(c => c.a_count > 0 && c.b_count === 0);
+    const sOnly = unbalanced.filter(c => c.a_count === 0 && c.b_count > 0);
+    const sameCount = unbalanced.filter(c => c.a_count > 0 && c.b_count > 0 && c.a_count === c.b_count);
+    const diffCount = unbalanced.filter(c => c.a_count > 0 && c.b_count > 0 && c.a_count !== c.b_count);
+
+    const renderClass = (title: string, classes: typeof unbalanced, color: string) => {
+      if (!classes.length) return null;
+      return (
+        <div style={{ marginBottom: 8 }}>
+          <div style={{ ...sectionTitle, color }}>{title} ({classes.length})</div>
+          {classes.map((c, i) => (
+            <div key={i} style={{ ...panelBase, borderLeft: `3px solid ${color}`, marginTop: i > 0 ? 1 : 0 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 10, fontWeight: 600, color: "var(--ink3)", marginBottom: 2 }}>
+                L {c.a_count} : S {c.b_count}
+                {c.a_count !== c.b_count && <span style={{ fontSize: 9, fontWeight: 700, color, padding: "0 4px", borderRadius: 2, background: color + "22" }}>Δ{c.a_count - c.b_count}</span>}
+              </div>
+              <table style={{ width: "100%", fontSize: 11, borderCollapse: "collapse" }}>
+                <tbody>
+                  <tr>
+                    <td style={{ color: "#f55", paddingRight: 8, verticalAlign: "top", whiteSpace: "nowrap", width: 16, fontSize: 10 }}>L</td>
+                    <td style={{ color: "var(--ink2)", wordBreak: "break-all", fontFamily: "var(--mono)", fontSize: 10 }}>
+                      {c.a.map(n => stripSide(n)).join(", ") || "—"}
+                    </td>
+                  </tr>
+                  <tr>
+                    <td style={{ color: "#48f", paddingRight: 8, verticalAlign: "top", whiteSpace: "nowrap", width: 16, fontSize: 10 }}>S</td>
+                    <td style={{ color: "var(--ink2)", wordBreak: "break-all", fontFamily: "var(--mono)", fontSize: 10 }}>
+                      {c.b.map(n => stripSide(n)).join(", ") || "—"}
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          ))}
+        </div>
+      );
+    };
+
+    const highIters = state.data.json.iterations > 4;
+    return (
+      <div style={{ flex: "0 0 auto", margin: "0 10px 8px" }}>
+        <div style={{ ...sectionTitle, fontSize: 12 }}>Unbalanced Devices ({unbalanced.length} classes, L {state.data.json.a_devices} : S {state.data.json.b_devices})</div>
+        {highIters && (
+          <div style={{ fontSize: 9, color: "#fd0", marginBottom: 6, lineHeight: 1.4 }}>
+            ⚠ {state.data.json.iterations} refinement iterations (high) — 1-WL may struggle on this graph.
+          </div>
+        )}
+        <div style={{ fontSize: 9, color: "var(--ink3)", marginBottom: 6, lineHeight: 1.4 }}>
+          vyges-lvs is name-independent — unbalanced classes are color groups, not device-by-device matches.
+          Devices that share the same connection signature end up in the same class.
+          L-only / S-only mean no counterpart existed with matching connectivity.
+        </div>
+        {renderClass("Only in Layout", lOnly, "#f55")}
+        {renderClass("Only in Schematic", sOnly, "#48f")}
+        {renderClass("Mismatch (same count)", sameCount, "#f80")}
+        {renderClass("Count Mismatch", diffCount, "#fd0")}
+      </div>
+    );
+  };
+
   const renderReportInline = () => {
     if (state.phase !== "done" || !state.data.report) return null;
-    const engName = state.data.engine === "all" ? "vyges-lvs + name-based" : (ENGINE_LABELS[state.data.engine] ?? state.data.engine);
-    const engines = (state.data as any).engines as Record<string, { engine: string; report: string }> | undefined;
+    const engName = ENGINE_LABELS[state.data.engine] ?? state.data.engine;
 
     return (
       <div style={{ margin: "0 0 8px", display: "flex", flexDirection: "column", flex: "1 1 auto", minHeight: 0 }}>
@@ -674,17 +1048,6 @@ export default function LVSComparePanel({ dieId, layoutNetlist, dialect, moduleN
           style={{ ...textareaBase, flex: 1, cursor: "default", whiteSpace: "pre", fontFamily: "var(--mono)", fontSize: 9 }}
           spellCheck={false}
         />
-        {engines && Object.entries(engines).map(([ek, er]) => (
-          <div key={ek} style={{ marginTop: 4, display: "flex", flexDirection: "column", flex: "1 1 auto", minHeight: 0 }}>
-            <div style={{ ...sectionTitle, fontSize: 9 }}>{ENGINE_LABELS[ek] ?? ek} full report</div>
-            <textarea
-              readOnly
-              value={er.report}
-              style={{ ...textareaBase, flex: 1, cursor: "default", whiteSpace: "pre", fontFamily: "var(--mono)", fontSize: 9 }}
-              spellCheck={false}
-            />
-          </div>
-        ))}
       </div>
     );
   };
@@ -707,12 +1070,17 @@ export default function LVSComparePanel({ dieId, layoutNetlist, dialect, moduleN
           <>
             <div style={{ display: "flex", gap: 10, flex: "1 1 auto", minHeight: 0, overflow: "hidden", padding: "6px 10px 0" }}>
               <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "auto", minWidth: 0 }}>
+                {renderJsonNote()}
                 {renderPortChips()}
                 {renderPropertyTable()}
                 {renderReportInline()}
               </div>
               <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "auto", minWidth: 0 }}>
-                {renderDeviceDiffs()}
+                {engine === "vyges-lvs" ? (
+                  <>{renderUnbalancedVyges()}</>
+                ) : (
+                  <>{renderDeviceDiffs()}</>
+                )}
               </div>
             </div>
           </>

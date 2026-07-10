@@ -77,7 +77,7 @@ function AnalogNetlist({ dieId }: { dieId: string }) {
   const annotations = annotationsQ.data;
 
   // Dialect picker state
-  const [dialect, setDialect] = useState<SpiceDialect>("cdl");
+  const [dialect, setDialect] = useState<SpiceDialect>("spectre");
   // Resistor format: ohms (resolved value) vs sqRs (squares × sheetR)
   const [resistorFormat, setResistorFormat] = useState<"ohms" | "sqRs">("ohms");
   const [matchEnabled, setMatchEnabled] = useState(false);
@@ -623,6 +623,7 @@ function AnalogNetlist({ dieId }: { dieId: string }) {
               layoutNetlist={netlist.data?.source ?? null}
               dialect={dialect}
               moduleName={moduleName}
+              deviceToHighlight={selectedInstance}
             />
           ) : rightView === "schematic" && annotations ? (
             <SchematicViewPanel

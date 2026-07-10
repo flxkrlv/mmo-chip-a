@@ -22,6 +22,7 @@ export function createDebugRouter(config: { dataRoot: string }) {
         json: body.json,
         report: body.report,
         devices: body.devices,
+        stderr: body.stderr ?? "",
       };
 
       await fsp.writeFile(filePath, JSON.stringify(snapshot, null, 2), "utf-8");

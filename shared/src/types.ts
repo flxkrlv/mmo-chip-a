@@ -905,7 +905,7 @@ export interface AnalogExportResponse {
 
 // ── LVS comparison ──────────────────────────────────────────────
 
-export type LvsEngine = "vyges-lvs" | "name-based" | "all";
+export type LvsEngine = "vyges-lvs" | "name-based";
 
 export interface LvsCompareRequest {
   layoutNetlist: string;
@@ -956,6 +956,7 @@ export interface LvsEngineResult {
   matched: boolean;
   json: LvsRawResult;
   report: string;
+  stderr?: string;
 }
 
 /** Combined response */
@@ -964,7 +965,6 @@ export interface LvsCombinedResult {
   matched: boolean;
   json: LvsRawResult;
   report: string;
-  engines?: Record<string, LvsEngineResult>; // present only when engine="all"
 }
 
 export interface LvsResponse {

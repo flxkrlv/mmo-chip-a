@@ -1,22 +1,15 @@
 /**
- * normalizeNetlist.ts — Normalize Spectre-format netlists for vyges-lvs.
+ * normalizeNetlist.ts — Normalize SPICE netlists for vyges-lvs.
  *
  * vyges-lvs expects SPICE/CDL syntax (`.SUBCKT`/`.ENDS` with dots) and
- * chokes on Cadence Spectre simulation directives (`simulatorOptions`,
- * `tran`, `save`, `modelParameter`, etc.).
+ * POSITIONAL device parameters: `R1 n1 n2 1k` NOT `R1 (n1 n2) resistor r=1k`.
+ * Spectre parenthesized format `(n1 n2)` and `keyword=value` params are
+ * NOT parsed by vyges-lvs v0.1.11 (values are silently ignored).
  *
- * This normalizer:
- *   1. Strips non-device Spectre directives
- *   2. Preserves `.GLOBAL` net declarations (from input or via `globalNets` param)
- *   3. Strips any existing `.SUBCKT`/`.ENDS` boundaries (flat output)
- *   4. Preserves device instances and `parameters`/`.PARAM`
- *   5. Wraps everything in `.SUBCKT ${moduleName}` / `.ENDS ${moduleName}`
- *      without port declarations — both sides get identical wrapping
- *
- * Currently Spectre-only. Extend for CDL/HSPICE when needed.
- *
- * For hierarchical netlists with real I/O pin ports, pass `ioNetIds`
- * through to the generator (see docs/lvs-plan.md).
+ * This normalizer converts Spectre → CDL format before passing to vyges-lvs:
+ *   R1 (n1 n2) resistor r=1k  →  R1 n1 n2 1k
+ *   C1 (n1 n2) capacitor c=1p  →  C1 n1 n2 1p
+ *   Q1 (c b e s) npn m=1    →  Q1 c b e s npn m=1  (parentheses only)
  */
 
 // Lines that are definitely NOT device instances or subcircuit boundaries.
@@ -71,6 +64,43 @@ function isDeviceLine(line: string): boolean {
 }
 
 /**
+ * Convert a Spectre-format device line to CDL (vyges-lvs-compatible) format.
+ *
+ * Spectre:  R1 (n1 n2) resistor r=1k
+ * CDL:      R1 n1 n2 1k
+ *
+ * vyges-lvs v0.1.11 ONLY parses value from positional tokens (CDL format).
+ * Parentheses and keyword=value parameters (r=, c=, w=, l=) are silently
+ * ignored, so we must convert before passing to vyges-lvs.
+ */
+function spectreToCdl(line: string): string {
+  // Trim leading whitespace (preserved from trimEnd in the normalize loop)
+  const trimmed = line.trimStart();
+  // Match Spectre parenthesized format: DEVNAME (term1 term2 ...) rest...
+  const m = trimmed.match(/^(\w+)\s+\(([^)]+)\)\s*(.*)$/);
+  if (!m) return line; // already CDL or unknown format — keep as-is
+
+  const devName = m[1];
+  const terminals = m[2].replace(/\s+/g, " ").trim();
+  const rest = m[3].trim();
+  const prefix = devName[0].toUpperCase();
+
+  // R, C, L — strip model keyword, convert keyword=value to positional
+  if (prefix === "R" || prefix === "C" || prefix === "L") {
+    let cleanRest = rest.replace(/^(resistor|capacitor|inductor)\s*/i, "").trim();
+    // Extract value from keyword=value (r=1k, c=1p) → positional
+    const valMatch = cleanRest.match(/^[a-zA-Z]+\s*=\s*(\S+)/);
+    if (valMatch) {
+      cleanRest = valMatch[1];
+    }
+    return `${devName} ${terminals} ${cleanRest}`.trim();
+  }
+
+  // Q, M, D, others — strip parentheses only, keep model + params as-is
+  return `${devName} ${terminals} ${rest}`.trim();
+}
+
+/**
  * Normalize a Spectre netlist string for vyges-lvs consumption.
  * Both sides get identical `.SUBCKT name` / `.ENDS name` wrapping.
  * Existing subcircuit boundaries are stripped; ports are not declared.
@@ -105,14 +135,14 @@ export function normalizeForVyges(input: string, moduleName?: string, globalNets
     }
 
     // Collect .GLOBAL net names; vyges-lvs uses them to anchor power/ground
-    if (/^global\s+/i.test(trimmed)) {
+    if (/^\.?global\s+/i.test(trimmed)) {
       const nets = trimmed.replace(/^global\s+/i, "").trim().split(/\s+/);
       globalsFromInput.push(...nets.filter(Boolean));
       continue;
     }
 
     if (isDeviceLine(trimmed)) {
-      out.push(trimmed);
+      out.push(spectreToCdl(trimmed));
     }
     // Everything else is silently dropped.
   }

@@ -10,6 +10,7 @@ interface LvsSnapshot {
   json: LvsRawResult;
   report: string;
   devices: { name: string; category: string; layoutLine: string; schematicLine: string }[];
+  stderr?: string;
 }
 
 export async function compareNetlists(dieId: string, req: LvsCompareRequest): Promise<LvsApiResponse> {

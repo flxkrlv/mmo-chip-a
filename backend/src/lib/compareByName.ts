@@ -39,7 +39,7 @@ function knownModelKeyword(s: string): boolean {
 function isDeviceLine(trimmed: string): boolean {
   if (!trimmed) return false;
   if (trimmed.startsWith("//") || trimmed.startsWith("*")) return false;
-  if (/^\.(SUBCKT|ENDS|GLOBAL|PARAM|subckt|ends|global|param)\b/i.test(trimmed)) return false;
+  if (/^\.?(SUBCKT|ENDS|GLOBAL|PARAM|subckt|ends|global|param)\b/i.test(trimmed)) return false;
   if (/^(parameters|simulator)\b/i.test(trimmed)) return false;
   return /^[A-Za-z_]\w+\s/.test(trimmed);
 }
