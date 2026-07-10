@@ -1,23 +1,26 @@
 # mmo-chip — analog-re-wip
 
-**Форк [mmo-chip](https://github.com/giulioz/mmo-chip) для реверс-инжиниринга аналоговых и mixed-signal ИС.**  
-Исходный проект ориентирован на цифровые CMOS Gate Array / Standard Cell чипы и извлекает логические вентили и Verilog-нетлист.  
-Этот форк расширяет его до **BJT, BiCMOS, резисторов, конденсаторов, диодов** — всей аналоговой периферии, которая не укладывается в модель стандартных ячеек.
+> **ENG** | [**RU**](README.ru.md)
 
-## Благодарности (ENG)
+**A fork of [mmo-chip](https://github.com/giulioz/mmo-chip) for reverse engineering analog and mixed-signal ICs.**  
+The original project targets digital CMOS Gate Array / Standard Cell chips and extracts logic gates and Verilog netlists.  
+This fork extends it to **BJTs, BiCMOS, resistors, capacitors, diodes** — all the analog periphery that doesn't fit the standard cell model.
+
+## Acknowledgments
+
 Many thanks to the developers of the original [mmo-chip](https://github.com/giulioz/mmo-chip).  
 Clean architecture, thoughtful modularity, and clear interfaces between the frontend, backend, and shared types are an excellent base for custom extensions, for example, for RE analog blocks and chips.
 
-Оригинальный CMOS-маршрут (стандартные ячейки, логика, Verilog) **не тронут** — аналоговая экстракция работает как надстройка. Мы старались не сломать цифровой маршрут, но это нуждается в проврерке - у нас нет опыта в цифровой логике и примеров снимков таких кристалов.
+The original CMOS pipeline (standard cells, logic, Verilog) is **untouched** — analog extraction works as an add-on. We tried not to break the digital path, but this needs verification — we have no experience in digital logic or sample chip images to test against.
 
-### Использованные open source проекты
+### Open source projects used
 
-| Проект | Назначение |
+| Project | Purpose |
 |---|---|
-| [netlist2svg](https://github.com/ajsb85/netlist2svg) (ELK.js) | Layout и рендеринг transistor-level схем |
-| [vyges-lvs](https://github.com/vyges/vyges-lvs) | LVS-движок (name-independent сравнение нетлистов) |
-| [cytoscape.js](https://js.cytoscape.org/) | Force-directed граф соединений приборов |
-| [clipper2-wasm](https://github.com/ajsb85/clipper2-wasm) | Разрезание diffusion, объединение poly gate групп |
+| [netlist2svg](https://github.com/ajsb85/netlist2svg) (ELK.js) | Layout and rendering of transistor-level schematics |
+| [vyges-lvs](https://github.com/vyges/vyges-lvs) | LVS engine (name-independent netlist comparison) |
+| [cytoscape.js](https://js.cytoscape.org/) | Force-directed device connection graph |
+| [clipper2-wasm](https://github.com/ajsb85/clipper2-wasm) | Diffusion splitting, poly gate group merging |
 
 ---
 
@@ -26,7 +29,7 @@ Clean architecture, thoughtful modularity, and clear interfaces between the fron
 │                mmo-chip                  │
 ├────────────────┬────────────────────────┤
 │  CMOS Logic    │  Analog Extraction      │
-│  (оригинал)    │  (наша ветка)           │
+│  (original)    │  (our branch)           │
 ├────────────────┼────────────────────────┤
 │ extractCell()  │ extractMarkedDevices()  │
 │ gates.ts       │ simpleAnalog.ts         │
@@ -40,138 +43,136 @@ Clean architecture, thoughtful modularity, and clear interfaces between the fron
 ```
 
 ![die-viewer-analog-workflow](docs/die-viewer-analog-workflow.png)
-*Die viewer с обнаруженными аналоговыми приборами: цветные bbox с подписями, терминальные метки (G, S/D, B, C, E), параметры (W/L, AE, Ω)*
+*Die viewer with detected analog devices: colored bboxes with labels, terminal markers (G, S/D, B, C, E), parameters (W/L, AE, Ω)*
 
 ---
 
-## Поддерживаемые устройства
+## Supported devices
 
-| Устройство | Детекция | Параметры |
+| Device | Detection | Parameters |
 |---|---|---|
-| **NMOS / PMOS** (3-/4-терминальные) | **Well-based**: nwell→PMOS, pwell→NMOS. Без маркеров — автоматически по пересечению diffusion + polysilicon. **Все MOS** (включая single-finger) используют **Clipper2** для разрезания diffusion между затворами. N gate fingers → N+1 сегментов → N отдельных MOS | W, L, fingers, multiplier. Bulk: контакт на nwell/pwell вне diffusion/poly → positive netId. Если нет → sentinel -2 → VDD/GND (настраиваемые имена) |
-| **NPN** | Маркер `npn_id` с collector + base + emitter | AE (overlap base∩emitter), multiplier M |
-| **PNP / LPnp** (латеральный PNP) | Маркер `pnp_id` | AE, PE (периметр эмиттера), multiplier M |
-| **Диод** | Маркер `diode_id` **или** NPN/PNP без коллектора — base=анод(+), emitter=катод(-). Терминалы: PLUS через `["base","bulk"]`, MINUS через `["emitter"]` с приоритетами (emitter 0 > base 1) | Площадь (AE из base-emitter overlap) |
-| **Резистор** | **Геометрическая детекция** (res_id не требуется): тело резистора (poly/base/emitter/hsr/film) → ME1, пересекающий тело → контакты на ME1 → группы контактов = PLUS/MINUS. Рисуется polyline-инструментом (`L`) с ортогональным snap. Ширина в µm (слайдер 0–200µm). При клике — выделяется вся цепочка сегментов | Ω или squares×Rₛ. Поддерживаются body-слои: poly-R, p-base (pb), n+ (npl), HSR (high-sheet), thin film. Множественные резисторы в одной ячейке |
-| **Конденсатор** | Маркер `cap_id` — ёмкость из overlap-области | fF = площадь × плотность (1 fF/µm² по умолчанию) - проверить |
+| **NMOS / PMOS** (3-/4-terminal) | **Well-based**: nwell→PMOS, pwell→NMOS. No markers needed — automatic via diffusion + polysilicon intersection. **All MOS** (including single-finger) use **Clipper2** to split diffusion at gates. N gate fingers → N+1 segments → N individual MOS | W, L, fingers, multiplier. Bulk: contact on nwell/pwell outside diffusion/poly → positive netId. If absent → sentinel -2 → VDD/GND (configurable names) |
+| **NPN** | Marker `npn_id` with collector + base + emitter | AE (overlap base∩emitter), multiplier M |
+| **PNP / LPnp** (lateral PNP) | Marker `pnp_id` | AE, PE (emitter perimeter), multiplier M |
+| **Diode** | Marker `diode_id` **or** NPN/PNP without collector — base=anode(+), emitter=cathode(-). Terminals: PLUS via `["base","bulk"]`, MINUS via `["emitter"]` with priorities (emitter 0 > base 1) | Area (AE from base-emitter overlap) |
+| **Resistor** | **Geometric detection** (res_id not required): resistor body (poly/base/emitter/hsr/film) → ME1 intersecting the body → contacts on ME1 → contact groups = PLUS/MINUS. Drawn with polyline tool (`L`) with orthogonal snap. Width in µm (slider 0–200µm). Click selects the entire segment chain | Ω or squares×Rₛ. Body layers supported: poly-R, p-base (pb), n+ (npl), HSR (high-sheet), thin film. Multiple resistors in one cell |
+| **Capacitor** | Marker `cap_id` — capacitance from overlap area | fF = area × density (1 fF/µm² default) — needs verification |
 
 ---
 
-## Как рисовать устройства
+## How to draw devices
 
-### MOS-транзистор (well-based, маркеры не нужны)
+### MOS transistor (well-based, no markers needed)
 
-MOS детектируется **автоматически** по пересечению слоёв — отдельно рисовать маркеры не требуется.
+MOS is detected **automatically** from layer intersections — no separate markers required.
 
-| Слой | Назначение |
+| Layer | Purpose |
 |---|---|
-| `nwell` | PMOS-транзисторы ищутся внутри nwell |
-| `pwell` | NMOS-транзисторы ищутся внутри pwell |
-| `diffusion` | Тело транзистора (исток + сток) |
-| `polysilicon` | Затворы, пересекающие diffusion |
+| `nwell` | PMOS transistors are found inside nwell |
+| `pwell` | NMOS transistors are found inside pwell |
+| `diffusion` | Transistor body (source + drain) |
+| `polysilicon` | Gates crossing diffusion |
 
-1. Нарисуйте `nwell` (для PMOS) или `pwell` (для NMOS) на Cell RE.
-2. Внутри well нарисуйте `diffusion` — это область истока и стока.
-3. Нарисуйте `polysilicon` поперёк diffusion — это затвор(ы).
-4. **Bulk:** нарисуйте `cont` (contact) на nwell/pwell **вне** diffusion и polysilicon. Если контакт попадает и на diffusion — он считается S/D, не bulk. Если bulk-контакта нет — sentinel -2 → VDD (PMOS) / GND (NMOS). Имена VDD/GND настраиваются в Analog Netlist → SubBar.
-5. **Металлизация:** соедините diffusion-области через контакты и metal1 с остальной схемой.
-6. **Multi-finger (несколько затворов на одной diffusion):** Clipper2 (`polygonDifference()`) разрезает diffusion между затворами. Каждый gate finger → отдельный MOS. Shared сегмент между затворами — D для левого и S для правого (одинаковый netId при wire matching).
+1. Draw `nwell` (for PMOS) or `pwell` (for NMOS) on Cell RE.
+2. Inside the well, draw `diffusion` — this is the source and drain region.
+3. Draw `polysilicon` across diffusion — this is the gate(s).
+4. **Bulk:** draw `cont` (contact) on nwell/pwell **outside** diffusion and polysilicon. If the contact lands on diffusion too, it's considered S/D, not bulk. If no bulk contact → sentinel -2 → VDD (PMOS) / GND (NMOS). VDD/GND names are configurable in Analog Netlist → SubBar.
+5. **Metallization:** connect diffusion regions through contacts and metal1 to the rest of the circuit.
+6. **Multi-finger (multiple gates on one diffusion):** Clipper2 (`polygonDifference()`) splits diffusion between gates. Each gate finger → separate MOS. Shared segment between gates — D for the left and S for the right (identical netId after wire matching).
+7. **Metal-connected D/S:** If drain/source of two different transistors are connected by ME1 (or ME2 via via1) inside the cell — they get one cell-level netId. Union-Find across metal1+metal2+via1+contact.
 
-7. **Metal-connected D/S:** Если drain/source двух разных транзисторов соединены ME1 (или ME2 через via1) внутри ячейки — они получают один cell-level netId. Union-Find по metal1+metal2+via1+contact.
+W/L, fingers, and segments are computed automatically.
 
-W/L, fingers, сегменты вычисляются автоматически.
+![RECEll MOS — 3 PMOS in one cell (multi-finger + single-finger)](docs/RECEll_3pmos_1cell(multi_and_single_finger).png)
+*Cell RE: 3 PMOS in one cell (multi-finger and single-finger). Clipper2 splits diffusion, poly gate net grouping merges gates.*
 
-
-![RECEll MOS — 3 PMOS в одной ячейке (multi-finger + single-finger)](docs/RECEll_3pmos_1cell(multi_and_single_finger).png)
-*Cell RE: 3 PMOS в одной ячейке (multi-finger и single-finger). Clipper2 разрезает diffusion, poly gate net grouping объединяет затворы.*
-
-> Подробное описание MOS detection pipeline — [`docs/mos_detection.md`](docs/mos_detection.md).
+> Detailed MOS detection pipeline — [`docs/mos_detection.md`](docs/mos_detection.md).
 
 ### BJT (NPN / PNP)
 
-| Слой | Назначение |
+| Layer | Purpose |
 |---|---|
-| `npn_id` | Bounding box NPN |
-| `pnp_id` | Bounding box PNP |
-| `collector` | Область коллектора |
-| `base` | Область базы |
-| `emitter` | Область эмиттера |
+| `npn_id` | NPN bounding box |
+| `pnp_id` | PNP bounding box |
+| `collector` | Collector region |
+| `base` | Base region |
+| `emitter` | Emitter region |
 
-1. **Выберите bounding box:** нарисуйте `npn_id` (NPN) или `pnp_id` (PNP / LPnp) — прямоугольник, охватывающий весь прибор.
-2. **Нарисуйте слои:** collector, base, emitter — в виде rect или polygon внутри bbox.
-3. **Контакты:** поставьте `cont` (contact) на каждый слой. Инструмент сам сопоставит контакты с выводами.
-4. **Для PNP / LPnp** PE (perimeter) = периметр эмиттера — используется как основной параметр.
-5. **Multi-emitter:** нарисуйте несколько эмиттеров внутри одного bbox — инструмент сложит их площади и выставит multiplier M.
+1. **Choose a bounding box:** draw `npn_id` (NPN) or `pnp_id` (PNP / LPnp) — a rectangle covering the entire device.
+2. **Draw layers:** collector, base, emitter — as rect or polygon inside the bbox.
+3. **Contacts:** place `cont` (contact) on each layer. The tool matches contacts to terminals automatically.
+4. **For PNP / LPnp** PE (perimeter) = emitter perimeter — used as the primary parameter.
+5. **Multi-emitter:** draw multiple emitters inside one bbox — the tool sums their areas and sets multiplier M.
 
-> **Важно:** emitter должен лежать **внутри** base (или пересекаться с ней). Это layout-ориентированный физический подход, понятный для топологов
+> **Important:** emitter must lie **inside** base (or intersect it). This is a layout-oriented physical approach familiar to layout engineers.
 
-### Диод
+### Diode
 
-**Способ 1 — маркер `diode_id`:**  
-Нарисуйте `diode_id` — прямоугольник вокруг области диода. Не тестировался
+**Method 1 — marker `diode_id`:**  
+Draw `diode_id` — a rectangle around the diode region. Not tested.
 
-**Способ 2 — из BJT без коллектора (рекомендуемый):**  
-Нарисуйте `npn_id` (или `pnp_id`) с `base` + `emitter`, но **без** `collector`.  
-Инструмент автоматически распознает прибор как диод:
-- Base = анод (PLUS)
-- Emitter = катод (MINUS)
-- AE (overlap base ∩ emitter) = площадь диода
+**Method 2 — from BJT without collector (recommended):**  
+Draw `npn_id` (or `pnp_id`) with `base` + `emitter`, but **without** `collector`.  
+The tool automatically recognizes it as a diode:
+- Base = anode (PLUS)
+- Emitter = cathode (MINUS)
+- AE (overlap base ∩ emitter) = diode area
 
-### Резистор
+### Resistor
 
-| Слой | Назначение |
+| Layer | Purpose |
 |---|---|
-| `res_id` | Bounding box резистора | --< LEGACY! БОЛЬШЕ НЕ ИСПОЛЬЗУЕТСЯ, заменен геометрической детекцией 
-| `poly` / `polysilicon` | Тело (poly-резистор) |
-| `base` | Тело (p-base diffusion) |
-| `emitter` | Тело (n+ diffusion) |
-| `hsr` | Тело (High Sheet Resistance — ионная имплантация) |
-| `film` | Тело (тонкоплёночный) |
-| `contact` | Контакты (минимум 2) |
+| `res_id` | Resistor bounding box | --< LEGACY! NO LONGER USED, replaced by geometric detection
+| `poly` / `polysilicon` | Body (poly resistor) |
+| `base` | Body (p-base diffusion) |
+| `emitter` | Body (n+ diffusion) |
+| `hsr` | Body (High Sheet Resistance — ion implantation) |
+| `film` | Body (thin film) |
+| `contact` | Contacts (minimum 2) |
 
-1. **res_id** больше не требуется — детекция чисто геометрическая: тело → ME1 → контакты → группы = PLUS/MINUS.
-2. Выберите **body-слой**: poly, base, emitter, hsr, film. Рисуйте тело ТОЛЬКО polyline-инструментом (`L`), даже для прямых резисторов.
-3. Нарисуйте ME1, **перекрывающийся с телом резистора**. Поставьте минимум 2 контакта (`contact`) — они станут PLUS и MINUS.
-4. **Polyline-режим:**
-   - `L` — активировать инструмент
-   - Ширина в µm (слайдер 0–200µm, шаг 1) задаётся ДО рисования в тулбаре
-   - Ортогональный snap (90°) в реальном времени
-   - Каждый сегмент суммируется в общую длину
-   - Opacity слайдер в тулбаре — наложение полупрозрачного слоя на изображение для проверки совпадения ширины
-5. Ширину нарисованного резистора можно поменять: кликните на любом сегменте → выделится вся цепочка → в правой панели (внизу) поле Width в µm. Drag-move для line shapes отключён (не ломать геометрию).
+1. **res_id** is no longer required — detection is purely geometric: body → ME1 → contacts → groups = PLUS/MINUS.
+2. Choose a **body layer**: poly, base, emitter, hsr, film. Draw the body **ONLY** with the polyline tool (`L`), even for straight resistors.
+3. Draw ME1 **overlapping the resistor body**. Place at least 2 contacts (`contact`) — they become PLUS and MINUS.
+4. **Polyline mode:**
+   - `L` — activate the tool
+   - Width in µm (slider 0–200µm, step 1) is set **before** drawing in the toolbar
+   - Orthogonal snap (90°) in real time
+   - Each segment is added to the total length
+   - Opacity slider in the toolbar — overlay a semi-transparent layer on the image to verify width alignment
+5. The width of a drawn resistor can be changed: click any segment → the entire chain is selected → Width field in the right panel (bottom). Drag-move for line shapes is disabled (to preserve geometry).
 
-> **Sheet R₀:** настраивается в GUI (по умолчанию: poly=25 Ω/□, hsr=1500 Ω/□, pb=200 Ω/□, npl=5 Ω/□, film=500 Ω/□). Это базовые ориентировные значения, которые могут меняться в широких пределах
-> Сопротивление = squares × sheetR₀. Можно переключать отображение между Ω и sq·Rs.
+> **Sheet R₀:** configurable in GUI (defaults: poly=25 Ω/□, hsr=1500 Ω/□, pb=200 Ω/□, npl=5 Ω/□, film=500 Ω/□). These are baseline reference values that can vary widely.
+> Resistance = squares × sheetR₀. Display can be toggled between Ω and sq·Rs.
 
-### Конденсатор (не тестировался)
+### Capacitor (not tested)
 
-1. Нарисуйте `cap_id` — bounding box (overlap-область = ёмкость).
-2. PLUS и MINUS — оба на `contact` слое.
+1. Draw `cap_id` — bounding box (overlap area = capacitance).
+2. PLUS and MINUS — both on the `contact` layer.
 
 ---
 
-## Управление (горячие клавиши)
+## Hotkeys
 
-### Die Viewer — инструменты
+### Die Viewer — tools
 
-| Клавиша | Инструмент |
+| Key | Tool |
 |---|---|
-| `S` | Select (выделение) |
-| `W` | Wire (трасса) — первое нажатие M1, повторное переключает M1↔M2 |
-| `E` | Via up — ставит via в позиции курсора и переключает слой на следующий (M1→M2) |
-| `Q` | Via down — ставит via и переключает слой на предыдущий (M2→M1) |
+| `S` | Select |
+| `W` | Wire — first press M1, second press toggles M1↔M2 |
+| `E` | Via up — places via at cursor and switches to next layer (M1→M2) |
+| `Q` | Via down — places via and switches to previous layer (M2→M1) |
 | `B` | Multi-wire / Bus |
-| `O` | Via (контактное окно) |
-| `K` | Ruler / Measurement (линейка) |
-| `R` | Add Cell (добавить ячейку) |
-| `P` | I/O Point (вход/выход) |
+| `O` | Via (contact window) |
+| `K` | Ruler / Measurement |
+| `R` | Add Cell |
+| `P` | I/O Point |
 | `F` | Fit to Screen / Pan |
 | `+` / `=` | Zoom in |
 | `-` | Zoom out |
 
-### Die Viewer — навигация по вкладкам
+### Die Viewer — tab navigation
 
-| Клавиша | Вкладка |
+| Key | Tab |
 |---|---|
 | `1` | Die viewer |
 | `2` | Merge cells |
@@ -179,162 +180,162 @@ W/L, fingers, сегменты вычисляются автоматически
 | `4` | Code |
 | `5` | Analog Netlist |
 
-### Cell RE — инструменты
+### Cell RE — tools
 
-| Клавиша | Инструмент |
+| Key | Tool |
 |---|---|
-| `R` | Rect (прямоугольник) |
-| `P` | Polygon (многоугольник) |
-| `O` | Point / via (точка / контакт) |
-| `L` | Polyline (меандр-резистор, ортогональный snap) |
+| `R` | Rect |
+| `P` | Polygon |
+| `O` | Point / via |
+| `L` | Polyline (meander resistor, orthogonal snap) |
 
 ### Undo / Redo
 
-| Клавиши | Действие |
+| Keys | Action |
 |---|---|
 | `Ctrl+Z` / `⌘Z` | Undo |
 | `Ctrl+Shift+Z` / `⌘⇧Z` | Redo |
 
-### Overlay-изображения (общие)
+### Overlay images (global)
 
-| Клавиши | Действие |
+| Keys | Action |
 |---|---|
-| `Ctrl+Shift+B` | Показать / скрыть базовое изображение (фото кристалла) |
-| `]` | Показать **только** следующий overlay-слой (N+1), остальные скрыть |
-| `[` | Показать **только** предыдущий overlay-слой (N-1), остальные скрыть |
-| `Ctrl+Shift+1..8` | Показать **только** overlay-слой №1..8, остальные скрыть |
+| `Ctrl+Shift+B` | Show/hide base image (die photo) |
+| `]` | Show **only** the next overlay layer (N+1), hide others |
+| `[` | Show **only** the previous overlay layer (N-1), hide others |
+| `Ctrl+Shift+1..8` | Show **only** overlay layer #1..8, hide others |
 
-Работают на всех трёх вкладках: Die Viewer, Merge Cells, RE Cell. (надо проверять)
+Works on all three tabs: Die Viewer, Merge Cells, RE Cell. (needs verification)
 
-### Merge Cells — режимы просмотра
+### Merge Cells — view modes
 
-| Клавиша | Режим |
+| Key | Mode |
 |---|---|
-| `Alt+1` | Overlay (наложение) |
-| `Alt+2` | Side-by-side (рядом) |
-| `Alt+3` | Difference (разница) |
-| `Alt+4` | Specimen only (только образец) |
-| `Alt+5` | Candidate only (только кандидат) |
+| `Alt+1` | Overlay |
+| `Alt+2` | Side-by-side |
+| `Alt+3` | Difference |
+| `Alt+4` | Specimen only |
+| `Alt+5` | Candidate only |
 
-### Analog Netlist — горячие клавиши
+### Analog Netlist — hotkeys
 
-| Клавиша | Действие |
+| Key | Action |
 |---|---|
-| `G` | Переключить Code / Graph вид |
+| `G` | Toggle Code / Graph view |
 | `H` | Hierarchical on/off |
-| `R` | Формат резистора (Ω / sq·Rs) |
+| `R` | Resistor format (Ω / sq·Rs) |
 | `M` | Device matching on/off |
 
-### Cell RE — прочее
+### Cell RE — misc
 
-| Клавиши | Действие |
+| Keys | Action |
 |---|---|
-| `Ctrl+C` / `⌘C` | Копировать выделенные фигуры |
-| `Ctrl+V` / `⌘V` | Вставить |
-| Пробел (hold) | Временный Pan (в любом инструменте) |
+| `Ctrl+C` / `⌘C` | Copy selected shapes |
+| `Ctrl+V` / `⌘V` | Paste |
+| Space (hold) | Temporary Pan (in any tool) |
 
 ---
 
-## Экспорт / Импорт проекта
+## Project Export / Import
 
-Проект можно выгрузить с сервера и импортировать на другой инстанс.
+Projects can be exported from the server and imported to another instance.
 
-- **`POST /api/dies/:dieId/export-project`** — экспорт в JSON (light: только аннотации / full: + изображения)
-- **`POST /api/dies/import-project`** — импорт с обработкой конфликтов (перезапись / пропуск)
-- **`POST /api/dies/:dieId/rename`** — переименование кристалла
-- Экспорт preferences из localStorage
+- **`POST /api/dies/:dieId/export-project`** — export to JSON (light: annotations only / full: + images)
+- **`POST /api/dies/import-project`** — import with conflict handling (overwrite / skip)
+- **`POST /api/dies/:dieId/rename`** — rename a die
+- Export preferences from localStorage
 
-Full-экспорт сохраняет оригинальное изображение + overlay-изображения, так что сторонние проекты восстанавливаются полностью (с изображениями).
+Full export preserves the original image + overlay images, so third-party projects are fully restorable (with images).
 
 ---
 
-## Floorplan регионы (v0.2)
+## Floorplan regions (v0.2)
 
-Инструмент для выделения аналоговых блоков на топологии кристалла. Прямоугольные и полигональные регионы.
+A tool for marking analog blocks on the die layout. Rectangular and polygonal regions.
 
-### Возможности
-- **Рисование:** rect (drag-based) или polygon (вершины по клику, двойной клик / Enter завершает)
-- **Popover:** редактирование имени, цвета, алиасов портов, резервация
-- **Резервация:** опционально — показать, кто работает над блоком (для мультиплеера)
-- **Port aliases:** назначение человекочитаемых имён для граничных портов блока
-- **Global rename:** алиасы переименовывают нет на die (через `PUT /api/dies/:dieId/nets/:uuid`)
-  При снятии алиаса — исходное имя восстанавливается
-  При коллизии (одинаковый алиас у двух разных netId) — авто-суффикс `_1`, `_2`
-- **Port dots:** цветные кружки с именами портов на die-вьювере
-  При выделении блока — на его портах; галочка "FP IO" — на всех блоках сразу
-- **Layer:** дисплей поверх всего, обводка без заливки, клик проходится насквозь до канваса
+### Features
+- **Drawing:** rect (drag-based) or polygon (vertices by click, double-click / Enter to finish)
+- **Popover:** edit name, color, port aliases, reservation
+- **Reservation:** optionally show who is working on a block (for multiplayer)
+- **Port aliases:** assign human-readable names to block boundary ports
+- **Global rename:** aliases rename nets on the die (via `PUT /api/dies/:dieId/nets/:uuid`)
+  Removing an alias restores the original name
+  Collision (same alias for two different netIds) → auto-suffix `_1`, `_2`
+- **Port dots:** colored circles with port names on the die viewer
+  When a block is selected — on its ports; "FP IO" checkbox — on all blocks at once
+- **Layer:** rendered on top, outline only (no fill), clicks pass through to canvas
 
-### Горячие клавиши
+### Hotkeys
 
-| Клавиша | Действие |
+| Key | Action |
 |---|---|
-| `H` | Активировать инструмент "Floorplan" |
-| `Ctrl+Shift+H` | Показать/скрыть overlay регионов |
+| `H` | Activate "Floorplan" tool |
+| `Ctrl+Shift+H` | Show/hide region overlay |
 
 ---
 
 ## Schematic Viewer (netlist2svg)
 
-Транзистор-уровневые схемы и функциональные блок-диаграммы, генерируемые из SPICE-нетлиста.
+Transistor-level schematics and functional block diagrams generated from SPICE netlists.
 
-### Возможности
+### Features
 
-- **Analog mode:** полноценная transistor-level схема с NMOS/PMOS/NPN/PNP, резисторами, конденсаторами, диодами, источниками — все найденные на die устройства
-- **Functional mode:** блок-диаграмма, где каждый floorplan-регион отображается как прямоугольник с I/O портами. Кросс-регионные соединения — провода между блоками. Устройства вне регионов рисуются аналоговыми символами рядом с блоками
-- **Пан/зум** через `@panzoom/panzoom` (drag для панорамирования, колесо для зума, кнопки +/−/⊖)
-- **Device tooltips** (React overlay): при наведении на устройство — имя, тип, параметры (W/L для MOS, AE/M для BJT, Ω/sq/тип для резисторов)
-- **Power net coloring:** VDD — красный, GND — синий (на схеме + connected wires)
-- **ELK layout:** настраиваемая стратегия (Brandes-Koepf / Interactive / Simple), направление (DOWN/RIGHT/UP/LEFT), степень сжатия (0–4)
-- **Экспорт:** SVG (тёмная/светлая тема), PNG (2×), Yosys JSON
-- **Per-region просмотр:** кнопки регионов в Analog mode для изолированного просмотра каждого floorplan-блока
+- **Analog mode:** full transistor-level schematic with NMOS/PMOS/NPN/PNP, resistors, capacitors, diodes, sources — all devices found on the die
+- **Functional mode:** block diagram where each floorplan region appears as a rectangle with I/O ports. Cross-region connections — wires between blocks. Devices outside regions are drawn as analog symbols next to blocks
+- **Pan/zoom** via `@panzoom/panzoom` (drag to pan, scroll to zoom, +/−/⊖ buttons)
+- **Device tooltips** (React overlay): hover a device to see name, type, parameters (W/L for MOS, AE/M for BJT, Ω/sq/type for resistors)
+- **Power net coloring:** VDD — red, GND — blue (on schematic + connected wires)
+- **ELK layout:** configurable strategy (Brandes-Koepf / Interactive / Simple), direction (DOWN/RIGHT/UP/LEFT), compression (0–4)
+- **Export:** SVG (dark/light theme), PNG (2×), Yosys JSON
+- **Per-region view:** region buttons in Analog mode for isolated viewing of each floorplan block
 
-### Движок
+### Engine
 
-Используется [netlist2svg](https://github.com/ajsb85/netlist2svg) (ELK.js для layout) с кастомным SVG-скином, который заменяет стандартные netlistsvg-символы на реалистичные 4-терминальные MOS (D/G/S/B), BJT, резисторы, диоды.
+Uses [netlist2svg](https://github.com/ajsb85/netlist2svg) (ELK.js for layout) with a custom SVG skin that replaces standard netlistsvg symbols with realistic 4-terminal MOS (D/G/S/B), BJT, resistors, and diodes.
 
-Ранее экспериментировали с `@spice-ts/ui` в качестве альтернативного рендерера, но он был заменён из-за низкого качества отрисовки и отсутствия кастомизации.
+Previously experimented with `@spice-ts/ui` as an alternative renderer, but it was replaced due to poor rendering quality and lack of customization.
 
 ---
 
 ## LVS (Layout vs Schematic)
 
-Сравнение нетлиста, восстановленного из топологии, с нетлистом, который вы рисуете вручную (схематический редактор).
+Comparing the netlist extracted from the layout with the netlist you draw manually in a schematic editor.
 
-**Задача:** когда вы восстанавливаете топологию и параллельно рисуете схему, LVS позволяет постоянно проверять себя и находить ошибки — неправильные соединения, пропущенные или лишние устройства.
+**The goal:** when you're reconstructing the layout and drawing the schematic in parallel, LVS lets you constantly check yourself and find errors — incorrect connections, missing or extra devices.
 
-### Два движка
+### Two engines
 
-| Режим | Когда использовать |
+| Mode | When to use |
 |---|---|
-| **name-based** | Вы сохраняете названия устройств (Q1, M2, R5) — diff по именам простой и наглядный |
-| **vyges-lvs** | Схема уже нарисована с произвольными названиями — name-independent сравнение (аналог netgen). Проверяет топологию соединений, игнорируя имена |
+| **name-based** | You keep device names (Q1, M2, R5) — diff by name is simple and clear |
+| **vyges-lvs** | The schematic was drawn with different names — name-independent comparison (similar to netgen). Checks connection topology, ignoring names |
 
-### Доступность
+### Availability
 
-- Вкладка **LVS** на странице Analog Netlist (`Alt+4`)
-- Layout-нетлист заполняется автоматически из extraction
-- Schematic-нетлист вставляется в текстовое поле (copy-paste из вашего SPICE-редактора)
-- Кнопка **Compare** — запускает выбранный движок
-- Результат: MATCH ✅ / MISMATCH ❌, device-diff таблица, полный отчёт
+- **LVS** tab on the Analog Netlist page (`Alt+4`)
+- Layout netlist is auto-filled from extraction
+- Schematic netlist is pasted into a text field (copy-paste from your SPICE editor)
+- **Compare** button — runs the selected engine
+- Result: MATCH ✅ / MISMATCH ❌, device-diff table, full report
 
-**Ограничения:** пока тестировался только Spectre-диалект SPICE. Требуется нормализация под остальные диалекты (CDL, HSPICE).
+**Limitations:** only Spectre dialect has been tested so far. Normalization for other dialects (CDL, HSPICE) is needed.
 
 ---
 
-## Иерархический SPICE-нетлист
+## Hierarchical SPICE netlist
 
-При создании floorplan регионов появляется возможность генерировать **иерархический** (а не плоский) нетлист.
+When floorplan regions are created, **hierarchical** (rather than flat) netlist generation becomes available.
 
-- **Плоский (flat):** все устройства и соединения на одном уровне — поведение по умолчанию
-- **Иерархический:** каждое устройство попадает в .SUBCKT своего региона (по центру). 
-  Порт региона = net, который соединяет устройства внутри и снаружи (boundary net).
-  Порты автоматически детектятся по соединениям устройств.
+- **Flat:** all devices and connections at one level — default behavior
+- **Hierarchical:** each device goes into the .SUBCKT of its region (by center).
+  A region port = a net connecting devices inside and outside (boundary net).
+  Ports are automatically detected from device connections.
 
-### Переключатель "Hierarchical"
-На вкладке Analog Netlist (таб `5`) — чекбокс в панели экспорта. 
-По умолчанию Off (сохраняется старый плоский нетлист).
+### "Hierarchical" toggle
+On the Analog Netlist tab (tab `5`) — checkbox in the export panel.
+Default is Off (preserves the old flat netlist).
 
-### Формат
+### Format
 
 ```spice
 // Spectre hierarchical netlist
@@ -353,187 +354,189 @@ ends lmv341
 
 ---
 
-## Комментарии на топологии
+## Layout comments
 
-Аннотации в виде кликабельных иконок на die-вьювере. Позволяют оставлять заметки на физической топологии.
+Clickable annotation icons on the die viewer. Leave notes on the physical layout.
 
-- **Добавление:** инструмент "Comment" (пин) в тулбаре — клик в нужной точке
-- **Popover:** текст, автор, дата, список ответов
-- **WS:** новые комментарии приходят всем, кто открыл die, в реальном времени
-- **Данные:** хранятся как опциональное поле `comments[]` в DieAnnotations — обратно совместимо
+- **Adding:** "Comment" tool (pin) in the toolbar — click at the desired point
+- **Popover:** text, author, date, reply list
+- **WS:** new comments arrive to everyone viewing the die in real time
+- **Data:** stored as optional `comments[]` field in DieAnnotations — backwards compatible
 
 ---
 
 ## Net ID overlay
 
-Отображает человекочитаемые имена нетов на die viewer — те же имена, что в SPICE-нетлисте.
+Shows human-readable net names on the die viewer — the same names used in the SPICE netlist.
 
-- Переключается галочкой в боковой панели
-- Имена вычисляются из `netNameMap` (коллектор die-широких устройств)
-- VDD/GND/VSS/0 не подписываются (избыточно)
+- Toggled by a checkbox in the side panel
+- Names are computed from `netNameMap` (die-wide device collector)
+- VDD/GND/VSS/0 are not shown (redundant)
 
 ---
 
 ## ProblemNavigator
 
-Единая панель проблем на die viewer — дашборд качества извлечения. Открывается кнопкой `IssuesChip` (счётчик `N/M` в SubBar).
+A unified problem panel on the die viewer — extraction quality dashboard. Opened via the `IssuesChip` button (`N/M` counter in SubBar).
 
-| Категория | Что проверяет |
+| Category | What it checks |
 |---|---|
-| **Connectivity** | Неподключенные терминалы (netId ≥ 2000) и нетлисты с ≤1 устройством |
-| **Wiring** | Обрывки трасс — концы ME1 разных нетов в пределах 20px друг от друга |
-| **Vias** | Via-аннотации без metal1 и/или metal2 в радиусе 15px |
-| **I/O Pins** | Несовпадение имени пина с именем ближайшего annotation net |
-| **Overlaps** | Пересекающиеся сегменты трасс на одном слое металла |
-| **Electrical** | Предупреждения детекции (закороченные выводы, floating gate, polarity mismatch) |
+| **Connectivity** | Unconnected terminals (netId ≥ 2000) and nets with ≤1 device |
+| **Wiring** | Wire stubs — ends of ME1 from different nets within 20px of each other |
+| **Vias** | Via annotations without metal1 and/or metal2 within 15px |
+| **I/O Pins** | Pin name mismatch with the nearest annotation net |
+| **Overlaps** | Intersecting wire segments on the same metal layer |
+| **Electrical** | Detection warnings (shorted pins, floating gate, polarity mismatch) |
 
-Полезен как быстрый способ проверить, не осталось ли проблем после редактирования топологии — все несведённые концы видны в одном списке.
+Useful as a quick way to check if any problems remain after editing the layout — all unresolved ends are visible in one list.
 
-Детали: [`docs/problem-navigator.md`](docs/problem-navigator.md)
+Details: [`docs/problem-navigator.md`](docs/problem-navigator.md)
 
 ---
 
-## Предупреждения нетлиста
+## Netlist warnings
 
-Подробная документация всех предупреждений при генерации SPICE/CDL — [`docs/netlist_warnings.md`](docs/netlist_warnings.md).
+Detailed documentation of all warnings during SPICE/CDL generation — [`docs/netlist_warnings.md`](docs/netlist_warnings.md).
 
-| Префикс | Значение |
+| Prefix | Meaning |
 |---|---|
-| `[WARN]` | Вероятная ошибка (D=S short, emitter на VDD и т.д.) |
-| `[INFO]` | Подозрительно, но может быть нормально (floating gate, dummy resistor) |
+| `[WARN]` | Likely error (D=S short, emitter on VDD, etc.) |
+| `[INFO]` | Suspicious but possibly normal (floating gate, dummy resistor) |
 
-Предупреждения отображаются в Collapsible-панели внизу вкладки Analog Netlist и в начале сгенерированного файла как комментарии.
+Warnings are shown in a collapsible panel at the bottom of the Analog Netlist tab and at the top of the generated file as comments.
 
 ---
 
-## Управление слоями (Cell RE)
+## Layer reference (Cell RE)
 
-В Cell RE доступны слои для рисования аналоговых устройств:
+Available layers for drawing analog devices in Cell RE:
 
-| Слой | Группа |
+| Layer | Group |
 |---|---|
 | `diffusion` / `polysilicon` / `nwell` / `pwell` | MOS |
 | `collector` / `base` / `emitter` | BJT |
-| `hsr` / `film` | Резисторы (high-sheet / thin film) |
-| `npn_id` / `pnp_id` / `res_id` / `cap_id` | Маркеры |
-| `metal1` / `contact` | Металлизация |
+| `hsr` / `film` | Resistors (high-sheet / thin film) |
+| `npn_id` / `pnp_id` / `res_id` / `cap_id` | Markers |
+| `metal1` / `contact` | Metallization |
 
 ---
 
 ## Device Registry
 
-Каждому обнаруженному устройству выдаётся стабильный UUID на основе fingerprint-ключа: `kind + позиция внутри ячейки + subType`.
+Every detected device gets a stable UUID based on a fingerprint key: `kind + position inside cell + subType`.
 
-- Если вы незначительно изменили слои ячейки (< 100 px сдвиг) — то же устройство получает тот же UUID
-- Если вы вручную нумеруете устройства на схеме — нумерация **не сбивается** при переизвлечении или изменении слоёв
-- Устройства можно **переименовывать** — имена сохраняются между сессиями (localStorage) и в project export
-- Можно задавать force-оверрайды параметров (W/L, AE, R) — они тоже привязаны к UUID устройства
+- If you slightly modify the cell layers (< 100 px shift) — the same device gets the same UUID
+- If you manually number devices in your schematic — numbering **does not reset** on re-extraction or layer changes
+- Devices can be **renamed** — names persist between sessions (localStorage) and in project export
+- Force-overrides for parameters (W/L, AE, R) can be set — they are also tied to the device UUID
 
 ---
 
-## Ключевые изменения относительно оригинального mmo-chip (main)
+## Key changes from original mmo-chip (main)
 
-- **Well-based MOS** — единственный путь для MOS. **Все MOS** (single-finger + multi-finger) используют Clipper2 (`polygonDifference()`) для разрезания diffusion между затворами. Каждый gate finger → отдельный MOS. Shared сегменты между gate (D gate[i] = S gate[i+1]) получают одинаковый netId.
-- **Poly gate grouping (polyGateNetMap)** — физически соединённые poly shapes (через Clipper2 overlap) получают один gate netId. Shared poly bus подсвечивается в overlay.
-- **Gate тёрминал включает все poly shapes** из polyGateNetMap-компоненты (не только режущие diffusion), поэтому shared poly bus корректно подсвечивается в overlay.
-- **Metal-connected D/S merging** — drain/source, соединённые ME1/ME2+via1 внутри ячейки, получают общий cell-level netId. Union-Find идентичный cell.ts Step 2.
-- **Diode из BJT** — рисование NPN/PNP без коллектора автоматически даёт диод. PLUS через слои `["base","bulk"]`, MINUS через `["emitter"]`. Приоритет: emitter(0) > base(1) для разрешения коллизий.
-- **BJT с multiple emitter** — AE суммируется, multiplier M = количество эмиттеров (надо проверять)
-- **Polyline Tool** — рисование резисторов-меандров с 90° ортогональным snap (включая превью), редактируемой шириной в µm (слайдер 0–200µm, шаг 1). Opacity слайдер для наложения на изображение. Клик выделяет всю цепочку сегментов. Drag-move отключён. Геометрическая детекция: тело → ME1 → контакты → PLUS/MINUS группы.
-- **Ruler Tool** (клавиша `K`) — измерение расстояний на кристалле. Режимы: free, horizontal, vertical, orthogonal, diagonal (45°). Double-click → ввод размера в µm → umPerPx сохраняется.
-- **Wire: слой трассы (ME1/ME2) и via-переходы** — при рисовании трассы (W) выбирается слой металла (m1/m2).
-  **Контакт устройства всегда подключается только к ME1** — ME2+ требует via-перехода.
-  **Горячие клавиши mid-draft:**
-  - `E` — ставит `point_via` в позиции курсора и переключает на следующий слой (ME1→ME2)
-  - `Q` — ставит via и переключает на предыдущий слой (ME2→ME1)
-  Via создаётся как `HumanAnnotation` и участвует в snap-to-via.
-- **Overlay-изображения** — мультислойные SEM / doping / металл-изображения, загружаемые с сервера или из файла, с горячими клавишами управления.
-- **Analog overlay на die viewer** — каждый обнаруженный прибор: цветной прямоугольник с подписью (`M1 pmos`, `Q3 npn`, `R5 poly res`...) и параметрами. Терминальные метки (G, S/D, C, B, E) при зуме >0.7×, параметры >0.5×.
-- **SPICE/CDL/Spectre экспорт** — корректный Spectre-формат. MOS: w/l/m без AS/AD/PS/PD. BJT: AE, PE, M. Резисторы: r=Ω. Диоды: are a=AREA. Три диалекта.
+- **Well-based MOS** — the only MOS path. **All MOS** (single-finger + multi-finger) use Clipper2 (`polygonDifference()`) to split diffusion at gates. Each gate finger → separate MOS. Shared segments between gates (D gate[i] = S gate[i+1]) get the same netId.
+- **Poly gate grouping (polyGateNetMap)** — physically connected poly shapes (via Clipper2 overlap) get one gate netId. Shared poly bus is highlighted in overlay.
+- **Gate terminal includes all poly shapes** from the polyGateNetMap component (not just those cutting diffusion), so shared poly bus is correctly highlighted in overlay.
+- **Metal-connected D/S merging** — drain/source connected by ME1/ME2+via1 inside the cell get a shared cell-level netId. Union-Find identical to cell.ts Step 2.
+- **Diode from BJT** — drawing NPN/PNP without collector automatically yields a diode. PLUS via layers `["base","bulk"]`, MINUS via `["emitter"]`. Priority: emitter(0) > base(1) for collision resolution.
+- **BJT with multiple emitters** — AE is summed, multiplier M = emitter count (needs verification)
+- **Polyline Tool** — meander resistor drawing with 90° orthogonal snap (including preview), editable width in µm (slider 0–200µm, step 1). Opacity slider for image overlay. Click selects the entire segment chain. Drag-move disabled. Geometric detection: body → ME1 → contacts → PLUS/MINUS groups.
+- **Ruler Tool** (key `K`) — distance measurement on the die. Modes: free, horizontal, vertical, orthogonal, diagonal (45°). Double-click → enter size in µm → umPerPx is saved.
+- **Wire: layer (ME1/ME2) and via transitions** — metal layer is selected when drawing a wire (W).
+  **Device contacts always connect to ME1 only** — ME2+ requires a via.
+  **Mid-draft hotkeys:**
+  - `E` — places `point_via` at cursor and switches to next layer (ME1→ME2)
+  - `Q` — places via and switches to previous layer (ME2→ME1)
+  Via is created as `HumanAnnotation` and participates in snap-to-via.
+- **Overlay images** — multi-layer SEM / doping / metal images, loaded from server or file, with hotkey control.
+- **Analog overlay on die viewer** — each detected device: colored rectangle with label (`M1 pmos`, `Q3 npn`, `R5 poly res`...) and parameters. Terminal labels (G, S/D, C, B, E) at zoom >0.7×, parameters at >0.5×.
+- **SPICE/CDL/Spectre export** — correct Spectre format. MOS: w/l/m without AS/AD/PS/PD. BJT: AE, PE, M. Resistors: r=Ω. Diodes: area=AREA. Three dialects.
 
   ![netlist-example](docs/netlist_example.png)
-  *Пример сгенерированного SPICE-нетлиста с обнаруженными приборами и предупреждениями*
+  *Example of a generated SPICE netlist with detected devices and warnings*
 
-- **BJT normalisation** — поиск минимального AE (NPN) / PE (PNP) → это m=1, остальные масштабируются.
-- **VDD/GND config persistence** — имена supply net-ов настраиваются в SubBar, сохраняются на backend с debounced auto-save.
-- **Cell RE device review** — force override W/L, AE, R, fingers через GUI. (надо проверять)
-- **Layout CSV + SKILL шаблон** для импорта в Cadence.
-- **Net Graph** (Cytoscape.js) — force-directed граф соединений приборов. Режимы: пока только D2D (device-to-device)
+- **BJT normalization** — find minimum AE (NPN) / PE (PNP) → m=1, others scaled.
+- **VDD/GND config persistence** — supply net names configured in SubBar, saved to backend with debounced auto-save.
+- **Cell RE device review** — force override W/L, AE, R, fingers via GUI. (needs verification)
+- **Layout CSV + SKILL template** for Cadence import.
+- **Net Graph** (Cytoscape.js) — force-directed device connection graph. Modes: currently D2D (device-to-device) only.
 
   ![graph-netlist-example](docs/graph_netlist_example.png)
-  *Net Graph: граф соединений приборов*
+  *Net Graph: device connection graph*
 
-- **Per-net color override** — цвета выводов сохраняются в preferences.
-- **uuid polyfill** — `crypto.randomUUID()` не работает через Network IP; заменён на `uuid()` с fallback Math.random() для v4.
-- **Overlay-изображения на Merge Canvas + RE Cell Canvas** — с clipping по cell area и глобальными hotkeys.
-- **Floorplan regions** — rect/polygon регионы с цветом, именем, резервацией, алиасами портов
-- **Hierarchical SPICE netlist** — генерация .SUBCKT на каждый регион с автодетекцией boundary nets
-- **Schematic viewer (netlist2svg)** — transistor-level схемы и функциональные блок-диаграммы с ELK layout, пан/зумом, тултипами, раскраской питания, экспортом SVG/PNG
-- **Global port rename** — алиасы портов переименовывают annotation net на die через API
-- **Port dots overlay** — визуализация граничных портов на die viewer (выделенный блок / все блоки)
-- **Comment annotations** — кликабельные иконки с текстом, автором, ответами на die viewer
-- **Net ID overlay** — человекочитаемые имена нетов на die viewer
-- **Project export/import** — light/full экспорт + импорт с обработкой конфликтов
-- **Device Registry** — стабильные UUID: fingerprint устройства (kind + позиция + subType) → один UUID при переизвлечении. Имена и оверрайды не сбрасываются
-- **LVS comparison** — name-based diff и vyges-lvs (name-independent) для сверки нетлиста с ручной схемой
-- **ProblemNavigator** — unified панель проблем на die viewer: connectivity, wiring, vias, I/O pins, overlaps, electrical
-- **DeviceInstancePanel** — список приборов с подсветкой неподключенных терминалов (желтое/красное свечение)
-- **Cells locked toggle** — блокировка перемещения ячеек на die
-- **Per-layer wire colors** — кастомизация цвета трасс и via
-- **Per-cell schematic** — analog schematic (netlist2svg) на вкладке Cell RE для просмотра схемы одной ячейки
-- **Customizable device/contacts overlay в CellRE** — настройка отображения контактов и распознанных приборов прямо на канвасе
-
----
-
-## Что ещё не сделано (нужно и приоритетно)
-
-- **DMOS** (LDMOS / VDMOS) — нет ни детекции, ни маркеров
-- **Диод Шоттки** — отдельный маркер / детекция
-- **VPNP** (вертикальный PNP) — слой `vpnp` добавлен в типы, но не детектится
-- **JFET** — маркеры и geometry params в зачаточном состоянии
-- **Wire matching на die-wide уровне** — допуск привязан к размеру контакта (`contactTolerance()`: tol = size×0.5, без запаса). На плотных разводках возможны ложные срабатывания — тестировать
-- **Редактирование polyline после размещения** — stretch/reshape сегментов (только перерисовать заново)
-- **Сериализация overlay-изображений** в JSON аннотаций (пока статика)
-- **Hierarchical netlist + floorplan:** базовый функционал готов, но требуется тестирование на реальных кейсах
-  - Alias collision: проверить при чистом старте (нет старых алиасов с неправильными netId)
-  - Global rename: проверка revert при снятии алиаса
-  - Скорость rename: множественные `PUT /api/dies/:dieId/nets/:uuid` при большом количестве алиасов
+- **Per-net color override** — net colors saved in preferences.
+- **uuid polyfill** — `crypto.randomUUID()` doesn't work over Network IP; replaced with `uuid()` fallback using Math.random() for v4.
+- **Overlay images on Merge Canvas + RE Cell Canvas** — clipped to cell area with global hotkeys.
+- **Floorplan regions** — rect/polygon regions with color, name, reservation, port aliases
+- **Hierarchical SPICE netlist** — .SUBCKT generation per region with auto-detected boundary nets
+- **Schematic viewer (netlist2svg)** — transistor-level schematics and functional block diagrams with ELK layout, pan/zoom, tooltips, power net coloring, SVG/PNG export
+- **Global port rename** — port aliases rename annotation nets on the die via API
+- **Port dots overlay** — visualization of boundary ports on the die viewer (selected block / all blocks)
+- **Comment annotations** — clickable icons with text, author, replies on the die viewer
+- **Net ID overlay** — human-readable net names on the die viewer
+- **Project export/import** — light/full export + import with conflict handling
+- **Device Registry** — stable UUIDs: device fingerprint (kind + position + subType) → same UUID on re-extraction. Names and overrides are preserved
+- **LVS comparison** — name-based diff and vyges-lvs (name-independent) for netlist verification against hand-drawn schematics
+- **ProblemNavigator** — unified problem panel on die viewer: connectivity, wiring, vias, I/O pins, overlaps, electrical
+- **DeviceInstancePanel** — device list with unconnected terminal glow (yellow/red halo)
+- **Cells locked toggle** — lock cells on the die to prevent accidental movement
+- **Per-layer wire colors** — customize wire and via colors
+- **Per-cell schematic** — analog schematic (netlist2svg) on Cell RE tab for viewing one cell's schematic
+- **Customizable device/contacts overlay in CellRE** — configure display of contacts and recognized devices directly on canvas
 
 ---
 
-## ⚠️ Предупреждение
+## What's not done yet (priority)
 
-**Всё ещё альфа / WIP.** Код покрыт только unit-тестами extraction pipeline (22 теста: 18 pass, 4 skip, 0 fail). Skipped — геометрический резистор и MOS (требуют Clipper2 + загруженные слои).  
-Нет сквозных (e2e) тестов, нет тестов на overlay, wire matching, SPICE-экспорт, cross-tab навигацию.
-Не было тестирования пользователями.
-
-**Возможны:**
-- Критические ошибки и потеря данных
-- Некорректные нетлисты (особенно на сложной разводке)
-- Ложные срабатывания / пропуски при детекции на плотных аналоговых блоках
-
-Проверяйте результаты визуально и перекрёстно с оригиналом (даташит / layout / SEM).  
-Пишите баг-репорты и тестовые кейсы.
+- **DMOS** (LDMOS / VDMOS) — no detection or markers
+- **Schottky diode** — separate marker / detection
+- **VPNP** (vertical PNP) — `vpnp` layer added to types but not detected
+- **JFET** — markers and geometry params in early state
+- **Wire matching at die-wide level** — tolerance tied to contact size (`contactTolerance()`: tol = size×0.5, no margin). Dense routing may cause false positives — needs testing
+- **Polyline post-edit** — stretch/reshape segments (only redraw from scratch)
+- **Overlay image serialization** into JSON annotations (currently static)
+- **Hierarchical netlist + floorplan:** basic functionality ready, needs real-world testing
+  - Alias collision: verify on clean start (no old aliases with wrong netIds)
+  - Global rename: verify revert on alias removal
+  - Rename speed: multiple `PUT /api/dies/:dieId/nets/:uuid` with many aliases
 
 ---
 
-## Структура репозитория
+## ⚠️ Disclaimer
+
+**Still alpha / WIP.** Only unit tests for the extraction pipeline exist (22 tests: 18 pass, 4 skip, 0 fail). Skipped — geometric resistor and MOS (require Clipper2 + loaded layers).  
+No e2e tests, no tests for overlay, wire matching, SPICE export, or cross-tab navigation.  
+No user testing has been done.
+
+**Possible issues:**
+- Critical errors and data loss
+- Incorrect netlists (especially with complex routing)
+- False positives / missed detections on dense analog blocks
+
+Verify results visually and cross-check with the original (datasheet / layout / SEM).  
+File bug reports and test cases.
+
+---
+
+## Repository structure
 
 ```
 frontend/     Vite + React + TypeScript — die viewer, cell RE, analog netlist, overlay
 backend/      Node + TypeScript API — import, tiling, JSON persistence, WebSocket
 shared/       Shared TypeScript types (annotation schema + analog device types)
-ml/           Python U-Net (опционально, для assisted annotation)
+ml/           Python U-Net (optional, for assisted annotation)
 docs/
-  analog-devices.md              ← актуальное описание детекции аналоговых приборов
+  analog-devices.md              ← current analog device detection documentation
   mos_detection.md               ← MOS detection pipeline (Clipper2, polyGateNetMap, metal merge)
-  netlist_warnings.md            ← все предупреждения при генерации SPICE/CDL
-  lvs_rules_examples/            ← примеры LVS-правил для аналоговых слоёв
+  netlist_warnings.md            ← all SPICE/CDL generation warnings
+  problem-navigator.md           ← ProblemNavigator details
+  lvs-plan.md                    ← LVS architecture and status
+  lvs_patterns.md                ← LVS pattern examples
   reference/
-    analogDevices.ts             ← legacy auto-detection (reference), см. docs/reference/README.md
+    analogDevices.ts             ← legacy auto-detection (reference), see docs/reference/README.md
 ```
 
-Ключевые файлы аналоговой экстракции:
+Key analog extraction files:
 
 ```
 frontend/src/
@@ -550,45 +553,51 @@ frontend/src/
     AnalogDeviceHighlights.tsx    ← canvas overlay
     FloorplanOverlay.tsx          ← floorplan region rendering + port dots
     FloorplanRegionPopover.tsx    ← popover for region edit + port aliases
+    ProblemNavigatorPanel.tsx     ← ProblemNavigator dashboard
+  components/netlist/
+    LVSComparePanel.tsx           ← LVS comparison UI
   components/cellRE/
-    CellREToolbar.tsx             ← инструменты Cell RE
-    useLayerPolylineTool.ts       ← polyline (резистор-меандр)
-  state/cellRE.ts                 ← TOOL_LAYERS, ReToolKind, polyline state
-  lib/hotkeys.ts                  ← центральный registry горячих клавиш (все страницы)
-  lib/useOverlayHotkeys.ts        ← overlay-хоткеи
+    CellREToolbar.tsx             ← Cell RE tools
+    useLayerPolylineTool.ts       ← polyline (meander resistor)
+  state/
+    cellRE.ts                     ← TOOL_LAYERS, ReToolKind, polyline state
+    deviceRegistry.ts             ← Device Registry (UUID, overrides)
+  lib/hotkeys.ts                  ← central hotkey registry (all pages)
+  lib/useOverlayHotkeys.ts        ← overlay hotkeys
   routes/
-    AnalogNetlistPage.tsx         ← Analog Netlist вкладка
-    RECellPage.tsx                ← RE Cell страница
+    AnalogNetlistPage.tsx         ← Analog Netlist tab
+    RECellPage.tsx                ← RE Cell page
 
 docs/
-  analog-devices.md               ← полное описание детекции и API (актуально)
+  analog-devices.md               ← full device detection and API documentation (current)
   mos_detection.md                ← MOS detection pipeline
+  problem-navigator.md            ← ProblemNavigator details
+  lvs-plan.md                     ← LVS architecture
   reference/
     analogDevices.ts              ← legacy Phase 1 auto-detection (reference only)
 ```
 
 ---
 
-## Запуск
+## Running
 
 ```sh
 # Node ≥ 20
 npm install
 
-# Запуск всего (бэкенд + фронтенд + ML sidecar):
+# Start everything (backend + frontend + ML sidecar):
 npm run dev
 
-# По отдельности:
+# Individually:
 npm run dev -w backend    # http://localhost:3001
 npm run dev -w frontend   # http://localhost:5173
 ```
 
-Тесты:
+Tests:
 
 ```sh
-npm test                                             # все тесты
-node --import tsx --test backend/src/analog-extraction.test.ts  # только extraction
+npm test                                             # all tests
+node --import tsx --test backend/src/analog-extraction.test.ts  # extraction only
 ```
 
 ---
-
