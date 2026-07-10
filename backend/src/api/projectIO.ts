@@ -14,7 +14,6 @@
  */
 
 import { createHash } from "node:crypto";
-import { createWriteStream, createReadStream } from "node:fs";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { Router } from "express";
@@ -332,8 +331,6 @@ export function createProjectIORouter(config: { dataRoot: string }) {
     "/api/dies/:dieId/export-project",
     async (request, response, next) => {
       const dieId = request.params.dieId;
-      const tempDir = path.join(config.dataRoot, "tmp");
-      const tempPath = path.join(tempDir, `export-${dieId}-${Date.now()}.zip`);
       try {
         const { archive, filename } = await queueExport(
           config.dataRoot,
@@ -341,37 +338,27 @@ export function createProjectIORouter(config: { dataRoot: string }) {
           request.body ?? {}
         );
 
-        await ensureDir(tempDir);
-        const writeStream = createWriteStream(tempPath);
-
-        // Pipe archive into temp file
-        archive.pipe(writeStream);
-
-        await archive.finalize();
-
-        // Wait for write stream to flush
-        await new Promise<void>((resolve, reject) => {
-          writeStream.on("finish", resolve);
-          writeStream.on("error", reject);
-        });
-
-        // Serve via streaming (avoid temp file issues with large exports)
+        // Stream archive directly to response (no temp file)
         response.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
         response.setHeader("Content-Type", "application/zip");
+        response.setHeader("Transfer-Encoding", "chunked");
 
-        const readStream = createReadStream(tempPath);
-        readStream.pipe(response);
+        archive.pipe(response);
 
         await new Promise<void>((resolve, reject) => {
-          readStream.on("end", resolve);
-          readStream.on("error", reject);
+          archive.on("error", (err) => { console.error(`[export:${dieId}] archive error:`, err); reject(err); });
+          archive.on("end", resolve);
+          response.on("finish", resolve);
+          response.on("close", () => { /* client disconnected */ resolve(); });
+          archive.finalize();
         });
-
-        // Cleanup
-        await fs.rm(tempPath, { force: true }).catch(() => {});
       } catch (error) {
-        await fs.rm(tempPath, { force: true }).catch(() => {});
-        next(error);
+        if (!response.headersSent) {
+          console.error(`[export:${dieId}] failed:`, error);
+          next(error);
+        } else {
+          console.error(`[export:${dieId}] error after headers sent:`, error);
+        }
       }
     }
   );
