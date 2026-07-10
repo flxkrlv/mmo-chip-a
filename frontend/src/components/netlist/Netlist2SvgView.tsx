@@ -141,7 +141,28 @@ export const Netlist2SvgView = forwardRef<Netlist2SvgHandle, Props>(function Net
       svg = svg.replace("<svg ", `<svg class="n2s-svg" `);
       container.innerHTML = svg;
       svgRef.current = container.querySelector("svg");
-      if (svgRef.current) { colorPowerNets(svgRef.current); annotateDeviceData(svgRef.current, netlistJson); fixBlockLabels(svgRef.current); }
+      if (svgRef.current) {
+        // Fit SVG content to container: compute actual bounding box, set viewBox + fill CSS
+        let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+        for (const el of svgRef.current.querySelectorAll<SVGGraphicsElement>("path, rect, circle, ellipse, line, polyline, polygon, text, g")) {
+          try {
+            if (el.getAttribute("s:generic") === "body" && (el as SVGElement).style.fill !== "none") continue;
+            const b = el.getBBox();
+            if (b.width === 0 && b.height === 0) continue;
+            minX = Math.min(minX, b.x); minY = Math.min(minY, b.y);
+            maxX = Math.max(maxX, b.x + b.width); maxY = Math.max(maxY, b.y + b.height);
+          } catch (_) {}
+        }
+        if (isFinite(minX)) {
+          const pad = 30;
+          const bw = maxX - minX + pad * 2, bh = maxY - minY + pad * 2;
+          svgRef.current.setAttribute("viewBox", `${minX - pad} ${minY - pad} ${bw} ${bh}`);
+        }
+        svgRef.current.style.width = "100%";
+        svgRef.current.style.height = "100%";
+        svgRef.current.setAttribute("preserveAspectRatio", "xMidYMid meet");
+        colorPowerNets(svgRef.current); annotateDeviceData(svgRef.current, netlistJson); fixBlockLabels(svgRef.current);
+      }
       initPanzoom();
       attachTooltipListener(); // always after container is ready
     } catch (err) {
