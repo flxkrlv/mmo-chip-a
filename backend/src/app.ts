@@ -114,6 +114,8 @@ export function createApp(config: {
       response: express.Response,
       _next: express.NextFunction
     ) => {
+      if (response.headersSent) return;
+
       if ((error as NodeJS.ErrnoException).code === "ENOENT") {
         response.status(404).json({ error: "Not found" });
         return;
