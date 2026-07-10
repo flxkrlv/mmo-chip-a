@@ -14,6 +14,7 @@
  */
 
 import { createHash } from "node:crypto";
+import { createWriteStream } from "node:fs";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { Router } from "express";
@@ -331,6 +332,8 @@ export function createProjectIORouter(config: { dataRoot: string }) {
     "/api/dies/:dieId/export-project",
     async (request, response, next) => {
       const dieId = request.params.dieId;
+      const tempDir = path.join(config.dataRoot, "tmp");
+      const tempPath = path.join(tempDir, `export-${dieId}-${Date.now()}.zip`);
       try {
         const { archive, filename } = await queueExport(
           config.dataRoot,
@@ -338,21 +341,34 @@ export function createProjectIORouter(config: { dataRoot: string }) {
           request.body ?? {}
         );
 
-        // Stream archive directly to response (no temp file)
-        response.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
-        response.setHeader("Content-Type", "application/zip");
-        response.setHeader("Transfer-Encoding", "chunked");
+        await fs.mkdir(tempDir, { recursive: true });
+        const writeStream = createWriteStream(tempPath);
 
-        archive.pipe(response);
+        archive.pipe(writeStream);
 
         await new Promise<void>((resolve, reject) => {
-          archive.on("error", (err) => { console.error(`[export:${dieId}] archive error:`, err); reject(err); });
-          archive.on("end", resolve);
-          response.on("finish", resolve);
-          response.on("close", () => { /* client disconnected */ resolve(); });
+          archive.on("error", reject);
+          writeStream.on("finish", resolve);
+          writeStream.on("error", reject);
           archive.finalize();
         });
+
+        // Serve via sendFile (Vite proxy can buffer, no chunked encoding issues)
+        const stat = await fs.stat(tempPath);
+        response.setHeader("Content-Length", stat.size);
+        response.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+        response.setHeader("Content-Type", "application/zip");
+
+        await new Promise<void>((resolve, reject) => {
+          response.sendFile(tempPath, (err) => {
+            if (err) return reject(err);
+            resolve();
+          });
+        });
+
+        await fs.rm(tempPath, { force: true }).catch(() => {});
       } catch (error) {
+        await fs.rm(tempPath, { force: true }).catch(() => {});
         if (!response.headersSent) {
           console.error(`[export:${dieId}] failed:`, error);
           next(error);
