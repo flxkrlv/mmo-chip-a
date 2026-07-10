@@ -353,14 +353,9 @@ export function createProjectIORouter(config: { dataRoot: string }) {
           archive.finalize();
         });
 
-        // Serve via sendFile (Vite proxy can buffer, no chunked encoding issues)
-        const stat = await fs.stat(tempPath);
-        response.setHeader("Content-Length", stat.size);
-        response.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
-        response.setHeader("Content-Type", "application/zip");
-
+        // Serve via Express download
         await new Promise<void>((resolve, reject) => {
-          response.sendFile(tempPath, (err) => {
+          response.download(tempPath, filename, (err: unknown) => {
             if (err) return reject(err);
             resolve();
           });
@@ -369,12 +364,8 @@ export function createProjectIORouter(config: { dataRoot: string }) {
         await fs.rm(tempPath, { force: true }).catch(() => {});
       } catch (error) {
         await fs.rm(tempPath, { force: true }).catch(() => {});
-        if (!response.headersSent) {
-          console.error(`[export:${dieId}] failed:`, error);
-          next(error);
-        } else {
-          console.error(`[export:${dieId}] error after headers sent:`, error);
-        }
+        console.error(`[export:${dieId}] failed:`, error);
+        if (!response.headersSent) next(error);
       }
     }
   );
