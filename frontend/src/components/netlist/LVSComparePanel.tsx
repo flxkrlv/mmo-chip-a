@@ -7,7 +7,7 @@ import { Ic } from "../../icons";
 // ── Styles ────────────────────────────────────────────────────
 
 const textareaBase: React.CSSProperties = {
-  width: "100%", fontFamily: "var(--mono)", fontSize: 10, lineHeight: 1.4,
+  width: "100%", fontFamily: "var(--mono)", fontSize: 12, lineHeight: 1.5,
   background: "var(--bg1)", border: "1px solid var(--l2)", borderRadius: 4,
   color: "var(--fg)", padding: 6, resize: "vertical", outline: "none",
 };
@@ -348,11 +348,8 @@ export default function LVSComparePanel({ dieId, layoutNetlist, dialect, moduleN
   const [engine, setEngine] = useState<LvsEngine>("vyges-lvs");
   const [highlightedLine, setHighlightedLine] = useState<number | null>(null);
   const [highlightedSchematicLine, setHighlightedSchematicLine] = useState<number | null>(null);
-  const [vygesClassLayout, setVygesClassLayout] = useState<string[]>([]);
-  const [vygesClassSchematic, setVygesClassSchematic] = useState<string[]>([]);
   const reportRef = useRef<HTMLDivElement>(null);
   const layoutScrollRef = useRef<HTMLDivElement>(null);
-  const schematicScrollRef = useRef<HTMLDivElement>(null);
 
   const displayLayout = layoutNetlistOverride ?? layoutNetlist;
 
@@ -403,58 +400,24 @@ export default function LVSComparePanel({ dieId, layoutNetlist, dialect, moduleN
     if (!deviceToHighlight || !layoutLocked) return;
 
     const searchName = deviceToHighlight.toLowerCase();
-
     const findLine = (text: string | null): number => {
       if (!text) return -1;
       const lines = text.split("\n");
-      const totalLines = lines.length;
-
-      // For vyges-lvs with results: check unbalanced classes
-      if (engine === "vyges-lvs" && state.phase === "done") {
-        for (const cls of state.data.json.unbalanced) {
-          if (cls.what !== "device") continue;
-          const names = [...cls.a, ...cls.b].map(n => stripSide(n).toLowerCase());
-          if (names.includes(searchName)) {
-            for (let i = 0; i < totalLines; i++) {
-              const first = lines[i].trim().split(/\s+/)[0];
-              if (first && names.includes(first.toLowerCase())) { return i; }
-            }
-          }
-        }
-      }
-
-      // Fallback: direct name search
-      for (let i = 0; i < totalLines; i++) {
+      for (let i = 0; i < lines.length; i++) {
         const first = lines[i].trim().split(/\s+/)[0];
-        if (first && first.toLowerCase() === searchName) { return i; }
+        if (first && first.toLowerCase() === searchName) return i;
       }
       return -1;
     };
 
     const layoutLine = findLine(displayLayout);
-    const schematicLine = engine === "name-based" ? findLine(schematicNetlist) : -1;
-
     setHighlightedLine(layoutLine);
-    setHighlightedSchematicLine(engine === "name-based" ? schematicLine : null);
 
-    // For vyges-lvs: find class membership and highlight ALL devices in the class
-    let vygesLayoutNames: string[] = [];
-    let vygesSchematicNames: string[] = [];
-    if (engine === "vyges-lvs" && state.phase === "done") {
-      for (const cls of state.data.json.unbalanced) {
-        if (cls.what !== "device") continue;
-        const allNames = [...cls.a, ...cls.b].map(n => stripSide(n).toLowerCase());
-        if (allNames.includes(searchName)) {
-          vygesLayoutNames = cls.a.map(n => stripSide(n).toLowerCase());
-          vygesSchematicNames = cls.b.map(n => stripSide(n).toLowerCase());
-          break;
-        }
-      }
+    // Name-based: also highlight schematic
+    if (engine === "name-based") {
+      setHighlightedSchematicLine(findLine(schematicNetlist));
     }
-    setVygesClassLayout(vygesLayoutNames);
-    setVygesClassSchematic(vygesSchematicNames);
 
-    // Center in viewport: scrollTarget = line * lineHeight - viewportHeight/2 + lineHeight/2
     const centerScroll = (el: HTMLElement, line: number, totalLines: number) => {
       const lineHeight = el.scrollHeight / totalLines;
       el.scrollTop = Math.max(0, line * lineHeight - el.clientHeight / 2 + lineHeight / 2);
@@ -464,11 +427,8 @@ export default function LVSComparePanel({ dieId, layoutNetlist, dialect, moduleN
       if (layoutLine >= 0 && layoutScrollRef.current && displayLayout) {
         centerScroll(layoutScrollRef.current, layoutLine, displayLayout.split("\n").length);
       }
-      if (schematicLine >= 0 && schematicScrollRef.current && schematicNetlist) {
-        centerScroll(schematicScrollRef.current, schematicLine, schematicNetlist.split("\n").length);
-      }
     });
-  }, [deviceToHighlight, state.phase, engine, layoutLocked, displayLayout, schematicNetlist]);
+  }, [deviceToHighlight, engine, layoutLocked, displayLayout]);
 
   const canCompare = schematicNetlist.trim().length > 0 && !!displayLayout && state.phase !== "loading";
 
@@ -552,15 +512,25 @@ export default function LVSComparePanel({ dieId, layoutNetlist, dialect, moduleN
 
         {/* Stats — only when done */}
         {data && (() => {
-          const { json, devices } = data;
+          const { json, devices, engine: eng } = data;
           const totalDev = Math.max(json.a_devices, json.b_devices);
+          const netD = Math.abs(json.a_nets - json.b_nets);
+          if (eng === "vyges-lvs") {
+            const devClasses = json.unbalanced.filter(c => c.what === "device").length;
+            return (
+              <span style={{ fontSize: 10, color: "var(--ink)", display: "flex", gap: 12, fontWeight: 500, flexWrap: "wrap" }}>
+                <span>Devices: <b>{json.a_devices}</b> / <b>{json.b_devices}</b> L/S</span>
+                {devClasses > 0 && <span style={{ color: "#fd0" }}>{devClasses} unbalanced classes</span>}
+                <span style={{ color: "var(--ink3)" }}>Nets {json.a_nets}/{json.b_nets}{netD > 0 ? ` (Δ${netD})` : ""} | {json.iterations} iters</span>
+              </span>
+            );
+          }
           const devDiffs = devices.length;
           const lOnly = devices.filter(d => d.category === "l-only").length;
           const sOnly = devices.filter(d => d.category === "s-only").length;
           const typeM = devices.filter(d => d.category === "type-mismatch").length;
           const paramC = devices.filter(d => d.category === "mismatch" && !terminalsDiffer(d.layoutLine, d.schematicLine)).length;
           const connM = devices.filter(d => d.category === "mismatch" && terminalsDiffer(d.layoutLine, d.schematicLine)).length;
-          const netD = Math.abs(json.a_nets - json.b_nets);
           return (
             <span style={{ fontSize: 10, color: "var(--ink)", display: "flex", gap: 12, fontWeight: 500, flexWrap: "wrap" }}>
               <span>Devices: <b>{totalDev}</b> — <span style={{ color: devDiffs ? "#fd0" : "var(--okFg, #4f4)" }}>{devDiffs} diff{devDiffs !== 1 ? "s" : ""}</span></span>
@@ -666,25 +636,18 @@ export default function LVSComparePanel({ dieId, layoutNetlist, dialect, moduleN
           {layoutLocked ? (
             <div ref={layoutScrollRef} style={{
               ...textareaBase, flex: 1, overflow: "auto", cursor: "default", padding: "4px 0",
-              fontFamily: "var(--mono)", fontSize: 10, lineHeight: 1.4, whiteSpace: "pre-wrap", wordBreak: "break-all",
+              whiteSpace: "pre-wrap", wordBreak: "break-all",
               maxWidth: "100%", boxSizing: "border-box",
             }}>
-              {(displayLayout ?? "").split("\n").map((line, i) => {
-                const lineDevName = line.trim().split(/\s+/)[0]?.toLowerCase();
-                const isExact = highlightedLine === i;
-                const isClass = engine === "vyges-lvs" && lineDevName && vygesClassLayout.includes(lineDevName) && !isExact;
-                return (
-                  <div key={i} style={{
-                    padding: "0 6px",
-                    background: isExact ? "var(--accentBg)" : isClass ? "rgba(100,150,255,0.08)" : "transparent",
-                    borderLeft: isExact
-                      ? "3px solid var(--accent)"
-                      : isClass ? "3px dashed var(--accent)" : "3px solid transparent",
-                  }}>
-                    {line || " "}
-                  </div>
-                );
-              })}
+              {(displayLayout ?? "").split("\n").map((line, i) => (
+                <div key={i} style={{
+                  padding: "0 6px",
+                  background: highlightedLine === i ? "var(--accentBg)" : "transparent",
+                  borderLeft: highlightedLine === i ? "3px solid var(--accent)" : "3px solid transparent",
+                }}>
+                  {line || " "}
+                </div>
+              ))}
             </div>
           ) : (
             <textarea
@@ -703,52 +666,25 @@ export default function LVSComparePanel({ dieId, layoutNetlist, dialect, moduleN
           )}
         </div>
         <div style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0 }}>
-          <div style={{ fontSize: 9, fontWeight: 600, color: "var(--ink2)", marginBottom: 2, display: "flex", alignItems: "center" }}>
+          <div style={{ fontSize: 9, fontWeight: 600, color: "var(--ink2)", marginBottom: 2, display: "flex", alignItems: "center", gap: 4 }}>
             Schematic Netlist
             {dialectBadge(schematicDialect)}
           </div>
           {engine === "name-based" && deviceToHighlight ? (
-            <div ref={schematicScrollRef} style={{
+            <div style={{
               ...textareaBase, flex: 1, overflow: "auto", cursor: "default", padding: "4px 0",
-              fontFamily: "var(--mono)", fontSize: 10, lineHeight: 1.4, whiteSpace: "pre-wrap", wordBreak: "break-all",
+              whiteSpace: "pre-wrap", wordBreak: "break-all",
               maxWidth: "100%", boxSizing: "border-box",
             }}>
-              {schematicNetlist.split("\n").map((line, i) => {
-                const sdName = line.trim().split(/\s+/)[0]?.toLowerCase();
-                const isSExact = highlightedSchematicLine === i;
-                const isSClass = engine === "name-based" ? false : (!!sdName && vygesClassSchematic.includes(sdName) && !isSExact);
-                return (
-                  <div key={i} style={{
-                    padding: "0 6px",
-                    background: isSExact ? "var(--accentBg)" : isSClass ? "rgba(100,150,255,0.08)" : "transparent",
-                    borderLeft: isSExact
-                      ? "3px solid var(--accent)"
-                      : isSClass ? "3px dashed var(--accent)" : "3px solid transparent",
-                  }}>
-                    {line || " "}
-                  </div>
-                );
-              })}
-            </div>
-          ) : engine === "vyges-lvs" && vygesClassSchematic.length > 0 ? (
-            <div ref={schematicScrollRef} style={{
-              ...textareaBase, flex: 1, overflow: "auto", cursor: "default", padding: "4px 0",
-              fontFamily: "var(--mono)", fontSize: 10, lineHeight: 1.4, whiteSpace: "pre-wrap", wordBreak: "break-all",
-              maxWidth: "100%", boxSizing: "border-box",
-            }}>
-              {schematicNetlist.split("\n").map((line, i) => {
-                const sdName = line.trim().split(/\s+/)[0]?.toLowerCase();
-                const isSClass = !!sdName && vygesClassSchematic.includes(sdName);
-                return (
-                  <div key={i} style={{
-                    padding: "0 6px",
-                    background: isSClass ? "rgba(100,150,255,0.08)" : "transparent",
-                    borderLeft: isSClass ? "3px dashed var(--accent)" : "3px solid transparent",
-                  }}>
-                    {line || " "}
-                  </div>
-                );
-              })}
+              {schematicNetlist.split("\n").map((line, i) => (
+                <div key={i} style={{
+                  padding: "0 6px",
+                  background: highlightedSchematicLine === i ? "var(--accentBg)" : "transparent",
+                  borderLeft: highlightedSchematicLine === i ? "3px solid var(--accent)" : "3px solid transparent",
+                }}>
+                  {line || " "}
+                </div>
+              ))}
             </div>
           ) : (
             <textarea
@@ -1045,7 +981,7 @@ export default function LVSComparePanel({ dieId, layoutNetlist, dialect, moduleN
         <textarea
           readOnly
           value={state.data.report}
-          style={{ ...textareaBase, flex: 1, cursor: "default", whiteSpace: "pre", fontFamily: "var(--mono)", fontSize: 9 }}
+          style={{ ...textareaBase, flex: 1, cursor: "default", whiteSpace: "pre", fontFamily: "var(--mono)", fontSize: 11 }}
           spellCheck={false}
         />
       </div>
