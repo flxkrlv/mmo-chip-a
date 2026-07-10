@@ -12,7 +12,11 @@ export default defineConfig({
         ws: true,
         rewriteWsOrigin: true
       },
-      "/api": "http://localhost:3001"
+      "/api": {
+        target: "http://localhost:3001",
+        timeout: 600000,
+        proxyTimeout: 600000
+      }
     }
   }
 });

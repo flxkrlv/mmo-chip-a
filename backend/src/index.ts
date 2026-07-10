@@ -15,6 +15,9 @@ async function main() {
 
   await ensureDataStore(config.dataRoot);
   const httpServer = createServer();
+  httpServer.requestTimeout = 0;
+  httpServer.headersTimeout = 0;
+  httpServer.timeout = 0;
   const authEnabled = isAuthEnabled();
   const broadcaster = attachWebSocketBroadcaster(httpServer, verifyToken, authEnabled);
   const app = createApp({ ...config, broadcaster });
