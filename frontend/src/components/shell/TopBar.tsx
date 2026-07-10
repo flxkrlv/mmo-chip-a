@@ -69,7 +69,7 @@ export function TopBar({ breadcrumb, meta, savedAgo, onUndo, onRedo, canUndo, ca
           className="m"
           style={{ fontSize: 11.5, fontWeight: 600, color: "var(--ink)", letterSpacing: 0.6 }}
         >
-          MMO<span style={{ color: "var(--ink3)" }}>·</span>CHIP
+          MMO<span style={{ color: "var(--ink3)" }}>·</span>CHIP-A
         </div>
       </div>
       <Divider />
