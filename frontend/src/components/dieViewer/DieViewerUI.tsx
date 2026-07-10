@@ -53,6 +53,10 @@ export function CursorReadout({
 export function annotationsSummary(a: DieAnnotations): string | null {
   const counts: string[] = [];
   if (a.cells.length) counts.push(`${a.cells.length} cells`);
+  const emptyTypes = a.cellTypes.filter(
+    (ct) => !ct.layers || Object.keys(ct.layers).length === 0,
+  ).length;
+  if (emptyTypes) counts.push(`${emptyTypes} empty`);
   if (a.nets.length) counts.push(`${a.nets.length} nets`);
   const vias = a.annotations?.length ?? 0;
   if (vias) counts.push(`${vias} vias`);

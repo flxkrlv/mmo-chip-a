@@ -51,6 +51,7 @@ import {
 } from "../components/dieViewer/DieContextMenu";
 import { InspectorPanel } from "../components/dieViewer/InspectorPanel";
 import { AnalogDiePanel } from "../components/dieViewer/AnalogDiePanel";
+import { ProblemNavigatorPanel, collectProblems } from "../components/dieViewer/ProblemNavigatorPanel";
 import { AnalogDeviceHighlights } from "../components/dieViewer/AnalogDeviceHighlights";
 import { DeviceInspector } from "../components/dieViewer/DeviceInspector";
 import { DeviceInstancePanel } from "../components/dieViewer/DeviceInstancePanel";
@@ -895,6 +896,7 @@ function DieViewer({ dieId }: { dieId: string }) {
   const cellsLocked = usePreferences((s) => s.cellsLocked);
   const setCellsLocked = usePreferences((s) => s.setCellsLocked);
   const [selectedDevice, setSelectedDevice] = useState<AnalogDevice | null>(null);
+  const [showProblems, setShowProblems] = useState(false);
   // Track Clipper2 WASM readiness so useMemo re-runs after it loads
   // (multi-finger MOS splitting depends on Clipper).
   const [clipperTick, setClipperTick] = useState(0);
@@ -910,21 +912,39 @@ function DieViewer({ dieId }: { dieId: string }) {
   const regVer = useRegistryVersion((s) => s.v);
   const analogMemo = useMemo(
     () => {
-      if (!annotations) return { devices: [], netNames: new Map<number, string>(), unconnectedCount: 0 };
+      if (!annotations) return { devices: [], netNames: new Map<number, string>(), unconnectedCount: 0, warnings: [], netIdMap: new Map() };
       try {
         const r = collectDieWideAnalogDevices(annotations as any, annotations.umPerPx ?? 1);
         applyAnalogOverrides(r.devices);
         const unconnectedCount = r.devices.reduce(
           (sum, d) => sum + d.terminals.filter((t) => t.netId >= 2000).length, 0,
         );
-        return { devices: r.devices, netNames: r.namedNets, unconnectedCount };
-      } catch { return { devices: [], netNames: new Map<number, string>(), unconnectedCount: 0 }; }
+        return { devices: r.devices, netNames: r.namedNets, unconnectedCount, warnings: r.warnings, netIdMap: r.netIdMap };
+      } catch { return { devices: [], netNames: new Map<number, string>(), unconnectedCount: 0, warnings: [], netIdMap: new Map() }; }
     },
     [annotations, clipperTick, regVer]
   );
   const analogDevices = analogMemo.devices;
   const netNames = analogMemo.netNames;
   const unconnectedCount = analogMemo.unconnectedCount;
+  const analogWarnings = analogMemo.warnings;
+  const netIdMap = analogMemo.netIdMap;
+
+  // Reverse map: numeric netId → annotation net UUID (for zoom)
+  const netIdToUuid = useMemo(() => {
+    const m = new Map<number, string>();
+    for (const [uuid, id] of netIdMap) m.set(id, uuid);
+    return m;
+  }, [netIdMap]);
+
+  const totalProblems = useMemo(() => {
+    if (!annotations || !analogDevices.length && !analogWarnings.length) return 0;
+    try {
+      const p = collectProblems(annotations as any, analogDevices, netNames);
+      return p.connErrors.length + p.unconnNets.length + p.unconnWires.length
+        + p.danglingVias.length + p.pinMismatches.length + p.overlappingWires.length + analogWarnings.length;
+    } catch { return 0; }
+  }, [annotations, analogDevices, netNames, analogWarnings]);
 
   // Mirror analogDevices in a ref so callbacks passed to TiledCanvas
   // (onCanvasClick, onCanvasDoubleClick) don't get new references on
@@ -2479,7 +2499,7 @@ function DieViewer({ dieId }: { dieId: string }) {
                 Inference {mlJob.data.percentage}%
               </span>
             )}
-            <IssuesChip />
+            <IssuesChip errors={totalProblems} warnings={analogWarnings.filter(w => w.startsWith("[WARN]")).length} onClick={() => setShowProblems(v => !v)} />
             <div
               style={{ width: 1, height: 18, background: "var(--l2)", margin: "0 2px" }}
             />
@@ -2811,6 +2831,24 @@ function DieViewer({ dieId }: { dieId: string }) {
             </div>
             {selectedDevice ? (
               <DeviceInspector device={selectedDevice} onClose={() => setSelectedDevice(null)} />
+            ) : showProblems ? (
+              <ProblemNavigatorPanel
+                annotations={annotations ?? (undefined as any)}
+                devices={analogDevices}
+                netNames={netNames}
+                warnings={analogWarnings}
+                netIdToUuid={netIdToUuid}
+                onFocusCell={(cid) => {
+                  focusOnIds([`cell:${cid}`]);
+                }}
+                onFocusPoint={(x, y) => {
+                  canvasHandle.current?.centerOn(x, y, 8);
+                }}
+                onFocusNet={(uuid) => {
+                  focusOnIds([`net:${uuid}`]);
+                  useDieViewerStore.getState().select(new Set([`net:${uuid}`]), "replace");
+                }}
+              />
             ) : (
               <AnalogDiePanel annotations={annotations ?? (undefined as any)} />
             )}

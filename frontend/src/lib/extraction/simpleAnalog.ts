@@ -175,6 +175,7 @@ export function extractMarkedDevices(
   cellTypeId: string,
   umPerPx: number,
 ): AnalogDevice[] {
+  if (!layers) return [];
   resetDummyNets();
   let counter = 0;
   const devices: AnalogDevice[] = [];

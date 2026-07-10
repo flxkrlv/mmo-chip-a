@@ -331,17 +331,33 @@ function CellOptions() {
   );
 }
 
-/** Placeholder errors/warnings chip. Wires to a real validation pass later;
- *  for now it always reads zero so the slot/position is locked in. */
 export function IssuesChip({
   errors = 0,
-  warnings = 0
+  warnings = 0,
+  onClick,
 }: {
   errors?: number;
   warnings?: number;
+  onClick?: () => void;
 }) {
   const tone = errors > 0 ? "err" : warnings > 0 ? "warn" : "";
-  return (
+  return onClick ? (
+    <button
+      className={"chip" + (tone ? ` ${tone}` : "")}
+      title={`${errors} error${errors === 1 ? "" : "s"}, ${warnings} warning${
+        warnings === 1 ? "" : "s"
+      }`}
+      onClick={onClick}
+      style={{
+        cursor: "pointer", border: 0, fontSize: "inherit", fontFamily: "inherit",
+        background: tone === "err" ? "var(--err-bg, #3a1111)" : tone === "warn" ? "var(--warn-bg, #3a2a00)" : "var(--l1)",
+        color: "inherit", padding: "0 6px", borderRadius: 3, height: 22,
+      }}
+    >
+      {Ic.mlExclude}
+      {errors} / {warnings}
+    </button>
+  ) : (
     <span
       className={"chip" + (tone ? ` ${tone}` : "")}
       title={`${errors} error${errors === 1 ? "" : "s"}, ${warnings} warning${

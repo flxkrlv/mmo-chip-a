@@ -79,6 +79,7 @@ function matchWireToPoint(
 export function extractAnalogDevicesFromCellType(
   cellType: CellType, umPerPx: number,
 ): AnalogDevice[] {
+  if (!cellType.layers || Object.keys(cellType.layers).length === 0) return [];
   const marker = extractMarkedDevices(cellType.layers, cellType.id, umPerPx);
   const well = detectMOSFromLayers(cellType.layers, cellType.id, umPerPx);
   const all = [...well, ...marker];
@@ -479,7 +480,7 @@ export function collectDieWideAnalogDevices(
 
             if (foundNetId != null) {
               warnings.push(
-                `${instName} (${mosType.toUpperCase()}): bulk has no well contact — auto-connected to global ${supplyName}`
+                `[INFO] ${instName} (${mosType.toUpperCase()}): bulk has no well contact — auto-connected to global ${supplyName}`
               );
               return {...t, netId: foundNetId};
             }
@@ -495,7 +496,7 @@ export function collectDieWideAnalogDevices(
               netIdMap.set(`_global_${supplyName}`, freshId);
             }
             warnings.push(
-              `${instName} (${mosType.toUpperCase()}): bulk has no well contact — auto-connected to global ${supplyName}`
+              `[INFO] ${instName} (${mosType.toUpperCase()}): bulk has no well contact — auto-connected to global ${supplyName}`
             );
             return {...t, netId: freshId};
           }
@@ -612,11 +613,25 @@ export function collectDieWideAnalogDevices(
   applyBulkHeuristic(allDevices);
   propagateMultiFingerDS(allDevices);
 
+  // ── Assign stable instance names first so warnings use them ────
+  // Save old names so we can patch bulk warnings generated before rename
+  for (const d of allDevices) (d as any)._origName = d.instanceName;
+  assignStableInstanceNames(allDevices);
+  // Patch warnings whose device was renamed
+  // Bulk warning format: `[INFO] M1 (NMOS): bulk...` (with [LEVEL] prefix)
+  for (const d of allDevices) {
+    const old = (d as any)._origName as string | undefined;
+    const cur = d.instanceName;
+    if (old && cur && old !== cur) {
+      const re = new RegExp(`(^|\\[WARN\\] |\\[INFO\\] )${old}(?= )`);
+      for (let i = 0; i < warnings.length; i++) {
+        warnings[i] = warnings[i].replace(re, `$1${cur}`);
+      }
+    }
+  }
+
   const devWarn = detectDeviceWarnings(allDevices, namedNets, _spiceConfig);
   warnings.push(...devWarn);
-
-  // ── Assign stable instance names (all consumers benefit) ─────────
-  assignStableInstanceNames(allDevices);
 
   return { devices: allDevices, namedNets, netIdMap, warnings, ioNetIds };
 }
