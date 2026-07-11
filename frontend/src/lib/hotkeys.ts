@@ -115,6 +115,32 @@ export const ANALOG_NETLIST_ALT_HOTKEYS: Record<string, AnalogNetlistAction> = {
   "4": "viewLvs",
 };
 
+// ── Die Viewer modifier-action hotkeys (Ctrl/Shift combos) ──────
+// Actions that are gated on wire-draft or selection state; the
+// handler logic lives in DieViewerPage.tsx but which key triggers
+// which action is defined here so remapping is one file.
+export type DieViewerModAction =
+  | "copyCell"
+  | "pasteCell"
+  | "makeUnique"
+  | "viaUp"
+  | "viaDown";
+
+export const DIE_VIEWER_MOD_HOTKEYS: Record<string, {
+  ctrl: boolean; shift: boolean; action: DieViewerModAction
+}> = {
+  "c": { ctrl: true, shift: false, action: "copyCell" },
+  "C": { ctrl: true, shift: false, action: "copyCell" },
+  "v": { ctrl: true, shift: false, action: "pasteCell" },
+  "V": { ctrl: true, shift: false, action: "pasteCell" },
+  "u": { ctrl: false, shift: true, action: "makeUnique" },
+  "U": { ctrl: false, shift: true, action: "makeUnique" },
+  "e": { ctrl: false, shift: false, action: "viaUp" },
+  "E": { ctrl: false, shift: false, action: "viaUp" },
+  "q": { ctrl: false, shift: false, action: "viaDown" },
+  "Q": { ctrl: false, shift: false, action: "viaDown" },
+};
+
 // ── Overlay hotkeys (shared across Die viewer / Merge / RE Cell) ─
 //   Ctrl+Shift+B    — toggle base image visibility
 //   ]               — cycle to next overlay (toggle on/off)

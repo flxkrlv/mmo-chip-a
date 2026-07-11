@@ -27,7 +27,7 @@ import {
   parseMlViaId
 } from "../renderer/layers/MLViasLayer";
 import { OverlayImageLayer } from "../renderer/layers/OverlayImageLayer";
-import { DIE_VIEWER_HOTKEYS, GLOBAL_HOTKEYS } from "../lib/hotkeys";
+import { DIE_VIEWER_HOTKEYS, DIE_VIEWER_MOD_HOTKEYS, GLOBAL_HOTKEYS } from "../lib/hotkeys";
 import { RulerOverlay, type RulerDraft } from "../components/dieViewer/RulerOverlay";
 import {
   buildCellAnnotation,
@@ -307,69 +307,95 @@ function DieViewer({ dieId }: { dieId: string }) {
     const onKey = (e: KeyboardEvent) => {
       if (e.repeat || isTypingTarget(e.target)) return;
 
-      // ── Copy/paste cell instances ──────────────────────────────
-      if ((e.metaKey || e.ctrlKey) && (e.key === "c" || e.key === "C")) {
-        e.preventDefault();
-        const ann = annotationsRef.current;
-        const sel = useDieViewerStore.getState().selectedIds;
-        const cells = ann?.cells?.filter((c) => sel.has(`cell:${c.id}`)) ?? [];
-        if (cells.length === 0) return;
-        useDieViewerStore.getState().copyCells(
-          cells.map((c) => ({ cellTypeId: c.cellTypeId, flippedV: c.flippedV, flippedH: c.flippedH, rotation: c.rotation }))
-        );
-        return;
-      }
-      if ((e.metaKey || e.ctrlKey) && (e.key === "v" || e.key === "V")) {
-        e.preventDefault();
-        const ann = annotationsRef.current;
-        if (!ann) return;
-        const store = useDieViewerStore.getState();
-        const clips = store.clipboardCells;
-        if (clips.length === 0) return;
-        const cursor = cursorLive.get();
-        const baseX = cursor ? cursor.x : 0;
-        const baseY = cursor ? cursor.y : 0;
-        for (let i = 0; i < clips.length; i++) {
-          const clip = clips[i];
-          const newCell = {
-            id: uuid(),
-            cellTypeId: clip.cellTypeId,
-            x: Math.round(baseX + i * 50),
-            y: Math.round(baseY + i * 50),
-            flippedV: clip.flippedV,
-            flippedH: clip.flippedH,
-            rotation: clip.rotation,
-          };
-          void dispatcherRef.current.dispatch({
-            kind: "upsertCell", cell: newCell, prevCell: null
-          });
+      // ── Modifier-action hotkeys (lookup in central registry) ────
+      const modDef = DIE_VIEWER_MOD_HOTKEYS[e.key];
+      if (modDef && modDef.ctrl === (e.metaKey || e.ctrlKey) && modDef.shift === e.shiftKey) {
+        switch (modDef.action) {
+          case "copyCell": {
+            const ann = annotationsRef.current;
+            const sel = useDieViewerStore.getState().selectedIds;
+            const cells = ann?.cells?.filter((c) => sel.has(`cell:${c.id}`)) ?? [];
+            if (cells.length === 0) return;
+            e.preventDefault();
+            useDieViewerStore.getState().copyCells(
+              cells.map((c) => ({ cellTypeId: c.cellTypeId, flippedV: c.flippedV, flippedH: c.flippedH, rotation: c.rotation }))
+            );
+            return;
+          }
+          case "pasteCell": {
+            const ann = annotationsRef.current;
+            if (!ann) return;
+            const store = useDieViewerStore.getState();
+            const clips = store.clipboardCells;
+            if (clips.length === 0) return;
+            e.preventDefault();
+            const cursor = cursorLive.get();
+            const baseX = cursor ? cursor.x : 0;
+            const baseY = cursor ? cursor.y : 0;
+            for (let i = 0; i < clips.length; i++) {
+              const clip = clips[i];
+              void dispatcherRef.current.dispatch({
+                kind: "upsertCell",
+                cell: {
+                  id: uuid(), cellTypeId: clip.cellTypeId,
+                  x: Math.round(baseX + i * 50), y: Math.round(baseY + i * 50),
+                  flippedV: clip.flippedV, flippedH: clip.flippedH,
+                  rotation: clip.rotation,
+                },
+                prevCell: null,
+              });
+            }
+            return;
+          }
+          case "makeUnique": {
+            const ann = annotationsRef.current;
+            if (!ann) return;
+            const sel = useDieViewerStore.getState().selectedIds;
+            const cellId = [...sel].find((id) => id.startsWith("cell:"));
+            if (!cellId) return;
+            const cell = ann.cells?.find((c) => c.id === cellId.slice(5));
+            if (!cell) return;
+            e.preventDefault();
+            void dispatcherRef.current.dispatch(buildMakeUniqueAction(ann, cell));
+            return;
+          }
+          case "viaUp":
+          case "viaDown": {
+            const cur = useDieViewerStore.getState();
+            if (cur.activeTool !== "wire") return;
+            const w = wireRef.current;
+            if (!w.draft) return;
+            const cursorWorld = cursorLive.get();
+            if (!cursorWorld) return;
+            e.preventDefault();
+            const viaPoint = w.insertDraftPoint(cursorWorld);
+            if (!viaPoint) return;
+            void dispatcherRef.current.dispatch({
+              kind: "upsertAnnotation",
+              annotation: {
+                id: uuid(), class: "point_via",
+                geometry: { kind: "point", x: viaPoint.x, y: viaPoint.y },
+                source: "human"
+              },
+              prevAnnotation: null
+            });
+            const METAL_ORDER: NonNullable<typeof cur.wireLayer>[] = ["metal1", "metal2"];
+            const idx = METAL_ORDER.indexOf(cur.wireLayer as any);
+            if (idx < 0) return;
+            if (modDef.action === "viaUp" && idx < METAL_ORDER.length - 1) cur.setWireLayer(METAL_ORDER[idx + 1]);
+            else if (modDef.action === "viaDown" && idx > 0) cur.setWireLayer(METAL_ORDER[idx - 1]);
+            return;
+          }
         }
-        return;
       }
 
       if (e.metaKey || e.ctrlKey) return; // other ctrl combos → handled by undo/redo
-
-      // ── Make Unique (Shift+U) ─────────────────────────────────
-      if ((e.key === "u" || e.key === "U") && e.shiftKey) {
-        const ann = annotationsRef.current;
-        if (!ann) return;
-        const sel = useDieViewerStore.getState().selectedIds;
-        const cellId = [...sel].find((id) => id.startsWith("cell:"));
-        if (!cellId) return;
-        const cell = ann.cells?.find((c) => c.id === cellId.slice(5));
-        if (!cell) return;
-        e.preventDefault();
-        void dispatcherRef.current.dispatch(buildMakeUniqueAction(ann, cell));
-        return;
-      }
 
       // Tool switch hotkeys.
       const toolId = DIE_VIEWER_HOTKEYS[e.key];
       if (toolId && toolId !== "pan") {
         e.preventDefault();
         if (toolId === "wire") {
-          // W carousel: first press activates wire+M1, repeat toggles M1↔M2.
-          // All other metals are reached via the layer selector in the toolbar.
           const cur = useDieViewerStore.getState();
           if (cur.activeTool === "wire") {
             const nextLayer = cur.wireLayer === "metal1" ? "metal2" : "metal1";
@@ -389,48 +415,7 @@ function DieViewer({ dieId }: { dieId: string }) {
       if (globalAction === "zoomIn") { e.preventDefault(); zoomInRef.current(); return; }
       if (globalAction === "zoomOut") { e.preventDefault(); zoomOutRef.current(); return; }
       if (globalAction === "fitToScreen") { e.preventDefault(); fitToScreenRef.current(); return; }
-
-      // f: also fit to screen (overlaps with DIE_VIEWER_HOTKEYS.pan above).
-      if (toolId === "pan") {
-        e.preventDefault();
-        fitToScreenRef.current();
-        return;
-      }
-
-      // E = via up to next metal, Q = via down to previous metal.
-      // Only fires during an active wire draft.
-      if ((e.key === "e" || e.key === "E" || e.key === "q" || e.key === "Q") && e.key.length === 1) {
-        const cur = useDieViewerStore.getState();
-        if (cur.activeTool !== "wire") return;
-        const w = wireRef.current;
-        if (!w.draft) return;
-        const cursorWorld = cursorLive.get();
-        if (!cursorWorld) return;
-        e.preventDefault();
-        const viaPoint = w.insertDraftPoint(cursorWorld);
-        if (!viaPoint) return;
-        // Create a point_via annotation at the transition point.
-        void dispatcherRef.current.dispatch({
-          kind: "upsertAnnotation",
-          annotation: {
-            id: uuid(),
-            class: "point_via",
-            geometry: { kind: "point", x: viaPoint.x, y: viaPoint.y },
-            source: "human"
-          },
-          prevAnnotation: null
-        });
-        // E = up, Q = down. Skip if already at the boundary layer.
-        const METAL_ORDER: NonNullable<typeof cur.wireLayer>[] = ["metal1", "metal2"];
-        const idx = METAL_ORDER.indexOf(cur.wireLayer as any);
-        if (idx < 0) return;
-        if ((e.key === "e" || e.key === "E") && idx < METAL_ORDER.length - 1) {
-          cur.setWireLayer(METAL_ORDER[idx + 1]);
-        } else if ((e.key === "q" || e.key === "Q") && idx > 0) {
-          cur.setWireLayer(METAL_ORDER[idx - 1]);
-        }
-        return;
-      }
+      if (toolId === "pan") { e.preventDefault(); fitToScreenRef.current(); return; }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
