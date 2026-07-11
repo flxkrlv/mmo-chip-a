@@ -1144,7 +1144,8 @@ export const CellRECanvas = forwardRef<CellRECanvasHandle, Props>(function CellR
       ctx.fillStyle = "rgba(255,255,255,0.04)";
       ctx.fillRect(0, 0, box.w, box.h);
     }
-    // Die-viewer overlay (wires, vias) — no orientation transform here.
+    // Die-viewer overlay (wires, vias) — lives in die-world coordinates,
+    // so apply instance orientation to match the physical layout.
     if (cell && annotations) {
       const cellDieRect: Rect = {
         x: cell.x,
@@ -1153,6 +1154,10 @@ export const CellRECanvas = forwardRef<CellRECanvasHandle, Props>(function CellR
         height: box.h
       };
       ctx.save();
+      ctx.translate(box.w / 2, box.h / 2);
+      ctx.rotate(((cell.rotation ?? 0) * Math.PI) / 180);
+      ctx.scale(cell.flippedH ? -1 : 1, cell.flippedV ? -1 : 1);
+      ctx.translate(-box.w / 2, -box.h / 2);
       ctx.translate(-cell.x, -cell.y);
       drawDieOverlay(ctx, annotations, cellDieRect, v.zoom, {
         hideWires: layerHidden["_dvWires"] === true,
