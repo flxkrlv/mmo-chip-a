@@ -30,6 +30,7 @@ import type {
   LayerShape, SpiceConfig, WireLayer,
 } from "shared";
 import { extractMarkedDevices, detectMOSFromLayers, consumeSegmentShapes, mergeMetalConnectedTerminals, resolveDeviceContacts, applyBulkHeuristic, applySourceOverride, propagateMultiFingerDS } from "../lib/extraction/simpleAnalog";
+import { applyOrientation, polygonBounds } from "../lib/geometry";
 import { isClipperLoaded } from "../lib/extraction/clipper";
 import { generateSpiceNetlist } from "../lib/export/spice";
 import { matchOrCreateDevice, reconcileWithLiveDevices, compactFingerprints, setLegacyOverrides, getLegacyOverrides, clearLegacyOverrides, getLiveRecords, getDeviceRecord, setDeviceInstanceName } from "../state/deviceRegistry";
@@ -404,9 +405,22 @@ export function collectDieWideAnalogDevices(
         const instName = `${prefx}${counters[prefx]}`;
         const cx = instCell?.x??0, cy = instCell?.y??0;
 
-        const worldBbox = dev.bbox
-          ? { ...dev.bbox, x: dev.bbox.x+cx, y: dev.bbox.y+cy }
-          : dev.bbox;
+        // World bbox: orient cell-local bbox by instance rotation/flip, then offset.
+        const worldBbox: typeof dev.bbox | undefined = (() => {
+          if (!dev.bbox) return undefined;
+          const cw = ct.cropRect.width || 1;
+          const ch = ct.cropRect.height || 1;
+          const corners: { x: number; y: number }[] = [
+            { x: dev.bbox.x, y: dev.bbox.y },
+            { x: dev.bbox.x + dev.bbox.width, y: dev.bbox.y },
+            { x: dev.bbox.x + dev.bbox.width, y: dev.bbox.y + dev.bbox.height },
+            { x: dev.bbox.x, y: dev.bbox.y + dev.bbox.height },
+          ].map((p) => applyOrientation(p, instCell, cw, ch));
+          const ob = polygonBounds(corners);
+          return ob
+            ? { ...ob, x: ob.x + cx, y: ob.y + cy }
+            : { ...dev.bbox, x: dev.bbox.x + cx, y: dev.bbox.y + cy };
+        })();
 
         // ── Inject synthetic segment shapes (multi-finger MOS) ──
         // When detectMOSFromLayers splits a diffusion via Clipper2,
@@ -431,11 +445,25 @@ export function collectDieWideAnalogDevices(
         // Uses the unified resolveDeviceContacts() which handles all
         // device types (BJT priority E>C>B, MOS shared D/S, bulk
         // exclusion, name-based terminal-to-def resolution).
-        const { termPoints, termContacts } = resolveDeviceContacts(
+        const { termPoints: rawTermPoints, termContacts: rawTermContacts } = resolveDeviceContacts(
           dev,
           layersWithSegs,
           cx, cy,
         );
+
+        // ── Apply instance orientation to contact positions ───
+        // resolveDeviceContacts offsets by (cx, cy) but does NOT
+        // rotate/mirror. Apply orientation now so both wire matching
+        // and the die-viewer overlay use the correct world positions.
+        const cw = ct.cropRect.width || 1;
+        const ch = ct.cropRect.height || 1;
+        const orientPoint = <T extends { x: number; y: number }>(p: T): T => ({
+          ...p,
+          x: applyOrientation({ x: p.x - cx, y: p.y - cy }, instCell, cw, ch).x + cx,
+          y: applyOrientation({ x: p.x - cx, y: p.y - cy }, instCell, cw, ch).y + cy,
+        });
+        const termPoints = rawTermPoints.map(orientPoint);
+        const termContacts = rawTermContacts.map((arr) => arr.map(orientPoint));
 
         // ── Wire matching by contact proximity (10px) ────────
         const matchedTerms = dev.terminals.map((t,ti)=>{
