@@ -1127,17 +1127,13 @@ export const CellRECanvas = forwardRef<CellRECanvasHandle, Props>(function CellR
     const hovering = !inflightForDim && dimNonHovered && hoveredKeys.size > 0;
     const DIM_ALPHA = 0.35;
 
-    // ── Image (oriented to canonical) ─────────────────────────────────
+    // ── Image (canonical orientation — no per-instance rotation) ──────
+    // Instance rotation/flip is handled at the die level (merged cells,
+    // die viewer). The Cell RE editor always shows the cell type in its
+    // original unrotated frame so drawing layers and the background
+    // image stay aligned regardless of how instances are placed on die.
     const img = getImage(imageUrl);
     const baseVisible = useOverlayLayers.getState().baseImageVisible;
-    const o = cell
-      ? orientOf(cell)
-      : { flippedH: false, flippedV: false, rotation: 0 as const };
-    ctx.save();
-    ctx.translate(box.w / 2, box.h / 2);
-    ctx.rotate((o.rotation * Math.PI) / 180);
-    ctx.scale(o.flippedH ? -1 : 1, o.flippedV ? -1 : 1);
-    ctx.translate(-box.w / 2, -box.h / 2);
     if (hovering) ctx.globalAlpha = DIM_ALPHA;
     if (baseVisible && img) {
       ctx.imageSmoothingEnabled = v.zoom < 3;
@@ -1148,10 +1144,7 @@ export const CellRECanvas = forwardRef<CellRECanvasHandle, Props>(function CellR
       ctx.fillStyle = "rgba(255,255,255,0.04)";
       ctx.fillRect(0, 0, box.w, box.h);
     }
-    // Die-viewer overlay (wires, vias) lives in the same image-orientation
-    // frame as the crop: shift by (-cell.x, -cell.y) so die coords land at
-    // their matching image pixel — items get rotated/flipped together with
-    // the image so they stay pinned to the underlying features.
+    // Die-viewer overlay (wires, vias) — no orientation transform here.
     if (cell && annotations) {
       const cellDieRect: Rect = {
         x: cell.x,
@@ -1167,7 +1160,6 @@ export const CellRECanvas = forwardRef<CellRECanvasHandle, Props>(function CellR
       });
       ctx.restore();
     }
-    ctx.restore();
 
     // ── Overlay images (clipped to cell area) ────────────────────────
     // Draw each non-hidden overlay composited at its world offset,
