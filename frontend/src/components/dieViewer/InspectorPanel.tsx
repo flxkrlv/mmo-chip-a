@@ -116,7 +116,8 @@ function resolve(
   id: string,
   ann: DieAnnotations,
   dispatcher: ActionDispatcher,
-  mlViasLayer: MLViasLayer | null
+  mlViasLayer: MLViasLayer | null,
+  cellTypeCounts?: Map<string, number>
 ): Resolved | null {
   // ── ML vias (synthetic position id; no persistent annotation) ──────
   // Checked first because the prefix is unambiguous and the layer lookup
@@ -269,6 +270,8 @@ function resolve(
       ];
       if (ct) {
         rows.push(["size", `${ct.cropRect.width}×${ct.cropRect.height}`]);
+        const count = cellTypeCounts?.get(ct.id) ?? 1;
+        rows.push(["relationship", count > 1 ? `Linked (×${count})` : "Unique"]);
       }
       rows.push(["flipped", c.flippedV ? "vertical" : "no"]);
       base.sub = { kind: "Cell", id: c.id, rows };
@@ -372,7 +375,8 @@ export function InspectorPanel({
   annotations,
   dispatcher,
   dieId,
-  mlViasLayer
+  mlViasLayer,
+  cellTypeCounts,
 }: {
   annotations: DieAnnotations | undefined;
   dispatcher: ActionDispatcher;
@@ -381,6 +385,8 @@ export function InspectorPanel({
    *  through it to fetch score / class. May be null while the page is still
    *  bootstrapping. */
   mlViasLayer: MLViasLayer | null;
+  /** cellTypeId → instance count for relationship display. */
+  cellTypeCounts?: Map<string, number>;
 }) {
   const tab = usePreferences((s) => s.inspectorTab);
   const setTab = usePreferences((s) => s.setInspectorTab);
@@ -414,6 +420,7 @@ export function InspectorPanel({
             dispatcher={dispatcher}
             ids={selectedIds}
             mlViasLayer={mlViasLayer}
+            cellTypeCounts={cellTypeCounts}
           />
         )}
       </div>
@@ -425,19 +432,21 @@ function InspectorBody({
   annotations,
   dispatcher,
   ids,
-  mlViasLayer
+  mlViasLayer,
+  cellTypeCounts,
 }: {
   annotations: DieAnnotations | undefined;
   dispatcher: ActionDispatcher;
   ids: ReadonlySet<string>;
   mlViasLayer: MLViasLayer | null;
+  cellTypeCounts?: Map<string, number>;
 }) {
   if (!annotations) return <Empty>loading…</Empty>;
   if (ids.size === 0) return <Empty>Nothing selected</Empty>;
   if (ids.size > 1) return <Empty>{ids.size} items selected</Empty>;
 
   const only = ids.values().next().value as string;
-  const r = resolve(only, annotations, dispatcher, mlViasLayer);
+  const r = resolve(only, annotations, dispatcher, mlViasLayer, cellTypeCounts);
   if (!r) return <Empty>Selection not found</Empty>;
 
   return (

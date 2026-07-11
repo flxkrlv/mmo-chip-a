@@ -578,7 +578,23 @@ function DieViewer({ dieId }: { dieId: string }) {
       netNodeRadiusMult: () =>
         usePreferences.getState().netNodeVisible
           ? usePreferences.getState().netNodeSize
-          : 0
+          : 0,
+      isSibling: (cellId: string) => {
+        if (!annotations) return false;
+        const sel = useDieViewerStore.getState().selectedIds;
+        if (sel.size === 0) return false;
+        let ctId: string | undefined;
+        for (const s of sel) {
+          if (s.startsWith("cellType:")) { ctId = s.slice(9); break; }
+          if (s.startsWith("cell:")) {
+            const c = annotations.cells.find((c) => c.id === s.slice(5));
+            if (c) { ctId = c.cellTypeId; break; }
+          }
+        }
+        if (!ctId) return false;
+        const c = annotations.cells.find((c) => c.id === cellId);
+        return c?.cellTypeId === ctId;
+      }
     });
   }, [annotationLayer, annotations]);
 
@@ -1005,6 +1021,22 @@ function DieViewer({ dieId }: { dieId: string }) {
     if (annotations) for (const c of annotations.cells ?? []) m.set(c.id, c.cellTypeId);
     return m;
   }, [annotations]);
+
+  // Cell sibling set: when a cell or cellType is selected, all cells sharing
+  // that cellTypeId get a glow highlight on the die view.
+  const siblingIds = useMemo(() => {
+    if (!annotations || selectedIds.size === 0) return new Set<string>();
+    let ctId: string | undefined;
+    for (const s of selectedIds) {
+      if (s.startsWith("cellType:")) { ctId = s.slice(9); break; }
+      if (s.startsWith("cell:")) {
+        const c = annotations.cells.find((c) => c.id === s.slice(5));
+        if (c) { ctId = c.cellTypeId; break; }
+      }
+    }
+    if (!ctId) return new Set<string>();
+    return new Set(annotations.cells.filter((c) => c.cellTypeId === ctId).map((c) => c.id));
+  }, [annotations, selectedIds]);
 
   const totalProblems = useMemo(() => {
     if (!annotations || !analogDevices.length && !analogWarnings.length) return 0;
@@ -2753,6 +2785,7 @@ function DieViewer({ dieId }: { dieId: string }) {
             dispatcher={dispatcher}
             dieId={dieId}
             mlViasLayer={mlViasLayer}
+            cellTypeCounts={cellTypeCounts}
           />
           <div style={{ borderTop: "2px solid var(--l2)" }}>
             <div style={{ padding: "6px 10px 4px" }}>

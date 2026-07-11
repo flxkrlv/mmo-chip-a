@@ -101,6 +101,9 @@ export interface PopulateOptions {
   /** Live getter: net node radius multiplier (0 = hide nodes).
    *  Default: use NET_NODE_RADIUS_MULT from style. */
   netNodeRadiusMult?: () => number;
+  /** Called at draw time for each cell: true → draw a glow outline
+   *  (sibling cells sharing a cellTypeId with the selection). */
+  isSibling?: (cellId: string) => boolean;
 }
 
 /**
@@ -127,10 +130,12 @@ export function populateAnnotationLayer(
 
   const cellTypeMap = new Map(annotations.cellTypes.map((ct) => [ct.id, ct]));
 
+  const getIsSibling = options.isSibling;
+
   for (const cell of annotations.cells) {
     const ct = cellTypeMap.get(cell.cellTypeId);
     if (!ct) continue;
-    layer.add(buildCellAnnotation(cell, ct, getCellColor, getCellShowShapes));
+    layer.add(buildCellAnnotation(cell, ct, getCellColor, getCellShowShapes, getIsSibling));
   }
 
   const getNetOverrideColor = options.netOverrideColor ?? ((_: string) => null);
@@ -186,7 +191,8 @@ export function buildCellAnnotation(
   cell: Cell,
   cellType: CellType,
   getColor: () => string,
-  getShowShapes: () => boolean
+  getShowShapes: () => boolean,
+  isSibling?: (cellId: string) => boolean
 ): Annotation {
   const w = cellType.cropRect.width;
   const h = cellType.cropRect.height;
@@ -248,6 +254,17 @@ export function buildCellAnnotation(
         // or for cells that carry no inner shapes at all).
         ctx.fillStyle = state.selected ? SELECT_FILL : withAlpha(color, CELL_FILL_ALPHA);
         ctx.fillRect(0, 0, w, h);
+      }
+
+      // Sibling glow: cells sharing a cellTypeId with the selection get a
+      // cyan halo before the regular outline so the group is visible at a glance.
+      if (!state.selected && isSibling?.(cell.id)) {
+        ctx.strokeStyle = "rgba(0, 200, 255, 0.35)";
+        ctx.lineWidth = (CELL_OUTLINE_PX + 6) / bounds.zoom;
+        ctx.strokeRect(0, 0, w, h);
+        ctx.strokeStyle = "rgba(0, 220, 255, 0.6)";
+        ctx.lineWidth = (CELL_OUTLINE_PX + 2) / bounds.zoom;
+        ctx.strokeRect(0, 0, w, h);
       }
 
       // Strong outline, always — this is what makes cell boundaries readable.
