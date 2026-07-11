@@ -266,6 +266,38 @@ export function buildUnmatchAction(
   };
 }
 
+/**
+ * Detach `cell` from its shared cellType into a private copy. The new cellType
+ * is a deep clone of the original (identical layers, cropRect, etc.) but with a
+ * fresh id, so the cell can be edited independently. The original cellType
+ * remains untouched (it may have other instances).
+ *
+ * One batched undo step.
+ */
+export function buildMakeUniqueAction(
+  annotations: DieAnnotations,
+  cell: Cell
+): AnnotationAction {
+  const origType = cellTypeById(annotations, cell.cellTypeId);
+  const cropRect = origType
+    ? { x: 0, y: 0, width: origType.cropRect.width, height: origType.cropRect.height }
+    : { x: 0, y: 0, width: 0, height: 0 };
+  const privateType: CellType = structuredClone(origType ?? {
+    id: uuid(), name: `cell ${cell.id.slice(0, 6)}`, cropRect, matched: false
+  });
+  privateType.id = uuid();
+  privateType.name = `${origType?.name ?? "cell"} (unique)`;
+  privateType.matched = false;
+  const nextCell: Cell = { ...cell, cellTypeId: privateType.id, merged: undefined };
+  return {
+    kind: "batch",
+    actions: [
+      { kind: "upsertCellType", cellType: privateType, prevCellType: null },
+      { kind: "upsertCell", cell: nextCell, prevCell: cell }
+    ]
+  };
+}
+
 /** A single-field orientation/position edit on a candidate (flip/rotate/align)
  *  — its own undo step. */
 export function buildOrientAction(

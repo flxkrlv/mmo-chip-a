@@ -93,12 +93,14 @@ interface DieViewerState {
   /** Draft ML config edited from the ML tab (mockup: client-side, seeded from
    *  the die's `annotations.mlConfig`). Source-pixel units. */
   mlConfig: DieMLConfig;
-  /** Total ML vias currently held in the `MLViasLayer` cache — bumped by the
-   *  layer as tiles load (and reset when the cache is cleared on a model
-   *  switch). Lets the outline panel surface a live cardinality without
-   *  having to walk the cache itself. Partial: it's the count for tiles
-   *  fetched so far this session, not a die-wide ground truth. */
+/** Total ML vias currently held in the `MLViasLayer` cache — bumped by the
+ *  layer as tiles load (and reset when the cache is cleared on a model
+ *  switch). Lets the outline panel surface a live cardinality without
+ *  having to walk the cache itself. Partial: it's the count for tiles
+ *  fetched so far this session, not a die-wide ground truth. */
   mlViasCount: number;
+  /** Copied cell data for paste (cellTypeId + orientation, no position). */
+  clipboardCells: { cellTypeId: string; flippedV?: boolean; flippedH?: boolean; rotation?: 0 | 90 | 180 | 270 }[];
 }
 
 interface DieViewerActions {
@@ -121,6 +123,10 @@ interface DieViewerActions {
   setMlConfig: (patch: Partial<DieMLConfig>) => void;
   /** Set the live ML-via cardinality — called by the layer when tiles load. */
   setMlViasCount: (count: number) => void;
+  /** Copy selected cell instance(s) to clipboard. */
+  copyCells: (cells: { cellTypeId: string; flippedV?: boolean; flippedH?: boolean; rotation?: 0 | 90 | 180 | 270 }[]) => void;
+  /** Clear cell clipboard. */
+  clearCellClipboard: () => void;
   /** Wipe transient state — called when navigating to a different die. */
   reset: () => void;
 }
@@ -139,7 +145,8 @@ const INITIAL_STATE: DieViewerState = {
   guideAxis: "x",
   measureMode: "free",
   mlConfig: { ...DEFAULT_ML_CONFIG },
-  mlViasCount: 0
+  mlViasCount: 0,
+  clipboardCells: []
 };
 
 /**
@@ -221,6 +228,9 @@ export const useDieViewerStore = create<DieViewerState & DieViewerActions>()((se
     if (get().mlViasCount === count) return;
     set({ mlViasCount: count });
   },
+
+  copyCells: (cells) => set({ clipboardCells: cells }),
+  clearCellClipboard: () => set({ clipboardCells: [] }),
 
   reset: () => set(INITIAL_STATE)
 }));

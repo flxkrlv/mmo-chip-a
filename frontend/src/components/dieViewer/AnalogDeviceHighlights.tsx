@@ -61,6 +61,12 @@ interface Props {
   showNetIds?: boolean;
   /** numeric netId → human-readable net name (e.g. "n100", "VCC"). */
   netNames?: Map<number, string>;
+  /** Show cell relationship status (Linked ×N / Unique) on device labels. */
+  showCellRelations?: boolean;
+  /** cellTypeId → number of instances sharing that type. */
+  cellTypeCounts?: Map<string, number>;
+  /** cellId → cellTypeId lookup. */
+  cellTypeByCellId?: Map<string, string>;
 }
 
 /** Minimum device bbox area (world px²) to bother drawing the label. */
@@ -77,6 +83,9 @@ export function AnalogDeviceHighlights({
   onDeviceDoubleClick,
   showNetIds,
   netNames,
+  showCellRelations,
+  cellTypeCounts,
+  cellTypeByCellId,
 }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const viewport = useLiveValue(viewportStore);
@@ -88,6 +97,12 @@ export function AnalogDeviceHighlights({
   viewportRef.current = viewport;
   const showNetIdsRef = useRef(showNetIds);
   showNetIdsRef.current = showNetIds;
+  const showCellRelationsRef = useRef(showCellRelations);
+  showCellRelationsRef.current = showCellRelations;
+  const cellTypeCountsRef = useRef(cellTypeCounts);
+  cellTypeCountsRef.current = cellTypeCounts;
+  const cellTypeByCellIdRef = useRef(cellTypeByCellId);
+  cellTypeByCellIdRef.current = cellTypeByCellId;
 
   // Draw
   useEffect(() => {
@@ -153,7 +168,20 @@ export function AnalogDeviceHighlights({
         if (area >= MIN_LABEL_AREA) {
           const names = group.map((d) => d.instanceName ?? d.id).join(" ");
           const typeStr = deviceTypeString(dev);
-          const labelFull = typeStr ? `${names} ${typeStr}` : names;
+          let labelFull = typeStr ? `${names} ${typeStr}` : names;
+          // Append cell relationship status if enabled
+          const ctByCell = cellTypeByCellIdRef.current;
+          const ctCounts = cellTypeCountsRef.current;
+          if (showCellRelationsRef.current && ctByCell && ctCounts) {
+            const cellId = (dev as any)._cellId as string | undefined;
+            if (cellId) {
+              const ctId = ctByCell.get(cellId);
+              if (ctId) {
+                const count = ctCounts.get(ctId) ?? 1;
+                labelFull += count > 1 ? ` ×${count}` : " ◆";
+              }
+            }
+          }
           ctx.font = `600 ${Math.max(10, Math.min(14, sw * 0.18))}px monospace`;
           const textMetrics = ctx.measureText(labelFull);
           const labelW = textMetrics.width + 8;

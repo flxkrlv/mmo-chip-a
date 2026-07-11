@@ -18,6 +18,8 @@ import { renameDeviceInstance, validateDeviceName } from "../../api/dieWideAnalo
 interface Props {
   device: AnalogDevice;
   onClose: () => void;
+  cellTypeCounts?: Map<string, number>;
+  cellTypeByCellId?: Map<string, string>;
 }
 
 /** Render a labelled property row. */
@@ -54,7 +56,7 @@ function Section({ children }: { children: React.ReactNode }) {
   );
 }
 
-export function DeviceInspector({ device, onClose }: Props) {
+export function DeviceInspector({ device, onClose, cellTypeCounts, cellTypeByCellId }: Props) {
   const g = device.geometry;
   const uuid = (device as any)._uuid as string | undefined;
 
@@ -175,6 +177,15 @@ export function DeviceInspector({ device, onClose }: Props) {
         {device.cellTypeId && device.cellTypeId !== "die" && (
           <Prop label="Cell Type" val={device.cellTypeId} />
         )}
+        {cellTypeCounts && cellTypeByCellId && (() => {
+          const cellId = (device as any)._cellId as string | undefined;
+          if (!cellId) return null;
+          const ctId = cellTypeByCellId.get(cellId);
+          if (!ctId) return null;
+          const count = cellTypeCounts.get(ctId) ?? 1;
+          const label = count > 1 ? `Linked (×${count})` : "Unique";
+          return <Prop label="Relationship" val={label} />;
+        })()}
 
         {/* Geometry parameters by kind */}
         <Section>Geometry</Section>

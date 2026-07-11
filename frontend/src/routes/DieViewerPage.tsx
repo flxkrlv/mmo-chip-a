@@ -126,6 +126,7 @@ import { viaSnapTolerance } from "../renderer/annotations/style";
 import type { Layer, Viewport } from "../renderer/types";
 import { formatPercent } from "../lib/format";
 import { isTypingTarget } from "../lib/keyboard";
+import { buildMakeUniqueAction } from "../lib/mergeCells";
 import { createLiveValue } from "../lib/liveValue";
 import type { WirePreview } from "../components/dieViewer/WireDraftOverlay";
 import { ANNOTATION_KIND_VALUES } from "../state/annotationKinds";
@@ -305,7 +306,62 @@ function DieViewer({ dieId }: { dieId: string }) {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.repeat || isTypingTarget(e.target)) return;
-      if (e.metaKey || e.ctrlKey) return; // handled by undo/redo
+
+      // ── Copy/paste cell instances ──────────────────────────────
+      if ((e.metaKey || e.ctrlKey) && (e.key === "c" || e.key === "C")) {
+        e.preventDefault();
+        const ann = annotationsRef.current;
+        const sel = useDieViewerStore.getState().selectedIds;
+        const cells = ann?.cells?.filter((c) => sel.has(`cell:${c.id}`)) ?? [];
+        if (cells.length === 0) return;
+        useDieViewerStore.getState().copyCells(
+          cells.map((c) => ({ cellTypeId: c.cellTypeId, flippedV: c.flippedV, flippedH: c.flippedH, rotation: c.rotation }))
+        );
+        return;
+      }
+      if ((e.metaKey || e.ctrlKey) && (e.key === "v" || e.key === "V")) {
+        e.preventDefault();
+        const ann = annotationsRef.current;
+        if (!ann) return;
+        const store = useDieViewerStore.getState();
+        const clips = store.clipboardCells;
+        if (clips.length === 0) return;
+        const cursor = cursorLive.get();
+        const baseX = cursor ? cursor.x : 0;
+        const baseY = cursor ? cursor.y : 0;
+        for (let i = 0; i < clips.length; i++) {
+          const clip = clips[i];
+          const newCell = {
+            id: uuid(),
+            cellTypeId: clip.cellTypeId,
+            x: Math.round(baseX + i * 50),
+            y: Math.round(baseY + i * 50),
+            flippedV: clip.flippedV,
+            flippedH: clip.flippedH,
+            rotation: clip.rotation,
+          };
+          void dispatcherRef.current.dispatch({
+            kind: "upsertCell", cell: newCell, prevCell: null
+          });
+        }
+        return;
+      }
+
+      if (e.metaKey || e.ctrlKey) return; // other ctrl combos → handled by undo/redo
+
+      // ── Make Unique (Shift+U) ─────────────────────────────────
+      if ((e.key === "u" || e.key === "U") && e.shiftKey) {
+        const ann = annotationsRef.current;
+        if (!ann) return;
+        const sel = useDieViewerStore.getState().selectedIds;
+        const cellId = [...sel].find((id) => id.startsWith("cell:"));
+        if (!cellId) return;
+        const cell = ann.cells?.find((c) => c.id === cellId.slice(5));
+        if (!cell) return;
+        e.preventDefault();
+        void dispatcherRef.current.dispatch(buildMakeUniqueAction(ann, cell));
+        return;
+      }
 
       // Tool switch hotkeys.
       const toolId = DIE_VIEWER_HOTKEYS[e.key];
@@ -897,6 +953,7 @@ function DieViewer({ dieId }: { dieId: string }) {
   const setCellsLocked = usePreferences((s) => s.setCellsLocked);
   const [selectedDevice, setSelectedDevice] = useState<AnalogDevice | null>(null);
   const [showProblems, setShowProblems] = useState(false);
+  const [showCellRelations, setShowCellRelations] = useState(false);
   // Track Clipper2 WASM readiness so useMemo re-runs after it loads
   // (multi-finger MOS splitting depends on Clipper).
   const [clipperTick, setClipperTick] = useState(0);
@@ -936,6 +993,18 @@ function DieViewer({ dieId }: { dieId: string }) {
     for (const [uuid, id] of netIdMap) m.set(id, uuid);
     return m;
   }, [netIdMap]);
+
+  // cellTypeId → instance count, cellId → cellTypeId (for cell relationship display)
+  const cellTypeCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    if (annotations) for (const c of annotations.cells ?? []) counts.set(c.cellTypeId, (counts.get(c.cellTypeId) ?? 0) + 1);
+    return counts;
+  }, [annotations]);
+  const cellTypeByCellId = useMemo(() => {
+    const m = new Map<string, string>();
+    if (annotations) for (const c of annotations.cells ?? []) m.set(c.id, c.cellTypeId);
+    return m;
+  }, [annotations]);
 
   const totalProblems = useMemo(() => {
     if (!annotations || !analogDevices.length && !analogWarnings.length) return 0;
@@ -2646,6 +2715,9 @@ function DieViewer({ dieId }: { dieId: string }) {
               viewportStore={viewportLive}
               showNetIds={showTermNetIds}
               netNames={showTermNetIds ? netNames : undefined}
+              showCellRelations={showCellRelations}
+              cellTypeCounts={showCellRelations ? cellTypeCounts : undefined}
+              cellTypeByCellId={showCellRelations ? cellTypeByCellId : undefined}
               onDeviceClick={(dev) => setSelectedDevice(dev)}
               onDeviceDoubleClick={(dev) => {
                 if (!annotations) return;
@@ -2763,6 +2835,30 @@ function DieViewer({ dieId }: { dieId: string }) {
                   marginBottom: 6,
                 }}
               >
+                <span className="u">CELL REL</span>
+                <label
+                  style={{
+                    marginLeft: "auto", fontSize: 9, minWidth: 55,
+                    display: "flex", alignItems: "center", gap: 4,
+                    cursor: "pointer", color: "var(--ink2)",
+                  }}
+                >
+                  <input
+                    type="checkbox"
+                    checked={showCellRelations}
+                    onChange={(e) => setShowCellRelations(e.target.checked)}
+                    style={{ margin: 0 }}
+                  />
+                  overlay
+                </label>
+              </div>
+              <div
+                style={{
+                  fontSize: 11, color: "var(--ink3)", letterSpacing: 1,
+                  display: "flex", alignItems: "center", gap: 8,
+                  marginBottom: 6,
+                }}
+              >
                 <span className="u">FLOORPLAN</span>
                 <label
                   style={{
@@ -2830,7 +2926,12 @@ function DieViewer({ dieId }: { dieId: string }) {
               />
             </div>
             {selectedDevice ? (
-              <DeviceInspector device={selectedDevice} onClose={() => setSelectedDevice(null)} />
+              <DeviceInspector
+                device={selectedDevice}
+                onClose={() => setSelectedDevice(null)}
+                cellTypeCounts={cellTypeCounts}
+                cellTypeByCellId={cellTypeByCellId}
+              />
             ) : showProblems ? (
               <ProblemNavigatorPanel
                 annotations={annotations ?? (undefined as any)}
