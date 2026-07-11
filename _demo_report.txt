@@ -1,6 +1,0 @@
-vyges-lvs — MATCH ✓
-  devices   A 2  B 2
-  nets      A 4  B 4
-  refine    2 iteration(s)
-
-  the two netlists are structurally equivalent (verified by explicit isomorphism).
