@@ -104,6 +104,9 @@ export interface PopulateOptions {
   /** Called at draw time for each cell: true → draw a glow outline
    *  (sibling cells sharing a cellTypeId with the selection). */
   isSibling?: (cellId: string) => boolean;
+  /** Called at draw time: when sibling highlighting is active, non-sibling
+   *  cells are dimmed so the group stands out. */
+  siblingActive?: () => boolean;
 }
 
 /**
@@ -131,11 +134,12 @@ export function populateAnnotationLayer(
   const cellTypeMap = new Map(annotations.cellTypes.map((ct) => [ct.id, ct]));
 
   const getIsSibling = options.isSibling;
+  const getSiblingActive = options.siblingActive;
 
   for (const cell of annotations.cells) {
     const ct = cellTypeMap.get(cell.cellTypeId);
     if (!ct) continue;
-    layer.add(buildCellAnnotation(cell, ct, getCellColor, getCellShowShapes, getIsSibling));
+    layer.add(buildCellAnnotation(cell, ct, getCellColor, getCellShowShapes, getIsSibling, getSiblingActive));
   }
 
   const getNetOverrideColor = options.netOverrideColor ?? ((_: string) => null);
@@ -192,7 +196,8 @@ export function buildCellAnnotation(
   cellType: CellType,
   getColor: () => string,
   getShowShapes: () => boolean,
-  isSibling?: (cellId: string) => boolean
+  isSibling?: (cellId: string) => boolean,
+  siblingActive?: () => boolean
 ): Annotation {
   const w = cellType.cropRect.width;
   const h = cellType.cropRect.height;
@@ -243,6 +248,11 @@ export function buildCellAnnotation(
       ctx.rotate(((cell.rotation ?? 0) * Math.PI) / 180);
       ctx.scale(cell.flippedH ? -1 : 1, cell.flippedV ? -1 : 1);
       ctx.translate(-w / 2, -h / 2);
+
+      // Dim non-sibling cells when a sibling group is active so the
+      // highlighted cluster stands out on the die.
+      const dimmed = !state.selected && !isSibling?.(cell.id) && siblingActive?.();
+      if (dimmed) ctx.globalAlpha = 0.25;
 
       if (showShapes) {
         // No outlines on the die view — at die-wide zooms the per-shape

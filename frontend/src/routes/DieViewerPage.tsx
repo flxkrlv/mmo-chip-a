@@ -594,6 +594,14 @@ function DieViewer({ dieId }: { dieId: string }) {
         if (!ctId) return false;
         const c = annotations.cells.find((c) => c.id === cellId);
         return c?.cellTypeId === ctId;
+      },
+      siblingActive: () => {
+        const sel = useDieViewerStore.getState().selectedIds;
+        if (sel.size === 0) return false;
+        for (const s of sel) {
+          if (s.startsWith("cell:") || s.startsWith("cellType:")) return true;
+        }
+        return false;
       }
     });
   }, [annotationLayer, annotations]);
