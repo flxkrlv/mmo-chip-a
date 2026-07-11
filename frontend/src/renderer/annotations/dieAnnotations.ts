@@ -252,7 +252,7 @@ export function buildCellAnnotation(
       // Dim non-sibling cells when a sibling group is active so the
       // highlighted cluster stands out on the die.
       const dimmed = !state.selected && !isSibling?.(cell.id) && siblingActive?.();
-      if (dimmed) ctx.globalAlpha = 0.25;
+      if (dimmed) ctx.globalAlpha = 0.1;
 
       if (showShapes) {
         // No outlines on the die view — at die-wide zooms the per-shape
