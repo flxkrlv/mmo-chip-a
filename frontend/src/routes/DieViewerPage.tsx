@@ -2265,9 +2265,13 @@ function DieViewer({ dieId }: { dieId: string }) {
       let hitPoint: Point = world;
       let hitAnchor: DrawAnchor | null = null;
       let hitLabel = "from this point";
+      let hitCellId: string | undefined;
       const tol = HIT_TOLERANCE_PX / vp.zoom;
       const hit = annotationLayer?.hitTest(world, tol) ?? null;
       if (hit) {
+        if (hit.annotation.kind === "cell" && hit.annotation.id.startsWith("cell:")) {
+          hitCellId = hit.annotation.id.slice(5);
+        }
         const node = wire.nodeFromHit(hit);
         if (node) {
           hitPoint = { x: node.x, y: node.y };
@@ -2327,7 +2331,8 @@ function DieViewer({ dieId }: { dieId: string }) {
         hitPoint,
         hitAnchor,
         hitLabel,
-        multiPointCount: picks.length
+        multiPointCount: picks.length,
+        hitCellId
       });
     },
     [annotationLayer, mlViasLayer, wire, extractAnchorPointsFromSelection]
@@ -3037,6 +3042,20 @@ function DieViewer({ dieId }: { dieId: string }) {
               )
             )
           }
+          onCopyCell={() => {
+            const ann = annotationsRef.current;
+            if (!ann || !contextMenu.hitCellId) return;
+            const cell = ann.cells?.find((c) => c.id === contextMenu.hitCellId);
+            if (!cell) return;
+            useDieViewerStore.getState().copyCells([{ cellTypeId: cell.cellTypeId, flippedV: cell.flippedV, flippedH: cell.flippedH, rotation: cell.rotation }]);
+          }}
+          onMakeUnique={() => {
+            const ann = annotationsRef.current;
+            if (!ann || !contextMenu.hitCellId) return;
+            const cell = ann.cells?.find((c) => c.id === contextMenu.hitCellId);
+            if (!cell) return;
+            void dispatcher.dispatch(buildMakeUniqueAction(ann, cell));
+          }}
         />
       )}
     </AppShell>

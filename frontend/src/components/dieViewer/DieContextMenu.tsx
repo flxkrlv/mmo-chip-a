@@ -21,6 +21,8 @@ export interface DieContextMenuState {
   hitLabel: string;
   /** How many points the current selection contributes to multi-wire. */
   multiPointCount: number;
+  /** If the right-click landed on a cell instance, its id. */
+  hitCellId?: string;
 }
 
 interface Props {
@@ -28,6 +30,8 @@ interface Props {
   onClose: () => void;
   onStartWire: () => void;
   onStartMultiWire: () => void;
+  onCopyCell?: () => void;
+  onMakeUnique?: () => void;
 }
 
 /** Right-click menu on the die-viewer canvas. Items today: start a single
@@ -37,7 +41,9 @@ export function DieContextMenu({
   menu,
   onClose,
   onStartWire,
-  onStartMultiWire
+  onStartMultiWire,
+  onCopyCell,
+  onMakeUnique
 }: Props) {
   const ref = useRef<HTMLDivElement | null>(null);
 
@@ -96,6 +102,17 @@ export function DieContextMenu({
           ? `Start multi-wire from ${menu.multiPointCount} points`
           : "Start multi-wire from selection"}
       </button>
+      {menu.hitCellId && onCopyCell && (
+        <>
+          <div className="menu-sep" />
+          <button className="menu-item" onClick={() => { onCopyCell(); onClose(); }}>
+            Copy Cell  <span style={{ marginLeft: "auto", color: "var(--ink3)" }}>⌘C</span>
+          </button>
+          <button className="menu-item" onClick={() => { onMakeUnique?.(); onClose(); }}>
+            Make Unique  <span style={{ marginLeft: "auto", color: "var(--ink3)" }}>⇧U</span>
+          </button>
+        </>
+      )}
     </div>
   );
 }
