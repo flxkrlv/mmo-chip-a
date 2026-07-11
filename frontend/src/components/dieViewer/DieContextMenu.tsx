@@ -31,6 +31,7 @@ interface Props {
   onStartWire: () => void;
   onStartMultiWire: () => void;
   onCopyCell?: () => void;
+  onPasteCell?: () => void;
   onMakeUnique?: () => void;
 }
 
@@ -43,6 +44,7 @@ export function DieContextMenu({
   onStartWire,
   onStartMultiWire,
   onCopyCell,
+  onPasteCell,
   onMakeUnique
 }: Props) {
   const ref = useRef<HTMLDivElement | null>(null);
@@ -110,6 +112,14 @@ export function DieContextMenu({
           </button>
           <button className="menu-item" onClick={() => { onMakeUnique?.(); onClose(); }}>
             Make Unique  <span style={{ marginLeft: "auto", color: "var(--ink3)" }}>⇧U</span>
+          </button>
+        </>
+      )}
+      {!menu.hitCellId && onPasteCell && (
+        <>
+          <div className="menu-sep" />
+          <button className="menu-item" onClick={() => { onPasteCell(); onClose(); }}>
+            Paste Cell  <span style={{ marginLeft: "auto", color: "var(--ink3)" }}>⌘V</span>
           </button>
         </>
       )}

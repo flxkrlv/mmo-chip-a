@@ -3056,6 +3056,30 @@ function DieViewer({ dieId }: { dieId: string }) {
             if (!cell) return;
             void dispatcher.dispatch(buildMakeUniqueAction(ann, cell));
           }}
+          onPasteCell={() => {
+            const ann = annotationsRef.current;
+            if (!ann) return;
+            const clips = useDieViewerStore.getState().clipboardCells;
+            if (clips.length === 0) return;
+            const baseX = Math.round(contextMenu.hitPoint.x);
+            const baseY = Math.round(contextMenu.hitPoint.y);
+            for (let i = 0; i < clips.length; i++) {
+              const clip = clips[i];
+              void dispatcher.dispatch({
+                kind: "upsertCell",
+                cell: {
+                  id: uuid(),
+                  cellTypeId: clip.cellTypeId,
+                  x: baseX + i * 50,
+                  y: baseY + i * 50,
+                  flippedV: clip.flippedV,
+                  flippedH: clip.flippedH,
+                  rotation: clip.rotation,
+                },
+                prevCell: null,
+              });
+            }
+          }}
         />
       )}
     </AppShell>
