@@ -1581,6 +1581,11 @@ export const CellRECanvas = forwardRef<CellRECanvasHandle, Props>(function CellR
     const showDeviceLabels = prefs.reDeviceLabelsVisible;
     const showTerminalLabels = prefs.reTerminalLabelsVisible;
     if (analogDevices.length > 0 && v.zoom >= 0.8 && (showDeviceLabels || showTerminalLabels)) {
+      ctx.save();
+      ctx.translate(box.w / 2, box.h / 2);
+      ctx.rotate((o.rotation * Math.PI) / 180);
+      ctx.scale(o.flippedH ? -1 : 1, o.flippedV ? -1 : 1);
+      ctx.translate(-box.w / 2, -box.h / 2);
       const TERM_FONT_SIZE_BASE = 7;
       const TERM_RADIUS = 2.2;
       const TERM_COLORS: Record<string, string> = {
@@ -1724,6 +1729,7 @@ export const CellRECanvas = forwardRef<CellRECanvasHandle, Props>(function CellR
           ctx.fillText(displayName, sx + 5, sy);
         }
       }
+      ctx.restore(); // end orientation frame for analog device overlay
     }
 
     // ── Marquee rectangle ─────────────────────────────────────────────
