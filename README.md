@@ -234,6 +234,16 @@ Works on all three tabs: Die Viewer, Merge Cells, RE Cell. (needs verification)
 | `Ctrl+V` / `⌘V` | Paste |
 | Space (hold) | Temporary Pan (in any tool) |
 
+### Die Viewer — cell operations
+
+| Keys | Action |
+|---|---|
+| `Ctrl+C` / `⌘C` (on a selected cell) | Copy cell instance (cellTypeId + orientation) |
+| `Ctrl+V` / `⌘V` | Paste cell instance at cursor position |
+| `Shift+U` | Make Unique — detach cell from its cellType into a private copy |
+| Right-click on cell | Context menu: Copy Cell / Make Unique |
+| Right-click (clipboard non-empty) | Context menu: Paste Cell at click position |
+
 ---
 
 ## Project Export / Import
@@ -429,6 +439,37 @@ Every detected device gets a stable UUID based on a fingerprint key: `kind + pos
 - If you manually number devices in your schematic — numbering **does not reset** on re-extraction or layer changes
 - Devices can be **renamed** — names persist between sessions (localStorage) and in project export
 - Force-overrides for parameters (W/L, AE, R) can be set — they are also tied to the device UUID
+
+---
+
+## Cell Operations
+
+Tools for working with cell instances on the die viewer. These solve the problem of having many identical cells on a die where one needs different parameters.
+
+### Copy / Paste
+
+Select a cell on the die (click on its outline) and press `Ctrl+C` / `⌘C` to copy. The cell type ID and orientation (rotation, flip) are stored in the clipboard. `Ctrl+V` / `⌘V` pastes a new instance at the cursor position with the same type and orientation.
+
+Paste can also be triggered from the right-click context menu when the clipboard is non-empty — the new cell is placed at the click location.
+
+### Make Unique (`Shift+U`)
+
+Detaches a cell instance from its shared cell type. A deep copy of the cell type's layers is created with a new ID, and only this instance points to it. After Make Unique:
+
+- The cell can be opened in Cell RE and its layers edited independently
+- Other instances of the original cell type are unaffected
+- The extraction pipeline automatically re-runs for the new private type
+- Undo is supported (one batch step)
+
+Find it via: right-click on a cell → "Make Unique", or `Shift+U` with the cell selected.
+
+### Cell Relationship Overlay
+
+When a cell or cell type is selected in the die viewer (via canvas click or Outline Tree), all cells sharing the same cell type receive a cyan glow halo. Non-sibling cells are dimmed to 10% opacity so the group stands out at a glance.
+
+- Toggle: **CELL REL** checkbox in the right panel (overlay section)
+- **Inspector** and **DeviceInspector** both show a "Relationship: Linked (×N)" or "Unique" row
+- Clicking a cell type group in the Outline Tree highlights all its instances
 
 ---
 
