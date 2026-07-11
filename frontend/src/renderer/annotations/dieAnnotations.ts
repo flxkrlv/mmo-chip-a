@@ -269,11 +269,11 @@ export function buildCellAnnotation(
       // Sibling glow: cells sharing a cellTypeId with the selection get a
       // cyan halo before the regular outline so the group is visible at a glance.
       if (!state.selected && isSibling?.(cell.id)) {
-        ctx.strokeStyle = "rgba(0, 200, 255, 0.35)";
-        ctx.lineWidth = (CELL_OUTLINE_PX + 6) / bounds.zoom;
+        ctx.strokeStyle = "rgba(0, 200, 255, 0.45)";
+        ctx.lineWidth = (CELL_OUTLINE_PX + 10) / bounds.zoom;
         ctx.strokeRect(0, 0, w, h);
-        ctx.strokeStyle = "rgba(0, 220, 255, 0.6)";
-        ctx.lineWidth = (CELL_OUTLINE_PX + 2) / bounds.zoom;
+        ctx.strokeStyle = "rgba(0, 230, 255, 0.7)";
+        ctx.lineWidth = (CELL_OUTLINE_PX + 3) / bounds.zoom;
         ctx.strokeRect(0, 0, w, h);
       }
 
