@@ -1093,9 +1093,9 @@ export const CellRECanvas = forwardRef<CellRECanvasHandle, Props>(function CellR
       h: cellType.cropRect.height
     };
 
-    // World → device transform (no per-instance rotation here: layer shapes
-    // are stored in the canonical, un-rotated cell-local frame and the image
-    // is rotated in-place inside that frame).
+    // World → device transform. Instance orientation (rotation/flip) is
+    // applied below — once for the background image (inside its own
+    // ctx.save/restore) and once for the layer shapes.
     ctx.setTransform(dpr * v.zoom, 0, 0, dpr * v.zoom, -v.ox * v.zoom * dpr, -v.oy * v.zoom * dpr);
 
     // ── Hover dim setup ───────────────────────────────────────────────
@@ -1296,6 +1296,12 @@ export const CellRECanvas = forwardRef<CellRECanvasHandle, Props>(function CellR
     // here (so they don't render at dim alpha) and re-drawn at full alpha
     // in the bright pass further down.
     ctx.save();
+    // Apply instance orientation (rotation/flip) so layer shapes align with
+    // the background image which is drawn inside the same orientation frame.
+    ctx.translate(box.w / 2, box.h / 2);
+    ctx.rotate((o.rotation * Math.PI) / 180);
+    ctx.scale(o.flippedH ? -1 : 1, o.flippedV ? -1 : 1);
+    ctx.translate(-box.w / 2, -box.h / 2);
     if (hovering) ctx.globalAlpha = DIM_ALPHA;
     const resistorOpacity = usePreferences.getState().resistorOpacity;
     drawCellLayers(ctx, cellType.layers, tile, {
@@ -1349,6 +1355,11 @@ export const CellRECanvas = forwardRef<CellRECanvasHandle, Props>(function CellR
     // Mirrors the dim pass's per-shape transform + label injection so the
     // same shape renders identically in both passes, only at different alpha.
     if (hovering) {
+      ctx.save();
+      ctx.translate(box.w / 2, box.h / 2);
+      ctx.rotate((o.rotation * Math.PI) / 180);
+      ctx.scale(o.flippedH ? -1 : 1, o.flippedV ? -1 : 1);
+      ctx.translate(-box.w / 2, -box.h / 2);
       for (const key of hoveredKeys) {
         const r = resolveKey(key);
         if (!r) continue;
@@ -1379,7 +1390,14 @@ export const CellRECanvas = forwardRef<CellRECanvasHandle, Props>(function CellR
           drawShape(ctx, polyShape, tile);
         }
       }
+      ctx.restore();
     }
+    // ── Hover/selection overlays in the same oriented frame ──────────
+    ctx.save();
+    ctx.translate(box.w / 2, box.h / 2);
+    ctx.rotate((o.rotation * Math.PI) / 180);
+    ctx.scale(o.flippedH ? -1 : 1, o.flippedV ? -1 : 1);
+    ctx.translate(-box.w / 2, -box.h / 2);
     // Alt-drag duplicates: fresh-id copies painted at the dragged offset, in
     // their source layer's color. Grouped by layer so we don't churn the
     // canvas fill/stroke between shapes.
@@ -1437,6 +1455,7 @@ export const CellRECanvas = forwardRef<CellRECanvasHandle, Props>(function CellR
         strokeShape(ctx, moved, v.zoom);
       }
     }
+    ctx.restore(); // end orientation frame for hover/selection overlays
 
     // ── Drag handles for single-shape selection ───────────────────────
     if (selectedShapeIds.size === 1) {
