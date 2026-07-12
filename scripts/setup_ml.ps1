@@ -3,8 +3,9 @@
   Create Python venv + install ML dependencies for mmo-chip-a sidecar.
 #>
 $ErrorActionPreference = "Stop"
-$root = Split-Path -LiteralPath $PSScriptRoot -Parent
-Set-Location -LiteralPath $root
+$root = Split-Path -Path $MyInvocation.MyCommand.Path -Parent
+$root = Split-Path -Path $root -Parent
+Set-Location -Path $root
 
 Write-Host "Creating Python venv..." -ForegroundColor Green
 python -m venv ml\.venv
