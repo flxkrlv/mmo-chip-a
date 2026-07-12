@@ -8,7 +8,7 @@
     "backend"
   ],
   "scripts": {
-    "sidecar": "ml/.venv/bin/python ml/sidecar.py",
+    "sidecar": "node scripts/run_sidecar.js",
     "dev": "concurrently -n be,fe,sc \"npm run dev -w backend\" \"npm run dev -w frontend\" \"npm run sidecar\"",
     "build": "npm run build -w backend && npm run build -w frontend",
     "test": "npm run test -w backend && npm run test -w frontend"
