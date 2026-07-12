@@ -51,7 +51,7 @@ def _dice_bce(pred: torch.Tensor, tgt: torch.Tensor, valid: torch.Tensor,
                                                    t, reduction="none")
     bce = (bce * valid).sum() / valid.sum().clamp(min=1.0)
     inter = (p * t).sum()
-    dice = 1.0 - (2 * inter + eps) / (p.sum() + t.sum() + eps)
+    dice = pred.new_ones(()) - (2 * inter + eps) / (p.sum() + t.sum() + eps)
     return bce + dice
 
 
