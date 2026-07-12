@@ -53,7 +53,11 @@ def auto_device() -> str:
         return "cuda"
     if getattr(torch.backends, "mps", None) and torch.backends.mps.is_available():
         return "mps"
-    return "cpu"
+    try:
+        import torch_directml  # noqa: F401
+        return "dml"
+    except ImportError:
+        return "cpu"
 
 
 def checkpoint_hash(path: Path) -> str:
@@ -90,7 +94,7 @@ class ModelState:
             print(f"[sidecar] no checkpoint at {checkpoint_path} — running unloaded")
             return
         try:
-            ckpt = torch.load(checkpoint_path, map_location=self.device, weights_only=True)
+            ckpt = torch.load(checkpoint_path, map_location=self.device, weights_only=False)
             encoder = ckpt.get("encoder", "resnet18")
             n_classes = infer_num_classes(ckpt["model_state"])
             model = build_model(encoder_name=encoder, encoder_weights=None,

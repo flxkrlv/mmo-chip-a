@@ -23,7 +23,11 @@ def auto_device() -> str:
         return "cuda"
     if getattr(torch.backends, "mps", None) and torch.backends.mps.is_available():
         return "mps"
-    return "cpu"
+    try:
+        import torch_directml  # noqa: F401
+        return "dml"
+    except ImportError:
+        return "cpu"
 
 
 # Channel order matches dataset.CLASS_ORDER / shared CLASS_REGISTRY:
