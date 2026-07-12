@@ -138,7 +138,7 @@ def run_training(params: TrainParams,
 
     encoder_weights = None if params.encoder_weights.lower() == "none" else params.encoder_weights
     model = build_model(encoder_name=params.encoder, encoder_weights=encoder_weights).to(device)
-    opt = AdamW(model.parameters(), lr=params.lr)
+    opt = AdamW(model.parameters(), lr=params.lr, foreach=False)
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=params.epochs)
 
     out_path = Path(params.output)
