@@ -47,8 +47,10 @@ def _weighted_mse(pred: torch.Tensor, tgt: torch.Tensor, valid: torch.Tensor,
 def _dice_bce(pred: torch.Tensor, tgt: torch.Tensor, valid: torch.Tensor,
               eps: float = 1e-6) -> torch.Tensor:
     p, t = pred * valid, tgt * valid
-    bce = torch.nn.functional.binary_cross_entropy(p.clamp(eps, 1 - eps),
-                                                   t, reduction="none")
+    # Manual BCE — avoids aten::binary_cross_entropy which falls back
+    # to CPU on DirectML. Uses only basic ops (log, mul, add).
+    clipped = p.clamp(eps, 1 - eps)
+    bce = -(t * clipped.log() + (1 - t) * (1 - clipped).log())
     bce = (bce * valid).sum() / valid.sum().clamp(min=1.0)
     inter = (p * t).sum()
     dice = pred.new_ones(()) - (2 * inter + eps) / (p.sum() + t.sum() + eps)
