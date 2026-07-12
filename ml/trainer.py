@@ -24,8 +24,8 @@ def auto_device() -> str:
     if getattr(torch.backends, "mps", None) and torch.backends.mps.is_available():
         return "mps"
     try:
-        import torch_directml  # noqa: F401
-        return "dml"
+        import torch_directml
+        return str(torch_directml.device())
     except ImportError:
         return "cpu"
 
