@@ -9,13 +9,56 @@ from pathlib import Path
 from typing import Callable
 
 import torch
-from torch.optim import AdamW
+from torch.optim import AdamW as TorchAdamW
+from torch.optim.optimizer import Optimizer
 from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
 
 from augment import train_augmentations
 from dataset import AnnotationDataset
 from model import build_model
+
+
+class _AdamW(Optimizer):
+    """AdamW that avoids aten::lerp (unsupported on DirectML) by using
+    mul_ + add_ instead. Otherwise identical to torch.optim.AdamW."""
+    def __init__(self, params, lr=1e-3, betas=(0.9, 0.999), eps=1e-8,
+                 weight_decay=0.01, amsgrad=False):
+        defaults = dict(lr=lr, betas=betas, eps=eps,
+                        weight_decay=weight_decay, amsgrad=amsgrad)
+        super().__init__(params, defaults)
+
+    @torch.no_grad
+    def step(self, closure=None):
+        loss = None
+        if closure is not None:
+            with torch.enable_grad(): loss = closure()
+        for group in self.param_groups:
+            beta1, beta2 = group["betas"]
+            for p in group["params"]:
+                if p.grad is None: continue
+                grad = p.grad
+                if grad.is_sparse: raise RuntimeError("sparse grad not supported")
+                state = self.state[p]
+                if len(state) == 0:
+                    state["step"] = 0
+                    state["exp_avg"] = torch.zeros_like(p)
+                    state["exp_avg_sq"] = torch.zeros_like(p)
+                    if group["amsgrad"]: state["max_exp_avg_sq"] = torch.zeros_like(p)
+                exp_avg, exp_avg_sq = state["exp_avg"], state["exp_avg_sq"]
+                state["step"] += 1
+                # Decoupled weight decay
+                if group["weight_decay"] != 0:
+                    p.mul_(1 - group["lr"] * group["weight_decay"])
+                # Bias-corrected Adam (without lerp)
+                exp_avg.mul_(beta1).add_(grad, alpha=1 - beta1)
+                exp_avg_sq.mul_(beta2).addcmul_(grad, grad, value=1 - beta2)
+                bias_corr1 = 1 - beta1 ** state["step"]
+                bias_corr2 = 1 - beta2 ** state["step"]
+                step_size = group["lr"] / bias_corr1
+                denom = (exp_avg_sq.sqrt() / (bias_corr2 ** 0.5)).add_(group["eps"])
+                p.addcdiv_(exp_avg, denom, value=-step_size)
+        return loss
 
 
 def auto_device() -> str:
@@ -138,7 +181,7 @@ def run_training(params: TrainParams,
 
     encoder_weights = None if params.encoder_weights.lower() == "none" else params.encoder_weights
     model = build_model(encoder_name=params.encoder, encoder_weights=encoder_weights).to(device)
-    opt = AdamW(model.parameters(), lr=params.lr, foreach=False)
+    opt = _AdamW(model.parameters(), lr=params.lr)
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=params.epochs)
 
     out_path = Path(params.output)
