@@ -122,16 +122,11 @@ export async function exportProject(
   const deviceRegistry = localStorage.getItem("mmo-chip-device-registry");
   const analogNames = localStorage.getItem("mmo-chip-analog-names");
 
-  // Use direct backend URL to bypass Vite proxy (which has issues with large responses)
-  const hostname = window.location.hostname;
-  const backendUrl = `http://${hostname}:3001/api/dies/${dieId}/export-project`;
-
-  const response = await fetch(backendUrl, {
+  const response = await fetch(`/api/dies/${dieId}/export-project`, {
     method: "POST",
     headers: { "Content-Type": "application/json", ...authHeaders() },
     body: JSON.stringify({ mode, preferences, deviceRegistry, analogNames }),
     signal,
-    mode: "cors"
   });
 
   if (!response.ok) {
