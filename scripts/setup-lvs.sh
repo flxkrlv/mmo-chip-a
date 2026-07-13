@@ -3,10 +3,12 @@ set -e
 # setup-lvs.sh — Install vyges-lvs on Linux/macOS
 # Run from repo root after `git clone` and `npm install`.
 
-echo "=== vyges-lvs setup ==="
+VERSION="v0.1.13"
+echo "=== vyges-lvs $VERSION setup ==="
 
 if command -v vyges-lvs &>/dev/null; then
     echo "vyges-lvs already installed at: $(which vyges-lvs)"
+    echo "To upgrade: remove it first, then re-run this script."
     exit 0
 fi
 
@@ -29,13 +31,18 @@ esac
 
 if [ -n "$BIN" ]; then
     echo "Downloading prebuilt binary: $BIN"
-    URL="https://github.com/vyges-tools/lvs/releases/download/v0.1.11/$BIN"
+    URL="https://github.com/vyges-tools/lvs/releases/download/$VERSION/$BIN"
     curl -sL "$URL" -o /tmp/vyges-lvs.tar.gz
-    tar xzf /tmp/vyges-lvs.tar.gz -C /tmp/
+    TMPDIR=$(mktemp -d)
+    tar xzf /tmp/vyges-lvs.tar.gz -C "$TMPDIR"
     mkdir -p "$HOME/.local/bin"
-    cp /tmp/vyges-lvs "$HOME/.local/bin/"
+    # binary is nested under an arch-named dir inside the tarball
+    cp "$TMPDIR"/*/vyges-lvs "$HOME/.local/bin/" 2>/dev/null || cp "$TMPDIR"/vyges-lvs "$HOME/.local/bin/" 2>/dev/null
+    chmod +x "$HOME/.local/bin/vyges-lvs"
+    rm -rf "$TMPDIR"
     echo "Installed to $HOME/.local/bin/vyges-lvs"
     echo 'Add to PATH: export PATH="$HOME/.local/bin:$PATH"'
+    "$HOME/.local/bin/vyges-lvs" --version
     exit 0
 fi
 

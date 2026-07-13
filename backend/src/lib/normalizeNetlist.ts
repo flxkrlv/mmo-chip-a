@@ -69,7 +69,7 @@ function isDeviceLine(line: string): boolean {
  * Spectre:  R1 (n1 n2) resistor r=1k
  * CDL:      R1 n1 n2 1k
  *
- * vyges-lvs v0.1.11 ONLY parses value from positional tokens (CDL format).
+ * vyges-lvs v0.1.13 ONLY parses value from positional tokens (CDL format).
  * Parentheses and keyword=value parameters (r=, c=, w=, l=) are silently
  * ignored, so we must convert before passing to vyges-lvs.
  */
@@ -97,6 +97,13 @@ function spectreToCdl(line: string): string {
   }
 
   // Q, M, D, others — strip parentheses only, keep model + params as-is
+  // BJT (Q): vyges-lvs expects 3 terminals (c,b,e). If the Spectre format
+  // has 4 (c,b,e,sub), drop the 4th (substrate) so the model isn't eaten.
+  if (prefix === "Q") {
+    const terms = terminals.split(/\s+/);
+    const cdlTerms = terms.length >= 4 ? terms.slice(0, 3).join(" ") : terminals;
+    return `${devName} ${cdlTerms} ${rest}`.trim();
+  }
   return `${devName} ${terminals} ${rest}`.trim();
 }
 

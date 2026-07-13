@@ -4,7 +4,7 @@ import path from "node:path";
 import { tmpdir, homedir } from "node:os";
 import { spawn } from "node:child_process";
 import { Router } from "express";
-import type { LvsCompareRequest, LvsRawResult, LvsEngine, LvsEngineResult, LvsCombinedResult } from "shared";
+import type { LvsCompareRequest, LvsRawResult, LvsEngine, LvsEngineResult, LvsCombinedResult, VygesEvent } from "shared";
 import { normalizeForVyges } from "../lib/normalizeNetlist.js";
 import { compareByName } from "../lib/compareByName.js";
 import type { NameBasedResult } from "../lib/compareByName.js";
@@ -29,6 +29,21 @@ function extractGlobals(layout: string, schematic: string): string[] {
     if (tokenSet.has(name)) globals.add(name);
   }
   return [...globals];
+}
+
+function parseVygesEvents(stderr: string): VygesEvent[] {
+  const events: VygesEvent[] = [];
+  for (const line of stderr.split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    try {
+      const parsed = JSON.parse(trimmed);
+      if (parsed?.schema === "vyges-events/1.0") {
+        events.push(parsed);
+      }
+    } catch { /* not a JSON line */ }
+  }
+  return events;
 }
 
 function resolveLvsCli(): string {
@@ -125,13 +140,22 @@ async function runVygesLvs(
       note = `vyges-lvs sees ${json.a_devices} devices (raw netlist has ${layoutDevCount}). Parallel/series resistors may be collapsed — connection mismatches may be hidden. Use name-based engine for verification.`;
     }
 
-    // Append stderr to note for diagnostic capture
-    const stderrCombined = [...new Set([jsonResult.stderr, textResult.stderr].filter(Boolean))].join(" | ");
+    // Parse vyges-events from stderr (structured JSON events)
+    const events = parseVygesEvents(jsonResult.stderr);
+
+    // Append remaining stderr (non-event lines) to note for diagnostics
+    const nonEventStderr = jsonResult.stderr.split("\n").filter(l => {
+      try { const p = JSON.parse(l.trim()); return p?.schema !== "vyges-events/1.0"; } catch { return true; }
+    }).join("\n").trim();
+    const textNonEvent = textResult.stderr.split("\n").filter(l => {
+      try { const p = JSON.parse(l.trim()); return p?.schema !== "vyges-events/1.0"; } catch { return true; }
+    }).join("\n").trim();
+    const stderrCombined = [...new Set([nonEventStderr, textNonEvent].filter(Boolean))].join(" | ");
     if (stderrCombined) {
       note = (note ? note + "\n" : "") + `vyges-lvs stderr: ${stderrCombined}`;
     }
 
-    return { engine: "vyges-lvs", matched, json, report: textResult.stdout + (note ? "\n\n" + note : ""), stderr: stderrCombined };
+    return { engine: "vyges-lvs", matched, json, report: textResult.stdout + (note ? "\n\n" + note : ""), stderr: stderrCombined, events };
   } finally {
     await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
   }
@@ -308,6 +332,7 @@ function buildSingleResponse(result: LvsEngineResult): LvsCombinedResult {
     matched: result.matched,
     json: result.json,
     report: result.report,
+    events: result.events,
   };
 }
 

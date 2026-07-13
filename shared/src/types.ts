@@ -934,6 +934,17 @@ export interface LvsPropertyDiff {
   b_value: number;
 }
 
+/** A structured event emitted by vyges-lvs on stderr */
+export interface VygesEvent {
+  schema: string;
+  ts_ms: number;
+  tool: string;
+  severity: "info" | "warn" | "error";
+  code: string;
+  raw_msg: string;
+  objects?: string[];
+}
+
 /** Top-level result from any LVS engine */
 export interface LvsRawResult {
   matched: boolean;
@@ -957,6 +968,7 @@ export interface LvsEngineResult {
   json: LvsRawResult;
   report: string;
   stderr?: string;
+  events?: VygesEvent[];
 }
 
 /** Combined response */
@@ -965,6 +977,7 @@ export interface LvsCombinedResult {
   matched: boolean;
   json: LvsRawResult;
   report: string;
+  events?: VygesEvent[];
 }
 
 export interface LvsResponse {

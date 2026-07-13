@@ -118,19 +118,18 @@ describe("Comprehensive LVS — 25 scenarios", () => {
     "MATCH");
 
   // ── 3-5: TYPE MISMATCH ──────────────────────────────────────
-  // vyges-lvs does NOT distinguish npn vs pnp (type info lost in colour-refinement)
-  check("3. Q7 pnp→npn → name-based MISMATCH, vyges MATCH (limitation: npn/pnp not distinguished)",
+  // normalizer strips the 4th BJT terminal (substrate), revealing the model
+  check("3. Q7 pnp→npn → MISMATCH (both engines)",
     BASE.replace("Q7 (Net_9 Net_12 Net_10 0) pnp", "Q7 (Net_9 Net_12 Net_10 0) npn"),
-    "MISMATCH", "MATCH");
+    "MISMATCH");
 
   check("4. R1→capacitor → MISMATCH",
     BASE.replace("R1 (Net_5 Net_6) resistor r=3981", "R1 (Net_5 Net_6) capacitor c=10p"),
     "MISMATCH");
 
-  // Same npn/pnp limitation
-  check("5. Q3 pnp→npn → name-based MISMATCH, vyges MATCH",
+  check("5. Q3 pnp→npn → MISMATCH (both engines)",
     BASE.replace("Q3 (Net_1 Net_4 Net_3 0) pnp m=5", "Q3 (Net_1 Net_4 Net_3 0) npn m=5"),
-    "MISMATCH", "MATCH");
+    "MISMATCH");
 
   // ── 6-8: CONNECTION MISMATCH ──────────────────────────────────
   check("6. R2 terminals swapped (sym) → MATCH",

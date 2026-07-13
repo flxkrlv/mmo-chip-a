@@ -1,14 +1,14 @@
 # LVS — Layout vs Schematic comparison
 
 **Branch:** `analog-re-wip`
-**Engine:** `vyges-lvs` v0.1.11 (Rust, Apache 2.0)
+**Engine:** `vyges-lvs` v0.1.13 (Rust, Apache 2.0)
 
 ## Current status (Jul 2026)
 
 | Feature | Status |
 |---------|--------|
-| vyges-lvs integrated | ✅ built from source, installed via `cargo install` |
-| Backend endpoint `POST /lvs/compare` | ✅ normalizes, spawns vyges-lvs, returns JSON + text report |
+| vyges-lvs integrated | ✅ installed via prebuilt binary or `cargo install` |
+| Backend endpoint `POST /lvs/compare` | ✅ normalizes, spawns vyges-lvs, returns JSON + text report + structured events |
 | Frontend tab "LVS" in Analog Netlist page | ✅ Alt+4, click-to-switch |
 | Layout netlist auto-filled from extraction | ✅ |
 | Schematic netlist paste area | ✅ |
@@ -16,6 +16,7 @@
 | MATCH/MISMATCH verdict badge | ✅ |
 | Device-diff table (buildDiffs Phase 1+2a) | ✅ L-only / S-only / Type Mismatch / Connection Mismatch |
 | Report inline (left column) | ✅ no accordion |
+| **vyges-events panel (right column)** | ✅ structured events from stderr (severity + code + message) |
 | Engine selector (vyges-lvs / name-based / both) | ✅ |
 | Cascade noise warning | ✅ |
 | vyges-lvs auto-detect (PATH, ~/.cargo/bin) | ✅ |
@@ -49,18 +50,25 @@ Applied identically to both sides before vyges-lvs.
 are emitted before `.SUBCKT` so vyges-lvs anchors supply nets and prevents 1-WL
 cascade across power rails.
 
+**BJT substrate fix:** vyges-lvs expects 3 terminals for BJT (c,b,e), but
+Spectre netlists list 4 (c,b,e,sub). The 4th terminal (substrate net, usually
+`0`/`GND`) was parsed as the model name, eating the real model (`pnp`/`npn`)
+and preventing type mismatch detection. Fixed: `spectreToCdl()` drops the 4th
+terminal for `Q` devices, revealing the true model to the LVS engine.
+
 ### Step 2: vyges-lvs matching
 
 vyges-lvs runs with `--json` and as text report:
 - Parses both sides as SPICE graphs (name-independent 1-WL colour refinement)
 - Confirms match with explicit device/net bijection
 - Returns `unbalanced[]` (colour classes that didn't balance) and `property_diffs[]`
+- Emits **vyges-events** to stderr (structured JSON events with severity, code, objects)
 
-**Known vyges-lvs v0.1.11 limitations:**
+**Known vyges-lvs v0.1.13 limitations:**
 - 1-WL cascade: single connectivity change propagates through entire component → many false positives in `unbalanced[]`
 - Does NOT report `property_diffs[]` (always empty)
 - Does NOT detect extra parallel resistors (R811 case)
-- Does NOT distinguish device types (npn vs pnp) — matches them as "same"
+- ~~Does NOT distinguish device types (npn vs pnp)~~ **Fixed:** normalization strips the 4th BJT terminal, so model name (`pnp`/`npn`) is preserved → type mismatch detected
 
 ### Step 3: Post-processing — buildDiffs() Phase 1 + 2a
 
@@ -82,6 +90,7 @@ Takes raw vyges-lvs JSON + original netlist lines:
 - Summary bar: engine selector, verdict badge, device/net stats
 - Device Diffs: grouped as **L-only** / **S-only** / **Type Mismatch** / **Connection Mismatch**
 - Report (inline, left column): text report from engine
+- **Events** (right column, below diffs): structured vyges-events with severity/code/message
 - Warning when cascade noise may be present
 
 ## Engine selector
@@ -105,7 +114,7 @@ This is the hardest case for LVS:
 
 GUI shows warning: "some diffs may be cascade noise".
 
-### vyges-lvs v0.1.11
+### vyges-lvs v0.1.13
 
 | Limitation | Impact | Workaround |
 |-----------|--------|-----------|
@@ -114,6 +123,21 @@ GUI shows warning: "some diffs may be cascade noise".
 | Parallel combine (Spectre) | R811 extra absorbed → FALSE MATCH | Use name-based engine |
 | CDL positional params | `R1 n1 n2 1k` vs `2k` = MISMATCH | Use Spectre format (`r=1k`) |
 | .SUBCKT port names | Not name-independent | normalizeNetlist.ts strips ports |
+| ~~BJT 4-terminal model eaten~~ | ~~npn/pnp never distinguished~~ | **Fixed:** normalizeNetlist.ts strips 4th terminal |
+
+### vyges-events (v0.1.13+)
+
+Structured JSON events emitted on stderr alongside the JSON/text report:
+
+| Event code | Severity | Meaning | objects |
+|-----------|----------|---------|---------|
+| `LVS-MATCH` | info | Clean match | — |
+| `LVS-MISMATCH` | error | Verdict mismatch | — |
+| `LVS-PARAM` | warn | Parameter value diff | `device:name` |
+| `LVS-DEVCOUNT` | warn | Device-kind count diff | `kind:X` |
+| `LVS-PORT` | warn | Port only in one side | `port:name` |
+
+Events are parsed in `backend/src/api/lvs.ts` and displayed in the right column of the LVS panel.
 
 ### Name-based engine
 
@@ -168,8 +192,10 @@ GUI shows warning: "some diffs may be cascade noise".
 2. **Phase 2b removed** — signature matching included net names → unreliable when nets are renamed
 3. **Ordered device swaps** — exclusive net swaps (Q6 net2110↔net2111) are graph-isomorphic → MATCH correctly
 4. **Parallel resistors** — R811 detected by name-based (different name), missed by vyges-lvs (parallel combine)
-5. **property_diffs always empty** in vyges-lvs v0.1.11
+5. **property_diffs always empty** in vyges-lvs v0.1.13 (upstream limitation)
 6. **Cascade noise** — when device names differ between sides, 1-WL cascade creates spurious unbalanced entries
+7. **BJT model fix** — normalization strips the 4th BJT terminal (substrate), making `pnp`/`npn` models visible to vyges-lvs → type mismatch now correctly detected
+8. **vyges-events** — structured events on stderr provide machine-readable LVS diagnostics (LVS-MISMATCH, LVS-PARAM, LVS-DEVCOUNT, LVS-PORT)
 
 ## Files changed
 
@@ -180,6 +206,7 @@ GUI shows warning: "some diffs may be cascade noise".
 | `backend/src/lib/compareByName.comprehensive.test.ts` | 25 realistic scenarios |
 | `backend/src/api/lvs.ts` | Engine multiplexer |
 | `shared/src/types.ts` | LvsEngine, LvsEngineResult types |
+| `backend/src/lib/normalizeNetlist.ts` | Spectre→CDL + BJT substrate fix |
 | `frontend/src/api/lvs.ts` | API client |
-| `frontend/src/components/netlist/LVSComparePanel.tsx` | buildDiffs, engine selector, report inline |
+| `frontend/src/components/netlist/LVSComparePanel.tsx` | buildDiffs, engine selector, report inline, events panel |
 | `test_lvs_categories.ps1` | vyges-lvs CLI tests |

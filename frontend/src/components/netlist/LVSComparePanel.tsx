@@ -1,5 +1,5 @@
 import { useCallback, useState, useRef, useEffect } from "react";
-import type { SpiceDialect, LvsRawResult, LvsEngine, LvsCombinedResult } from "shared";
+import type { SpiceDialect, LvsRawResult, LvsEngine, LvsCombinedResult, VygesEvent } from "shared";
 import type { LvsEngineResult } from "shared";
 import { compareNetlists, saveLvsSnapshot } from "../../api/lvs";
 import { Ic } from "../../icons";
@@ -43,6 +43,7 @@ interface LvsResultData {
   json: LvsRawResult;
   report: string;
   devices: DeviceDiff[];
+  events?: VygesEvent[];
 }
 
 type PanelPhase =
@@ -376,7 +377,7 @@ export default function LVSComparePanel({ dieId, layoutNetlist, dialect, moduleN
             snapshotJson.property_diffs.map(d => `${d.a_device} ${d.param} ${d.a_value}→${d.b_value}`).join(", "));
         }
 
-        setState({ phase: "done", data: { engine: engine, matched: data.matched, json: snapshotJson, report: data.report, devices: snapshotDevices } });
+        setState({ phase: "done", data: { engine: engine, matched: data.matched, json: snapshotJson, report: data.report, devices: snapshotDevices, events: data.events } });
 
         saveLvsSnapshot({ layoutNetlist: displayLayout, schematicNetlist, matched: data.matched, json: snapshotJson, report: data.report, devices: snapshotDevices });
       } else if (res.ok) {
@@ -905,6 +906,49 @@ export default function LVSComparePanel({ dieId, layoutNetlist, dialect, moduleN
     );
   };
 
+  /** Render vyges-events — structured events from stderr */
+  const renderEvents = () => {
+    if (state.phase !== "done" || !state.data.events?.length) return null;
+    const severityColor = (sev: string) =>
+      sev === "error" ? "#f55" : sev === "warn" ? "#fd0" : "#5c5";
+    const severityLabel = (sev: string) =>
+      sev === "error" ? "ERR" : sev === "warn" ? "WRN" : "INF";
+
+    return (
+      <div style={{ margin: "0 10px 8px" }}>
+        <div style={{ ...sectionTitle, fontSize: 12 }}>Events ({state.data.events.length})</div>
+        {state.data.events.map((ev, i) => (
+          <div key={i} style={{
+            ...panelBase,
+            borderLeft: `3px solid ${severityColor(ev.severity)}`,
+            marginTop: i > 0 ? 2 : 0,
+          }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+              <span style={{
+                fontSize: 9, fontWeight: 700, padding: "0 4px", borderRadius: 2,
+                background: severityColor(ev.severity) + "22",
+                color: severityColor(ev.severity),
+              }}>
+                {severityLabel(ev.severity)}
+              </span>
+              <span style={{ fontSize: 10, fontWeight: 600, color: "var(--ink3)" }}>
+                {ev.code}
+              </span>
+            </div>
+            <div style={{ fontSize: 10, color: "var(--ink2)", marginTop: 3, wordBreak: "break-all", fontFamily: "var(--mono)" }}>
+              {ev.raw_msg}
+            </div>
+            {ev.objects && ev.objects.length > 0 && (
+              <div style={{ fontSize: 9, color: "var(--ink4)", marginTop: 2 }}>
+                {ev.objects.join(", ")}
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+    );
+  };
+
   /** Render vyges-lvs unbalanced classes directly (no name-matching) */
   const renderUnbalancedVyges = () => {
     if (state.phase !== "done" || state.data.engine !== "vyges-lvs") return null;
@@ -1017,6 +1061,7 @@ export default function LVSComparePanel({ dieId, layoutNetlist, dialect, moduleN
                 ) : (
                   <>{renderDeviceDiffs()}</>
                 )}
+                {renderEvents()}
               </div>
             </div>
           </>
