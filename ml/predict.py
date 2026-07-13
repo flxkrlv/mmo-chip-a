@@ -31,6 +31,8 @@ def auto_device() -> str:
         return "cuda"
     if getattr(torch.backends, "mps", None) and torch.backends.mps.is_available():
         return "mps"
+    if hasattr(torch, "xpu") and torch.xpu.is_available():
+        return "xpu"
     try:
         import torch_directml
         return str(torch_directml.device())
