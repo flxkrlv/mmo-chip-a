@@ -30,6 +30,8 @@ import type {
   LayerShape, SpiceConfig, WireLayer,
 } from "shared";
 import { extractMarkedDevices, detectMOSFromLayers, consumeSegmentShapes, mergeMetalConnectedTerminals, resolveDeviceContacts, applyBulkHeuristic, applySourceOverride, propagateMultiFingerDS } from "../lib/extraction/simpleAnalog";
+import { CellTypeDeviceCache, extractDevicesForCellType, computeCellTypeHash, fnv1a64 } from "../lib/extraction/deviceCache";
+import { runChunked, type ChunkedRunnerOptions } from "../lib/extraction/chunkedRunner";
 import { applyOrientation, polygonBounds } from "../lib/geometry";
 import { isClipperLoaded } from "../lib/extraction/clipper";
 import { generateSpiceNetlist } from "../lib/export/spice";
@@ -345,12 +347,53 @@ export interface DieWideAnalogResult {
   ioNetIds: Set<number>;
 }
 
+// ── Module-level full result cache ──────────────────────────
+// Caches the DieWideAnalogResult keyed by a structural hash of annotations.
+// This makes ALL callers (synchronous + async) return instantly on re-render
+// when nothing structurally changed. The cache is invalidated when any
+// annotation (cellType layers, cells, nets, pins, umPerPx) changes.
+let _fullResultKey: string | null = null;
+let _fullResult: DieWideAnalogResult | null = null;
+
+function _computeResultKey(
+  ann: DieAnnotations,
+  umPerPx: number,
+  spiceConfig?: SpiceConfig,
+): string {
+  const ctKeys = (ann.cellTypes ?? [])
+    .map((ct) => computeCellTypeHash(ct.id, ct.layers as Record<string, LayerShape[] | undefined> | undefined, umPerPx))
+    .sort()
+    .join(",");
+  const cellsKey = (ann.cells ?? [])
+    .map((c) => `${c.id}:${c.cellTypeId}:${c.x ?? 0}:${c.y ?? 0}:fv:${!!c.flippedV}:fh:${!!c.flippedH}:r:${c.rotation ?? 0}`)
+    .join("|");
+  const spiceKey = spiceConfig ? `${spiceConfig.vdd ?? ""}|${spiceConfig.gnd ?? ""}` : "";
+  const data = JSON.stringify({
+    ctH: ctKeys,
+    ck: cellsKey,
+    nc: ann.nets?.length ?? 0,
+    pc: ann.pins?.length ?? 0,
+    u: umPerPx,
+    s: spiceKey,
+  });
+  const bytes = new TextEncoder().encode(data);
+  return fnv1a64(bytes);
+}
+
 export function collectDieWideAnalogDevices(
   annotations: DieAnnotations,
   umPerPx: number = 1.0,
   _spiceConfig?: SpiceConfig,
+  deviceCache?: CellTypeDeviceCache,
 ): DieWideAnalogResult {
   const ann = annotations as DieAnnotations;
+
+  // Full result cache: return immediately if annotations haven't structurally changed.
+  // This makes all sync callers (8+ on the page) take 0ms on re-render.
+  const key = _computeResultKey(ann, umPerPx, _spiceConfig);
+  if (_fullResultKey === key && _fullResult !== null) {
+    return _fullResult!;
+  }
   const allDevices: AnalogDevice[] = [];
   const nets = ann.nets ?? [];
 
@@ -364,8 +407,6 @@ export function collectDieWideAnalogDevices(
 
   const warnings: string[] = [];
 
-  // Warn when Clipper2 is not loaded — poly gate grouping falls back
-  // to shapeId-only dedup, which may miss connected poly shapes.
   if (!isClipperLoaded()) {
     warnings.push(
       "Clipper2 is not loaded — polysilicon gate net grouping uses shapeId-only " +
@@ -376,234 +417,202 @@ export function collectDieWideAnalogDevices(
 
   const netIdMap = new Map<string, number>();
   const nextNetId = { v: 100 };
-  // Cache: cell instance + cell-level netId → die-level netId.
-  // Ensures multiple devices in the same cell instance sharing the same
-  // gate poly (e.g., G=1000 from polyGateNetMap) get one die-level net.
   const cellNetCache = new Map<string, number>();
-
+  const perCtDevices = new Map<string, { cellType: CellType; devices: AnalogDevice[] }>();
   const counters: Record<string,number> = {};
   const pref: Record<string,string> = {
     bjt_npn:"Q",bjt_pnp:"Q",mos:"M",resistor:"R",capacitor:"C",diode:"D",
     jfet_n:"J",jfet_p:"J",unknown:"X",
   };
 
+  const shared: CellTypeProcessingShared = { allDevices, counters, netIdMap, nextNetId, cellNetCache, warnings, perCtDevices };
+
   for (const ct of ann.cellTypes) {
     const instanceList = instancesByCt.get(ct.id)??[];
     if (instanceList.length===0) continue;
+    _processOneCellType(ct, instanceList, nets, umPerPx, _spiceConfig, deviceCache, pref, shared);
+  }
 
-    let ctDevices: AnalogDevice[];
-    try {
+  const result = _finishDieWidePipeline(ann, allDevices, netIdMap, nextNetId, nets, warnings, _spiceConfig);
+
+  _fullResultKey = key;
+  _fullResult = result;
+
+  return result;
+}
+
+interface CellTypeProcessingShared {
+  allDevices: AnalogDevice[];
+  counters: Record<string, number>;
+  netIdMap: Map<string, number>;
+  nextNetId: { v: number };
+  cellNetCache: Map<string, number>;
+  warnings: string[];
+  perCtDevices: Map<string, { cellType: CellType; devices: AnalogDevice[] }>;
+}
+
+function _processOneCellType(
+  ct: CellType,
+  instanceList: Cell[],
+  nets: AnnotationNet[],
+  umPerPx: number,
+  spiceConfig: SpiceConfig | undefined,
+  deviceCache: CellTypeDeviceCache | undefined,
+  pref: Record<string, string>,
+  shared: CellTypeProcessingShared,
+): void {
+  let ctDevices: AnalogDevice[];
+  try {
+    if (deviceCache) {
+      ctDevices = extractDevicesForCellType(ct, umPerPx, deviceCache, extractAnalogDevicesFromCellType);
+    } else {
       ctDevices = extractAnalogDevicesFromCellType(ct, umPerPx);
-    } catch(e) { console.warn(`extractAnalogDevicesFromCellType("${ct.name}") failed:`,e); continue; }
-    if (ctDevices.length===0) continue;
+    }
+  } catch(e) { console.warn(`extractAnalogDevicesFromCellType("${ct.name}") failed:`,e); return; }
+  if (ctDevices.length===0) return;
+  shared.perCtDevices.set(ct.id, { cellType: ct, devices: ctDevices });
 
-    for (let inst=0; inst<instanceList.length; inst++) {
-      const instCell = instanceList[inst];
-      for (const dev of ctDevices) {
-        const prefx = pref[dev.kind]??"X";
-        counters[prefx] = (counters[prefx]??0) + 1;
-        const instName = `${prefx}${counters[prefx]}`;
-        const cx = instCell?.x??0, cy = instCell?.y??0;
+  try {
+  const { allDevices, counters, netIdMap, nextNetId, cellNetCache, warnings } = shared;
 
-        // World bbox: orient cell-local bbox by instance rotation/flip, then offset.
-        const worldBbox: typeof dev.bbox | undefined = (() => {
-          if (!dev.bbox) return undefined;
-          const cw = ct.cropRect.width || 1;
-          const ch = ct.cropRect.height || 1;
-          const corners: { x: number; y: number }[] = [
-            { x: dev.bbox.x, y: dev.bbox.y },
-            { x: dev.bbox.x + dev.bbox.width, y: dev.bbox.y },
-            { x: dev.bbox.x + dev.bbox.width, y: dev.bbox.y + dev.bbox.height },
-            { x: dev.bbox.x, y: dev.bbox.y + dev.bbox.height },
-          ].map((p) => applyOrientation(p, instCell, cw, ch));
-          const ob = polygonBounds(corners);
-          return ob
-            ? { ...ob, x: ob.x + cx, y: ob.y + cy }
-            : { ...dev.bbox, x: dev.bbox.x + cx, y: dev.bbox.y + cy };
-        })();
+  for (let inst=0; inst<instanceList.length; inst++) {
+    const instCell = instanceList[inst];
+    for (const dev of ctDevices) {
+      const prefx = pref[dev.kind]??"X";
+      counters[prefx] = (counters[prefx]??0) + 1;
+      const instName = `${prefx}${counters[prefx]}`;
+      const cx = instCell?.x??0, cy = instCell?.y??0;
 
-        // ── Inject synthetic segment shapes (multi-finger MOS) ──
-        // When detectMOSFromLayers splits a diffusion via Clipper2,
-        // it caches synthetic polygon shapes. Inject them into
-        // ctLayers so resolveDeviceContacts can find the correct
-        // segment polygons for D/S contact matching.
-        const segShapes = consumeSegmentShapes(dev.id);
-        if (segShapes.length > 0) {
-
-        }
-        const layersWithSegs = segShapes.length > 0
-          ? {
-              ...ct.layers,
-              diffusion: [
-                ...((ct.layers as Record<string, LayerShape[] | undefined>).diffusion ?? []),
-                ...segShapes,
-              ],
-            } as Record<string, LayerShape[] | undefined>
-          : (ct.layers as Record<string, LayerShape[] | undefined>);
-
-        // ── Resolve which contacts belong to which terminals ──
-        // Uses the unified resolveDeviceContacts() which handles all
-        // device types (BJT priority E>C>B, MOS shared D/S, bulk
-        // exclusion, name-based terminal-to-def resolution).
-        const { termPoints: rawTermPoints, termContacts: rawTermContacts } = resolveDeviceContacts(
-          dev,
-          layersWithSegs,
-          cx, cy,
-        );
-
-        // ── Apply instance orientation to contact positions ───
-        // resolveDeviceContacts offsets by (cx, cy) but does NOT
-        // rotate/mirror. Apply orientation now so both wire matching
-        // and the die-viewer overlay use the correct world positions.
+      const worldBbox: typeof dev.bbox | undefined = (() => {
+        if (!dev.bbox) return undefined;
         const cw = ct.cropRect.width || 1;
         const ch = ct.cropRect.height || 1;
-        const orientPoint = <T extends { x: number; y: number }>(p: T): T => ({
-          ...p,
-          x: applyOrientation({ x: p.x - cx, y: p.y - cy }, instCell, cw, ch).x + cx,
-          y: applyOrientation({ x: p.x - cx, y: p.y - cy }, instCell, cw, ch).y + cy,
-        });
-        const termPoints = rawTermPoints.map(orientPoint);
-        const termContacts = rawTermContacts.map((arr) => arr.map(orientPoint));
+        const corners: { x: number; y: number }[] = [
+          { x: dev.bbox.x, y: dev.bbox.y },
+          { x: dev.bbox.x + dev.bbox.width, y: dev.bbox.y },
+          { x: dev.bbox.x + dev.bbox.width, y: dev.bbox.y + dev.bbox.height },
+          { x: dev.bbox.x, y: dev.bbox.y + dev.bbox.height },
+        ].map((p) => applyOrientation(p, instCell, cw, ch));
+        const ob = polygonBounds(corners);
+        return ob
+          ? { ...ob, x: ob.x + cx, y: ob.y + cy }
+          : { ...dev.bbox, x: dev.bbox.x + cx, y: dev.bbox.y + cy };
+      })();
 
-        // ── Wire matching by contact proximity (10px) ────────
-        const matchedTerms = dev.terminals.map((t,ti)=>{
-          if (t.netId < 0 && dev.kind === "mos" && t.name === "B") {
-            // No well contact (or not resolved) → bulk = global supply
-            const mosType = (dev.geometry as DeviceGeometryMOS)?.mosType;
-            const vddNames = [
-              _spiceConfig?.vdd ?? "VDD",
-              "VCC", "vcc", "VDD", "vdd",
-            ];
-            const gndNames = [
-              _spiceConfig?.gnd ?? "GND",
-              "VSS", "vss", "GND", "gnd",
-            ];
-            const targetNames = mosType === "pmos" ? vddNames : gndNames;
-            const supplyName = targetNames[0];
+      const segShapes = consumeSegmentShapes(dev.id);
+      const layersWithSegs = segShapes.length > 0
+        ? {
+            ...ct.layers,
+            diffusion: [
+              ...((ct.layers as Record<string, LayerShape[] | undefined>).diffusion ?? []),
+              ...segShapes,
+            ],
+          } as Record<string, LayerShape[] | undefined>
+        : (ct.layers as Record<string, LayerShape[] | undefined>);
 
-            // 1) Check annotated net names
-            let foundNetId: number | null = null;
+      const { termPoints: rawTermPoints, termContacts: rawTermContacts } = resolveDeviceContacts(
+        dev, layersWithSegs, cx, cy,
+      );
+
+      const cw = ct.cropRect.width || 1;
+      const ch = ct.cropRect.height || 1;
+      const orientPoint = <T extends { x: number; y: number }>(p: T): T => ({
+        ...p,
+        x: applyOrientation({ x: p.x - cx, y: p.y - cy }, instCell, cw, ch).x + cx,
+        y: applyOrientation({ x: p.x - cx, y: p.y - cy }, instCell, cw, ch).y + cy,
+      });
+      const termPoints = rawTermPoints.map(orientPoint);
+      const termContacts = rawTermContacts.map((arr) => arr.map(orientPoint));
+
+      const matchedTerms = dev.terminals.map((t,ti)=>{
+        if (t.netId < 0 && dev.kind === "mos" && t.name === "B") {
+          const mosType = (dev.geometry as DeviceGeometryMOS)?.mosType;
+          const vddNames = [spiceConfig?.vdd ?? "VDD", "VCC", "vcc", "VDD", "vdd"];
+          const gndNames = [spiceConfig?.gnd ?? "GND", "VSS", "vss", "GND", "gnd"];
+          const targetNames = mosType === "pmos" ? vddNames : gndNames;
+          const supplyName = targetNames[0];
+          let foundNetId: number | null = null;
+          for (const n of nets) {
+            if (n.name && targetNames.includes(n.name)) {
+              if (!netIdMap.has(n.id)) netIdMap.set(n.id, nextNetId.v++);
+              foundNetId = netIdMap.get(n.id)!;
+              break;
+            }
+          }
+          if (foundNetId == null) {
             for (const n of nets) {
-              if (n.name && targetNames.includes(n.name)) {
+              if (!n.name) continue;
+              const lo = n.name.toLowerCase().replace(/[^a-z0-9]/g, "");
+              if (targetNames.some(t => lo === t.toLowerCase().replace(/[^a-z0-9]/g, ""))) {
                 if (!netIdMap.has(n.id)) netIdMap.set(n.id, nextNetId.v++);
                 foundNetId = netIdMap.get(n.id)!;
                 break;
               }
             }
-
-            // 2) Wire name check (case-insensitive, broader than step 1)
-            // Scan ALL nets for a case-insensitive match against the supply name.
-            // This catches wires named "gnd", "GND!", "gnd_1", etc.
-            if (foundNetId == null) {
-              for (const n of nets) {
-                if (!n.name) continue;
-                const lo = n.name.toLowerCase().replace(/[^a-z0-9]/g, "");
-                if (targetNames.some(t => lo === t.toLowerCase().replace(/[^a-z0-9]/g, ""))) {
-                  if (!netIdMap.has(n.id)) netIdMap.set(n.id, nextNetId.v++);
-                  foundNetId = netIdMap.get(n.id)!;
-                  break;
-                }
-              }
-            }
-
-            if (foundNetId != null) {
-              warnings.push(
-                `[INFO] ${instName} (${mosType.toUpperCase()}): bulk has no well contact — auto-connected to global ${supplyName}`
-              );
-              return {...t, netId: foundNetId};
-            }
-
-            // 3) No net found → use or create a global supply net.
-            // Dedup: all devices without a well contact share the same
-            // global supply net (_global_VDD or _global_GND) so their
-            // bulk terminals are shorted together (correct: they are in
-            // the same well diffusion region conceptually).
-            let freshId = netIdMap.get(`_global_${supplyName}`);
-            if (freshId == null) {
-              freshId = nextNetId.v++;
-              netIdMap.set(`_global_${supplyName}`, freshId);
-            }
-            warnings.push(
-              `[INFO] ${instName} (${mosType.toUpperCase()}): bulk has no well contact — auto-connected to global ${supplyName}`
-            );
-            return {...t, netId: freshId};
           }
-          if (t.netId < 0) {
-            const fresh = 2000 + allDevices.length*10 + ti;
-            return {...t, netId: fresh};
+          if (foundNetId != null) {
+            warnings.push(`[INFO] ${instName} (${mosType.toUpperCase()}): bulk has no well contact — auto-connected to global ${supplyName}`);
+            return {...t, netId: foundNetId};
           }
-          // ── Cell-level net dedup cache ────────────────────────
-          // Devices in the same cell instance sharing a cell-level netId
-          // (e.g. G=1000 from polyGateNetMap) must map to one die-level net.
-          const cacheKey = `${instCell.id}:${t.netId}`;
-          const cachedDieNet = cellNetCache.get(cacheKey);
-          if (cachedDieNet !== undefined) {
-
-            return {...t, netId: cachedDieNet};
+          let freshId = netIdMap.get(`_global_${supplyName}`);
+          if (freshId == null) {
+            freshId = nextNetId.v++;
+            netIdMap.set(`_global_${supplyName}`, freshId);
           }
-          const contacts = termContacts[ti];
-          // contacts.length === 0 — no contact centers
-          for (const cp of contacts) {
-            // Only ME1 wires can connect to device contacts.
-            // ME2+ requires a via (drawn on die viewer) to bridge up.
-            const wid = matchWireToPoint(nets, cp.x, cp.y, cp.tol ?? 10, netIdMap, nextNetId, "metal1");
-            if (wid!=null) {
-              cellNetCache.set(cacheKey, wid);
-              return {...t, netId: wid};
-            }
-          }
+          warnings.push(`[INFO] ${instName} (${mosType.toUpperCase()}): bulk has no well contact — auto-connected to global ${supplyName}`);
+          return {...t, netId: freshId};
+        }
+        if (t.netId < 0) {
           const fresh = 2000 + allDevices.length*10 + ti;
-          cellNetCache.set(cacheKey, fresh);
           return {...t, netId: fresh};
-        });
+        }
+        const cacheKey = `${instCell.id}:${t.netId}`;
+        const cachedDieNet = cellNetCache.get(cacheKey);
+        if (cachedDieNet !== undefined) {
+          return {...t, netId: cachedDieNet};
+        }
+        const contacts = termContacts[ti];
+        for (const cp of contacts) {
+          const wid = matchWireToPoint(nets, cp.x, cp.y, cp.tol ?? 10, netIdMap, nextNetId, "metal1");
+          if (wid!=null) {
+            cellNetCache.set(cacheKey, wid);
+            return {...t, netId: wid};
+          }
+        }
+        const fresh = 2000 + allDevices.length*10 + ti;
+        cellNetCache.set(cacheKey, fresh);
+        return {...t, netId: fresh};
+      });
 
-        // ── MOS: D/S termPoints keep their original names for net lookup ─
-        // The overlay relabels "D"/"S" to "S/D" at draw time.
-        // Storing as-is preserves the terminal distinction for correct
-        // netId resolution per contact.
+      const templateUuid = (dev as any)._templateUuid as string | undefined;
+      const cellLevelKey = (dev as any)._cellLevelKey as string ?? "unknown:0:0";
+      const instanceFingerprint = `${cellLevelKey}:${instCell.id}`;
+      const dieLevelKey = `${instCell.id}:${cellLevelKey}`;
+      const templateRecord = templateUuid ? getDeviceRecord(templateUuid) : null;
+      const seedOverride = templateRecord?.overrides;
+      const result = matchOrCreateDevice(instanceFingerprint, seedOverride);
+      const devUuid = result.uuid;
 
-        // ── Per-instance identity: cell-level-key-based fingerprint ──
-        // `_cellLevelKey` encodes the device kind, internal position (bxc,byc),
-        // and optional subType (mosType). By appending `instCell.id` we get a
-        // fingerprint that is:
-        //   • STABLE across cell moves on the die (cell-relative coords)
-        //   • UNIQUE per finger in multi-finger MOS (different bxc,byc)
-        //   • STABLE across small internal layer edits (≤ 100px — fuzzy match
-        //     at cell level absorbs the shift, keeping the same cellLevelKey)
-        //   • Changes when internal layers shift > 100px (new cellLevelKey)
-        const templateUuid = (dev as any)._templateUuid as string | undefined;
-        const cellLevelKey = (dev as any)._cellLevelKey as string ?? "unknown:0:0";
-
-        // Build the stable instance fingerprint
-        const instanceFingerprint = `${cellLevelKey}:${instCell.id}`;
-        const dieLevelKey = `${instCell.id}:${cellLevelKey}`;
-
-        // Seed overrides from the template record
-        const templateRecord = templateUuid ? getDeviceRecord(templateUuid) : null;
-        const seedOverride = templateRecord?.overrides;
-
-        // Create or retrieve per-instance record.
-        // Exact match always finds existing record when the cell is moved
-        // (fingerprint doesn't depend on world position).
-        const result = matchOrCreateDevice(instanceFingerprint, seedOverride);
-        const devUuid = result.uuid;
-
-        allDevices.push({
-          ...dev,
-          instanceName: instName, terminals: matchedTerms, bbox: worldBbox,
-          _termPoints: termPoints,
-          _cellId: instCell.id,
-          _cellBbox: dev.bbox,
-          _cellLevelKey: cellLevelKey,
-          _dieLevelKey: dieLevelKey,
-          _templateUuid: templateUuid,
-          _uuid: devUuid,
-        } as AnalogDevice & { _termPoints: typeof termPoints; _cellId: string; _cellBbox: typeof dev.bbox; _cellLevelKey: string; _dieLevelKey: string; _templateUuid?: string; _uuid?: string });
-      }
+      allDevices.push({
+        ...dev, instanceName: instName, terminals: matchedTerms, bbox: worldBbox,
+        _termPoints: termPoints, _cellId: instCell.id, _cellBbox: dev.bbox,
+        _cellLevelKey: cellLevelKey, _dieLevelKey: dieLevelKey,
+        _templateUuid: templateUuid, _uuid: devUuid,
+      } as any);
     }
   }
+  } catch(e) { console.warn(`_processOneCellType("${ct.name}") instance processing failed:`,e); }
+}
 
-  // ── Build namedNets: annotation net names + IO pin names ────
+function _finishDieWidePipeline(
+  ann: DieAnnotations,
+  allDevices: AnalogDevice[],
+  netIdMap: Map<string, number>,
+  nextNetId: { v: number },
+  nets: AnnotationNet[],
+  warnings: string[],
+  spiceConfig?: SpiceConfig,
+): DieWideAnalogResult {
   const namedNets = new Map<number, string>();
   for (const aNet of nets) {
     const spiceId = netIdMap.get(aNet.id);
@@ -611,8 +620,6 @@ export function collectDieWideAnalogDevices(
       namedNets.set(spiceId, aNet.name);
     }
   }
-
-  // Collect die-level IO pin net IDs (used by netlist2svg to limit port count)
   const ioNetIds = new Set<number>();
   const pins = ann.pins ?? [];
   for (const pin of pins) {
@@ -622,31 +629,16 @@ export function collectDieWideAnalogDevices(
       if (!namedNets.has(netId)) namedNets.set(netId, pin.name);
     }
   }
-
-  // Register fresh global supply nets (_global_VDD, _global_GND) as named nets
   for (const [key, id] of netIdMap) {
     if (key.startsWith("_global_")) {
       const name = key.slice("_global_".length);
       if (!namedNets.has(id)) namedNets.set(id, name);
     }
   }
-
-  // ── Device-level warnings ──────────────────────────────────
-  // Check for shorted pins, polarity mismatches, floating terminals.
-  // ── Re-apply D/S resolution at die level ─────────────────────
-  // Cell-level mergeMetalConnectedTerminals only catches metal connections
-  // WITHIN the cell. Die-level annotation wires connecting B to D/S are
-  // only resolved after wire matching above. Re-run so die-level
-  // connections also determine D/S assignment.
   applyBulkHeuristic(allDevices);
   propagateMultiFingerDS(allDevices);
-
-  // ── Assign stable instance names first so warnings use them ────
-  // Save old names so we can patch bulk warnings generated before rename
   for (const d of allDevices) (d as any)._origName = d.instanceName;
   assignStableInstanceNames(allDevices);
-  // Patch warnings whose device was renamed
-  // Bulk warning format: `[INFO] M1 (NMOS): bulk...` (with [LEVEL] prefix)
   for (const d of allDevices) {
     const old = (d as any)._origName as string | undefined;
     const cur = d.instanceName;
@@ -657,11 +649,68 @@ export function collectDieWideAnalogDevices(
       }
     }
   }
-
-  const devWarn = detectDeviceWarnings(allDevices, namedNets, _spiceConfig);
+  const devWarn = detectDeviceWarnings(allDevices, namedNets, spiceConfig);
   warnings.push(...devWarn);
-
   return { devices: allDevices, namedNets, netIdMap, warnings, ioNetIds };
+}
+
+export async function collectDieWideChunked(
+  annotations: DieAnnotations,
+  umPerPx: number = 1.0,
+  spiceConfig?: SpiceConfig,
+  deviceCache?: CellTypeDeviceCache,
+  options?: ChunkedRunnerOptions,
+): Promise<DieWideAnalogResult> {
+  const ann = annotations as DieAnnotations;
+
+  const key = _computeResultKey(ann, umPerPx, spiceConfig);
+  if (_fullResultKey === key && _fullResult !== null) {
+    return _fullResult!;
+  }
+  const allDevices: AnalogDevice[] = [];
+  const nets = ann.nets ?? [];
+
+  const cells = ann.cells ?? [];
+  const instancesByCt = new Map<string, Cell[]>();
+  for (const cell of cells) {
+    const list = instancesByCt.get(cell.cellTypeId) ?? [];
+    list.push(cell);
+    instancesByCt.set(cell.cellTypeId, list);
+  }
+
+  const warnings: string[] = [];
+
+  if (!isClipperLoaded()) {
+    warnings.push(
+      "Clipper2 is not loaded — polysilicon gate net grouping uses shapeId-only " +
+      "fallback. Connected poly shapes may not share a gate net. " +
+      "Reload the page if Clipper was expected to be available."
+    );
+  }
+
+  const netIdMap = new Map<string, number>();
+  const nextNetId = { v: 100 };
+  const cellNetCache = new Map<string, number>();
+  const perCtDevices = new Map<string, { cellType: CellType; devices: AnalogDevice[] }>();
+  const counters: Record<string,number> = {};
+  const pref: Record<string,string> = {
+    bjt_npn:"Q",bjt_pnp:"Q",mos:"M",resistor:"R",capacitor:"C",diode:"D",
+    jfet_n:"J",jfet_p:"J",unknown:"X",
+  };
+
+  const shared: CellTypeProcessingShared = { allDevices, counters, netIdMap, nextNetId, cellNetCache, warnings, perCtDevices };
+  const cellTypesToProcess = ann.cellTypes.filter(ct => (instancesByCt.get(ct.id) ?? []).length > 0);
+
+  await runChunked(cellTypesToProcess, (ct) => {
+    const instanceList = instancesByCt.get(ct.id)!;
+    _processOneCellType(ct, instanceList, nets, umPerPx, spiceConfig, deviceCache, pref, shared);
+    return ct.id;
+  }, options);
+
+  const result = _finishDieWidePipeline(ann, allDevices, netIdMap, nextNetId, nets, warnings, spiceConfig);
+  _fullResultKey = key;
+  _fullResult = result;
+  return result;
 }
 
 // ── Stable instance naming using position-based keys + localStorage ──

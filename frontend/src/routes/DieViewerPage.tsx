@@ -55,9 +55,8 @@ import { ProblemNavigatorPanel, collectProblems } from "../components/dieViewer/
 import { AnalogDeviceHighlights } from "../components/dieViewer/AnalogDeviceHighlights";
 import { DeviceInspector } from "../components/dieViewer/DeviceInspector";
 import { DeviceInstancePanel } from "../components/dieViewer/DeviceInstancePanel";
-import { applyAnalogOverrides } from "../api/analogNetlist";
-import { collectDieWideAnalogDevices } from "../api/dieWideAnalog";
-import { useRegistryVersion } from "../state/deviceRegistry";
+import { useDieExtraction } from "../hooks/useDieExtraction";
+import { useExtractionProgress } from "../state/extractionProgress";
 import { loadClipper } from "../lib/extraction";
 import { useMLJob, useMLStatus } from "../api/ml";
 import { WireDraftOverlay } from "../components/dieViewer/WireDraftOverlay";
@@ -963,38 +962,20 @@ function DieViewer({ dieId }: { dieId: string }) {
   const [selectedDevice, setSelectedDevice] = useState<AnalogDevice | null>(null);
   const [showProblems, setShowProblems] = useState(false);
   const [showCellRelations, setShowCellRelations] = useState(false);
-  // Track Clipper2 WASM readiness so useMemo re-runs after it loads
-  // (multi-finger MOS splitting depends on Clipper).
-  const [clipperTick, setClipperTick] = useState(0);
+
   useEffect(() => {
-
-    loadClipper().then(() => {
-
-      setClipperTick((s) => s + 1);
-    });
+    loadClipper();
   }, []);
 
-  // Re-compute devices when registry or annotations change.
-  const regVer = useRegistryVersion((s) => s.v);
-  const analogMemo = useMemo(
-    () => {
-      if (!annotations) return { devices: [], netNames: new Map<number, string>(), unconnectedCount: 0, warnings: [], netIdMap: new Map() };
-      try {
-        const r = collectDieWideAnalogDevices(annotations as any, annotations.umPerPx ?? 1);
-        applyAnalogOverrides(r.devices);
-        const unconnectedCount = r.devices.reduce(
-          (sum, d) => sum + d.terminals.filter((t) => t.netId >= 2000).length, 0,
-        );
-        return { devices: r.devices, netNames: r.namedNets, unconnectedCount, warnings: r.warnings, netIdMap: r.netIdMap };
-      } catch { return { devices: [], netNames: new Map<number, string>(), unconnectedCount: 0, warnings: [], netIdMap: new Map() }; }
-    },
-    [annotations, clipperTick, regVer]
-  );
-  const analogDevices = analogMemo.devices;
-  const netNames = analogMemo.netNames;
-  const unconnectedCount = analogMemo.unconnectedCount;
-  const analogWarnings = analogMemo.warnings;
-  const netIdMap = analogMemo.netIdMap;
+  // Re-compute devices when registry or annotations change (cached + async).
+  const {
+    devices: analogDevices,
+    netNames,
+    unconnectedCount,
+    warnings: analogWarnings,
+    netIdMap,
+  } = useDieExtraction(annotations as any);
+  const { progress: extractionProgress, isRunning: extractionRunning, lastTimeMs, lastCached } = useExtractionProgress();
 
   // Reverse map: numeric netId → annotation net UUID (for zoom)
   const netIdToUuid = useMemo(() => {
@@ -2982,7 +2963,7 @@ function DieViewer({ dieId }: { dieId: string }) {
                 }}
               />
             ) : (
-              <AnalogDiePanel annotations={annotations ?? (undefined as any)} />
+              <AnalogDiePanel annotations={annotations ?? (undefined as any)} devices={analogDevices} />
             )}
           </div>
         </aside>
@@ -3010,6 +2991,11 @@ function DieViewer({ dieId }: { dieId: string }) {
             : null,
           activeTool === "addCell"
             ? "add cell — drag to draw · corners resize · Enter to add · Esc to cancel"
+            : null,
+          extractionRunning
+            ? `extracting ${extractionProgress?.done ?? 0}/${extractionProgress?.total ?? 1}…`
+            : lastTimeMs != null
+            ? `analog ${lastTimeMs}ms${lastCached ? " ✓" : ""}`
             : null
         ].filter(Boolean)}
       />

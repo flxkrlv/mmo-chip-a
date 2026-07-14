@@ -6,14 +6,15 @@
  * a quick device count readout.
  */
 
-import { useEffect, useMemo, useRef, useState } from "react";
-import type { DieAnnotations } from "shared";
+import { useMemo, useState } from "react";
+import type { AnalogDevice, DieAnnotations } from "shared";
 import { collectDieWideAnalogDevices } from "../../api/dieWideAnalog";
 import { SheetRConfigPanel } from "../config/SheetRConfigPanel";
 import { usePreferences } from "../../state/preferences";
 
 interface Props {
-  annotations: DieAnnotations | null | undefined;
+  annotations?: DieAnnotations | null | undefined;
+  devices?: AnalogDevice[];
 }
 
 const KIND_LABEL: Record<string, string> = {
@@ -24,17 +25,24 @@ const KIND_LABEL: Record<string, string> = {
   inductor: "IND", unknown: "?",
 };
 
-export function AnalogDiePanel({ annotations }: Props) {
+export function AnalogDiePanel({ annotations, devices: devicesProp }: Props) {
   const [sheetROpen, setSheetROpen] = useState(false);
 
   // Reactive sheetR from preferences (NOT getState — subscribes properly)
   const sheetR = usePreferences((s) => (s as any).sheetR ?? {});
 
-  // Compute device stats once (annotations change infrequently)
+  // Compute device stats from prop (preferred) or fallback to sync extraction.
   const stats = useMemo(() => {
+    if (devicesProp) {
+      const byKind: Record<string, number> = {};
+      for (const d of devicesProp) {
+        byKind[d.kind] = (byKind[d.kind] ?? 0) + 1;
+      }
+      return { total: devicesProp.length, byKind };
+    }
     if (!annotations) return null;
     try {
-      const { devices } = collectDieWideAnalogDevices(annotations);
+      const { devices } = collectDieWideAnalogDevices(annotations, annotations.umPerPx ?? 1);
       const byKind: Record<string, number> = {};
       for (const d of devices) {
         byKind[d.kind] = (byKind[d.kind] ?? 0) + 1;
@@ -43,7 +51,7 @@ export function AnalogDiePanel({ annotations }: Props) {
     } catch {
       return null;
     }
-  }, [annotations]);
+  }, [annotations, devicesProp]);
 
   if (!annotations || !stats || stats.total === 0) {
     return (

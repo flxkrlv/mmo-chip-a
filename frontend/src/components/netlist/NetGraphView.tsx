@@ -362,7 +362,7 @@ export function NetGraphView({ annotations, onDeviceClick, vddNet, gndNet, highl
   // Collected data
   const collected = useMemo(() => {
     if (!annotations) return null;
-    return collectDieWideAnalogDevices(annotations);
+    return collectDieWideAnalogDevices(annotations, annotations?.umPerPx ?? 1);
   }, [annotations, getRenameVersion()]);
 
   const collAnn = useMemo(() => annotations, [annotations]);
