@@ -93,12 +93,12 @@ export const useCellREStore = create<CellREState & CellREActions>()((set, get) =
 export const TOOL_LAYERS: Record<"rect" | "polygon" | "point" | "polyline", LayerType[]> = {
   rect: ["diffusion","polysilicon","metal1","metal2","nwell","pwell","base","emitter","resistor_body","hsr","film","capacitor_bottom","capacitor_top","metal3","metal4","metal5","metal6","npn_id","pnp_id","lpnp_id","vpnp","res_id","cap_id","diode_id","collector","bulk","wire_hitbox"],
   polygon: ["diffusion","polysilicon","metal1","metal2","nwell","pwell","base","emitter","resistor_body","hsr","film","capacitor_bottom","capacitor_top","metal3","metal4","metal5","metal6","npn_id","pnp_id","lpnp_id","vpnp","res_id","cap_id","diode_id","collector","bulk","wire_hitbox"],
-  point: ["contact","via1"],
+  point: ["contact","via1","via2","via3","via4","via5"],
   polyline: ["resistor_body","polysilicon","base","emitter","hsr","film"],
 };
 
 export const LAYER_LABEL: Record<LayerType, string> = {
-  diffusion:"diff",polysilicon:"poly",metal1:"m1",metal2:"m2",contact:"contact",via1:"m1↔m2",wire_hitbox:"hitbox",
+  diffusion:"diff",polysilicon:"poly",metal1:"m1",metal2:"m2",contact:"contact",via1:"m1↔m2",via2:"m2↔m3",via3:"m3↔m4",via4:"m4↔m5",via5:"m5↔m6",wire_hitbox:"hitbox",
   nwell:"nwell",pwell:"pwell",deep_nwell:"dnwell",buried_layer:"buried",base:"base",emitter:"emit",collector_sinker:"csink",
   jfet_gate:"jgate",jfet_channel:"jchan",resistor_body:"R",hsr:"HSR",film:"Film",capacitor_bottom:"capB",capacitor_top:"capT",
   metal3:"m3",metal4:"m4",metal5:"m5",metal6:"m6",device_box:"dbox",
@@ -107,7 +107,7 @@ export const LAYER_LABEL: Record<LayerType, string> = {
 };
 
 export const LAYER_LONG: Record<LayerType, string> = {
-  diffusion:"Diffusion",polysilicon:"Polysilicon",metal1:"Metal 1",metal2:"Metal 2",contact:"Contact via",via1:"M1 ↔ M2 via",wire_hitbox:"Wire hitbox",
+  diffusion:"Diffusion",polysilicon:"Polysilicon",metal1:"Metal 1",metal2:"Metal 2",contact:"Contact via",via1:"M1 ↔ M2 via",via2:"M2 ↔ M3 via",via3:"M3 ↔ M4 via",via4:"M4 ↔ M5 via",via5:"M5 ↔ M6 via",wire_hitbox:"Wire hitbox",
   nwell:"N-Well",pwell:"P-Well",deep_nwell:"Deep N-Well",buried_layer:"Buried Layer",base:"Base",emitter:"Emitter",collector_sinker:"Collector Sinker",
   jfet_gate:"JFET Gate",jfet_channel:"JFET Channel",resistor_body:"Resistor Body",hsr:"High-Sheet-R",film:"Thin Film",capacitor_bottom:"Capacitor Bottom",capacitor_top:"Capacitor Top",
   metal3:"Metal 3",metal4:"Metal 4",metal5:"Metal 5",metal6:"Metal 6",device_box:"Device Box",

@@ -9,7 +9,17 @@ import {
 import { isTypingTarget } from "../../lib/keyboard";
 import type { DrawAnchor } from "../../lib/netGraph";
 import { useDieViewerStore, type ToolKind } from "../../state/dieViewer";
+import { useSession, DEFAULT_METAL_STACK } from "../../state/session";
 import { uuid } from "../../lib/uuid";
+import type { WireLayer } from "shared";
+
+function activeLayer(): WireLayer | null {
+  const stack = useSession.getState().metalStack ?? DEFAULT_METAL_STACK;
+  const id = useDieViewerStore.getState().activeMetalId;
+  if (!id) return null;
+  const m = stack.metals.find(m => m.id === id);
+  return (m?.layer ?? null) as WireLayer | null;
+}
 
 /** Phase-2 endpoint for the reference start point. 45°-snapped to the cursor
  *  by default; `free` (Shift held) lets the bus take any angle. Every wire
@@ -174,7 +184,7 @@ export function useMultiWireTool(opts: {
 
   const finalize = useCallback(
     (d: Draft, ends: Point[]) => {
-      const layer = useDieViewerStore.getState().wireLayer;
+      const layer = activeLayer();
       const nets = netsRef.current;
       const nameBase = nets.length;
       const uid = () => uuid();

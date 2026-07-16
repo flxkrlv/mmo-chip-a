@@ -9,12 +9,14 @@ export type {
   CommentAnnotation,
   CommentReply,
   DieAnnotations,
+  DieConfig,
   DieLevelMetadata,
   DieMetadata,
   DieSummary,
   ImportJobPhase,
   ImportJobProgress,
   ImportJobStatus,
+  MetalStack,
 } from "shared";
 
 // --- Backend-only types ---
@@ -44,6 +46,7 @@ export interface DieRecord {
   levels: import("shared").DieLevelMetadata[];
   createdAt: string;
   updatedAt: string;
+  config?: import("shared").DieConfig;
 }
 
 export interface DieIndex {

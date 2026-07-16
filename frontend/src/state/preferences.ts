@@ -119,6 +119,19 @@ interface PreferencesState {
   /** Per-conductor-layer wire colour override (metal1, metal2, etc.).
    *  Absent = use WIRE_LAYER_COLOR defaults from style.ts. */
   wireLayerColors: Record<string, string>;
+  /** When enabled, clicking a vertex on an adjacent metal auto-places the
+   *  via and connects, instead of requiring manual via placement. */
+  autoViaEnabled: boolean;
+  /** Where to place the via when pressing E/Q during wire drawing:
+   *  "cursor" = at the raw cursor position (current),
+   *  "wire-end" = at the snapped wire preview endpoint (only if not on existing node/via/terminal). */
+  viaPlaceMode: "cursor" | "wire-end";
+  /** Per-via-layer colour override (VIA12, VIA23, …). Absent = use
+   *  via.color from the metal stack. */
+  viaLayerColors: Record<string, string>;
+  /** Show via type label (VIA12, VIA23, …) above each via annotation on the
+   *  die viewer canvas. */
+  viaLabelsVisible: boolean;
   /** Wire node (junction dot) radius multiplier relative to net width.
    *  0 = hide nodes entirely. Default = NET_NODE_RADIUS_MULT. */
   netNodeSize: number;
@@ -147,6 +160,14 @@ interface PreferencesActions {
   setNetColorOverride: (netId: string, color: string | null) => void;
   /** Set colour for a specific conductor layer (metal1, metal2, poly, etc.). */
   setWireLayerColor: (layer: string, color: string) => void;
+  /** Toggle auto-via placement on cross-layer snap. */
+  setAutoViaEnabled: (enabled: boolean) => void;
+  /** Switch via placement mode for E/Q: "cursor" or "wire-end". */
+  setViaPlaceMode: (mode: "cursor" | "wire-end") => void;
+  /** Toggle via type labels on the die viewer canvas. */
+  setViaLabelsVisible: (visible: boolean) => void;
+  /** Override colour for a specific via layer (VIA12, VIA23, …). */
+  setViaLayerColor: (viaId: string, color: string) => void;
   /** Set wire node radius multiplier (0 = hide nodes). */
   setNetNodeSize: (size: number) => void;
   /** Toggle wire node visibility. */
@@ -252,6 +273,10 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
           metal1: WIRE_LAYER_COLOR.metal1,
           metal2: WIRE_LAYER_COLOR.metal2
         },
+        autoViaEnabled: false,
+        viaPlaceMode: "wire-end",
+        viaLayerColors: {},
+        viaLabelsVisible: true,
         netNodeSize: NET_NODE_RADIUS_MULT,
         netNodeVisible: true,
         resistorOpacity: 1,
@@ -264,6 +289,13 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
         setWireLayerColor: (layer, color) =>
           set((state) => ({
             wireLayerColors: { ...state.wireLayerColors, [layer]: color }
+          })),
+        setAutoViaEnabled: (enabled) => set({ autoViaEnabled: enabled }),
+        setViaPlaceMode: (mode) => set({ viaPlaceMode: mode }),
+        setViaLabelsVisible: (visible) => set({ viaLabelsVisible: visible }),
+        setViaLayerColor: (viaId, color) =>
+          set((state) => ({
+            viaLayerColors: { ...state.viaLayerColors, [viaId]: color }
           })),
         setNetNodeSize: (size) =>
           set({ netNodeSize: Math.max(0, Math.min(5, size)) }),
@@ -461,6 +493,10 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
           sheetR: state.sheetR,
           analogOverrides: state.analogOverrides,
           wireLayerColors: state.wireLayerColors,
+          autoViaEnabled: state.autoViaEnabled,
+          viaPlaceMode: state.viaPlaceMode,
+          viaLabelsVisible: state.viaLabelsVisible,
+          viaLayerColors: state.viaLayerColors,
           netNodeSize: state.netNodeSize,
           netNodeVisible: state.netNodeVisible,
           resistorOpacity: state.resistorOpacity,

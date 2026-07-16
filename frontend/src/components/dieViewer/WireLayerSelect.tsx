@@ -1,38 +1,38 @@
-import type { WireLayer } from "shared";
+import type { MetalLevel } from "shared";
 
-/** Selectable layers for the wire tool — only metal layers.
- *  Poly and unknown are removed: device contacts connect to ME1 only;
- *  ME2+ requires a via.  Also used in the InspectorPanel for edge
- *  layer assignment. */
-export const WIRE_LAYER_OPTIONS: ReadonlyArray<{
+export function wireLayerOptions(metals: MetalLevel[]): ReadonlyArray<{
   label: string;
-  value: WireLayer | null;
-}> = [
-  { label: "m1", value: "metal1" },
-  { label: "m2", value: "metal2" }
-];
+  value: string | null;
+}> {
+  return metals.map(m => ({
+    label: m.id.toLowerCase(),
+    value: m.layer,
+  }));
+}
 
-/** Chip row for picking a wire conductor layer (matches the hifi/wireframe
- *  "layer" row). Used both as a wire-tool option (bound to the store) and in
- *  the inspector (bound to a selected segment's edge). */
+/** Chip row for picking a wire conductor layer. Renders chips from the
+ *  provided metal stack. Used both as a wire-tool option (bound to the store)
+ *  and in the inspector (bound to a selected segment's edge). */
 export function WireLayerSelect({
+  metals,
   value,
   onChange
 }: {
-  value: WireLayer | null;
-  onChange: (layer: WireLayer | null) => void;
+  metals: MetalLevel[];
+  value: string | null;
+  onChange: (layer: string | null) => void;
 }) {
   return (
     <span className="row" style={{ gap: 4 }}>
-      {WIRE_LAYER_OPTIONS.map((o) => (
+      {metals.map((m) => (
         <button
-          key={o.label}
+          key={m.id}
           type="button"
-          className={"chip" + (o.value === value ? " on" : "")}
+          className={"chip" + (m.layer === value ? " on" : "")}
           style={{ cursor: "pointer" }}
-          onClick={() => onChange(o.value)}
+          onClick={() => onChange(m.layer)}
         >
-          {o.label}
+          {m.id.toLowerCase()}
         </button>
       ))}
     </span>

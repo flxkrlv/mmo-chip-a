@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import type { DieMLConfig, WireLayer } from "shared";
+import type { DieMLConfig } from "shared";
 import type { AnnotationAction } from "../api/actions";
 
 /** Which right-panel tab is showing. The ML tab also drives a render mode:
@@ -80,10 +80,11 @@ interface DieViewerState {
   /** When set, the global ⌘Z/⌘⇧Z handler defers to this instead of the
    *  action dispatcher (e.g. per-point undo while drawing a wire). */
   undoOverride: UndoOverride | null;
-  /** Active conductor layer for the wire / multi-wire tools. `null` = the
-   *  "unknown" layer (edges store no `layer`). Changing it mid-draw only
-   *  affects segments drawn afterwards. */
-  wireLayer: WireLayer | null;
+  /** Active metal id (ME1, ME2, …) for the wire / multi-wire tools.
+   *  `null` = the "unknown" layer (edges store no `layer`). */
+  activeMetalId: string | null;
+  /** Active via id (VIA12, VIA23, …) for via placement. */
+  activeViaId: string | null;
   /** Orientation for the cell-grid guide-line tool: "x" = vertical line
    *  (fixed x), "y" = horizontal line (fixed y). */
   guideAxis: "x" | "y";
@@ -116,7 +117,8 @@ interface DieViewerActions {
   clearRedo: () => void;
   /** Register / clear the global-undo override (see `UndoOverride`). */
   setUndoOverride: (override: UndoOverride | null) => void;
-  setWireLayer: (layer: WireLayer | null) => void;
+  setActiveMetalId: (id: string | null) => void;
+  setActiveViaId: (id: string | null) => void;
   setGuideAxis: (axis: "x" | "y") => void;
   setMeasureMode: (mode: "free" | "h" | "v" | "ortho" | "diag") => void;
   /** Patch the draft ML config (one or more fields). */
@@ -141,7 +143,8 @@ const INITIAL_STATE: DieViewerState = {
   undoStack: [],
   redoStack: [],
   undoOverride: null,
-  wireLayer: null,
+  activeMetalId: null,
+  activeViaId: null,
   guideAxis: "x",
   measureMode: "free",
   mlConfig: { ...DEFAULT_ML_CONFIG },
@@ -219,7 +222,8 @@ export const useDieViewerStore = create<DieViewerState & DieViewerActions>()((se
   clearRedo: () => set({ redoStack: [] }),
   setUndoOverride: (override) => set({ undoOverride: override }),
   setActiveAnalogLayer: (layer) => set({ activeAnalogLayer: layer }),
-  setWireLayer: (layer) => set({ wireLayer: layer }),
+  setActiveMetalId: (id) => set({ activeMetalId: id }),
+  setActiveViaId: (id) => set({ activeViaId: id }),
   setGuideAxis: (axis) => set({ guideAxis: axis }),
   setMeasureMode: (mode) => set({ measureMode: mode }),
   setMlConfig: (patch) =>

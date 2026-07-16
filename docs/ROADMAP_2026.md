@@ -1,6 +1,6 @@
 # ROADMAP: mmo-chip-a — 2026 Q3
 
-**Дата:** 2026-07-14
+**Дата:** 2026-07-16
 **Статус:** active
 
 ## TL;DR
@@ -8,7 +8,7 @@
 | Phase | Цель | Длительность | Статус |
 |-------|------|--------------|--------|
 | **1. Производительность** | UI не блокируется + per-cellType cache | 4-5 дней | ✅ **DONE** (2026-07-14) |
-| **2. Многослойная металлизация** | Конфигурируемая архитектура для 6 ME + via | 4-5 дней | ⏸️ не начато |
+| **2. Многослойная металлизация** | Конфигурируемая архитектура для 6 ME + via | 4-5 дней | ✅ **DONE** (2026-07-16) |
 | **3. Аналоговая экстракция** | Закрыть пробелы (VPNP, capacitors, HSPICE) | 3-5 дней | ⏸️ не начато |
 | **4. Рефакторинг god-файлов** | simpleAnalog/cell/DieViewerPage → мелкие модули | 5-7 дней | 🟡 Vitest setup ✅, остальное ⏸️ |
 
@@ -96,11 +96,11 @@
 
 ---
 
-## Phase 2 — Многослойная металлизация
+## Phase 2 — Многослойная металлизация ✅ (2026-07-16)
 
-**Цель:** конфигурируемая архитектура для 6 металлов и via между ними. Не хардкод ME1/ME2.
+**Цель:** конфигурируемая архитектура для 6 металлов и via между ними. Отказ от хардкода ME1/ME2.
 
-### Шаг 2.1 — Тип MetalStack в shared (0.5 дня)
+### Шаг 2.1 — Тип MetalStack в shared ✅
 
 **Файлы:** `shared/src/types.ts`
 
@@ -202,7 +202,7 @@ const isVia = metalStack.vias.some(v => v.layer === wire.layer);
 if (isMetal || isVia || wire.layer === 'contact') { ... }
 ```
 
-### Шаг 2.7 — Тесты (0.5 дня)
+### Шаг 2.7 — Тесты (0.5 дня) ✅
 
 **Файлы:** `backend/src/metal-stack.test.ts` (новый)
 
@@ -212,15 +212,74 @@ if (isMetal || isVia || wire.layer === 'contact') { ... }
 - Минимум 1 metal + 1 via
 - Custom metal names (юзер может назвать "M1" вместо "ME1")
 
-### Acceptance Phase 2
+### Шаг 2.8 — GUI для конфигурации металлов ✅ (2026-07-16)
 
-- `metalStack` хранится в `metadata.json`, мигрируется с дефолта
-- SubBar показывает ME1..ME6 (или кастомные имена)
-- Хоткеи 1..6 переключают активный metal
-- Wire tool создаёт wire на активном metal
-- Via размещается через `O`, использует правильный via из стека
-- SPICE netlist корректно ссылается на metal/via layers
-- Тесты на API + unit-тесты на валидацию
+**Файлы:**
+- `frontend/src/state/session.ts` — `buildMetalStack(count)` helper
+- `frontend/src/components/dieViewer/OutlineTree.tsx` — select количества металлов (1-6) в Net Settings popover
+- `frontend/src/components/dieViewer/DieToolbar.tsx` — хук-селектор для реактивного обновления
+
+**Что:**
+- Net Settings popover → select "Metal layers" (1-6)
+- При смене → PUT на сервер + обновление стора
+- GUI (Layer colors, WireOptions, ViaOptions, hotkeys) подхватывает без перезагрузки
+
+### Шаг 2.9 — Color picker 8+8 ✅ (2026-07-16)
+
+**Файлы:** `frontend/src/renderer/annotations/style.ts`, `frontend/src/components/dieViewer/OutlineTree.tsx`
+
+**Что:**
+- NET_COLOR_OPTIONS и VIA_COLOR_OPTIONS: 18 → 16 цветов (8+8)
+- Явные 2 ряда по 8 кружков (нет 9+7)
+- Металлы: подпись `Metal 1` (не ME1), лейблы сверху по левому краю
+- VIA: тот же стиль, подпись `VIA12`
+
+### Шаг 2.10 — Via labels overlay ✅ (2026-07-16)
+
+**Файлы:**
+- `frontend/src/renderer/annotations/dieAnnotations.ts` — текст поверх via
+- `frontend/src/renderer/layers/AnnotationLayer.ts` — label pass после nets
+- `frontend/src/state/preferences.ts` — `viaLabelsVisible`
+- `frontend/src/routes/DieViewerPage.tsx` — toggle VIA LABEL в правой панели
+
+**Что:**
+- Лейбл типа via (VIA12, VIA56…) по центру фигуры, только при zoom ≥ 8×
+- Чёрная полупрозрачная подложка, белый жирный текст — читаемо на любом фоне
+- Слой для label-ов — отдельный pass после nets (поверх проводов)
+- Toggle `VIA LABEL` в правой панели (overlay)
+
+### Шаг 2.11 — Wire-end via placement ✅ (2026-07-16)
+
+**Файлы:**
+- `frontend/src/state/preferences.ts` — `viaPlaceMode` ("cursor" | "wire-end")
+- `frontend/src/components/dieViewer/DieToolbar.tsx` — чекбокс в WireOptions
+- `frontend/src/routes/DieViewerPage.tsx` — E/Q handler читает `wirePreviewLive`
+
+**Что:**
+- По умолчанию `wire-end`: E/Q ставит via на конце превью провода (snapped), а не под курсором
+- Если preview snapнулся к ноде/via/терминалу — E/Q игнорируется
+- Можно переключить на `cursor` (старое поведение)
+
+### Шаг 2.12 — ProblemNavigator: per-via dangling detection ✅ (2026-07-16)
+
+**Файлы:** `frontend/src/components/dieViewer/ProblemNavigatorPanel.tsx`
+
+**Что:**
+- Замена перебора всех via-определений на поиск конкретного via по `ann.layer`
+- VIA56 теперь проверяет только ME5 + ME6, а не ME1/ME2
+- Проброс `metalStack` из стора
+
+### Acceptance Phase 2 (обновлён)
+
+- ✅ `metalStack` хранится в `metadata.json`, мигрируется с дефолта
+- ✅ GUI показывает только активные металлы (1-6), настраивается в Net Settings
+- ✅ Хоткеи 1..6 переключают активный metal (в пределах стека)
+- ✅ Wire tool создаёт wire на активном metal
+- ✅ Via размещается через E/Q, использует правильный via из стека
+- ✅ Via labels поверх проводов с toggle
+- ✅ Wire-end режим для E/Q (via на конце превью)
+- ✅ ProblemNavigator корректно проверяет dangling via для всех металлов
+- ✅ Тесты на API + unit-тесты на валидацию
 
 ## Phase 3 — Аналоговая экстракция: закрыть пробелы
 
@@ -355,21 +414,24 @@ jobs:
 - **Web deploy / OAuth** — не нужно
 - **Figma-style cursors** — низкий приоритет, дорого
 
-## Принятые решения (Phase 1)
+## Принятые решения (Phase 1-2)
 
 | # | Вопрос | Решение |
 |---|--------|---------|
 | 1 | Hash-функция для cellType | **FNV1a-64** (быстрее SHA-256 в ~200x, коллизии < 10⁻⁹ на 500 entry) |
 | 2 | TTL кэша | **LRU-only + maxEntries=500** (без TTL, кэш живёт пока entry не вытеснится) |
 | 3 | Отмена extraction | **AbortSignal** (прерывание через AbortController, не игнор результатов) |
-| 4 | Default metal stack | **2 metal (ME1, ME2)** — backward compat (не реализовано) |
-| 5 | Custom metal имена | **Свободные строки** (не реализовано) |
-| 6 | Wire tool `1..6` vs `Alt+1..6` | **Alt+1..6 если конфликт** (не реализовано) |
+| 4 | Default metal stack | **6 metal (ME1..ME6)** — с возможностью понизить до 1 через GUI |
+| 5 | Custom metal имена | **Свободные строки** — типы готовы, но UI для редактирования имён не сделан |
+| 6 | Wire tool metal hotkeys | **1..6** (Shift+1..5 — табы, конфликта нет) |
 | 7 | Vitest vs Jest | **Vitest** ✅ установлен |
 | 8 | Incremental wire cache | **Пропущен** — риск ошибок > выгода |
+| 9 | Via place mode | **wire-end** по умолчанию (via на конце превью, не под курсором) |
+| 10 | Via labels | **Только при zoom ≥ 8×**, чёрная подложка + белый текст, toggle VIA LABEL |
+| 11 | Metal count config | **Select 1-6 в Net Settings** (PUT на сервер, без перезагрузки) |
+| 12 | Color picker | **16 цветов (8+8)**, два явных ряда |
 
 ## Что дальше
 
-- **Phase 2 — Многослойная металлизация** (конфигурируемый MetalStack, 6 ME, via)
 - **Phase 3 — Аналоговая экстракция** (VPNP, capacitors, HSPICE verification)
 - **Phase 4 — Рефакторинг god-файлов** (simpleAnalog → 6 модулей, cell → 3 модуля, DieViewerPage → hooks)

@@ -28,7 +28,59 @@ import type {
 } from "../../renderer/layers/AnnotationLayer";
 import type { Viewport } from "../../renderer/types";
 import { useDieViewerStore, type ToolKind } from "../../state/dieViewer";
+import { useSession, DEFAULT_METAL_STACK } from "../../state/session";
 import type { WirePreview } from "./WireDraftOverlay";
+import type { WireLayer, MetalStack } from "shared";
+import { uuid } from "../../lib/uuid";
+
+// ── Metal-stack helpers ────────────────────────────────────────
+
+/** Resolve activeMetalId → layer name from the current metal stack. */
+function activeLayer(): WireLayer | null {
+  const stack = useSession.getState().metalStack ?? DEFAULT_METAL_STACK;
+  const id = useDieViewerStore.getState().activeMetalId;
+  if (!id) return null;
+  const m = stack.metals.find(m => m.id === id);
+  return (m?.layer ?? null) as WireLayer | null;
+}
+
+/** Get the current active metal id from the store. */
+function activeMetalId(): string | null {
+  return useDieViewerStore.getState().activeMetalId;
+}
+
+/** Collect all distinct edge layers at a net vertex. */
+function getEdgeLayersAtVertex(
+  nets: AnnotationNet[],
+  netId: string,
+  nodeId: string,
+): Set<string | undefined> {
+  const layers = new Set<string | undefined>();
+  for (const net of nets) {
+    if (net.id !== netId) continue;
+    for (const edge of net.edges) {
+      if (edge.from === nodeId || edge.to === nodeId) {
+        layers.add(edge.layer);
+      }
+    }
+  }
+  return layers;
+}
+
+/** Find a via in the metal stack that connects `fromId` to `toId`. */
+function viaBetween(stack: MetalStack, fromId: string, toId: string): { id: string } | undefined {
+  return stack.vias.find(
+    v => (v.from === fromId && v.to === toId) || (v.from === toId && v.to === fromId),
+  );
+}
+
+/** Check if two metal ids are adjacent in the stack (z diff = 1). */
+function areAdjacent(stack: MetalStack, aId: string, bId: string): boolean {
+  const a = stack.metals.find(m => m.id === aId);
+  const b = stack.metals.find(m => m.id === bId);
+  if (!a || !b) return false;
+  return Math.abs(a.z - b.z) === 1;
+}
 
 /** Click tolerance in CSS pixels — world tolerance is this divided by zoom. */
 export const HIT_TOLERANCE_PX = 4;
@@ -163,6 +215,13 @@ export function useWireTool(opts: {
   /** Live getter for the "Auto-end on contact" pref. When true, clicking on
    *  a cell terminal (orange halo) commits the wire immediately. Default = on. */
   autoEndOnContactEnabled?: () => boolean;
+  /** Find a via annotation (manual, with layer) near `world` within `tolWorld`.
+   *  Returns the via layer id and centre point, or null. Used for cross-layer
+   *  snap detection and auto-via placement. */
+  findViaAnnotation?: (world: Point, tolWorld: number) => { viaId: string; x: number; y: number } | null;
+  /** Live getter for the "Auto-via" pref. When enabled, clicking a vertex on
+   *  an adjacent metal auto-places the via and connects. Default = off. */
+  autoViaEnabled?: () => boolean;
 }): WireTool {
   const {
     dispatcher,
@@ -178,7 +237,9 @@ export function useWireTool(opts: {
     autoEndOnViaEnabled,
     getViaSizeWorld,
     findNearestTerminal,
-    autoEndOnContactEnabled
+    autoEndOnContactEnabled,
+    findViaAnnotation,
+    autoViaEnabled
   } = opts;
   // Mirror the snap providers into a ref so callbacks don't re-bind every
   // render (would invalidate downstream useEffects + churn React Query).
@@ -188,7 +249,9 @@ export function useWireTool(opts: {
     snapToViasEnabled,
     autoEndOnViaEnabled,
     getViaSizeWorld,
-    findNearestTerminal
+    findNearestTerminal,
+    findViaAnnotation,
+    autoViaEnabled,
   });
   snapRef.current = {
     findNearestVia,
@@ -196,17 +259,40 @@ export function useWireTool(opts: {
     snapToViasEnabled,
     autoEndOnViaEnabled,
     getViaSizeWorld,
-    findNearestTerminal
+    findNearestTerminal,
+    findViaAnnotation,
+    autoViaEnabled,
   };
 
   /** Try the via-snap path: return the snapped point if the pref is on and
    *  a via lies within the (zoom-adjusted) via radius of `world`. Tolerance
-   *  matches the rendered dot — see `viaSnapTolerance`. */
+   *  matches the rendered dot — see `viaSnapTolerance`.
+   *
+   *  Layer-aware: when a manual via annotation with a known layer is found,
+   *  the snap only succeeds if the current wire metal is one of the via's
+   *  connected metals. ML vias (no layer) are always allowed. */
   const viaSnap = useCallback((world: Point, zoom: number): Point | null => {
-    const { findNearestVia, snapToViasEnabled, getViaSizeWorld } = snapRef.current;
+    const { findNearestVia, findViaAnnotation, snapToViasEnabled, getViaSizeWorld } = snapRef.current;
     if (!findNearestVia || !snapToViasEnabled?.()) return null;
     const worldR = getViaSizeWorld?.() ?? VIA_DEFAULT_SIZE;
-    return findNearestVia(world, viaSnapTolerance(zoom, worldR));
+    const tol = viaSnapTolerance(zoom, worldR);
+    const snapped = findNearestVia(world, tol);
+    if (!snapped) return null;
+
+    const currentId = activeMetalId();
+    if (!currentId) return snapped; // no active metal → legacy, allow
+
+    // Check if this snapped point is a manual via with a known layer
+    const ann = findViaAnnotation?.(snapped, 2); // tight tolerance to match exactly
+    if (ann) {
+      const stack = useSession.getState().metalStack ?? DEFAULT_METAL_STACK;
+      const viaDef = stack.vias.find(v => v.id === ann.viaId);
+      if (viaDef && viaDef.from !== currentId && viaDef.to !== currentId) {
+        return null; // via's metals don't include current → reject
+      }
+    }
+    // ML vias (no layer) or compatible via → allow
+    return snapped;
   }, []);
 
   /** Auto-end-on-via probe: when the pref is on, return the first via lying on
@@ -233,11 +319,13 @@ export function useWireTool(opts: {
    *  virtual vertex marker, so a terminal under that wire doesn't confuse. */
   const resolveTerminalSnap = useCallback(
     (world: Point, zoom: number): TerminalSnapTarget | null => {
-      // Only snap to device terminals when ME1 is selected.
-      // ME2+ requires a via to reach the contact — don't lure the user
-      // into drawing an illegal ME2→contact connection.
-      const layer = useDieViewerStore.getState().wireLayer;
-      if (layer && layer !== "metal1") return null;
+      // Only snap to device terminals when the bottom metal is selected.
+      // Upper metals require a via to reach the contact — don't lure the user
+      // into drawing an illegal connection.
+      const stack = useSession.getState().metalStack ?? DEFAULT_METAL_STACK;
+      const firstMetalLayer = stack.metals[0]?.layer;
+      const layer = activeLayer();
+      if (layer && firstMetalLayer && layer !== firstMetalLayer) return null;
       const { findNearestTerminal } = snapRef.current;
       if (!findNearestTerminal) return null;
       const tol = TERMINAL_SNAP_TOLERANCE_PX / zoom;
@@ -294,27 +382,74 @@ export function useWireTool(opts: {
    *  tolerance, and a vertex sitting under `via` (even one larger than the
    *  vertex dot) is caught too — so the wire joins the existing net instead of
    *  starting a disconnected one beside it. `widen` is false under Shift (free
-   *  placement), where only an exact hit should connect. */
+   *  placement), where only an exact hit should connect.
+   *
+   *  Layer compatibility: if the current wire layer differs from the vertex's
+   *  edge layers, the snap is rejected unless a via annotation (matching the
+   *  two metals) lies within tolerance. When autoVia is enabled and the metals
+   *  are adjacent, the snap is allowed and the caller is expected to place the
+   *  via (the returned node carries `autoViaId`). */
   const snapNode = useCallback(
     (
       cursor: Point,
       via: Point | null,
       zoom: number,
       widen: boolean
-    ): ResolvedNode | null => {
+    ): (ResolvedNode & { autoViaId?: string }) | null => {
       const hitTol = HIT_TOLERANCE_PX / zoom;
       if (!widen) return nearestNode(cursor, hitTol);
-      const { snapToViasEnabled, getViaSizeWorld } = snapRef.current;
+      const { snapToViasEnabled, getViaSizeWorld, findViaAnnotation, autoViaEnabled } = snapRef.current;
       const viaTol = snapToViasEnabled?.()
         ? viaSnapTolerance(zoom, getViaSizeWorld?.() ?? VIA_DEFAULT_SIZE)
         : 0;
-      const byCursor = nearestNode(cursor, Math.max(hitTol, viaTol));
+      const searchTol = Math.max(hitTol, viaTol);
+      const byCursor = nearestNode(cursor, searchTol);
       if (byCursor) return byCursor;
-      // The cursor snapped to a via whose centre is offset from the vertex it
-      // covers (a via larger than the vertex): look right under the via too.
       return via ? nearestNode(via, viaTol) : null;
     },
     [nearestNode]
+  );
+
+  /** Check layer compatibility between the current wire metal and a vertex.
+   *  Returns the vertex if compatible, or an autoVia marker, or null to reject.
+   *  Separated so `addWirePoint` can use it before making the snap decision. */
+  const checkLayerCompat = useCallback(
+    (node: ResolvedNode, zoom: number): (ResolvedNode & { autoViaId?: string }) | null => {
+      const currentId = activeMetalId();
+      if (!currentId) return node; // null layer → legacy, allow
+      const stack = useSession.getState().metalStack ?? DEFAULT_METAL_STACK;
+      const vertexLayers = getEdgeLayersAtVertex(netsRef.current, node.netId, node.nodeId);
+      if (vertexLayers.size === 0) return node; // no edges → legacy, allow
+      if (vertexLayers.has(undefined)) return node; // legacy edge without layer
+
+      // Find what metal ids these layers correspond to
+      const vertexMetalIds = new Set<string>();
+      for (const l of vertexLayers) {
+        if (l) {
+          const m = stack.metals.find(m => m.layer === l);
+          if (m) vertexMetalIds.add(m.id);
+        }
+      }
+      if (vertexMetalIds.has(currentId)) return node; // same metal → allow
+
+      // Different metals: need a via
+      const { findViaAnnotation, autoViaEnabled: autoVia } = snapRef.current;
+      const autoOn = autoVia?.() ?? false;
+
+      // Check if auto-via is possible (adjacent metals)
+      for (const vId of vertexMetalIds) {
+        const via = viaBetween(stack, currentId, vId);
+        if (!via) continue;
+        if (!areAdjacent(stack, currentId, vId)) continue;
+        // Adjacent → check if existing via annotation nearby
+        const viaTol = viaSnapTolerance(zoom, 15);
+        const existing = findViaAnnotation?.(node, viaTol);
+        if (existing) return node; // via already exists → allow
+        if (autoOn) return { ...node, autoViaId: via.id }; // auto-via → allow + flag
+      }
+      return null; // no compatible via → reject
+    },
+    [],
   );
 
   const snapVertex = useCallback(
@@ -437,7 +572,7 @@ export function useWireTool(opts: {
       const d = draftRef.current;
       // Layer active right now — applied to whatever segment(s) this click
       // creates, so switching layer mid-draw only affects new segments.
-      const layer = useDieViewerStore.getState().wireLayer;
+      const layer = activeLayer();
 
       if (!d) {
         draftRedoRef.current = [];
@@ -445,13 +580,36 @@ export function useWireTool(opts: {
         // vertex (even one hidden under a via) so the new wire extends that
         // net.
         const via = viaSnap(world, vp.zoom);
-        const node = snapNode(world, via, vp.zoom, true);
-        if (node) {
+        const rawNode = snapNode(world, via, vp.zoom, true);
+        if (rawNode) {
+          // Check layer compatibility (cross-metal via detection)
+          const compat = checkLayerCompat(rawNode, vp.zoom);
+          if (!compat) {
+            // Start a separate disconnected wire
+            const start = via
+              ? { x: Math.round(via.x), y: Math.round(via.y) }
+              : world;
+            setDraft({ points: [start], anchor: null, segLayers: [] });
+            return;
+          }
           setDraft({
-            points: [{ x: node.x, y: node.y }],
-            anchor: { netId: node.netId, nodeId: node.nodeId },
+            points: [{ x: compat.x, y: compat.y }],
+            anchor: { netId: compat.netId, nodeId: compat.nodeId },
             segLayers: []
           });
+          // AutoVia: place via annotation at the snap point
+          if (compat.autoViaId) {
+            dispatcher.dispatch({
+              kind: "upsertAnnotation",
+              annotation: {
+                id: uuid(), class: "point_via",
+                layer: compat.autoViaId,
+                geometry: { kind: "point", x: compat.x, y: compat.y },
+                source: "human"
+              },
+              prevAnnotation: null
+            });
+          }
           return;
         }
         // Started on a wire body → a virtual vertex that splits that edge on
@@ -532,33 +690,50 @@ export function useWireTool(opts: {
       }
       const snapped45 = snapTo45(last, world);
       const via = shift ? null : viaSnap(snapped45, vp.zoom);
-      const node = snapNode(world, via, vp.zoom, !shift);
-      if (node) {
-        // Connect with an axis-aligned L (two 90° segments) into the vertex,
-        // unless the free-wiring hotkey (Shift) bypasses it.
-        let pts = d.points;
-        let segs = d.segLayers;
-        if (!shift) {
-          const elbow = orthoElbow(last, { x: node.x, y: node.y });
-          if (elbow) {
-            pts = [...d.points, elbow];
-            segs = [...d.segLayers, layer];
+      const rawNode = snapNode(world, via, vp.zoom, !shift);
+      if (rawNode) {
+        // Check layer compatibility (cross-metal via detection)
+        const compat = checkLayerCompat(rawNode, vp.zoom);
+        if (compat) {
+          // Connect with an axis-aligned L (two 90° segments) into the vertex,
+          // unless the free-wiring hotkey (Shift) bypasses it.
+          let pts = d.points;
+          let segs = d.segLayers;
+          if (!shift) {
+            const elbow = orthoElbow(last, { x: compat.x, y: compat.y });
+            if (elbow) {
+              pts = [...d.points, elbow];
+              segs = [...d.segLayers, layer];
+            }
           }
+          const action = buildAction(d, (nets, anchor) =>
+            connectToNode(
+              nets,
+              pts,
+              anchor,
+              compat.netId,
+              compat.nodeId,
+              segs,
+              layer
+            )
+          );
+          if (action) void dispatcher.dispatch(action);
+          clearDraft();
+          // AutoVia: place via annotation at the snap point
+          if (compat.autoViaId) {
+            dispatcher.dispatch({
+              kind: "upsertAnnotation",
+              annotation: {
+                id: uuid(), class: "point_via",
+                layer: compat.autoViaId,
+                geometry: { kind: "point", x: compat.x, y: compat.y },
+                source: "human"
+              },
+              prevAnnotation: null
+            });
+          }
+          return;
         }
-        const action = buildAction(d, (nets, anchor) =>
-          connectToNode(
-            nets,
-            pts,
-            anchor,
-            node.netId,
-            node.nodeId,
-            segs,
-            layer
-          )
-        );
-        if (action) void dispatcher.dispatch(action);
-        clearDraft();
-        return;
       }
 
       const point = shift
@@ -662,7 +837,8 @@ export function useWireTool(opts: {
       }
       const snapped45 = snapTo45(last, world);
       const via = shiftKey ? null : viaSnap(snapped45, zoom);
-      const node = snapNode(world, via, zoom, !shiftKey);
+      const rawNode = snapNode(world, via, zoom, !shiftKey);
+      const node = rawNode ? checkLayerCompat(rawNode, zoom) : null;
       let preview: WirePreview;
       if (node) {
         const elbow = shiftKey ? null : orthoElbow(last, { x: node.x, y: node.y });
@@ -708,7 +884,7 @@ export function useWireTool(opts: {
       const d = draftRef.current;
       if (!d) return null;
       const point = { x: Math.round(world.x), y: Math.round(world.y) };
-      const layer = useDieViewerStore.getState().wireLayer;
+      const layer = activeLayer();
       draftRedoRef.current = [];
       setDraft({
         points: [...d.points, point],

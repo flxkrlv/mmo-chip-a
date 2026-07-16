@@ -61,15 +61,43 @@ export const GLOBAL_HOTKEYS: Record<string, GlobalAction> = {
   "-": "zoomOut",
 };
 
-// ── Navigation hotkeys (1–5, tab switching) ─────────────────────
-// Maps key → index into TAB_ROUTES in App.tsx.
+// ── Navigation hotkeys (Shift+1..5, tab switching) ─────────────
+// Maps Shift+key → index into TAB_ROUTES in App.tsx.
 // 0=Library, 1=Die viewer, 2=Merge cells, 3=RE cell, 4=Code, 5=Netlist (Analog)
 export const NAV_HOTKEYS: Record<string, number> = {
-  "1": 1,  // Die viewer
-  "2": 2,  // Merge cells
-  "3": 3,  // RE cell
-  "4": 4,  // Code
-  "5": 5,  // Netlist (Analog)
+  "1": 1,  // Shift+1 → Die viewer
+  "2": 2,  // Shift+2 → Merge cells
+  "3": 3,  // Shift+3 → RE cell
+  "4": 4,  // Shift+4 → Code
+  "5": 5,  // Shift+5 → Netlist (Analog)
+};
+
+// ── Die-viewer metal hotkeys (bare digits 1..N) ──────────────
+// Maps bare digit key → metal index (0-based) into MetalStack.metals.
+export const METAL_HOTKEYS: Record<string, number> = {
+  "1": 0,
+  "2": 1,
+  "3": 2,
+  "4": 3,
+  "5": 4,
+  "6": 5,
+  "7": 6,
+  "8": 7,
+  "9": 8,
+};
+
+// ── Die-viewer via hotkeys (Alt+1..N) ─────────────────────────
+// Maps Alt+digit key → via index (0-based) into MetalStack.vias.
+export const VIA_HOTKEYS: Record<string, number> = {
+  "1": 0,
+  "2": 1,
+  "3": 2,
+  "4": 3,
+  "5": 4,
+  "6": 5,
+  "7": 6,
+  "8": 7,
+  "9": 8,
 };
 
 // ── Merge Cells mode hotkeys ────────────────────────────────────

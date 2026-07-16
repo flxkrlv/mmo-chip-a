@@ -52,6 +52,38 @@ export type WireLayer =
   | "poly"
   | "metal1" | "metal2" | "metal3" | "metal4" | "metal5" | "metal6";
 
+// ── Metal stack configuration ─────────────────────────────────
+
+export interface MetalLevel {
+  id: string;             // "ME1", "ME2", ...
+  layer: WireLayer;       // "metal1", "metal2", ...
+  z: number;              // 1, 2, 3, ...
+  name: string;           // "Metal 1"
+  color: string;
+  width?: number;
+}
+
+export interface ViaLevel {
+  id: string;             // "VIA12", "VIA23", ...
+  from: string;           // MetalLevel.id (нижний)
+  to: string;             // MetalLevel.id (верхний)
+  layer: string;          // "via1", "via2", ...
+  color: string;
+  size?: number;
+}
+
+export interface MetalStack {
+  metals: MetalLevel[];
+  vias: ViaLevel[];
+  defaultMetalId: string;
+  defaultViaId: string;
+}
+
+export interface DieConfig {
+  metalStack?: MetalStack;
+  umPerPx?: number;
+}
+
 export interface AnnotationNetEdge {
   id: string;
   from: string;
@@ -82,8 +114,12 @@ export type LayerType =
   | "polysilicon"
   | "metal1"
   | "metal2"
+  | "metal3"
+  | "metal4"
+  | "metal5"
+  | "metal6"
   | "contact"
-  | "via1"
+  | "via1" | "via2" | "via3" | "via4" | "via5"
   | "wire_hitbox"
   // ── Analog/BiCMOS extension layers ────────
   | "nwell"
@@ -98,11 +134,6 @@ export type LayerType =
   | "resistor_body"
   | "capacitor_bottom"
   | "capacitor_top"
-  // Extended metal stack
-  | "metal3"
-  | "metal4"
-  | "metal5"
-  | "metal6"
   // Compound: user-drawn device boundary box
   | "device_box"
   // Resistor body: material-specific layers for type detection
@@ -365,6 +396,8 @@ export interface HumanAnnotation {
   geometry: Geometry;
   /** "approved" = a model prediction the user verified; default "human". */
   source?: "human" | "approved";
+  /** Via layer id (VIA12, VIA23, …) for via annotations. Absent = legacy. */
+  layer?: string;
 }
 
 export interface ROIRectangle {

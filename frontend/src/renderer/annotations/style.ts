@@ -24,6 +24,10 @@ export const COLOR_LAYER: Record<LayerType, string> = {
   metal2: "#e060e0",
   contact: "#c0a000",
   via1: "#a030a0",
+  via2: "#b040b0",
+  via3: "#c050c0",
+  via4: "#d060d0",
+  via5: "#e070e0",
   wire_hitbox: "#f3b351",
   // Analog / BiCMOS layers
   nwell: "#ff8844",
@@ -70,6 +74,10 @@ export const LAYER_FILL_OPACITY: Record<LayerType, number> = {
   metal2: 0.4,
   contact: 0.4,
   via1: 0.4,
+  via2: 0.4,
+  via3: 0.4,
+  via4: 0.4,
+  via5: 0.4,
   wire_hitbox: 0.15,
   // Analog layers: well layers are large, use low opacity
   nwell: 0.18,
@@ -146,7 +154,7 @@ export const CELL_DETAIL_ZOOM = 0.2;
 /** Preset colors offered for unselected wires + vertices (chosen in the net
  *  settings popover). All are bright/opaque and distinct from the amber
  *  selection accent. First entry is the default (legacy viewer blue).
- *  18 colors ≈ 2 rows of 9 in a 300px popover with flexWrap. */
+ *  16 colors = 8 cool + 8 warm. */
 export const NET_COLOR_OPTIONS: ReadonlyArray<{ label: string; value: string }> = [
   // Row 1 — cool
   { label: "Blue", value: "#2e97ff" },
@@ -157,7 +165,6 @@ export const NET_COLOR_OPTIONS: ReadonlyArray<{ label: string; value: string }> 
   { label: "Sky", value: "#38bdf8" },
   { label: "Indigo", value: "#818cf8" },
   { label: "Violet", value: "#a78bfa" },
-  { label: "Purple", value: "#c084fc" },
   // Row 2 — warm
   { label: "Magenta", value: "#e879f9" },
   { label: "Hot Pink", value: "#ec4899" },
@@ -166,8 +173,7 @@ export const NET_COLOR_OPTIONS: ReadonlyArray<{ label: string; value: string }> 
   { label: "Orange", value: "#fb923c" },
   { label: "Amber", value: "#f59e0b" },
   { label: "Yellow", value: "#facc15" },
-  { label: "Chartreuse", value: "#84cc16" },
-  { label: "Slate Gray", value: "#94a3b8" }
+  { label: "Slate Gray", value: "#94a3b8" },
 ];
 
 /** Default base color for unselected wires + vertices (legacy viewer blue). */
@@ -217,9 +223,9 @@ export const COLOR_VIA = "rgba(130, 214, 166, 0.85)"; // green-power
 export const COLOR_VIA_FILL = "rgba(130, 214, 166, 0.25)";
 
 /** Preset colors offered for via dot/outline (chosen in the via settings
- *  popover). All bright/opaque colours; first entry is the default.
- *  18 colors ≈ 2 rows of 9 in a 300px popover. Every swatch is visually
- *  distinct — full spectrum coverage with no two adjacent hues looking alike. */
+ *  settings popover). All bright/opaque colours; first entry is the default.
+ *  16 colors = 8 cool + 8 warm. Every swatch is visually distinct — full
+ *  spectrum coverage with no two adjacent hues looking alike. */
 export const VIA_COLOR_OPTIONS: ReadonlyArray<{ label: string; value: string }> = [
   // Row 1 — cool to neutral
   { label: "Green (default)", value: "rgba(130, 214, 166, 0.85)" },
@@ -230,8 +236,8 @@ export const VIA_COLOR_OPTIONS: ReadonlyArray<{ label: string; value: string }> 
   { label: "Indigo", value: "rgba(129, 140, 248, 0.85)" },
   { label: "Violet", value: "rgba(167, 139, 250, 0.85)" },
   { label: "Purple", value: "rgba(192, 132, 252, 0.85)" },
-  { label: "Magenta", value: "rgba(232, 121, 249, 0.85)" },
   // Row 2 — warm to bright
+  { label: "Magenta", value: "rgba(232, 121, 249, 0.85)" },
   { label: "Hot Pink", value: "rgba(236, 72, 153, 0.85)" },
   { label: "Pink", value: "rgba(251, 113, 133, 0.85)" },
   { label: "Red", value: "rgba(239, 68, 68, 0.85)" },
@@ -239,8 +245,6 @@ export const VIA_COLOR_OPTIONS: ReadonlyArray<{ label: string; value: string }> 
   { label: "Orange", value: "rgba(249, 115, 22, 0.85)" },
   { label: "Amber", value: "rgba(245, 194, 66, 0.85)" },
   { label: "Yellow", value: "rgba(250, 204, 21, 0.85)" },
-  { label: "Lime", value: "rgba(163, 230, 53, 0.85)" },
-  { label: "White", value: "rgba(230, 230, 230, 0.85)" }
 ];
 /** Default via color (green-power — current look). */
 export const VIA_DEFAULT_COLOR = VIA_COLOR_OPTIONS[0].value;

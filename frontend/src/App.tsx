@@ -43,14 +43,22 @@ function NavigationHotkeys() {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       // Ignore if user is typing in an input
-      const tag = (e.target as HTMLElement)?.tagName;
+      const tag = (e.target as Element)?.tagName;
       if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
       if (e.metaKey || e.ctrlKey || e.altKey) return;
 
-      const idx = NAV_HOTKEYS[e.key];
-      if (idx == null) return;
-      e.preventDefault();
-      navigate(tabTarget(idx, dieIdRef.current));
+      // Navigation: Shift+1..5 (bare digits reserved for metal layer switching)
+      if (e.shiftKey) {
+        const DIGIT_IDX: Record<string, number> = {
+          Digit1: 1, Digit2: 2, Digit3: 3, Digit4: 4, Digit5: 5,
+        };
+        const idx = DIGIT_IDX[e.code];
+        if (idx != null) {
+          e.preventDefault();
+          navigate(tabTarget(idx, dieIdRef.current));
+          return;
+        }
+      }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);

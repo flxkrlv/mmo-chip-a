@@ -27,7 +27,8 @@ import {
   parseMlViaId
 } from "../renderer/layers/MLViasLayer";
 import { OverlayImageLayer } from "../renderer/layers/OverlayImageLayer";
-import { DIE_VIEWER_HOTKEYS, DIE_VIEWER_MOD_HOTKEYS, GLOBAL_HOTKEYS } from "../lib/hotkeys";
+import { DIE_VIEWER_HOTKEYS, DIE_VIEWER_MOD_HOTKEYS, GLOBAL_HOTKEYS, METAL_HOTKEYS, VIA_HOTKEYS } from "../lib/hotkeys";
+
 import { RulerOverlay, type RulerDraft } from "../components/dieViewer/RulerOverlay";
 import {
   buildCellAnnotation,
@@ -132,7 +133,7 @@ import { ANNOTATION_KIND_VALUES } from "../state/annotationKinds";
 import { DEFAULT_ML_CONFIG, useDieViewerStore } from "../state/dieViewer";
 import { useOverlayLayers } from "../state/overlayLayers";
 import { usePreferences } from "../state/preferences";
-import { useSession } from "../state/session";
+import { useSession, DEFAULT_METAL_STACK, fetchMetalStack } from "../state/session";
 import { useUserStatus } from "../lib/useUserStatus";
 import { uuid } from "../lib/uuid";
 
@@ -364,31 +365,66 @@ function DieViewer({ dieId }: { dieId: string }) {
             if (cur.activeTool !== "wire") return;
             const w = wireRef.current;
             if (!w.draft) return;
-            const cursorWorld = cursorLive.get();
-            if (!cursorWorld) return;
+            let pos: { x: number; y: number } | null = null;
+            if (usePreferences.getState().viaPlaceMode === "wire-end") {
+              const preview = wirePreviewLive.get();
+              if (preview && !preview.onNode && !preview.onVia && !preview.onTerminal) {
+                pos = { x: Math.round(preview.x), y: Math.round(preview.y) };
+              }
+            }
+            if (!pos) {
+              const cursorWorld = cursorLive.get();
+              if (!cursorWorld) return;
+              pos = { x: Math.round(cursorWorld.x), y: Math.round(cursorWorld.y) };
+            }
+            const metalStack = useSession.getState().metalStack ?? DEFAULT_METAL_STACK;
+            const curIdx = metalStack.metals.findIndex(m => m.id === cur.activeMetalId);
+            if (curIdx < 0) return;
+            const nextIdx = modDef.action === "viaUp" ? curIdx + 1 : curIdx - 1;
+            if (nextIdx < 0 || nextIdx >= metalStack.metals.length) return;
+            const via = metalStack.vias[nextIdx < curIdx ? nextIdx : curIdx];
+            if (!via) return;
             e.preventDefault();
-            const viaPoint = w.insertDraftPoint(cursorWorld);
+            const viaPoint = w.insertDraftPoint(pos);
             if (!viaPoint) return;
             void dispatcherRef.current.dispatch({
               kind: "upsertAnnotation",
               annotation: {
                 id: uuid(), class: "point_via",
                 geometry: { kind: "point", x: viaPoint.x, y: viaPoint.y },
-                source: "human"
+                source: "human",
+                layer: via.id,
               },
               prevAnnotation: null
             });
-            const METAL_ORDER: NonNullable<typeof cur.wireLayer>[] = ["metal1", "metal2"];
-            const idx = METAL_ORDER.indexOf(cur.wireLayer as any);
-            if (idx < 0) return;
-            if (modDef.action === "viaUp" && idx < METAL_ORDER.length - 1) cur.setWireLayer(METAL_ORDER[idx + 1]);
-            else if (modDef.action === "viaDown" && idx > 0) cur.setWireLayer(METAL_ORDER[idx - 1]);
+            cur.setActiveMetalId(metalStack.metals[nextIdx].id);
             return;
           }
         }
       }
 
       if (e.metaKey || e.ctrlKey) return; // other ctrl combos → handled by undo/redo
+
+      const metalStack = useSession.getState().metalStack ?? DEFAULT_METAL_STACK;
+
+      // Metal layer hotkeys: bare digits 1..N
+      const metalIdx = !e.shiftKey && !e.altKey ? METAL_HOTKEYS[e.key] : undefined;
+      if (metalIdx != null && metalIdx < metalStack.metals.length) {
+        e.preventDefault();
+        useDieViewerStore.getState().setActiveMetalId(metalStack.metals[metalIdx].id);
+        if (useDieViewerStore.getState().activeTool !== "wire") setActiveTool("wire");
+        return;
+      }
+
+      // Via hotkeys: Alt+1..N
+      if (e.altKey && !e.shiftKey && !e.metaKey && !e.ctrlKey) {
+        const viaIdx = VIA_HOTKEYS[e.key];
+        if (viaIdx != null && viaIdx < metalStack.vias.length) {
+          e.preventDefault();
+          useDieViewerStore.getState().setActiveViaId(metalStack.vias[viaIdx].id);
+          return;
+        }
+      }
 
       // Tool switch hotkeys.
       const toolId = DIE_VIEWER_HOTKEYS[e.key];
@@ -397,11 +433,22 @@ function DieViewer({ dieId }: { dieId: string }) {
         if (toolId === "wire") {
           const cur = useDieViewerStore.getState();
           if (cur.activeTool === "wire") {
-            const nextLayer = cur.wireLayer === "metal1" ? "metal2" : "metal1";
-            cur.setWireLayer(nextLayer);
+            const curIdx = metalStack.metals.findIndex(m => m.id === cur.activeMetalId);
+            const nextIdx = (curIdx + 1) % metalStack.metals.length;
+            cur.setActiveMetalId(metalStack.metals[nextIdx].id);
           } else {
             setActiveTool("wire");
-            cur.setWireLayer("metal1");
+            cur.setActiveMetalId(metalStack.metals[0].id);
+          }
+        } else if (toolId === "via") {
+          const cur = useDieViewerStore.getState();
+          if (cur.activeTool === "via") {
+            const curIdx = metalStack.vias.findIndex(v => v.id === cur.activeViaId);
+            const nextIdx = (curIdx + 1) % metalStack.vias.length;
+            cur.setActiveViaId(metalStack.vias[nextIdx].id);
+          } else {
+            setActiveTool("via");
+            cur.setActiveViaId(metalStack.vias[0]?.id ?? null);
           }
         } else {
           setActiveTool(toolId);
@@ -442,9 +489,20 @@ function DieViewer({ dieId }: { dieId: string }) {
   }, [dieId, resetDieViewer]);
 
   // Remember the active die so the phase tabs can return to it after the user
-  // visits Library or another phase.
+  // visits Library or another phase. Also load the per-die metal stack.
   useEffect(() => {
     useSession.getState().setDieId(dieId);
+    fetchMetalStack(dieId).then(stack => {
+      useSession.getState().setMetalStack(stack);
+      // Reset activeMetalId / activeViaId if they're no longer in the stack
+      const dv = useDieViewerStore.getState();
+      if (!stack.metals.some(m => m.id === dv.activeMetalId)) {
+        dv.setActiveMetalId(stack.metals[0]?.id ?? null);
+      }
+      if (!stack.vias.some(v => v.id === dv.activeViaId)) {
+        dv.setActiveViaId(stack.vias[0]?.id ?? null);
+      }
+    });
   }, [dieId]);
 
   const layers = useMemo<Layer[]>(() => {
@@ -555,6 +613,12 @@ function DieViewer({ dieId }: { dieId: string }) {
         return usePreferences.getState().viaSize;
       },
       pointViaColor: () => usePreferences.getState().viaColor,
+      viaLayerColor: (layer: string) => {
+        const prefs = usePreferences.getState();
+        const stack = useSession.getState().metalStack ?? DEFAULT_METAL_STACK;
+        return prefs.viaLayerColors[layer] ?? stack.vias.find(v => v.id === layer)?.color;
+      },
+      viaLabelVisible: () => usePreferences.getState().viaLabelsVisible,
       netNodeMatchesWidth: () =>
         usePreferences.getState().inspectorTab === "ml",
       wireLayerColor: (layer: string) =>
@@ -595,7 +659,7 @@ function DieViewer({ dieId }: { dieId: string }) {
   useEffect(() => {
     const unsubs = (
       ["netWidth", "netColor", "cellColor", "cellShowShapes", "viaSize",
-       "viaColor", "wireLayerColors", "netNodeSize", "netNodeVisible"] as const
+       "viaColor", "wireLayerColors", "viaLayerColors", "netNodeSize", "netNodeVisible"] as const
     ).map((key) =>
       usePreferences.subscribe(
         (s) => s[key],
@@ -784,6 +848,38 @@ function DieViewer({ dieId }: { dieId: string }) {
   // held by `mlViasLayer`. The latter's `findNearestPointVia` is itself
   // centroid-aware. Reads `annotations` fresh from the existing
   // `annotationsRef` mirror so the snap closure stays referentially stable.
+  /** Find a manual via annotation and return its layer id + centre.
+   *  Used by the wire tool for cross-layer snap detection. */
+  const findViaAnnotation = useCallback(
+    (world: Point, tolWorld: number): { viaId: string; x: number; y: number } | null => {
+      const anns = annotationsRef.current?.annotations;
+      if (!anns) return null;
+      let best: { viaId: string; x: number; y: number } | null = null;
+      let bestD = tolWorld;
+      for (const a of anns) {
+        if (!a.layer) continue;
+        const g = a.geometry;
+        let cx: number, cy: number;
+        if (g.kind === "point") { cx = g.x; cy = g.y; }
+        else if (g.kind === "rectangle") { cx = g.x + g.width / 2; cy = g.y + g.height / 2; }
+        else if (g.kind === "polygon" && g.points.length > 0) {
+          let sx = 0, sy = 0;
+          for (const p of g.points) { sx += p.x; sy += p.y; }
+          cx = sx / g.points.length; cy = sy / g.points.length;
+        } else continue;
+        const d = Math.hypot(cx - world.x, cy - world.y);
+        if (d <= bestD) { bestD = d; best = { viaId: a.layer, x: cx, y: cy }; }
+      }
+      return best;
+    },
+    []
+  );
+
+  const autoViaEnabled = useCallback(
+    () => usePreferences.getState().autoViaEnabled,
+    []
+  );
+
   const findNearestVia = useCallback(
     (world: Point, tolWorld: number): Point | null => {
       let best: Point | null = null;
@@ -959,6 +1055,8 @@ function DieViewer({ dieId }: { dieId: string }) {
   const [showFloorplanIO, setShowFloorplanIO] = useState(false);
   const cellsLocked = usePreferences((s) => s.cellsLocked);
   const setCellsLocked = usePreferences((s) => s.setCellsLocked);
+  const viaLabelsVisible = usePreferences((s) => s.viaLabelsVisible);
+  const setViaLabelsVisible = usePreferences((s) => s.setViaLabelsVisible);
   const [selectedDevice, setSelectedDevice] = useState<AnalogDevice | null>(null);
   const [showProblems, setShowProblems] = useState(false);
   const [showCellRelations, setShowCellRelations] = useState(false);
@@ -1015,7 +1113,7 @@ function DieViewer({ dieId }: { dieId: string }) {
   const totalProblems = useMemo(() => {
     if (!annotations || !analogDevices.length && !analogWarnings.length) return 0;
     try {
-      const p = collectProblems(annotations as any, analogDevices, netNames);
+      const p = collectProblems(annotations as any, analogDevices, netNames, useSession.getState().metalStack ?? undefined);
       return p.connErrors.length + p.unconnNets.length + p.unconnWires.length
         + p.danglingVias.length + p.pinMismatches.length + p.overlappingWires.length + analogWarnings.length;
     } catch { return 0; }
@@ -1058,7 +1156,9 @@ function DieViewer({ dieId }: { dieId: string }) {
     autoEndOnViaEnabled,
     getViaSizeWorld,
     findNearestTerminal,
-    autoEndOnContactEnabled
+    autoEndOnContactEnabled,
+    findViaAnnotation,
+    autoViaEnabled,
   });
   wireRef.current = wire;
 
@@ -2070,13 +2170,15 @@ function DieViewer({ dieId }: { dieId: string }) {
       }
       if (tool === "via") {
         // A placed via point is a `point_via` HumanAnnotation (schema v2).
+        const viaId = useDieViewerStore.getState().activeViaId;
         void dispatcher.dispatch({
           kind: "upsertAnnotation",
           annotation: {
             id: uuid(),
             class: "point_via",
             geometry: { kind: "point", x: Math.round(x), y: Math.round(y) },
-            source: "human"
+            source: "human",
+            ...(viaId ? { layer: viaId } : {}),
           },
           prevAnnotation: null
         });
@@ -2859,6 +2961,30 @@ function DieViewer({ dieId }: { dieId: string }) {
                     type="checkbox"
                     checked={showCellRelations}
                     onChange={(e) => setShowCellRelations(e.target.checked)}
+                    style={{ margin: 0 }}
+                  />
+                  overlay
+                </label>
+              </div>
+              <div
+                style={{
+                  fontSize: 11, color: "var(--ink3)", letterSpacing: 1,
+                  display: "flex", alignItems: "center", gap: 8,
+                  marginBottom: 6,
+                }}
+              >
+                <span className="u">VIA LABEL</span>
+                <label
+                  style={{
+                    marginLeft: "auto", fontSize: 9, minWidth: 55,
+                    display: "flex", alignItems: "center", gap: 4,
+                    cursor: "pointer", color: "var(--ink2)",
+                  }}
+                >
+                  <input
+                    type="checkbox"
+                    checked={viaLabelsVisible}
+                    onChange={(e) => setViaLabelsVisible(e.target.checked)}
                     style={{ margin: 0 }}
                   />
                   overlay

@@ -19,6 +19,7 @@ import {
 } from "../../renderer/layers/MLViasLayer";
 import { useDieViewerStore } from "../../state/dieViewer";
 import { usePreferences } from "../../state/preferences";
+import { useSession, DEFAULT_METAL_STACK } from "../../state/session";
 import { WireLayerSelect } from "./WireLayerSelect";
 import { AnnotationClassSelect } from "./AnnotationClassSelect";
 
@@ -173,10 +174,11 @@ function resolve(
       const b = e && n.nodes.find((nd) => nd.id === e.to);
       if (e && a && b) {
         const len = Math.round(Math.hypot(b.x - a.x, b.y - a.y));
-        const setLayer = (layer: WireLayer | null) => {
+        const stack = useSession.getState().metalStack ?? DEFAULT_METAL_STACK;
+        const setLayer = (layer: string | null) => {
           const edges = n.edges.map((x) => {
             if (x.id !== e.id) return x;
-            if (layer) return { ...x, layer };
+            if (layer) return { ...x, layer: layer as WireLayer };
             const { layer: _drop, ...rest } = x;
             return rest;
           });
@@ -197,6 +199,7 @@ function resolve(
               "layer",
               <WireLayerSelect
                 key="layer"
+                metals={stack.metals}
                 value={e.layer ?? null}
                 onChange={setLayer}
               />
@@ -310,7 +313,11 @@ function resolve(
         typeLabel,
         displayName: `${typeLabel} ${short(a.id)}`,
         uid: a.id,
-        rows: [["class", a.class], geomRow]
+        rows: [
+          ["class", a.class],
+          geomRow,
+          ...(a.layer ? [["via layer", a.layer] as [string, ReactNode]] : []),
+        ]
       };
     }
     case "roi": {

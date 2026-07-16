@@ -2,7 +2,8 @@ import { useCallback, useMemo, useRef, useState } from "react";
 import type { DieAnnotations } from "shared";
 import { Ic } from "../../icons";
 import { useOverlayLayers } from "../../state/overlayLayers";
-import { useSession } from "../../state/session";
+import { useSession, DEFAULT_METAL_STACK, buildMetalStack, fetchMetalStack } from "../../state/session";
+import { apiPut } from "../../api/client";
 import {
   CELL_COLOR_OPTIONS,
   NET_COLOR_OPTIONS,
@@ -763,10 +764,13 @@ function NetSettingsButton() {
   const setNetColor = usePreferences((s) => s.setNetColor);
   const wireLayerColors = usePreferences((s) => s.wireLayerColors);
   const setWireLayerColor = usePreferences((s) => s.setWireLayerColor);
+  const viaLayerColors = usePreferences((s) => s.viaLayerColors);
+  const setViaLayerColor = usePreferences((s) => s.setViaLayerColor);
   const netNodeSize = usePreferences((s) => s.netNodeSize);
   const setNetNodeSize = usePreferences((s) => s.setNetNodeSize);
   const netNodeVisible = usePreferences((s) => s.netNodeVisible);
   const setNetNodeVisible = usePreferences((s) => s.setNetNodeVisible);
+  const metalStack = useSession((s) => s.metalStack ?? DEFAULT_METAL_STACK);
 
   return (
     <SettingsPopover label="Net settings">
@@ -793,27 +797,66 @@ function NetSettingsButton() {
       <div className="u" style={{ margin: "12px 0 8px" }}>
         Net wire color
       </div>
-      <ColorSwatches options={NET_COLOR_OPTIONS} value={netColor} onPick={setNetColor} />
+      <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+        <ColorSwatches options={NET_COLOR_OPTIONS.slice(0, 8)} value={netColor} onPick={setNetColor} />
+        <ColorSwatches options={NET_COLOR_OPTIONS.slice(8)} value={netColor} onPick={setNetColor} />
+      </div>
 
+      <div
+        style={{
+          fontSize: 11, color: "var(--ink3)", letterSpacing: 1,
+          display: "flex", alignItems: "center", gap: 8,
+          margin: "12px 0 8px",
+        }}
+      >
+        <span className="u">Metal layers</span>
+        <select
+          style={{
+            marginLeft: "auto", fontSize: 10,
+            background: "var(--l2)", color: "var(--ink)",
+            border: "1px solid var(--l3)", borderRadius: 4,
+            padding: "2px 4px",
+          }}
+          value={metalStack.metals.length}
+          onChange={async (e) => {
+            const count = Number(e.target.value);
+            const stack = buildMetalStack(count);
+            const dieId = useSession.getState().dieId;
+            if (dieId) {
+              await apiPut(`/api/dies/${dieId}/metal-stack`, stack);
+              await fetchMetalStack(dieId).then(s => useSession.getState().setMetalStack(s));
+            } else {
+              useSession.getState().setMetalStack(stack);
+            }
+          }}
+        >
+          {[1, 2, 3, 4, 5, 6].map((n) => (
+            <option key={n} value={n}>{n}</option>
+          ))}
+        </select>
+      </div>
       <div className="u" style={{ margin: "12px 0 8px" }}>
-        Wire layer colors
+        Layer colors
       </div>
-      <div style={{ fontSize: 10, color: "var(--ink3)", marginBottom: 6 }}>
-        metal1
+      <div>
+        {metalStack.metals.map((m) => (
+          <div key={m.id} style={{ marginBottom: 12, fontSize: 10 }}>
+            <div style={{ color: "var(--ink3)", marginBottom: 6 }}>{m.name}</div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+              <ColorSwatches
+                options={NET_COLOR_OPTIONS.slice(0, 8)}
+                value={wireLayerColors[m.layer] ?? WIRE_LAYER_COLOR[m.layer] ?? m.color}
+                onPick={(c) => setWireLayerColor(m.layer, c)}
+              />
+              <ColorSwatches
+                options={NET_COLOR_OPTIONS.slice(8)}
+                value={wireLayerColors[m.layer] ?? WIRE_LAYER_COLOR[m.layer] ?? m.color}
+                onPick={(c) => setWireLayerColor(m.layer, c)}
+              />
+            </div>
+          </div>
+        ))}
       </div>
-      <ColorSwatches
-        options={NET_COLOR_OPTIONS}
-        value={wireLayerColors.metal1 ?? WIRE_LAYER_COLOR.metal1}
-        onPick={(c) => setWireLayerColor("metal1", c)}
-      />
-      <div style={{ fontSize: 10, color: "var(--ink3)", marginTop: 8, marginBottom: 6 }}>
-        metal2
-      </div>
-      <ColorSwatches
-        options={NET_COLOR_OPTIONS}
-        value={wireLayerColors.metal2 ?? WIRE_LAYER_COLOR.metal2}
-        onPick={(c) => setWireLayerColor("metal2", c)}
-      />
 
       <div className="u" style={{ margin: "12px 0 8px" }}>
         Junction dots
@@ -852,6 +895,9 @@ function ViaSettingsButton() {
   const setViaSize = usePreferences((s) => s.setViaSize);
   const viaColor = usePreferences((s) => s.viaColor);
   const setViaColor = usePreferences((s) => s.setViaColor);
+  const viaLayerColors = usePreferences((s) => s.viaLayerColors);
+  const setViaLayerColor = usePreferences((s) => s.setViaLayerColor);
+  const vias = (useSession((s) => s.metalStack) ?? DEFAULT_METAL_STACK).vias;
   return (
     <SettingsPopover label="Via settings">
       <div className="u" style={{ marginBottom: 8 }}>
@@ -875,13 +921,39 @@ function ViaSettingsButton() {
       </div>
 
       <div className="u" style={{ margin: "12px 0 8px" }}>
-        Via color
+        Via color (default)
       </div>
-      <ColorSwatches
-        options={VIA_COLOR_OPTIONS}
-        value={viaColor}
-        onPick={setViaColor}
-      />
+      <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+        <ColorSwatches options={VIA_COLOR_OPTIONS.slice(0, 8)} value={viaColor} onPick={setViaColor} />
+        <ColorSwatches options={VIA_COLOR_OPTIONS.slice(8)} value={viaColor} onPick={setViaColor} />
+      </div>
+
+      {vias.length > 0 && (
+        <>
+          <div className="u" style={{ margin: "12px 0 8px" }}>
+            Via layer colors
+          </div>
+          <div>
+            {vias.map((v) => (
+              <div key={v.id} style={{ marginBottom: 12, fontSize: 10 }}>
+                <div style={{ color: "var(--ink3)", marginBottom: 6 }}>{v.id}</div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                  <ColorSwatches
+                    options={VIA_COLOR_OPTIONS.slice(0, 8)}
+                    value={viaLayerColors[v.id] ?? v.color}
+                    onPick={(c) => setViaLayerColor(v.id, c)}
+                  />
+                  <ColorSwatches
+                    options={VIA_COLOR_OPTIONS.slice(8)}
+                    value={viaLayerColors[v.id] ?? v.color}
+                    onPick={(c) => setViaLayerColor(v.id, c)}
+                  />
+                </div>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
     </SettingsPopover>
   );
 }

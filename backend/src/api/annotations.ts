@@ -31,8 +31,12 @@ const VALID_LAYERS: LayerType[] = [
   "polysilicon",
   "metal1",
   "metal2",
+  "metal3",
+  "metal4",
+  "metal5",
+  "metal6",
   "contact",
-  "via1",
+  "via1", "via2", "via3", "via4", "via5",
   "wire_hitbox"
 ];
 

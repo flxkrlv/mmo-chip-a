@@ -385,6 +385,7 @@ export function collectDieWideAnalogDevices(
   umPerPx: number = 1.0,
   _spiceConfig?: SpiceConfig,
   deviceCache?: CellTypeDeviceCache,
+  bottomMetalLayer?: string,
 ): DieWideAnalogResult {
   const ann = annotations as DieAnnotations;
 
@@ -425,7 +426,7 @@ export function collectDieWideAnalogDevices(
     jfet_n:"J",jfet_p:"J",unknown:"X",
   };
 
-  const shared: CellTypeProcessingShared = { allDevices, counters, netIdMap, nextNetId, cellNetCache, warnings, perCtDevices };
+  const shared: CellTypeProcessingShared = { allDevices, counters, netIdMap, nextNetId, cellNetCache, warnings, perCtDevices, bottomMetalLayer: bottomMetalLayer ?? "metal1" };
 
   for (const ct of ann.cellTypes) {
     const instanceList = instancesByCt.get(ct.id)??[];
@@ -449,6 +450,7 @@ interface CellTypeProcessingShared {
   cellNetCache: Map<string, number>;
   warnings: string[];
   perCtDevices: Map<string, { cellType: CellType; devices: AnalogDevice[] }>;
+  bottomMetalLayer: string;
 }
 
 function _processOneCellType(
@@ -573,7 +575,7 @@ function _processOneCellType(
         }
         const contacts = termContacts[ti];
         for (const cp of contacts) {
-          const wid = matchWireToPoint(nets, cp.x, cp.y, cp.tol ?? 10, netIdMap, nextNetId, "metal1");
+          const wid = matchWireToPoint(nets, cp.x, cp.y, cp.tol ?? 10, netIdMap, nextNetId, shared.bottomMetalLayer as WireLayer);
           if (wid!=null) {
             cellNetCache.set(cacheKey, wid);
             return {...t, netId: wid};
@@ -660,6 +662,7 @@ export async function collectDieWideChunked(
   spiceConfig?: SpiceConfig,
   deviceCache?: CellTypeDeviceCache,
   options?: ChunkedRunnerOptions,
+  bottomMetalLayer?: string,
 ): Promise<DieWideAnalogResult> {
   const ann = annotations as DieAnnotations;
 
@@ -698,7 +701,7 @@ export async function collectDieWideChunked(
     jfet_n:"J",jfet_p:"J",unknown:"X",
   };
 
-  const shared: CellTypeProcessingShared = { allDevices, counters, netIdMap, nextNetId, cellNetCache, warnings, perCtDevices };
+  const shared: CellTypeProcessingShared = { allDevices, counters, netIdMap, nextNetId, cellNetCache, warnings, perCtDevices, bottomMetalLayer: bottomMetalLayer ?? "metal1" };
   const cellTypesToProcess = ann.cellTypes.filter(ct => (instancesByCt.get(ct.id) ?? []).length > 0);
 
   await runChunked(cellTypesToProcess, (ct) => {

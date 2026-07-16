@@ -3,6 +3,7 @@ import { Ic } from "../../icons";
 import { useDieViewerStore, type ToolKind } from "../../state/dieViewer";
 import { useFloorplanStore } from "../../state/floorplan";
 import { usePreferences } from "../../state/preferences";
+import { useSession, DEFAULT_METAL_STACK } from "../../state/session";
 import { ToolDivider } from "../shell/SubBar";
 import { AnnotationClassSelect } from "./AnnotationClassSelect";
 import { BigToolDivider, Tool } from "./DieViewerUI";
@@ -142,6 +143,7 @@ function toolOptions(tool: ToolKind, multiWireHint?: string): ReactNode {
   if (tool === "wire") return <WireOptions />;
   if (tool === "multiWire") return <WireOptions hint={multiWireHint} />;
   if (tool === "addCell") return <CellOptions />;
+  if (tool === "via" || tool === "viaRect" || tool === "viaPoly") return <ViaOptions />;
   if (tool === "roi") return <RoiOptions />;
   if (tool === "cellGuideLine") return <GuideLineOptions />;
   if (tool === "measure") return <MeasureOptions />;
@@ -257,20 +259,25 @@ function RoiOptions() {
 }
 
 function WireOptions({ hint }: { hint?: string }) {
-  const wireLayer = useDieViewerStore((s) => s.wireLayer);
-  const setWireLayer = useDieViewerStore((s) => s.setWireLayer);
+  const activeMetalId = useDieViewerStore((s) => s.activeMetalId);
+  const setActiveMetalId = useDieViewerStore((s) => s.setActiveMetalId);
+  const metals = (useSession((s) => s.metalStack) ?? DEFAULT_METAL_STACK).metals;
   const snapToVias = usePreferences((s) => s.snapToVias);
   const setSnapToVias = usePreferences((s) => s.setSnapToVias);
   const autoEndOnVia = usePreferences((s) => s.wireAutoEndOnVia);
   const setAutoEndOnVia = usePreferences((s) => s.setWireAutoEndOnVia);
   const autoEndOnContact = usePreferences((s) => s.autoEndOnContact);
   const setAutoEndOnContact = usePreferences((s) => s.setAutoEndOnContact);
+  const autoVia = usePreferences((s) => s.autoViaEnabled);
+  const setAutoVia = usePreferences((s) => s.setAutoViaEnabled);
+  const viaPlaceMode = usePreferences((s) => s.viaPlaceMode);
+  const setViaPlaceMode = usePreferences((s) => s.setViaPlaceMode);
   return (
     <>
       <span className="u" style={{ fontSize: 10 }}>
         Layer
       </span>
-      <WireLayerSelect value={wireLayer} onChange={setWireLayer} />
+      <WireLayerSelect metals={metals} value={activeMetalId != null ? metals.find(m => m.id === activeMetalId)?.layer ?? null : null} onChange={(layer) => { const m = metals.find(m => m.layer === layer); setActiveMetalId(m?.id ?? null); }} />
       <label
         className="check"
         title="Snap click positions to the nearest via (ML or manually placed)"
@@ -304,12 +311,65 @@ function WireOptions({ hint }: { hint?: string }) {
         />
         Auto-end on contact
       </label>
+      <label
+        className="check"
+        title="When enabled, clicking a vertex on an adjacent metal auto-places the via and connects"
+      >
+        <input
+          type="checkbox"
+          checked={autoVia}
+          onChange={(e) => setAutoVia(e.target.checked)}
+        />
+        AutoVia
+      </label>
+      <label
+        className="check"
+        title="E/Q via placement: at cursor position, or at the snapped end of the wire preview"
+      >
+        <input
+          type="checkbox"
+          checked={viaPlaceMode === "wire-end"}
+          onChange={(e) => setViaPlaceMode(e.target.checked ? "wire-end" : "cursor")}
+        />
+        Via: {viaPlaceMode === "cursor" ? "cursor" : "wire-end"}
+      </label>
       {hint && (
         <span
           className="m"
           style={{ fontSize: 10.5, color: "var(--ink3)", fontStyle: "italic" }}
         >
           {hint}
+        </span>
+      )}
+    </>
+  );
+}
+
+function ViaOptions() {
+  const activeViaId = useDieViewerStore((s) => s.activeViaId);
+  const setActiveViaId = useDieViewerStore((s) => s.setActiveViaId);
+  const vias = (useSession((s) => s.metalStack) ?? DEFAULT_METAL_STACK).vias;
+  return (
+    <>
+      <span className="u" style={{ fontSize: 10 }}>
+        Via layer
+      </span>
+      <span className="row" style={{ gap: 4 }}>
+        {vias.map((v) => (
+          <button
+            key={v.id}
+            type="button"
+            className={"chip" + (activeViaId === v.id ? " on" : "")}
+            style={{ cursor: "pointer" }}
+            onClick={() => setActiveViaId(v.id)}
+          >
+            {v.id.toLowerCase()}
+          </button>
+        ))}
+      </span>
+      {activeViaId && (
+        <span style={{ fontSize: 10, color: "var(--ink3)", marginLeft: 4 }}>
+          O to cycle
         </span>
       )}
     </>

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { AnalogDevice, AnnotationNet, DieAnnotations, WireLayer } from "shared";
+import type { AnalogDevice, AnnotationNet, DieAnnotations, WireLayer, MetalStack } from "shared";
+import { useSession } from "../../state/session";
 
 // ── Problem types ──────────────────────────────────────────────────────
 
@@ -32,7 +33,8 @@ export interface ProblemDanglingVia {
   id: string;
   x: number;
   y: number;
-  missing: "metal1" | "metal2" | "both";
+  /** Layers that are missing around this via. */
+  missing: string[];
 }
 
 export interface ProblemPinMismatch {
@@ -111,6 +113,7 @@ export function collectProblems(
   annotations: DieAnnotations,
   devices: AnalogDevice[],
   netNames: Map<number, string>,
+  metalStack?: MetalStack,
 ) {
   // ── unConnPins ──
   const connErrors: ProblemUnconnPin[] = [];
@@ -157,7 +160,7 @@ export function collectProblems(
   for (const net of annotations.nets) {
     const nodeMap = new Map(net.nodes.map(n => [n.id, n]));
     for (const edge of net.edges) {
-      if (edge.layer && edge.layer !== "metal1") continue;
+      if (!edge.layer) continue;
       const fn = nodeMap.get(edge.from);
       const tn = nodeMap.get(edge.to);
       if (!fn || !tn) continue;
@@ -207,6 +210,7 @@ export function collectProblems(
 
   // ── Dangling Vias ──
   const danglingVias: ProblemDanglingVia[] = [];
+  const viasDef = metalStack?.vias;
   for (const ann of annotations.annotations ?? []) {
     if (ann.class !== "point_via" && ann.class !== "irregular_via") continue;
     const g = ann.geometry;
@@ -219,15 +223,34 @@ export function collectProblems(
       cy = pts.reduce((s, p) => s + p.y, 0) / pts.length;
     } else continue;
 
-    const me1 = edgeNear(cx, cy, annotations.nets, "metal1", 15);
-    const me2 = edgeNear(cx, cy, annotations.nets, "metal2", 15);
-    if (!me1 || !me2) {
-      danglingVias.push({
-        type: "dangling-via",
-        id: ann.id,
-        x: cx, y: cy,
-        missing: !me1 && !me2 ? "both" : !me1 ? "metal1" : "metal2",
-      });
+    // Without metal stack, check legacy ME1/ME2
+    if (!viasDef) {
+      const me1 = edgeNear(cx, cy, annotations.nets, "metal1", 15);
+      const me2 = edgeNear(cx, cy, annotations.nets, "metal2", 15);
+      if (!me1 || !me2) {
+        danglingVias.push({
+          type: "dangling-via",
+          id: ann.id,
+          x: cx, y: cy,
+          missing: [!me1 && "metal1", !me2 && "metal2"].filter(Boolean) as string[],
+        });
+      }
+    } else {
+      const missing: string[] = [];
+      // Check only the via definition that matches this annotation's layer
+      const viaDef = viasDef.find(v => v.id === ann.layer) ?? viasDef[0];
+      const bottomMetal = metalStack!.metals.find(m => m.id === viaDef.from)?.layer;
+      const topMetal = metalStack!.metals.find(m => m.id === viaDef.to)?.layer;
+      if (bottomMetal && !edgeNear(cx, cy, annotations.nets, bottomMetal as WireLayer, 15)) missing.push(viaDef.from);
+      if (topMetal && !edgeNear(cx, cy, annotations.nets, topMetal as WireLayer, 15)) missing.push(viaDef.to);
+      if (missing.length > 0) {
+        danglingVias.push({
+          type: "dangling-via",
+          id: ann.id,
+          x: cx, y: cy,
+          missing,
+        });
+      }
     }
   }
 
@@ -357,9 +380,10 @@ export function ProblemNavigatorPanel({
   onFocusPoint,
   onFocusNet,
 }: Props) {
+  const metalStack = useSession((s) => s.metalStack);
   const problems = useMemo(
-    () => annotations ? collectProblems(annotations, devices, netNames) : null,
-    [annotations, devices, netNames],
+    () => annotations ? collectProblems(annotations, devices, netNames, metalStack ?? undefined) : null,
+    [annotations, devices, netNames, metalStack],
   );
 
   // Parse warnings and build a device lookup map

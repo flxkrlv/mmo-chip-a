@@ -91,6 +91,13 @@ export interface PopulateOptions {
    *  stroke; fill gets an additional alpha reduction.
    *  Default: VIA_DEFAULT_COLOR. */
   pointViaColor?: () => string;
+  /** Live getter for per-via-layer colour override. Called with the via
+   *  annotation's layer id (VIA12, VIA23, …). Returns the colour or falls
+   *  back to pointViaColor. */
+  viaLayerColor?: (layer: string) => string | undefined;
+  /** Live getter: when true, draw the via type label (VIA12, VIA23, …)
+   *  above each via annotation at sufficient zoom. Default false. */
+  viaLabelVisible?: () => boolean;
   /** Live getter: ML mode → render net vertices flush with the wire (radius =
    *  half the stroke) instead of the larger edit handles. Default false. */
   netNodeMatchesWidth?: () => boolean;
@@ -126,6 +133,8 @@ export function populateAnnotationLayer(
   const getCellShowShapes = options.cellShowShapes ?? (() => true);
   const getPointViaWorldRadius = options.pointViaWorldRadius ?? (() => null);
   const getPointViaColor = options.pointViaColor ?? (() => VIA_DEFAULT_COLOR);
+  const getViaLayerColor = options.viaLayerColor;
+  const getViaLabelVisible = options.viaLabelVisible ?? (() => false);
   const getNetNodeMatchesWidth =
     options.netNodeMatchesWidth ?? (() => false);
   const getLayerColor = options.wireLayerColor;
@@ -181,7 +190,7 @@ export function populateAnnotationLayer(
   }
 
   for (const a of annotations.annotations ?? []) {
-    const built = buildAnnotation(a, getPointViaWorldRadius, getPointViaColor);
+    const built = buildAnnotation(a, getPointViaWorldRadius, getPointViaColor, getViaLayerColor, getViaLabelVisible);
     if (built) layer.add(built);
   }
   for (const r of annotations.rois ?? []) layer.add(buildRoiRect(r));
@@ -302,7 +311,9 @@ export function buildCellAnnotation(
 export function buildAnnotation(
   a: HumanAnnotation,
   getPointViaWorldRadius: () => number | null = () => null,
-  getPointViaColor: () => string = () => VIA_DEFAULT_COLOR
+  getPointViaColor: () => string = () => VIA_DEFAULT_COLOR,
+  getViaLayerColor?: (layer: string) => string | undefined,
+  getViaLabelVisible?: () => boolean,
 ): Annotation | null {
   const g = a.geometry;
   const id = `anno:${a.id}`;
@@ -313,6 +324,22 @@ export function buildAnnotation(
       pickPriority: PICK.via,
       bbox: { x: g.x - 1, y: g.y - 1, width: 2, height: 2 },
       draw(ctx, bounds, state) {
+        // Label pass — draw only the type label on top of everything
+        if (state.pass === "label") {
+          if (a.layer && getViaLabelVisible?.() && bounds.zoom >= 8) {
+            const fontPx = 16 / bounds.zoom;
+            ctx.font = `bold ${fontPx}px ui-sans-serif, system-ui, sans-serif`;
+            ctx.textAlign = "center";
+            ctx.textBaseline = "middle";
+            const tw = ctx.measureText(a.layer).width;
+            const pad = 2 / bounds.zoom;
+            ctx.fillStyle = "rgba(0,0,0,0.65)";
+            ctx.fillRect(g.x - tw / 2 - pad, g.y - fontPx / 2 - pad, tw + pad * 2, fontPx + pad * 2);
+            ctx.fillStyle = "#ffffff";
+            ctx.fillText(a.layer, g.x, g.y);
+          }
+          return;
+        }
         // World radius from the active pref (or `mlConfig` when the ML tab
         // is forcing the export-footprint view), clamped to a CSS-px range
         // so vias stay visible at low zoom and don't take over at high
@@ -324,7 +351,7 @@ export function buildAnnotation(
             ? viaScreenRadius(bounds.zoom, worldR) / bounds.zoom
             : VIA_RADIUS_PX / bounds.zoom;
         const r = state.selected ? baseR * SELECT_NODE_MULT : baseR;
-        const viaColor = getPointViaColor();
+        const viaColor = (a.layer && getViaLayerColor?.(a.layer)) ?? getPointViaColor();
         ctx.fillStyle = state.selected ? SELECT_COLOR : viaColor;
         ctx.beginPath();
         ctx.arc(g.x, g.y, r, 0, Math.PI * 2);
@@ -346,7 +373,25 @@ export function buildAnnotation(
       pickPriority: PICK.via,
       bbox: { x: g.x, y: g.y, width: g.width, height: g.height },
       draw(ctx, bounds, state) {
-        const viaColor = getPointViaColor();
+        // Label pass — draw only the type label on top of everything
+        if (state.pass === "label") {
+          if (a.layer && getViaLabelVisible?.() && bounds.zoom >= 8) {
+            const cx = g.x + g.width / 2;
+            const cy = g.y + g.height / 2;
+            const fontPx = 16 / bounds.zoom;
+            ctx.font = `bold ${fontPx}px ui-sans-serif, system-ui, sans-serif`;
+            ctx.textAlign = "center";
+            ctx.textBaseline = "middle";
+            const tw = ctx.measureText(a.layer).width;
+            const pad = 2 / bounds.zoom;
+            ctx.fillStyle = "rgba(0,0,0,0.65)";
+            ctx.fillRect(cx - tw / 2 - pad, cy - fontPx / 2 - pad, tw + pad * 2, fontPx + pad * 2);
+            ctx.fillStyle = "#ffffff";
+            ctx.fillText(a.layer, cx, cy);
+          }
+          return;
+        }
+        const viaColor = (a.layer && getViaLayerColor?.(a.layer)) ?? getPointViaColor();
         const viaFill = viaColorWithAlpha(viaColor, 0.25);
         ctx.fillStyle = state.selected ? SELECT_FILL : viaFill;
         ctx.strokeStyle = state.selected ? SELECT_COLOR : viaColor;
@@ -376,8 +421,26 @@ export function buildAnnotation(
       pickPriority: PICK.via,
       bbox: { x: minX, y: minY, width: maxX - minX, height: maxY - minY },
       draw(ctx, bounds, state) {
+        // Label pass — draw only the type label on top of everything
+        if (state.pass === "label") {
+          if (a.layer && getViaLabelVisible?.() && bounds.zoom >= 8) {
+            const cx = (minX + maxX) / 2;
+            const cy = (minY + maxY) / 2;
+            const fontPx = 16 / bounds.zoom;
+            ctx.font = `bold ${fontPx}px ui-sans-serif, system-ui, sans-serif`;
+            ctx.textAlign = "center";
+            ctx.textBaseline = "middle";
+            const tw = ctx.measureText(a.layer).width;
+            const pad = 2 / bounds.zoom;
+            ctx.fillStyle = "rgba(0,0,0,0.65)";
+            ctx.fillRect(cx - tw / 2 - pad, cy - fontPx / 2 - pad, tw + pad * 2, fontPx + pad * 2);
+            ctx.fillStyle = "#ffffff";
+            ctx.fillText(a.layer, cx, cy);
+          }
+          return;
+        }
         if (pts.length < 2) return;
-        const viaColor = getPointViaColor();
+        const viaColor = (a.layer && getViaLayerColor?.(a.layer)) ?? getPointViaColor();
         const viaFill = viaColorWithAlpha(viaColor, 0.25);
         ctx.fillStyle = state.selected ? SELECT_FILL : viaFill;
         ctx.strokeStyle = state.selected ? SELECT_COLOR : viaColor;

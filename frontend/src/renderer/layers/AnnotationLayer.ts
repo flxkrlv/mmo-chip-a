@@ -16,6 +16,9 @@ export interface AnnotationDrawState {
    *  multi-pass rendering: it draws all metal1 edges from all net
    *  annotations in one pass, then all metal2 edges on top. */
   layerFilter?: string;
+  /** Render pass for vias: "body" = shape only (drawn before nets),
+   *  "label" = text only (drawn after nets). */
+  pass?: "body" | "label";
 }
 
 /** Result of a successful point-pick. */
@@ -292,21 +295,30 @@ export class AnnotationLayer implements Layer {
     const isSelected = (id: string) => selected.has(id);
     const state: AnnotationDrawState = { selected: false, isSelected };
 
-    // Separate hits: non-nets draw once (cells, vias, pins, rois, ignores),
-    // nets draw in layer-order passes (metal1 first, then metal2, etc.).
+    // Separate hits: non-nets (cells, pins, rois, ignores), vias, and nets.
     const nonNets: typeof hits = [];
     const nets: typeof hits = [];
+    const vias: typeof hits = [];
     for (const h of hits) {
       if (h.annotation.kind === "net") nets.push(h);
+      else if (h.annotation.kind === "via") vias.push(h);
       else nonNets.push(h);
     }
 
-    // Non-nets (cells, vias, pins, etc.) — draw in drawOrder.
+    // Non-nets (cells, pins, etc.) — draw in drawOrder.
     nonNets.sort((a, b) => (a.annotation.drawOrder ?? 0) - (b.annotation.drawOrder ?? 0));
     for (const h of nonNets) {
       if (visible && !visible.has(h.annotation.kind)) continue;
       state.selected = selected.has(h.annotation.id);
       h.annotation.draw(ctx, bounds, state);
+    }
+
+    // Vias — body only (fill/stroke, no labels)
+    const viaBodyState: AnnotationDrawState = { ...state, pass: "body" };
+    for (const h of vias) {
+      if (visible && !visible.has(h.annotation.kind)) continue;
+      viaBodyState.selected = selected.has(h.annotation.id);
+      h.annotation.draw(ctx, bounds, viaBodyState);
     }
 
     // Nets — multi-pass by conductor layer: metal1 → metal2 → metal3+.
@@ -320,6 +332,14 @@ export class AnnotationLayer implements Layer {
         layerState.selected = selected.has(h.annotation.id);
         h.annotation.draw(ctx, bounds, layerState);
       }
+    }
+
+    // Via labels — on top of everything (nets + via bodies).
+    const viaLabelState: AnnotationDrawState = { ...state, pass: "label" };
+    for (const h of vias) {
+      if (visible && !visible.has(h.annotation.kind)) continue;
+      viaLabelState.selected = selected.has(h.annotation.id);
+      h.annotation.draw(ctx, bounds, viaLabelState);
     }
   }
 }

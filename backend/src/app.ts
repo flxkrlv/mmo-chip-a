@@ -12,6 +12,7 @@ import { createAnalogExportRouter } from "./api/analogExport.js";
 import { createLvsRouter } from "./api/lvs.js";
 import { createDebugRouter } from "./api/debug.js";
 import { createAuthRouter } from "./api/auth.js";
+import { createMetalStackRouter } from "./api/metalStack.js";
 import { createProjectIORouter } from "./api/projectIO.js";
 import { createTilesRouter } from "./api/tiles.js";
 import { listDieRecords } from "./store.js";
@@ -104,6 +105,7 @@ export function createApp(config: {
     mlPredictPad: config.mlPredictPad,
     broadcaster: config.broadcaster
   }));
+  app.use(createMetalStackRouter({ dataRoot: config.dataRoot }));
   app.use(createProjectIORouter({ dataRoot: config.dataRoot }));
   app.use(createDebugRouter({ dataRoot: config.dataRoot }));
 

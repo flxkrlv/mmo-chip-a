@@ -5,6 +5,7 @@ import { applyAnalogOverrides } from "../api/analogNetlist";
 import { CellTypeDeviceCache } from "../lib/extraction/deviceCache";
 import { useExtractionProgress } from "../state/extractionProgress";
 import { useRegistryVersion } from "../state/deviceRegistry";
+import { useSession, DEFAULT_METAL_STACK } from "../state/session";
 
 interface DieExtractionResult {
   devices: AnalogDevice[];
@@ -48,12 +49,14 @@ export function useDieExtraction(
     const ctCount = annotations.cellTypes?.length ?? 0;
     const startTime = performance.now();
 
+    const metalStack = useSession.getState().metalStack ?? DEFAULT_METAL_STACK;
     collectDieWideChunked(
       annotations,
       umPerPx,
       undefined,
       cacheRef.current!,
       { signal: ctrl.signal, chunkSize: 10 },
+      metalStack.metals[0]?.layer,
     )
       .then((r) => {
         if (thisRun !== runIdRef.current) return;
