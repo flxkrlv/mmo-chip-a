@@ -248,6 +248,7 @@ export function useWireTool(opts: {
     findViaOnSegment,
     snapToViasEnabled,
     autoEndOnViaEnabled,
+    autoEndOnContactEnabled,
     getViaSizeWorld,
     findNearestTerminal,
     findViaAnnotation,
@@ -258,6 +259,7 @@ export function useWireTool(opts: {
     findViaOnSegment,
     snapToViasEnabled,
     autoEndOnViaEnabled,
+    autoEndOnContactEnabled,
     getViaSizeWorld,
     findNearestTerminal,
     findViaAnnotation,
@@ -624,15 +626,19 @@ export function useWireTool(opts: {
           });
           return;
         }
-        // Cell terminal: start the wire at the terminal centre. No net
-        // anchor — the SPICE export matches the wire to the terminal by
-        // distance. The wire node is placed right at the terminal centre so
-        // the match is exact.
+        // Cell terminal: start the wire at the terminal centre.
+        // If the terminal already has a connected net vertex, anchor to it
+        // so this wire extends that net instead of creating a new one.
         const terminal = resolveTerminalSnap(world, vp.zoom);
         if (terminal) {
+          const termPoint = { x: terminal.x, y: terminal.y };
+          const existingNode = nearestNode(termPoint, TERMINAL_SNAP_TOLERANCE_PX / vp.zoom);
+          const anchor = existingNode
+            ? { netId: existingNode.netId, nodeId: existingNode.nodeId }
+            : null;
           setDraft({
-            points: [{ x: terminal.x, y: terminal.y }],
-            anchor: null,
+            points: [termPoint],
+            anchor,
             segLayers: []
           });
           return;
@@ -675,15 +681,23 @@ export function useWireTool(opts: {
       // Terminal snap: when auto-end-on-contact is on, snap the endpoint
       // to the terminal centre and commit. Otherwise fall through to
       // via/vertex/free placement.
-      if (snapRef.current.autoEndOnViaEnabled?.()) {
+      if (snapRef.current.autoEndOnContactEnabled?.()) {
         const terminal = resolveTerminalSnap(world, vp.zoom);
         if (terminal) {
           const point = { x: terminal.x, y: terminal.y };
+          const existingNode = nearestNode(point, TERMINAL_SNAP_TOLERANCE_PX / vp.zoom);
           draftRedoRef.current = [];
-          const action = buildAction(d, (nets, anchor) =>
-            commitDraft(nets, [...d.points, point], anchor, [...d.segLayers, layer])
-          );
-          if (action) void dispatcher.dispatch(action);
+          if (existingNode) {
+            const action = buildAction(d, (nets, anchor) =>
+              connectToNode(nets, [...d.points, point], anchor, existingNode.netId, existingNode.nodeId, [...d.segLayers, layer], layer)
+            );
+            if (action) void dispatcher.dispatch(action);
+          } else {
+            const action = buildAction(d, (nets, anchor) =>
+              commitDraft(nets, [...d.points, point], anchor, [...d.segLayers, layer])
+            );
+            if (action) void dispatcher.dispatch(action);
+          }
           clearDraft();
           return;
         }
