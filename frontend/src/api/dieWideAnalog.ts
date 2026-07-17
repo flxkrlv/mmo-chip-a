@@ -368,10 +368,13 @@ function _computeResultKey(
     .map((c) => `${c.id}:${c.cellTypeId}:${c.x ?? 0}:${c.y ?? 0}:fv:${!!c.flippedV}:fh:${!!c.flippedH}:r:${c.rotation ?? 0}`)
     .join("|");
   const spiceKey = spiceConfig ? `${spiceConfig.vdd ?? ""}|${spiceConfig.gnd ?? ""}` : "";
+  const netContentKey = (ann.nets ?? [])
+    .map(n => `${n.id}:${n.nodes.length}:${n.edges.length}`)
+    .join("|");
   const data = JSON.stringify({
     ctH: ctKeys,
     ck: cellsKey,
-    nc: ann.nets?.length ?? 0,
+    nc: netContentKey,
     pc: ann.pins?.length ?? 0,
     u: umPerPx,
     s: spiceKey,
