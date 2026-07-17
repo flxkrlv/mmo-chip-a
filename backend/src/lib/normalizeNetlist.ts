@@ -1,7 +1,9 @@
+/// <reference types="node" />
+
 /**
  * normalizeNetlist.ts — Normalize SPICE netlists for vyges-lvs.
  *
- * vyges-lvs expects SPICE/CDL syntax (`.SUBCKT`/`.ENDS` with dots) and
+ * Vyges-lvs expects SPICE/CDL syntax (`.SUBCKT`/`.ENDS` with dots) and
  * POSITIONAL device parameters: `R1 n1 n2 1k` NOT `R1 (n1 n2) resistor r=1k`.
  * Spectre parenthesized format `(n1 n2)` and `keyword=value` params are
  * NOT parsed by vyges-lvs v0.1.11 (values are silently ignored).
@@ -11,6 +13,13 @@
  *   C1 (n1 n2) capacitor c=1p  →  C1 n1 n2 1p
  *   Q1 (c b e s) npn m=1    →  Q1 c b e s npn m=1  (parentheses only)
  */
+
+/** Strip Spectre backslash escapes: `\X` → `X` for any character X.
+ *  Spectre uses `\` to escape special chars in net names (e.g. `V\-` → `V-`).
+ *  CDL format doesn't support backslash escapes. */
+function stripEscapes(s: string): string {
+  return s.replace(/\\(.)/g, "$1");
+}
 
 // Lines that are definitely NOT device instances or subcircuit boundaries.
 // These are Spectre simulation/analysis directives that vyges-lvs doesn't need.
@@ -30,6 +39,7 @@ const DISCARD_PATTERNS = [
   /^ic\b/i,
   /^nodeset\b/i,
   /^include\b/i,
+  /^parameters\b/i,
 ];
 
 function isDiscardLine(raw: string): boolean {
@@ -48,16 +58,9 @@ function isSubcktLine(line: string): boolean {
 }
 
 function isDeviceLine(line: string): boolean {
-  // Heuristic: starts with a letter followed by identifier chars (device name),
-  // then whitespace and more text (terminals + model + params).
-  // This catches: R41 (n1 n2) resistor r=1k, Q37 (c b e 0) npn m=1, etc.
   const trimmed = line.trim();
   if (!trimmed) return false;
   if (/^[A-Za-z_][A-Za-z0-9_]*\s/.test(trimmed)) {
-    // Exclude lines that are device-like but are actually other keywords.
-    // `parameters` and `.PARAM` are handled separately.
-    if (/^(parameters|\.PARAM)\b/i.test(trimmed)) return true;
-    // If it starts with a letter (like a device name), it's a device line.
     return true;
   }
   return false;
@@ -78,11 +81,11 @@ function spectreToCdl(line: string): string {
   const trimmed = line.trimStart();
   // Match Spectre parenthesized format: DEVNAME (term1 term2 ...) rest...
   const m = trimmed.match(/^(\w+)\s+\(([^)]+)\)\s*(.*)$/);
-  if (!m) return line; // already CDL or unknown format — keep as-is
+  if (!m) return stripEscapes(line); // already CDL or unknown format — just unescape
 
   const devName = m[1];
-  const terminals = m[2].replace(/\s+/g, " ").trim();
-  const rest = m[3].trim();
+  const terminals = stripEscapes(m[2].replace(/\s+/g, " ").trim());
+  const rest = stripEscapes(m[3].trim());
   const prefix = devName[0].toUpperCase();
 
   // R, C, L — strip model keyword, convert keyword=value to positional
@@ -125,21 +128,14 @@ export function normalizeForVyges(input: string, moduleName?: string, globalNets
   const lines = input.split("\n");
   const out: string[] = [];
 
-  let hasParams = false;
   const globalsFromInput: string[] = [];
 
-  // Phase 1: filter & collect — strip everything except devices + parameters + globals
+  // Phase 1: filter & collect — strip everything except devices + globals
   for (const raw of lines) {
     const trimmed = raw.trimEnd();
     if (isDiscardLine(trimmed)) continue;
     // Strip any existing subcircuit boundaries — we re-wrap identically below
     if (isSubcktLine(trimmed)) continue;
-
-    if (/^parameters\b/i.test(trimmed)) {
-      hasParams = true;
-      out.push(trimmed);
-      continue;
-    }
 
     // Collect .GLOBAL net names; vyges-lvs uses them to anchor power/ground
     if (/^\.?global\s+/i.test(trimmed)) {
@@ -161,16 +157,7 @@ export function normalizeForVyges(input: string, moduleName?: string, globalNets
 
   // Phase 2: always wrap — identical wrapping on both sides eliminates port diffs
   const name = moduleName || "top";
-  let header = "";
-  if (allGlobals.length > 0) {
-    header = `.GLOBAL ${allGlobals.join(" ")}\n`;
-  }
-  if (hasParams) {
-    const paramIdx = out.findIndex((l) => /^parameters\b/i.test(l));
-    if (paramIdx >= 0) {
-      header += out.splice(paramIdx, 1)[0] + "\n";
-    }
-  }
+  const header = allGlobals.length > 0 ? `.GLOBAL ${allGlobals.join(" ")}\n` : "";
   out.unshift(header + `.SUBCKT ${name}`);
   out.push(`.ENDS ${name}`);
 
