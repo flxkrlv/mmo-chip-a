@@ -18,6 +18,9 @@ export function createMLExportRouter(config: { dataRoot: string }) {
         response.status(400).json({ error: "approxViaRadiusPx must be a positive number" });
         return;
       }
+      const overlayFilename = typeof body.overlayFilename === "string" && body.overlayFilename.length > 0
+        ? body.overlayFilename
+        : undefined;
 
       // Fire-and-forget. Errors are logged but not surfaced to the client —
       // the client gets 202 once the job is scheduled.
@@ -25,6 +28,7 @@ export function createMLExportRouter(config: { dataRoot: string }) {
         dataRoot: config.dataRoot,
         dieId,
         approxViaRadiusPx,
+        overlayFilename,
         logger: (message) => console.log(message),
       }).catch((error) => {
         console.error(`[ml-export] ${dieId} failed`, error);

@@ -6,6 +6,9 @@ import {
   type UseQueryResult
 } from "@tanstack/react-query";
 import type {
+  CVDebugData,
+  CVMatchRequest,
+  CVMatchResponse,
   MLExportRequest,
   MLInferenceJob,
   MLModelsResponse,
@@ -26,9 +29,10 @@ import { ApiError, apiGet, apiPost } from "./client";
  */
 export function exportMlData(
   dieId: string,
-  approxViaRadiusPx: number
+  approxViaRadiusPx: number,
+  overlayFilename?: string
 ): Promise<{ ok: true }> {
-  const body: MLExportRequest = { approxViaRadiusPx };
+  const body: MLExportRequest = { approxViaRadiusPx, overlayFilename };
   return apiPost<{ ok: true }>(`/api/dies/${dieId}/ml-export`, body);
 }
 
@@ -44,13 +48,15 @@ export interface UseDieViasOptions {
   minDistance?: number;
   /** Skip the fetch (useful when the user has the overlay turned off). */
   enabled?: boolean;
+  /** Overlay filename to run inference on, instead of base image. */
+  overlaySource?: string;
 }
 
 /**
  * ML via predictions for a die bbox in source-image (px) coords. Hits the
  * **uncached** `GET /api/dies/:dieId/vias?bbox=…` endpoint — every server
  * call triggers a fresh inference run — so the client caches aggressively:
- * results are keyed by `(dieId, bbox, threshold, minDistance)` and reused
+ * results are keyed by `(dieId, bbox, threshold, minDistance, overlaySource)` and reused
  * across the session. Pass `enabled: false` to silence the request entirely
  * while the user has the overlay toggled off.
  *
@@ -63,14 +69,15 @@ export function useDieVias(
   bbox: DieViasBbox | null,
   options: UseDieViasOptions = {}
 ): UseQueryResult<MLPrediction | null, ApiError> {
-  const { threshold, minDistance, enabled = true } = options;
+  const { threshold, minDistance, enabled = true, overlaySource } = options;
   return useQuery<MLPrediction | null, ApiError>({
     queryKey: [
       "dieVias",
       dieId,
       bbox,
       threshold ?? null,
-      minDistance ?? null
+      minDistance ?? null,
+      overlaySource ?? null
     ] as const,
     queryFn: async ({ signal }) => {
       if (!dieId || !bbox) return null;
@@ -78,17 +85,14 @@ export function useDieVias(
       params.set("bbox", bbox.join(","));
       if (threshold != null) params.set("threshold", String(threshold));
       if (minDistance != null) params.set("min_distance", String(minDistance));
+      if (overlaySource) params.set("overlaySource", overlaySource);
       return apiGet<MLPrediction>(
         `/api/dies/${dieId}/vias?${params.toString()}`,
         signal
       );
     },
     enabled: enabled && !!dieId && !!bbox,
-    // Predictions for a given bbox + checkpoint are deterministic; keep them
-    // around for the session so a candidate flip-back or sxs / overlay mode
-    // toggle doesn't trigger fresh inference.
     staleTime: 5 * 60_000,
-    // ML sidecar may be unavailable. Don't hammer.
     retry: 1
   });
 }
@@ -143,8 +147,8 @@ export function getMLJob(
   return apiGet<MLInferenceJob>(`/api/dies/${dieId}/ml/job`, signal);
 }
 
-export function startMLJob(dieId: string): Promise<MLInferenceJob> {
-  return apiPost<MLInferenceJob>(`/api/dies/${dieId}/ml/job/start`, {});
+export function startMLJob(dieId: string, overlayFilename?: string): Promise<MLInferenceJob> {
+  return apiPost<MLInferenceJob>(`/api/dies/${dieId}/ml/job/start`, { overlayFilename });
 }
 
 export function stopMLJob(dieId: string): Promise<MLInferenceJob> {
@@ -193,6 +197,24 @@ type MLInferenceJobsQueryOptions = Omit<
   UseQueryOptions<MLInferenceJob[], ApiError, MLInferenceJob[], string[]>,
   "queryKey" | "queryFn"
 >;
+
+// ── CV cell detection ─────────────────────────────────────────────
+
+export function cvMatch(params: CVMatchRequest): Promise<CVMatchResponse> {
+  return apiPost<CVMatchResponse>("/api/ml/cv/match", params);
+}
+
+export function cvDebug(params: CVMatchRequest): Promise<CVDebugData> {
+  return apiPost<CVDebugData>("/api/ml/cv/debug", params);
+}
+
+export function cvDebugDump(params: CVMatchRequest): Promise<CVDebugData & { dump_path: string }> {
+  return apiPost<CVDebugData & { dump_path: string }>("/api/ml/cv/debug-dump", params);
+}
+
+export function cvTemplateMatch(params: CVMatchRequest): Promise<CVMatchResponse> {
+  return apiPost<CVMatchResponse>("/api/ml/cv/template-match", params);
+}
 
 export function useMLInferenceJobs(
   options?: MLInferenceJobsQueryOptions

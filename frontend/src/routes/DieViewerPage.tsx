@@ -529,15 +529,15 @@ function DieViewer({ dieId }: { dieId: string }) {
       die
         ? new MLViasLayer(die.id, die, {
             getHidden: () => usePreferences.getState().mlResultsHidden,
-            // Same render radius as manual vias — the user-facing pref
-            // governs both render + snap so the visible dot matches the
-            // click target.
-            // Same via colour as manual vias — the user pref is shared.
             getViaColor: () => usePreferences.getState().viaColor,
             getViaWorldRadius: () => usePreferences.getState().viaSize,
-            // Confidence slider filters the cached predictions client-side.
             getConfidenceThreshold: () =>
               usePreferences.getState().viaConfidenceThreshold,
+            getViaLayerColor: (viaLayer: string) => {
+              const stack = useSession.getState().metalStack ?? DEFAULT_METAL_STACK;
+              return stack.vias.find((v) => v.id === viaLayer)?.color;
+            },
+            showMlLabel: true,
             onCountChange: (n) => useDieViewerStore.getState().setMlViasCount(n)
           })
         : null,

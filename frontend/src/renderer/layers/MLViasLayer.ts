@@ -55,6 +55,8 @@ export interface MLViaHit {
   /** `point` = `pointVias` entry; `irregular` = `irregularVias` entry. The
    *  inspector uses this to label the kind ("Via point" vs "Via region"). */
   kind: "point" | "irregular";
+  /** Via layer id (VIA12, VIA23, …) when the checkpoint names one. */
+  viaLayer?: string;
 }
 
 /**
@@ -128,8 +130,13 @@ export interface MLViasDisplay {
    *  snapped. Cached predictions keep every detection + score; this filters
    *  them client-side. Absent ⇒ 0 (show everything). */
   getConfidenceThreshold?: () => number;
-  /** Point-via colour (rgba string). Default: VIA_DEFAULT_COLOR. */
+  /** Point-via colour (rgba string). Default: VIA_DEFAULT_COLOR.
+   *  Used when getViaLayerColor is absent or the via has no layer. */
   getViaColor?: () => string;
+  /** Per-via-layer colour override. Takes priority over getViaColor. */
+  getViaLayerColor?: (viaLayer: string) => string | undefined;
+  /** True to draw an "ML" label above each via. */
+  showMlLabel?: boolean;
   /** Fired whenever a tile loads (or the cache is cleared on model switch),
    *  with the sum of point + irregular vias currently held across every
    *  cached tile. Cardinal but partial — only counts what's been fetched so
@@ -209,7 +216,8 @@ export class MLViasLayer implements Layer {
             x: v.x,
             y: v.y,
             score: v.score,
-            kind: "point"
+            kind: "point",
+            viaLayer: v.viaLayer
           };
         }
       }
@@ -227,7 +235,8 @@ export class MLViasLayer implements Layer {
             x: cx,
             y: cy,
             score: r.score,
-            kind: "irregular"
+            kind: "irregular",
+            viaLayer: undefined
           };
         }
       }
@@ -530,6 +539,7 @@ export class MLViasLayer implements Layer {
       const selectR = pointR * SELECT_NODE_MULT;
       const selectStroke = SELECT_OUTLINE_PX / zoom;
       const viaColor = this.display.getViaColor?.() ?? VIA_DEFAULT_COLOR;
+      const showLabel = this.display.showMlLabel;
       // Point vias: small filled circles. Colour follows the user pref
       // (same as the human via annotation style). Selected ones use the
       // shared SELECT_COLOR + white ring for parity with the manual via
@@ -537,7 +547,9 @@ export class MLViasLayer implements Layer {
       for (const v of pointVias) {
         if (v.score < minScore) continue;
         const selected = hasSel && sel.has(mlViaId(v.x, v.y));
-        ctx.fillStyle = selected ? SELECT_COLOR : viaColor;
+        // Determine colour: via layer override > default via color
+        const layerColor = v.viaLayer && this.display.getViaLayerColor?.(v.viaLayer);
+        ctx.fillStyle = selected ? SELECT_COLOR : (layerColor ?? viaColor);
         const r = selected ? selectR : pointR;
         ctx.beginPath();
         ctx.arc(v.x, v.y, r, 0, Math.PI * 2);
@@ -548,6 +560,13 @@ export class MLViasLayer implements Layer {
           ctx.beginPath();
           ctx.arc(v.x, v.y, r, 0, Math.PI * 2);
           ctx.stroke();
+        }
+        // ML label
+        if (showLabel && !selected) {
+          ctx.fillStyle = "rgba(255,255,255,0.6)";
+          ctx.font = `${Math.max(8, Math.round(8 / zoom))}px sans-serif`;
+          ctx.textAlign = "center";
+          ctx.fillText("ML", v.x, v.y - r - 2 / zoom);
         }
       }
       // Irregular vias: bbox outline + translucent fill (selected: orange).

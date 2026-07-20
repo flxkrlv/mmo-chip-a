@@ -15,7 +15,7 @@ import type {
 } from "shared";
 import type { NetChange } from "../lib/netGraph";
 import { annotationKeys, removeById, upsertById } from "./annotations";
-import { apiDelete, apiPut } from "./client";
+import { apiDelete, apiGet, apiPut } from "./client";
 import { useDieViewerStore } from "../state/dieViewer";
 
 // ── Action union ─────────────────────────────────────────────────────
@@ -322,10 +322,11 @@ export async function requestAction(
     case "removeRuler":
       return apiDelete(`/api/dies/${dieId}/rulers/${action.ruler.id}`);
     case "batch": {
-      // Persist sub-actions in order; report the final revision.
-      let result: { ok: true; rev: number } = { ok: true, rev: 0 };
-      for (const sub of action.actions) result = await requestAction(dieId, sub);
-      return result;
+      // Single read → apply all mutations locally → single write.
+      // Avoids N individual HTTP requests (each with its own disk read/write).
+      const current = await apiGet<DieAnnotations>(`/api/dies/${dieId}/annotations`);
+      const patched = action.actions.reduce(applyAction, current);
+      return apiPut(`/api/dies/${dieId}/annotations`, patched);
     }
     case "upsertAnalogLayers":
       return apiPut(`/api/dies/${dieId}/analog-layers`, action.layers);

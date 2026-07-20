@@ -1,7 +1,11 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { Router } from "express";
+import sharp from "sharp";
 import type {
+  CVMatchRequest,
+  CVMatchResponse,
+  CVMatchResult,
   MLJobStatus,
   MLModelsResponse,
   MLPrediction,
@@ -20,7 +24,7 @@ import {
   SidecarUnavailable,
   toPrediction
 } from "../ml/predict.js";
-import { clearMLJobs, readDieRecord } from "../store.js";
+import { clearMLJobs, readAnnotations, readDieRecord } from "../store.js";
 import type { AnnotationBroadcaster } from "../ws.js";
 
 const HEALTH_TIMEOUT_MS = 3000;
@@ -216,7 +220,11 @@ export function createMLRouter(config: {
     "/api/dies/:dieId/ml/job/start",
     async (request, response, next) => {
       try {
-        response.json(await jobs.startJob(request.params.dieId));
+        const body = (request.body ?? {}) as { overlayFilename?: string };
+        const overlayFilename = typeof body.overlayFilename === "string" && body.overlayFilename.length > 0
+          ? body.overlayFilename
+          : undefined;
+        response.json(await jobs.startJob(request.params.dieId, overlayFilename));
       } catch (error) {
         if (send503IfUnavailable(error, response)) return;
         next(error);
@@ -236,6 +244,10 @@ export function createMLRouter(config: {
     }
   );
 
+  function overlayKey(overlaySource: string | undefined): string | undefined {
+    return overlaySource ? overlaySource.replace(/[^a-zA-Z0-9_\-.]/g, "_") : undefined;
+  }
+
   // ── GET /api/dies/:dieId/vias/tile/:z/:x/:y (cached) ────────────────
   router.get(
     "/api/dies/:dieId/vias/tile/:z/:x/:y",
@@ -249,6 +261,10 @@ export function createMLRouter(config: {
           response.status(400).json({ error: "Invalid tile coordinates" });
           return;
         }
+        const overlaySource = typeof request.query.overlaySource === "string"
+          ? request.query.overlaySource
+          : undefined;
+        const ovKey = overlayKey(overlaySource);
         const record = await readDieRecord(config.dataRoot, dieId);
         const resolved = resolveTile(record, z, tx, ty);
         if (resolved.kind === "non-native") {
@@ -257,7 +273,8 @@ export function createMLRouter(config: {
             irregularVias: [],
             traces: [],
             bbox: [0, 0, 0, 0],
-            checkpointHash: null
+            checkpointHash: null,
+            overlayFilename: overlaySource ?? null
           } satisfies MLPrediction);
           return;
         }
@@ -267,11 +284,6 @@ export function createMLRouter(config: {
         }
         const box = resolved.box;
 
-        // `cachedOnly` → return only what's already on disk; never trigger a
-        // sidecar inference run. The die-viewer overlay uses this so merely
-        // panning the view doesn't kick off inference — that's the job's
-        // role. A miss answers 204 so the client can retry once the job
-        // computes the tile.
         const cachedOnly =
           request.query.cachedOnly === "1" ||
           request.query.cachedOnly === "true";
@@ -280,8 +292,6 @@ export function createMLRouter(config: {
         try {
           checkpointHash = await predictor.getCheckpointHash();
         } catch (error) {
-          // Without the sidecar we can't resolve the cache dir. For a
-          // cached-only request that's just "no result available".
           if (cachedOnly) {
             response.status(204).end();
             return;
@@ -295,7 +305,8 @@ export function createMLRouter(config: {
           checkpointHash,
           z,
           tx,
-          ty
+          ty,
+          ovKey
         );
         if (cachedTile) {
           response.json(cachedTile);
@@ -307,6 +318,10 @@ export function createMLRouter(config: {
           return;
         }
 
+        const overlayPath = overlaySource
+          ? path.join(config.dataRoot, "overlay-images", dieId, overlaySource)
+          : undefined;
+
         let result: Awaited<ReturnType<typeof predictor.runPrediction>>;
         try {
           result = await predictor.runPrediction({
@@ -316,15 +331,16 @@ export function createMLRouter(config: {
             keep: box,
             threshold: INFERENCE_THRESHOLD,
             minDistance: INFERENCE_MIN_DISTANCE,
-            wantHeatmap: false
+            wantHeatmap: false,
+            overlayPath
           });
         } catch (error) {
           if (send503IfUnavailable(error, response)) return;
           throw error;
         }
 
-        const prediction = toPrediction(result, box, checkpointHash);
-        await predictor.writeCachedTile(dieId, checkpointHash, z, tx, ty, prediction);
+        const prediction = toPrediction(result, box, checkpointHash, overlaySource);
+        await predictor.writeCachedTile(dieId, checkpointHash, z, tx, ty, prediction, ovKey);
         response.json(prediction);
       } catch (error) {
         next(error);
@@ -350,9 +366,12 @@ export function createMLRouter(config: {
           .json({ error: "z, x0, y0, x1, y1 (tile coords) required" });
         return;
       }
+      const overlaySource = typeof request.query.overlaySource === "string"
+        ? request.query.overlaySource
+        : undefined;
+      const ovKey = overlayKey(overlaySource);
       const record = await readDieRecord(config.dataRoot, dieId);
       if (z !== record.maxZoomLevel) {
-        // Predictions only exist at the native level.
         response.json({
           z,
           checkpointHash: null,
@@ -372,7 +391,6 @@ export function createMLRouter(config: {
       try {
         checkpointHash = await predictor.getCheckpointHash();
       } catch {
-        // No sidecar → can't resolve the cache dir; nothing to return.
         response.json({
           z,
           checkpointHash: null,
@@ -399,7 +417,8 @@ export function createMLRouter(config: {
             checkpointHash,
             z,
             tx,
-            ty
+            ty,
+            ovKey
           );
           return prediction ? { x: tx, y: ty, prediction } : null;
         })
@@ -425,6 +444,9 @@ export function createMLRouter(config: {
         response.status(400).json({ error: "bbox must be x0,y0,x1,y1" });
         return;
       }
+      const overlaySource = typeof request.query.overlaySource === "string"
+        ? request.query.overlaySource
+        : undefined;
       const record = await readDieRecord(config.dataRoot, dieId);
       const x0 = Math.max(0, Math.min(parts[0], parts[2]));
       const y0 = Math.max(0, Math.min(parts[1], parts[3]));
@@ -443,6 +465,10 @@ export function createMLRouter(config: {
         throw error;
       }
 
+      const overlayPath = overlaySource
+        ? path.join(config.dataRoot, "overlay-images", dieId, overlaySource)
+        : undefined;
+
       let result: Awaited<ReturnType<typeof predictor.runPrediction>>;
       try {
         result = await predictor.runPrediction({
@@ -452,7 +478,8 @@ export function createMLRouter(config: {
           keep: [x0, y0, x1, y1],
           threshold: INFERENCE_THRESHOLD,
           minDistance: INFERENCE_MIN_DISTANCE,
-          wantHeatmap: false
+          wantHeatmap: false,
+          overlayPath
         });
       } catch (error) {
         if (send503IfUnavailable(error, response)) return;
@@ -460,7 +487,7 @@ export function createMLRouter(config: {
       }
 
       response.json(
-        toPrediction(result, [x0, y0, x1, y1], checkpointHash)
+        toPrediction(result, [x0, y0, x1, y1], checkpointHash, overlaySource)
       );
     } catch (error) {
       next(error);
@@ -695,6 +722,320 @@ export function createMLRouter(config: {
     } catch (error) {
       next(error);
     }
+  });
+
+  // ── POST /api/ml/cv/match ────────────────────────────────────────────
+  router.post("/api/ml/cv/match", async (request, response, next) => {
+    try {
+      const body = (request.body ?? {}) as Partial<CVMatchRequest>;
+      if (!body.dieId || !body.cellTypeId) {
+        response.status(400).json({ error: "dieId and cellTypeId are required" });
+        return;
+      }
+      const { dieId, cellTypeId } = body;
+
+      const record = await readDieRecord(config.dataRoot, dieId);
+      const annotations = await readAnnotations(config.dataRoot, dieId);
+      const cellType = annotations.cellTypes.find((ct) => ct.id === cellTypeId);
+      if (!cellType) {
+        response.status(404).json({ error: "cellType not found" });
+        return;
+      }
+
+      // Cell position on die — cropRect is cell-local (x:0, y:0), so add cell's die position
+      const cellX = body.cellX ?? 0;
+      const cellY = body.cellY ?? 0;
+      const cx0 = Math.round(cellX + cellType.cropRect.x);
+      const cy0 = Math.round(cellY + cellType.cropRect.y);
+      const cx1 = Math.round(cellX + cellType.cropRect.x + cellType.cropRect.width);
+      const cy1 = Math.round(cellY + cellType.cropRect.y + cellType.cropRect.height);
+
+      // Determine source image
+      const overlayFilename = body.overlayFilename;
+      const sourcePath = overlayFilename
+        ? path.join(config.dataRoot, "overlay-images", dieId, overlayFilename)
+        : record.originalPath;
+
+      const sourceMeta = await sharp(sourcePath, { limitInputPixels: false }).metadata();
+      const sW = sourceMeta.width ?? record.width;
+      const sH = sourceMeta.height ?? record.height;
+
+      // Clamp crop to image bounds
+      const refLeft = Math.max(0, cx0);
+      const refTop = Math.max(0, cy0);
+      const refW = Math.min(cx1 - cx0, Math.max(0, sW - refLeft));
+      const refH = Math.min(cy1 - cy0, Math.max(0, sH - refTop));
+      if (refW <= 0 || refH <= 0) {
+        response.status(400).json({ error: "reference crop outside image bounds" });
+        return;
+      }
+
+      // Send search image + reference bbox to sidecar (single preprocessing)
+      const searchBuf = await sharp(sourcePath, { limitInputPixels: false })
+        .png()
+        .toBuffer();
+
+      const fd = new FormData();
+      fd.append("search", new Blob([new Uint8Array(searchBuf)], { type: "image/png" }), "search.png");
+      fd.append("ref_x", String(refLeft));
+      fd.append("ref_y", String(refTop));
+      fd.append("ref_w", String(refW));
+      fd.append("ref_h", String(refH));
+      if (body.threshold != null) fd.append("threshold", String(body.threshold));
+      if (body.rotationSteps != null) fd.append("rotation_steps", String(body.rotationSteps));
+      if (body.maxMatches != null) fd.append("max_matches", String(body.maxMatches));
+      if (body.shapeThresh != null) fd.append("shape_thresh", String(body.shapeThresh));
+      if (body.areaLo != null) fd.append("area_lo", String(body.areaLo));
+      if (body.areaHi != null) fd.append("area_hi", String(body.areaHi));
+
+      let sidecarRes: Response;
+      try {
+        sidecarRes = await fetchSidecar(
+          `${config.mlSidecarUrl}/cv/match`,
+          120000, // 2 min timeout for full-die search
+          { method: "POST", body: fd }
+        );
+      } catch {
+        response.status(503).json({ error: "sidecar unreachable" });
+        return;
+      }
+      if (!sidecarRes.ok) {
+        const detail = await sidecarRes.text();
+        response.status(502).json({ error: `sidecar /cv/match ${sidecarRes.status}`, detail });
+        return;
+      }
+
+      const sidecarBody = (await sidecarRes.json()) as {
+        matches: { x: number; y: number; rotation: number; confidence: number; bbox: [number, number, number, number] }[];
+        total: number;
+      };
+
+      // Translate matches back to die-global coords.
+      // The search image is the full source at its native coordinates, so the
+      // sidecar returns coords in source-image pixel space — already die-global
+      // when the overlay is at the same resolution as the base image.
+      const scaleX = overlayFilename ? (cx1 - cx0) / (cx1 - cx0) : 1; // no scale
+      const matches: CVMatchResult[] = sidecarBody.matches.map((m) => ({
+        x: m.x,
+        y: m.y,
+        rotation: (m.rotation as 0 | 90 | 180 | 270) || 0,
+        confidence: m.confidence,
+        bbox: [m.bbox[0], m.bbox[1], m.bbox[2], m.bbox[3]],
+      }));
+
+      response.json({
+        matches,
+        referenceBbox: [cx0, cy0, cx1, cy1],
+        searchRegion: [0, 0, sW, sH],
+        total: sidecarBody.total,
+      } satisfies CVMatchResponse);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // ── POST /api/ml/cv/debug ─────────────────────────────────────────
+  router.post("/api/ml/cv/debug", async (request, response, next) => {
+    try {
+      const body = (request.body ?? {}) as Partial<CVMatchRequest>;
+      if (!body.dieId || !body.cellTypeId) {
+        response.status(400).json({ error: "dieId and cellTypeId are required" });
+        return;
+      }
+      const { dieId, cellTypeId } = body;
+      const record = await readDieRecord(config.dataRoot, dieId);
+      const annotations = await readAnnotations(config.dataRoot, dieId);
+      const cellType = annotations.cellTypes.find((ct) => ct.id === cellTypeId);
+      if (!cellType) {
+        response.status(404).json({ error: "cellType not found" });
+        return;
+      }
+
+      const cellX = body.cellX ?? 0;
+      const cellY = body.cellY ?? 0;
+      const cx0 = Math.round(cellX + cellType.cropRect.x);
+      const cy0 = Math.round(cellY + cellType.cropRect.y);
+      const cx1 = Math.round(cellX + cellType.cropRect.x + cellType.cropRect.width);
+      const cy1 = Math.round(cellY + cellType.cropRect.y + cellType.cropRect.height);
+
+      const overlayFilename = body.overlayFilename;
+      const sourcePath = overlayFilename
+        ? path.join(config.dataRoot, "overlay-images", dieId, overlayFilename)
+        : record.originalPath;
+
+      const debugMeta = await sharp(sourcePath, { limitInputPixels: false }).metadata();
+      const dW = debugMeta.width ?? record.width;
+      const dH = debugMeta.height ?? record.height;
+      const refLeftD = Math.max(0, cx0);
+      const refTopD = Math.max(0, cy0);
+      const refWD = Math.min(cx1 - cx0, Math.max(0, dW - refLeftD));
+      const refHD = Math.min(cy1 - cy0, Math.max(0, dH - refTopD));
+      if (refWD <= 0 || refHD <= 0) {
+        response.status(400).json({ error: "reference crop outside image bounds" });
+        return;
+      }
+
+      const searchBuf = await sharp(sourcePath, { limitInputPixels: false })
+        .png()
+        .toBuffer();
+
+      const fd = new FormData();
+      fd.append("search", new Blob([new Uint8Array(searchBuf)], { type: "image/png" }), "search.png");
+      fd.append("ref_x", String(refLeftD));
+      fd.append("ref_y", String(refTopD));
+      fd.append("ref_w", String(refWD));
+      fd.append("ref_h", String(refHD));
+      if (body.threshold != null) fd.append("threshold", String(body.threshold));
+      if (body.rotationSteps != null) fd.append("rotation_steps", String(body.rotationSteps));
+      if (body.shapeThresh != null) fd.append("shape_thresh", String(body.shapeThresh));
+      if (body.areaLo != null) fd.append("area_lo", String(body.areaLo));
+      if (body.areaHi != null) fd.append("area_hi", String(body.areaHi));
+
+      let sidecarRes: Response;
+      try {
+        sidecarRes = await fetchSidecar(
+          `${config.mlSidecarUrl}/cv/debug`,
+          120000,
+          { method: "POST", body: fd }
+        );
+      } catch {
+        response.status(503).json({ error: "sidecar unreachable" });
+        return;
+      }
+      if (!sidecarRes.ok) {
+        response.status(502).json({ error: `sidecar /cv/debug ${sidecarRes.status}` });
+        return;
+      }
+
+      const debugData = await sidecarRes.json();
+      response.json(debugData);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // ── POST /api/ml/cv/debug-dump ──────────────────────────────────
+  router.post("/api/ml/cv/debug-dump", async (request, response, next) => {
+    try {
+      const body = (request.body ?? {}) as Partial<CVMatchRequest>;
+      if (!body.dieId || !body.cellTypeId) {
+        response.status(400).json({ error: "dieId and cellTypeId are required" });
+        return;
+      }
+      const { dieId, cellTypeId } = body;
+      const record = await readDieRecord(config.dataRoot, dieId);
+      const annotations = await readAnnotations(config.dataRoot, dieId);
+      const cellType = annotations.cellTypes.find((ct) => ct.id === cellTypeId);
+      if (!cellType) {
+        response.status(404).json({ error: "cellType not found" });
+        return;
+      }
+      const cellX = body.cellX ?? 0;
+      const cellY = body.cellY ?? 0;
+      const cx0 = Math.round(cellX + cellType.cropRect.x);
+      const cy0 = Math.round(cellY + cellType.cropRect.y);
+      const cx1 = Math.round(cellX + cellType.cropRect.x + cellType.cropRect.width);
+      const cy1 = Math.round(cellY + cellType.cropRect.y + cellType.cropRect.height);
+      const overlayFilename = body.overlayFilename;
+      const sourcePath = overlayFilename
+        ? path.join(config.dataRoot, "overlay-images", dieId, overlayFilename)
+        : record.originalPath;
+      const ddMeta = await sharp(sourcePath, { limitInputPixels: false }).metadata();
+      const dW = ddMeta.width ?? record.width;
+      const dH = ddMeta.height ?? record.height;
+      const refLeftD = Math.max(0, cx0);
+      const refTopD = Math.max(0, cy0);
+      const refWD = Math.min(cx1 - cx0, Math.max(0, dW - refLeftD));
+      const refHD = Math.min(cy1 - cy0, Math.max(0, dH - refTopD));
+      if (refWD <= 0 || refHD <= 0) {
+        response.status(400).json({ error: "reference crop outside image bounds" });
+        return;
+      }
+      const searchBuf = await sharp(sourcePath, { limitInputPixels: false }).png().toBuffer();
+      const fd = new FormData();
+      fd.append("search", new Blob([new Uint8Array(searchBuf)], { type: "image/png" }), "search.png");
+      fd.append("ref_x", String(refLeftD));
+      fd.append("ref_y", String(refTopD));
+      fd.append("ref_w", String(refWD));
+      fd.append("ref_h", String(refHD));
+
+      let sidecarRes: Response;
+      try {
+        sidecarRes = await fetchSidecar(
+          `${config.mlSidecarUrl}/cv/debug-dump`,
+          120000,
+          { method: "POST", body: fd }
+        );
+      } catch {
+        response.status(503).json({ error: "sidecar unreachable" });
+        return;
+      }
+      if (!sidecarRes.ok) {
+        response.status(502).json({ error: `sidecar /cv/debug-dump ${sidecarRes.status}` });
+        return;
+      }
+      const result = await sidecarRes.json();
+      response.json(result);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // ── POST /api/ml/cv/template-match ──────────────────────────────
+  router.post("/api/ml/cv/template-match", async (request, response, next) => {
+    try {
+      const body = (request.body ?? {}) as Partial<CVMatchRequest>;
+      if (!body.dieId || !body.cellTypeId) {
+        response.status(400).json({ error: "dieId and cellTypeId are required" });
+        return;
+      }
+      const { dieId, cellTypeId } = body;
+      const record = await readDieRecord(config.dataRoot, dieId);
+      const annotations = await readAnnotations(config.dataRoot, dieId);
+      const cellType = annotations.cellTypes.find((ct) => ct.id === cellTypeId);
+      if (!cellType) { response.status(404).json({ error: "cellType not found" }); return; }
+      const cellX = body.cellX ?? 0;
+      const cellY = body.cellY ?? 0;
+      const cx0 = Math.round(cellX + cellType.cropRect.x);
+      const cy0 = Math.round(cellY + cellType.cropRect.y);
+      const cx1 = Math.round(cellX + cellType.cropRect.x + cellType.cropRect.width);
+      const cy1 = Math.round(cellY + cellType.cropRect.y + cellType.cropRect.height);
+      const overlayFilename = body.overlayFilename;
+      const sourcePath = overlayFilename
+        ? path.join(config.dataRoot, "overlay-images", dieId, overlayFilename)
+        : record.originalPath;
+      const tmMeta = await sharp(sourcePath, { limitInputPixels: false }).metadata();
+      const sW = tmMeta.width ?? record.width;
+      const sH = tmMeta.height ?? record.height;
+      const left = Math.max(0, cx0);
+      const top = Math.max(0, cy0);
+      const w = Math.min(cx1 - cx0, Math.max(0, sW - left));
+      const h = Math.min(cy1 - cy0, Math.max(0, sH - top));
+      if (w <= 0 || h <= 0) { response.status(400).json({ error: "crop outside bounds" }); return; }
+      const searchBuf = await sharp(sourcePath, { limitInputPixels: false }).png().toBuffer();
+      const fd = new FormData();
+      fd.append("search", new Blob([new Uint8Array(searchBuf)], { type: "image/png" }), "search.png");
+      fd.append("ref_x", String(left));
+      fd.append("ref_y", String(top));
+      fd.append("ref_w", String(w));
+      fd.append("ref_h", String(h));
+      if (body.threshold != null) fd.append("threshold", String(body.threshold));
+      if (body.rotationSteps != null) fd.append("rotation_steps", String(body.rotationSteps));
+      if (body.maxMatches != null) fd.append("max_matches", String(body.maxMatches));
+
+      let sidecarRes: Response;
+      try {
+        sidecarRes = await fetchSidecar(`${config.mlSidecarUrl}/cv/template-match`, 120000, { method: "POST", body: fd });
+      } catch { response.status(503).json({ error: "sidecar unreachable" }); return; }
+      if (!sidecarRes.ok) { response.status(502).json({ error: `sidecar /cv/template-match ${sidecarRes.status}` }); return; }
+      const data = await sidecarRes.json();
+      response.json({
+        matches: data.matches,
+        referenceBbox: [cx0, cy0, cx1, cy1],
+        searchRegion: [0, 0, sW, sH],
+        total: data.total,
+      } satisfies CVMatchResponse);
+    } catch (error) { next(error); }
   });
 
   return router;

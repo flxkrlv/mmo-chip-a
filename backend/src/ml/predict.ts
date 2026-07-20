@@ -74,6 +74,8 @@ export interface RunPredictionResult {
 export interface MLPredictor {
   /** Sidecar checkpoint hash (memoized ~10s) — drives the cache keys. */
   getCheckpointHash(): Promise<string | null>;
+  /** Via layer id derived from the current checkpoint filename, or null. */
+  getViaLayer(): string | null;
   /** Run inference for a source-pixel keep-box. */
   runPrediction(params: {
     originalPath: string;
@@ -83,11 +85,13 @@ export interface MLPredictor {
     threshold: number;
     minDistance: number;
     wantHeatmap: boolean;
+    /** Optional overlay image path to use instead of originalPath. */
+    overlayPath?: string;
   }): Promise<RunPredictionResult>;
   /** Directory holding cached predictions for a die at a checkpoint. */
   cacheDirFor(dieId: string, hash: string | null): string;
   /** Cached prediction JSON path for a native-zoom tile. */
-  tileCachePath(dieId: string, hash: string | null, z: number, tx: number, ty: number): string;
+  tileCachePath(dieId: string, hash: string | null, z: number, tx: number, ty: number, overlayKey?: string): string;
   /** Write a file atomically (tmp + rename). */
   atomicWrite(filePath: string, data: Buffer | string): Promise<void>;
   /** Read a tile's cached prediction (memory LRU → disk), or null on miss. */
@@ -96,7 +100,8 @@ export interface MLPredictor {
     hash: string | null,
     z: number,
     tx: number,
-    ty: number
+    ty: number,
+    overlayKey?: string
   ): Promise<MLPrediction | null>;
   /** Persist a tile prediction to disk + the memory LRU. */
   writeCachedTile(
@@ -105,7 +110,8 @@ export interface MLPredictor {
     z: number,
     tx: number,
     ty: number,
-    prediction: MLPrediction
+    prediction: MLPrediction,
+    overlayKey?: string
   ): Promise<void>;
   /** Drop the in-memory prediction cache (e.g. after a model switch). */
   clearMemCache(): void;
@@ -116,9 +122,8 @@ export function createMLPredictor(config: {
   dataRoot: string;
   mlPredictPad: number;
 }): MLPredictor {
-  // Memoized checkpoint hash — refreshed every HASH_TTL_MS so a retrain (new
-  // hash) invalidates the cache within ~10s without a /health call per tile.
-  let hashCache: { hash: string | null; at: number } | null = null;
+  // Memoized checkpoint hash + via layer — refreshed every HASH_TTL_MS.
+  let hashCache: { hash: string | null; viaLayer: string | null; at: number } | null = null;
 
   async function getCheckpointHash(): Promise<string | null> {
     const now = Date.now();
@@ -133,10 +138,15 @@ export function createMLPredictor(config: {
     const body = (await res.json()) as {
       checkpoint_hash?: string | null;
       model_loaded?: boolean;
+      via_layer?: string | null;
     };
     if (!body.model_loaded) throw new SidecarUnavailable("model not loaded");
-    hashCache = { hash: body.checkpoint_hash ?? null, at: now };
+    hashCache = { hash: body.checkpoint_hash ?? null, viaLayer: body.via_layer ?? null, at: now };
     return hashCache.hash;
+  }
+
+  function getViaLayer(): string | null {
+    return hashCache?.viaLayer ?? null;
   }
 
   async function runPrediction(params: {
@@ -147,6 +157,7 @@ export function createMLPredictor(config: {
     threshold: number;
     minDistance: number;
     wantHeatmap: boolean;
+    overlayPath?: string;
   }): Promise<RunPredictionResult> {
     const [kx0, ky0, kx1, ky1] = params.keep;
     const pad = config.mlPredictPad;
@@ -160,7 +171,8 @@ export function createMLPredictor(config: {
       return { pointVias: [], irregularVias: [], traces: [] };
     }
 
-    const buf = await sharp(params.originalPath, { limitInputPixels: false })
+    const sourcePath = params.overlayPath ?? params.originalPath;
+    const buf = await sharp(sourcePath, { limitInputPixels: false })
       .extract({ left: px0, top: py0, width: cropW, height: cropH })
       .png()
       .toBuffer();
@@ -205,11 +217,12 @@ export function createMLPredictor(config: {
     const inKeep = (x: number, y: number) =>
       x >= kx0 && x < kx1 && y >= ky0 && y < ky1;
 
+    const viaLayer = getViaLayer() ?? undefined;
     const pointVias: MLVia[] = [];
     for (const v of body.point_vias ?? []) {
       const sx = v.x + px0;
       const sy = v.y + py0;
-      if (inKeep(sx, sy)) pointVias.push({ x: sx, y: sy, score: v.score });
+      if (inKeep(sx, sy)) pointVias.push({ x: sx, y: sy, score: v.score, viaLayer });
     }
 
     const irregularVias: MLRegion[] = [];
@@ -272,9 +285,11 @@ export function createMLPredictor(config: {
     hash: string | null,
     z: number,
     tx: number,
-    ty: number
+    ty: number,
+    overlayKey?: string
   ): string {
-    return path.join(cacheDirFor(dieId, hash), `${z}_${tx}_${ty}.json`);
+    const suffix = overlayKey ? `__${overlayKey}` : "";
+    return path.join(cacheDirFor(dieId, hash), `${z}_${tx}_${ty}${suffix}.json`);
   }
 
   async function atomicWrite(
@@ -297,9 +312,11 @@ export function createMLPredictor(config: {
     hash: string | null,
     z: number,
     tx: number,
-    ty: number
+    ty: number,
+    overlayKey?: string
   ): string {
-    return `${dieId}/${hash ?? "nohash"}/${z}_${tx}_${ty}`;
+    const suffix = overlayKey ? `__${overlayKey}` : "";
+    return `${dieId}/${hash ?? "nohash"}/${z}_${tx}_${ty}${suffix}`;
   }
 
   function memGet(key: string): MLPrediction | undefined {
@@ -325,13 +342,14 @@ export function createMLPredictor(config: {
     hash: string | null,
     z: number,
     tx: number,
-    ty: number
+    ty: number,
+    overlayKey?: string
   ): Promise<MLPrediction | null> {
-    const key = memKey(dieId, hash, z, tx, ty);
+    const key = memKey(dieId, hash, z, tx, ty, overlayKey);
     const cached = memGet(key);
     if (cached !== undefined) return cached;
     try {
-      const raw = await fs.readFile(tileCachePath(dieId, hash, z, tx, ty), "utf8");
+      const raw = await fs.readFile(tileCachePath(dieId, hash, z, tx, ty, overlayKey), "utf8");
       const parsed = JSON.parse(raw) as MLPrediction;
       memSet(key, parsed);
       return parsed;
@@ -346,13 +364,14 @@ export function createMLPredictor(config: {
     z: number,
     tx: number,
     ty: number,
-    prediction: MLPrediction
+    prediction: MLPrediction,
+    overlayKey?: string
   ): Promise<void> {
     await atomicWrite(
-      tileCachePath(dieId, hash, z, tx, ty),
+      tileCachePath(dieId, hash, z, tx, ty, overlayKey),
       JSON.stringify(prediction)
     );
-    memSet(memKey(dieId, hash, z, tx, ty), prediction);
+    memSet(memKey(dieId, hash, z, tx, ty, overlayKey), prediction);
   }
 
   function clearMemCache(): void {
@@ -361,6 +380,7 @@ export function createMLPredictor(config: {
 
   return {
     getCheckpointHash,
+    getViaLayer,
     runPrediction,
     cacheDirFor,
     tileCachePath,
@@ -375,13 +395,15 @@ export function createMLPredictor(config: {
 export function toPrediction(
   result: RunPredictionResult,
   box: PredictBox,
-  checkpointHash: string | null
+  checkpointHash: string | null,
+  overlayFilename?: string | null
 ): MLPrediction {
   return {
     pointVias: result.pointVias,
     irregularVias: result.irregularVias,
     traces: result.traces,
     bbox: box,
-    checkpointHash
+    checkpointHash,
+    overlayFilename: overlayFilename ?? undefined
   };
 }

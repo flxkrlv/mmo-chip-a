@@ -1,4 +1,5 @@
 import { promises as fs } from "node:fs";
+import path from "node:path";
 import type { MLInferenceJob } from "shared";
 import {
   listMLJobs,
@@ -27,8 +28,8 @@ export interface MLJobManager {
   getJob(dieId: string): Promise<MLInferenceJob>;
   /** Every persisted job (stale "running" jobs reconciled to "stopped"). */
   listJobs(): Promise<MLInferenceJob[]>;
-  /** Begin (or resume) a die-wide inference sweep. */
-  startJob(dieId: string): Promise<MLInferenceJob>;
+  /** Begin (or resume) a die-wide inference sweep. overlayFilename optional — when set, run inference on that overlay. */
+  startJob(dieId: string, overlayFilename?: string): Promise<MLInferenceJob>;
   /** Request the running sweep to stop after the current tile. */
   stopJob(dieId: string): Promise<MLInferenceJob>;
 }
@@ -64,7 +65,8 @@ export function createMLJobManager(config: {
   async function countCachedTiles(
     dieId: string,
     hash: string | null,
-    nativeZ: number
+    nativeZ: number,
+    overlayKey?: string
   ): Promise<number> {
     const dir = predictor.cacheDirFor(dieId, hash);
     let entries: string[];
@@ -73,14 +75,25 @@ export function createMLJobManager(config: {
     } catch {
       return 0;
     }
-    const prefix = `${nativeZ}_`;
-    return entries.filter((f) => f.startsWith(prefix) && f.endsWith(".json"))
-      .length;
+    const prefix = overlayKey ? `${nativeZ}_` : `${nativeZ}_`;
+    const suffix = overlayKey ? `__${overlayKey}.json` : ".json";
+    // Without overlayKey, count tiles without the overlay suffix; with overlayKey, only those with it.
+    return entries.filter((f) => {
+      if (!f.startsWith(prefix) || !f.endsWith(".json")) return false;
+      const withoutExt = f.slice(0, -5);
+      const hasSuffix = withoutExt.includes("__");
+      if (overlayKey) return withoutExt.endsWith(`__${overlayKey}`);
+      return !hasSuffix;
+    }).length;
   }
 
   async function persistAndBroadcast(job: MLInferenceJob): Promise<void> {
     await writeMLJob(dataRoot, job);
     onJobChange?.(job);
+  }
+
+  function overlayKey(dieId: string, overlayFilename: string | null | undefined): string | undefined {
+    return overlayFilename ? `${overlayFilename.replace(/[^a-zA-Z0-9_\-.]/g, "_")}` : undefined;
   }
 
   async function getJob(dieId: string): Promise<MLInferenceJob> {
@@ -92,16 +105,17 @@ export function createMLJobManager(config: {
     try {
       checkpointHash = await predictor.getCheckpointHash();
     } catch {
-      // Sidecar down — fall back to the last hash we recorded.
       checkpointHash = null;
     }
 
     const persisted = await readMLJob(dataRoot, dieId);
     const hash = checkpointHash ?? persisted?.checkpointHash ?? null;
+    const ovKey = overlayKey(dieId, persisted?.overlayFilename ?? null);
     const completedTiles = await countCachedTiles(
       dieId,
       hash,
-      record.maxZoomLevel
+      record.maxZoomLevel,
+      ovKey
     );
     const running = active.has(dieId);
 
@@ -121,6 +135,7 @@ export function createMLJobManager(config: {
       percentage: pct(Math.min(completedTiles, totalTiles), totalTiles),
       checkpointHash: hash,
       model: persisted?.model ?? null,
+      overlayFilename: persisted?.overlayFilename ?? null,
       error: status === "failed" ? (persisted?.error ?? null) : null,
       startedAt: persisted?.startedAt ?? null,
       updatedAt: persisted?.updatedAt ?? new Date().toISOString(),
@@ -140,6 +155,11 @@ export function createMLJobManager(config: {
     for (let ty = 0; ty < rows; ty += 1) {
       for (let tx = 0; tx < columns; tx += 1) tiles.push({ tx, ty });
     }
+
+    const ovKey = overlayKey(record.id, job.overlayFilename);
+    const overlayPath = job.overlayFilename
+      ? path.join(dataRoot, "overlay-images", record.id, job.overlayFilename)
+      : undefined;
 
     let completed = 0;
     let lastBroadcast = 0;
@@ -166,7 +186,8 @@ export function createMLJobManager(config: {
           hash,
           nativeZ,
           tx,
-          ty
+          ty,
+          ovKey
         );
         if (cached) {
           completed += 1;
@@ -186,7 +207,8 @@ export function createMLJobManager(config: {
           keep: resolved.box,
           threshold: INFERENCE_THRESHOLD,
           minDistance: INFERENCE_MIN_DISTANCE,
-          wantHeatmap: false
+          wantHeatmap: false,
+          overlayPath
         });
         await predictor.writeCachedTile(
           record.id,
@@ -194,7 +216,8 @@ export function createMLJobManager(config: {
           nativeZ,
           tx,
           ty,
-          toPrediction(result, resolved.box, hash)
+          toPrediction(result, resolved.box, hash, job.overlayFilename),
+          ovKey
         );
         completed += 1;
         emit(false);
@@ -225,12 +248,10 @@ export function createMLJobManager(config: {
     }
   }
 
-  async function startJob(dieId: string): Promise<MLInferenceJob> {
+  async function startJob(dieId: string, overlayFilename?: string): Promise<MLInferenceJob> {
     if (active.has(dieId)) return getJob(dieId);
 
     const record = await readDieRecord(dataRoot, dieId);
-    // Resolve the checkpoint up-front so an unreachable sidecar fails the
-    // request loudly instead of spawning a doomed sweep.
     const hash = await predictor.getCheckpointHash();
     const { columns, rows } = nativeGrid(record);
     const totalTiles = columns * rows;
@@ -244,6 +265,7 @@ export function createMLJobManager(config: {
       percentage: 0,
       checkpointHash: hash,
       model: null,
+      overlayFilename: overlayFilename ?? null,
       error: null,
       startedAt: now,
       updatedAt: now,
@@ -275,5 +297,5 @@ export function createMLJobManager(config: {
     return getJob(dieId);
   }
 
-  return { getJob, listJobs, startJob, stopJob };
+  return { getJob, listJobs, startJob: startJob as (dieId: string, overlayFilename?: string) => Promise<MLInferenceJob>, stopJob };
 }

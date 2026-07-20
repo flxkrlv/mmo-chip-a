@@ -36,20 +36,24 @@ interface RoiManifest {
   ml_config: { point_via_size: number; trace_width: number };
   annotations: ManifestAnnotation[];
   ignore?: ManifestIgnore[];
+  /** Overlay filename used as source, absent when base image was used. */
+  source_overlay?: string;
 }
 
 export interface MLExportResult {
   exportDir: string;
   totalRois: number;
+  sourceImage: string;
 }
 
 export async function runMLExport(params: {
   dataRoot: string;
   dieId: string;
   approxViaRadiusPx: number; // legacy fallback when mlConfig is absent
+  overlayFilename?: string;
   logger?: (message: string) => void;
 }): Promise<MLExportResult> {
-  const { dataRoot, dieId, approxViaRadiusPx, logger } = params;
+  const { dataRoot, dieId, approxViaRadiusPx, overlayFilename, logger } = params;
   const log = logger ?? (() => {});
 
   const record = await readDieRecord(dataRoot, dieId);
@@ -62,6 +66,27 @@ export async function runMLExport(params: {
     pointViaSize: approxViaRadiusPx > 0 ? approxViaRadiusPx : 6,
     traceWidth: 4
   };
+
+  // Determine source image path and dimensions
+  let sourcePath: string;
+  let sourceFilename: string;
+  let sourceWidth: number;
+  let sourceHeight: number;
+
+  if (overlayFilename) {
+    const overlayDir = path.join(dataRoot, "overlay-images", dieId);
+    sourcePath = path.join(overlayDir, overlayFilename);
+    sourceFilename = overlayFilename;
+    const meta = await sharp(sourcePath, { limitInputPixels: false }).metadata();
+    sourceWidth = meta.width ?? record.width;
+    sourceHeight = meta.height ?? record.height;
+    log(`[ml-export] using overlay: ${overlayFilename} (${sourceWidth}×${sourceHeight})`);
+  } else {
+    sourcePath = record.originalPath;
+    sourceFilename = record.originalFilename;
+    sourceWidth = record.width;
+    sourceHeight = record.height;
+  }
 
   // nets is a node/edge graph; flatten to source-space segments once.
   const netSegments: { ax: number; ay: number; bx: number; by: number }[] = [];
@@ -80,13 +105,25 @@ export async function runMLExport(params: {
 
   log(`[ml-export] ${dieId} → ${exportDirAbs} (${rois.length} ROIs, ${netSegments.length} net segments)`);
 
+  // Coordinate transform: annotations are in base-image space; overlay may have different dimensions.
+  // Scale factors map base-image coords → overlay coords when sizes differ.
+  const scaleX = overlayFilename ? sourceWidth / record.width : 1;
+  const scaleY = overlayFilename ? sourceHeight / record.height : 1;
+  const ox = (x: number) => Math.round(x * scaleX);
+  const oy = (y: number) => Math.round(y * scaleY);
+
   let written = 0;
   for (let i = 0; i < rois.length; i++) {
     const roi = rois[i];
-    const x0 = Math.max(0, Math.round(roi.x));
-    const y0 = Math.max(0, Math.round(roi.y));
-    const x1 = Math.min(record.width, Math.round(roi.x + roi.width));
-    const y1 = Math.min(record.height, Math.round(roi.y + roi.height));
+    const roiX0 = Math.max(0, Math.round(roi.x));
+    const roiY0 = Math.max(0, Math.round(roi.y));
+    const roiX1 = Math.min(record.width, Math.round(roi.x + roi.width));
+    const roiY1 = Math.min(record.height, Math.round(roi.y + roi.height));
+    // Map to overlay coordinates
+    const x0 = ox(roiX0);
+    const y0 = oy(roiY0);
+    const x1 = Math.min(sourceWidth, ox(roiX1));
+    const y1 = Math.min(sourceHeight, oy(roiY1));
     const cropWidth = x1 - x0;
     const cropHeight = y1 - y0;
     if (cropWidth <= 0 || cropHeight <= 0) {
@@ -97,7 +134,7 @@ export async function runMLExport(params: {
     const jpgPath = path.join(exportDirAbs, `roi_${i + 1}.jpg`);
     const jsonPath = path.join(exportDirAbs, `roi_${i + 1}.json`);
 
-    await sharp(record.originalPath, { limitInputPixels: false, sequentialRead: true })
+    await sharp(sourcePath, { limitInputPixels: false, sequentialRead: true })
       .extract({ left: x0, top: y0, width: cropWidth, height: cropHeight })
       .resize({
         width: ML_EXPORT_RESOLUTION,
@@ -110,14 +147,17 @@ export async function runMLExport(params: {
 
     // fit:"fill" → x/y scale independently. Size driver uses the geometric
     // mean so it's fair under edge clipping (scaleX==scaleY when unclipped).
-    const scaleX = ML_EXPORT_RESOLUTION / cropWidth;
-    const scaleY = ML_EXPORT_RESOLUTION / cropHeight;
-    const sizeScale = Math.sqrt(scaleX * scaleY);
-    const sx = (x: number) => (x - x0) * scaleX;
-    const sy = (y: number) => (y - y0) * scaleY;
+    const rScaleX = ML_EXPORT_RESOLUTION / cropWidth;
+    const rScaleY = ML_EXPORT_RESOLUTION / cropHeight;
+    const sizeScale = Math.sqrt(rScaleX * rScaleY);
+    const sx = (x: number) => (x - x0) * rScaleX;
+    // Map annotation coords from base-image → overlay space, then to ROI-local
+    const annotX = (x: number) => sx(ox(x));
+    const annotY = (y: number) => sy(oy(y));
+    const sy = (y: number) => (y - y0) * rScaleY;
     const bboxHits = (
       pxMin: number, pyMin: number, pxMax: number, pyMax: number
-    ) => !(pxMax <= x0 || pxMin >= x1 || pyMax <= y0 || pyMin >= y1);
+    ) => !(pxMax <= roiX0 || pxMin >= roiX1 || pyMax <= roiY0 || pyMin >= roiY1);
 
     const roiClasses = roi.classes ?? [...ALL_CLASSES];
     const out: ManifestAnnotation[] = [];
@@ -127,22 +167,23 @@ export async function runMLExport(params: {
     for (const a of humanAnnotations) {
       const g = a.geometry;
       if (a.class === "point_via" && g.kind === "point") {
-        if (g.x >= x0 && g.x <= x1 && g.y >= y0 && g.y <= y1) {
-          out.push({ class: "point_via", geometry: { kind: "point", x: sx(g.x), y: sy(g.y) } });
+        if (g.x >= roiX0 && g.x <= roiX1 && g.y >= roiY0 && g.y <= roiY1) {
+          out.push({ class: "point_via", geometry: { kind: "point", x: annotX(g.x), y: annotY(g.y) } });
           pts += 1;
         }
       } else if (a.class === "irregular_via" && g.kind === "rectangle") {
-        const rx0 = Math.max(x0, g.x);
-        const ry0 = Math.max(y0, g.y);
-        const rx1 = Math.min(x1, g.x + g.width);
-        const ry1 = Math.min(y1, g.y + g.height);
+        const rx0 = Math.max(roiX0, g.x);
+        const ry0 = Math.max(roiY0, g.y);
+        const rx1 = Math.min(roiX1, g.x + g.width);
+        const ry1 = Math.min(roiY1, g.y + g.height);
         if (rx1 > rx0 && ry1 > ry0) {
           out.push({
             class: "irregular_via",
             geometry: {
               kind: "rectangle",
-              x: sx(rx0), y: sy(ry0),
-              width: (rx1 - rx0) * scaleX, height: (ry1 - ry0) * scaleY
+              x: annotX(rx0), y: annotY(ry0),
+              width: (rx1 - rx0) * rScaleX * scaleX,
+              height: (ry1 - ry0) * rScaleY * scaleY
             }
           });
           regions += 1;
@@ -157,7 +198,7 @@ export async function runMLExport(params: {
         if (!bboxHits(pxMin, pyMin, pxMax, pyMax)) continue;
         out.push({
           class: "irregular_via",
-          geometry: { kind: "polygon", points: g.points.map((p) => ({ x: sx(p.x), y: sy(p.y) })) }
+          geometry: { kind: "polygon", points: g.points.map((p) => ({ x: annotX(p.x), y: annotY(p.y) })) }
         });
         regions += 1;
       }
@@ -173,8 +214,8 @@ export async function runMLExport(params: {
         geometry: {
           kind: "polyline",
           points: [
-            { x: sx(s.ax), y: sy(s.ay) },
-            { x: sx(s.bx), y: sy(s.by) }
+            { x: annotX(s.ax), y: annotY(s.ay) },
+            { x: annotX(s.bx), y: annotY(s.by) }
           ]
         }
       });
@@ -184,27 +225,29 @@ export async function runMLExport(params: {
     // ── Ignore rectangles clipped to the ROI ────────────────────────
     const ignore: ManifestIgnore[] = [];
     for (const r of ignores) {
-      const rx0 = Math.max(x0, r.x);
-      const ry0 = Math.max(y0, r.y);
-      const rx1 = Math.min(x1, r.x + r.width);
-      const ry1 = Math.min(y1, r.y + r.height);
+      const rx0 = Math.max(roiX0, r.x);
+      const ry0 = Math.max(roiY0, r.y);
+      const rx1 = Math.min(roiX1, r.x + r.width);
+      const ry1 = Math.min(roiY1, r.y + r.height);
       if (rx1 <= rx0 || ry1 <= ry0) continue;
       ignore.push({
         kind: "rectangle",
-        x: sx(rx0), y: sy(ry0),
-        width: (rx1 - rx0) * scaleX, height: (ry1 - ry0) * scaleY
+        x: annotX(rx0), y: annotY(ry0),
+        width: (rx1 - rx0) * rScaleX * scaleX,
+        height: (ry1 - ry0) * rScaleY * scaleY
       });
     }
 
     const manifest: RoiManifest = {
-      source_image: record.originalFilename,
+      source_image: sourceFilename,
       roi_bbox: [x0, y0, x1, y1],
       roi_classes: roiClasses,
       ml_config: {
         point_via_size: mlConfig.pointViaSize * sizeScale,
         trace_width: mlConfig.traceWidth * sizeScale
       },
-      annotations: out
+      annotations: out,
+      source_overlay: overlayFilename ?? undefined,
     };
     if (ignore.length > 0) manifest.ignore = ignore;
 
@@ -218,6 +261,7 @@ export async function runMLExport(params: {
 
   return {
     exportDir: path.relative(dataRoot, exportDirAbs),
-    totalRois: written
+    totalRois: written,
+    sourceImage: sourceFilename,
   };
 }

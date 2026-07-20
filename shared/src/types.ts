@@ -276,6 +276,10 @@ export interface Cell {
   /** Set true once this instance has been classified & confirmed by the user
    *  via the merge-cells tool (drives the candidate "done" checkmark). */
   merged?: boolean;
+  /** True when placed by CV detection. */
+  mlDetected?: boolean;
+  /** Confidence score from CV matching (0..1). */
+  mlConfidence?: number;
 }
 
 // ── Grid definitions ──────────────────────────────────────────────
@@ -523,11 +527,15 @@ export interface DieAnnotations {
 
 export interface MLExportRequest {
   approxViaRadiusPx: number;
+  /** Optional: export ROIs from an overlay image instead of the base image. */
+  overlayFilename?: string;
 }
 
 export interface MLExportResponse {
   exportDir: string;
   totalRois: number;
+  /** Name of the source image used for export (base image or overlay). */
+  sourceImage: string;
 }
 
 export interface MLVia {
@@ -536,6 +544,8 @@ export interface MLVia {
   y: number;
   /** Heatmap probability at the peak, in (threshold, 1]. */
   score: number;
+  /** Via layer id (VIA12, VIA23, …). Derived from the checkpoint filename. */
+  viaLayer?: string;
 }
 
 /** irregular_via instance (ch1 connected component), source-image coords. */
@@ -560,6 +570,8 @@ export interface MLPrediction {
   bbox: [number, number, number, number];
   /** Checkpoint the prediction came from; changes invalidate caches. */
   checkpointHash: string | null;
+  /** Overlay filename used as source, or null for base image. */
+  overlayFilename?: string | null;
 }
 
 /** One native tile's cached prediction inside a batched range response. */
@@ -651,6 +663,8 @@ export interface MLInferenceJob {
   checkpointHash: string | null;
   /** Sidecar checkpoint filename in use when the job last ran. */
   model: string | null;
+  /** Overlay filename used as source, or null for base image. */
+  overlayFilename: string | null;
   error: string | null;
   startedAt: string | null;
   updatedAt: string;
@@ -1022,6 +1036,118 @@ export interface LvsErrorResponse {
   ok: false;
   error: string;
   detail?: string;
+}
+
+// ── CV cell detection ───────────────────────────────────────────
+
+export interface CVMatchResult {
+  /** Centroid x in search-image pixel coords. */
+  x: number;
+  /** Centroid y in search-image pixel coords. */
+  y: number;
+  /** Best-fit rotation in degrees (0, 90, 180, 270). */
+  rotation: 0 | 90 | 180 | 270;
+  /** Confidence score 0..1 (higher = more similar). */
+  confidence: number;
+  /** Bounding box [x, y, w, h] in search-image pixel coords. */
+  bbox: [number, number, number, number];
+}
+
+export interface CVMatchRequest {
+  dieId: string;
+  cellTypeId: string;
+  /** Position of the selected cell instance on the die (die coords). */
+  cellX?: number;
+  cellY?: number;
+  /** Overlay filename to search on, or undefined for base image. */
+  overlayFilename?: string;
+  /** Confidence threshold (0..1). Default 0.5. */
+  threshold?: number;
+  /** Number of rotation steps (1, 2, or 4). Default 4. */
+  rotationSteps?: number;
+  /** Max matches to return. Default 100. */
+  maxMatches?: number;
+  /** Advanced contour params (optional, use defaults). */
+  shapeThresh?: number;
+  areaLo?: number;
+  areaHi?: number;
+}
+
+export interface CVMatchResponse {
+  matches: CVMatchResult[];
+  /** Bounding box of the reference cell in die coords. */
+  referenceBbox: [number, number, number, number];
+  /** Bounding box of the searched region in die coords. */
+  searchRegion: [number, number, number, number];
+  total: number;
+}
+
+/** Cell type changes for CV detection. */
+export interface CellMLFlags {
+  /** True when placed by CV detection. */
+  mlDetected?: boolean;
+  /** Confidence score from CV matching. */
+  mlConfidence?: number;
+}
+
+/** Debug info returned by the CV debug endpoint. */
+export interface CVDebugData {
+  /** Reference crop image as base64 PNG. */
+  ref_crop_png_b64: string;
+  /** All extracted reference contours (multi-contour). */
+  ref_contours: CVRefContour[];
+  /** Number of reference contours found. */
+  ref_contour_count: number;
+  /** Reference contour visualisation as base64 PNG on black background. */
+  ref_contour_png_b64: string | null;
+  /** Search image preview (resized) with matched contours drawn, as base64 JPG. */
+  search_preview_png_b64: string | null;
+  /** Detailed metrics for top matches. */
+  top_matches: CVDebugMatch[];
+  /** All scored contours with pass/fail from multi-ref matching. */
+  all_scored?: CVDebugScoredContour[];
+  /** Total contours found in search image before filtering. */
+  total_contours_found: number;
+  /** Number of candidates that passed threshold filtering. */
+  total_candidates: number;
+  /** The actual detection parameters used. */
+  params_used: Record<string, unknown>;
+}
+
+export interface CVDebugScoredContour {
+  bbox: [number, number, number, number];
+  total_score: number;
+  shape_dist: number;
+  area_ratio: number;
+  aspect_err: number;
+  solidity_err: number;
+  extent_err: number;
+  circularity_err: number;
+  passed: boolean;
+}
+
+export interface CVDebugMatch {
+  bbox: [number, number, number, number];
+  centroid: [number, number];
+  rotation: number;
+  confidence: number;
+  total_score: number;
+  shape_dist: number;
+  area_ratio: number;
+  aspect_err: number;
+  solidity_err: number;
+  extent_err: number;
+  circularity_err: number;
+}
+
+/** One reference contour in multi-contour debug output. */
+export interface CVRefContour {
+  bbox: [number, number, number, number];
+  area: number;
+  aspect: number;
+  solidity: number;
+  extent: number;
+  circularity: number;
 }
 
 // ── Analog device detection job ─────────────────────────────────

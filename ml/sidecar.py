@@ -30,6 +30,7 @@ from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel
 
 from augment import normalize_only
+from cv_match import match_contour_pipeline, match_template_pipeline
 from heatmap import extract_components, extract_peaks, extract_trace_polylines
 from model import build_model, infer_num_classes
 from tiling import tile_predict
@@ -177,6 +178,22 @@ class ReloadBody(BaseModel):
 app = FastAPI(title="chiptool-ml-sidecar")
 
 
+def _infer_via_layer(checkpoint_path: Path | None) -> str | None:
+    """Infer via layer id from checkpoint filename convention.
+    E.g. via12_model.pt → VIA12, via23_2026-07.pt → VIA23.
+    Returns None when the filename doesn't match the pattern.
+    """
+    if checkpoint_path is None:
+        return None
+    name = checkpoint_path.stem.lower()
+    # Match patterns like via12, via23, etc.
+    import re
+    m = re.search(r"via(\d+)", name)
+    if m:
+        return f"VIA{m.group(1)}"
+    return None
+
+
 @app.get("/health")
 def health() -> dict:
     return {
@@ -188,6 +205,7 @@ def health() -> dict:
         "num_classes": STATE.num_classes,
         "model_loaded": STATE.model_loaded,
         "training_active": STATE.training_active,
+        "via_layer": _infer_via_layer(STATE.checkpoint_path),
     }
 
 
@@ -331,20 +349,218 @@ def get_job(job_id: str) -> dict:
         return job.as_dict()
 
 
+def _scan_checkpoints(ckpt_dir: Path) -> list[Path]:
+    """Return sorted .pt files from ckpt_dir, or empty list."""
+    if not ckpt_dir.is_dir():
+        return []
+    return sorted(ckpt_dir.glob("*.pt"))
+
+
+def _find_checkpoint(name: str) -> Path | None:
+    """Resolve a checkpoint filename in either checkpoints/ location.
+    Priority: project root checkpoints/ then ml/checkpoints/.
+    """
+    for base in (ML_DIR.parent / "checkpoints", ML_DIR / "checkpoints"):
+        p = base / name
+        if p.exists():
+            return p.resolve()
+    return None
+
+
+@app.post("/cv/match")
+def cv_match(
+    search: UploadFile = File(...),
+    ref_x: int = Form(...),
+    ref_y: int = Form(...),
+    ref_w: int = Form(...),
+    ref_h: int = Form(...),
+    shape_thresh: float = Form(1.25),
+    area_lo: float = Form(0.22),
+    area_hi: float = Form(4.5),
+    aspect_thresh: float = Form(1.25),
+    solidity_thresh: float = Form(0.60),
+    extent_thresh: float = Form(0.60),
+    circularity_thresh: float = Form(0.75),
+    min_area: int = Form(12),
+    min_distance: int = Form(10),
+    rotation_steps: int = Form(4),
+    max_matches: int = Form(100),
+) -> dict:
+    """Contour-based cell matching — single preprocessing pass.
+
+    Accepts the full search image and the reference bounding box.
+    Both reference contour and search contours are extracted from the
+    SAME preprocessed image, matching the 2.py approach.
+    """
+    search_raw = search.file.read()
+    search_arr = np.frombuffer(search_raw, dtype=np.uint8)
+    search_bgr = cv2.imdecode(search_arr, cv2.IMREAD_COLOR)
+    if search_bgr is None:
+        raise HTTPException(status_code=400, detail="could not decode search image")
+    search_rgb = cv2.cvtColor(search_bgr, cv2.COLOR_BGR2RGB)
+
+    params = {
+        "shape_thresh": shape_thresh,
+        "area_lo": area_lo,
+        "area_hi": area_hi,
+        "aspect_thresh": aspect_thresh,
+        "solidity_thresh": solidity_thresh,
+        "extent_thresh": extent_thresh,
+        "circularity_thresh": circularity_thresh,
+        "min_area": min_area,
+        "min_distance": min_distance,
+        "rotation_steps": rotation_steps,
+    }
+
+    matches = match_contour_pipeline(search_rgb, (ref_x, ref_y, ref_w, ref_h), params)
+
+    if len(matches) > max_matches:
+        matches = matches[:max_matches]
+
+    return {"matches": matches, "total": len(matches)}
+
+
+@app.post("/cv/debug")
+def cv_debug(
+    search: UploadFile = File(...),
+    ref_x: int = Form(...),
+    ref_y: int = Form(...),
+    ref_w: int = Form(...),
+    ref_h: int = Form(...),
+    shape_thresh: float = Form(1.25),
+    area_lo: float = Form(0.22),
+    area_hi: float = Form(4.5),
+    aspect_thresh: float = Form(1.25),
+    solidity_thresh: float = Form(0.60),
+    extent_thresh: float = Form(0.60),
+    circularity_thresh: float = Form(0.75),
+    min_area: int = Form(12),
+    min_distance: int = Form(10),
+    rotation_steps: int = Form(4),
+) -> dict:
+    """CV debug endpoint — single preprocessing pass."""
+    search_raw = search.file.read()
+    search_arr = np.frombuffer(search_raw, dtype=np.uint8)
+    search_bgr = cv2.imdecode(search_arr, cv2.IMREAD_COLOR)
+    if search_bgr is None:
+        raise HTTPException(status_code=400, detail="could not decode search image")
+    search_rgb = cv2.cvtColor(search_bgr, cv2.COLOR_BGR2RGB)
+
+    params = {
+        "shape_thresh": shape_thresh,
+        "area_lo": area_lo,
+        "area_hi": area_hi,
+        "aspect_thresh": aspect_thresh,
+        "solidity_thresh": solidity_thresh,
+        "extent_thresh": extent_thresh,
+        "circularity_thresh": circularity_thresh,
+        "min_area": min_area,
+        "min_distance": min_distance,
+        "rotation_steps": rotation_steps,
+    }
+
+    from cv_match import debug_match_pipeline
+    return debug_match_pipeline(search_rgb, (ref_x, ref_y, ref_w, ref_h), params)
+
+
+@app.post("/cv/debug-dump")
+def cv_debug_dump(
+    search: UploadFile = File(...),
+    ref_x: int = Form(...),
+    ref_y: int = Form(...),
+    ref_w: int = Form(...),
+    ref_h: int = Form(...),
+    shape_thresh: float = Form(1.25),
+    area_lo: float = Form(0.22),
+    area_hi: float = Form(4.5),
+    aspect_thresh: float = Form(1.25),
+    solidity_thresh: float = Form(0.60),
+    extent_thresh: float = Form(0.60),
+    circularity_thresh: float = Form(0.75),
+    min_area: int = Form(12),
+    min_distance: int = Form(10),
+    rotation_steps: int = Form(4),
+) -> dict:
+    """CV debug endpoint — writes debug data to disk for agent analysis."""
+    from datetime import datetime
+    search_raw = search.file.read()
+    search_arr = np.frombuffer(search_raw, dtype=np.uint8)
+    search_bgr = cv2.imdecode(search_arr, cv2.IMREAD_COLOR)
+    if search_bgr is None:
+        raise HTTPException(status_code=400, detail="could not decode search image")
+    search_rgb = cv2.cvtColor(search_bgr, cv2.COLOR_BGR2RGB)
+
+    params = {
+        "shape_thresh": shape_thresh,
+        "area_lo": area_lo,
+        "area_hi": area_hi,
+        "aspect_thresh": aspect_thresh,
+        "solidity_thresh": solidity_thresh,
+        "extent_thresh": extent_thresh,
+        "circularity_thresh": circularity_thresh,
+        "min_area": min_area,
+        "min_distance": min_distance,
+        "rotation_steps": rotation_steps,
+    }
+
+    from cv_match import debug_match_pipeline
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    dump_path = str((ML_DIR.parent / "data" / "tmp" / f"cv_debug_{ts}.json").resolve())
+
+    result = debug_match_pipeline(search_rgb, (ref_x, ref_y, ref_w, ref_h), params,
+                                   dump_path=dump_path)
+    return {**result, "dump_path": dump_path}
+
+
+@app.post("/cv/template-match")
+def cv_template_match(
+    search: UploadFile = File(...),
+    ref_x: int = Form(...),
+    ref_y: int = Form(...),
+    ref_w: int = Form(...),
+    ref_h: int = Form(...),
+    threshold: float = Form(0.5),
+    rotation_steps: int = Form(4),
+    max_matches: int = Form(100),
+    min_distance: int = Form(10),
+) -> dict:
+    """Template matching (Sobel + matchTemplate) — plan B from o.py."""
+    search_raw = search.file.read()
+    search_arr = np.frombuffer(search_raw, dtype=np.uint8)
+    search_bgr = cv2.imdecode(search_arr, cv2.IMREAD_COLOR)
+    if search_bgr is None:
+        raise HTTPException(status_code=400, detail="could not decode search image")
+    search_rgb = cv2.cvtColor(search_bgr, cv2.COLOR_BGR2RGB)
+
+    params = {
+        "threshold": threshold,
+        "rotation_steps": rotation_steps,
+        "max_matches": max_matches,
+        "min_distance": min_distance,
+    }
+
+    matches = match_template_pipeline(search_rgb, (ref_x, ref_y, ref_w, ref_h), params)
+    return {"matches": matches, "total": len(matches)}
+
+
 @app.get("/models")
 def list_models() -> dict:
-    """List checkpoint files the sidecar can load (the checkpoints/ dir).
+    """List checkpoint files from both checkpoints/ directories.
 
     Node surfaces this as the model dropdown. Hashes let the caller tell
-    whether a switch actually changes the resident weights."""
-    ckpt_dir = ML_DIR / "checkpoints"
+    whether a switch actually changes the resident weights. Files in the
+    project-root checkpoints/ take priority when names collide."""
+    seen: set[str] = set()
     resident = STATE.checkpoint_path.resolve() if STATE.checkpoint_path else None
     models: list[dict] = []
-    if ckpt_dir.is_dir():
-        for p in sorted(ckpt_dir.glob("*.pt")):
+    for ckpt_dir in (ML_DIR.parent / "checkpoints", ML_DIR / "checkpoints"):
+        for p in _scan_checkpoints(ckpt_dir):
+            if p.name in seen:
+                continue
+            seen.add(p.name)
             try:
                 h: str | None = checkpoint_hash(p)
-            except Exception:  # noqa: BLE001 — a bad file shouldn't drop the list
+            except Exception:  # noqa: BLE001
                 h = None
             models.append({
                 "name": p.name,
@@ -361,7 +577,10 @@ def model_reload(body: ReloadBody) -> dict:
         raise HTTPException(status_code=409, detail="cannot reload during training")
     p = Path(body.checkpoint_path)
     if not p.is_absolute():
-        p = ML_DIR / body.checkpoint_path
+        # Try resolving relative to both checkpoints/ directories
+        p = _find_checkpoint(p.name)
+        if p is None:
+            p = ML_DIR / body.checkpoint_path
     if not p.exists():
         raise HTTPException(status_code=400, detail=f"checkpoint not found: {p}")
     with STATE.lock:
@@ -384,7 +603,8 @@ def main() -> None:
     STATE.data_root = Path(args.data_root)
     ckpt = Path(args.checkpoint)
     if not ckpt.is_absolute():
-        ckpt = ML_DIR / ckpt
+        found = _find_checkpoint(ckpt.name)
+        ckpt = found if found else ML_DIR / ckpt
     STATE.load(ckpt)
 
     uvicorn.run(app, host=args.host, port=args.port, log_level="info")

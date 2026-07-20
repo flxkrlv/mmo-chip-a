@@ -1,8 +1,13 @@
-import { useState, type ReactNode } from "react";
+import { useState, useRef, useEffect, type ReactNode } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import type { DieAnnotations, MLInferenceJob, WireLayer } from "shared";
 import type { ActionDispatcher } from "../../api/actions";
+import { uuid } from "../../lib/uuid";
 import {
+  cvDebug,
+  cvDebugDump,
+  cvMatch,
+  cvTemplateMatch,
   exportMlData,
   mlJobKey,
   selectMLModel,
@@ -20,6 +25,7 @@ import {
 import { useDieViewerStore } from "../../state/dieViewer";
 import { usePreferences } from "../../state/preferences";
 import { useSession, DEFAULT_METAL_STACK } from "../../state/session";
+import { useOverlayLayers } from "../../state/overlayLayers";
 import { WireLayerSelect } from "./WireLayerSelect";
 import { AnnotationClassSelect } from "./AnnotationClassSelect";
 
@@ -420,7 +426,7 @@ export function InspectorPanel({
 
       <div style={{ flex: "1 1 auto", overflow: "auto", minHeight: 0 }}>
         {tab === "ml" ? (
-          <MLPanel dieId={dieId} />
+          <MLPanel dieId={dieId} annotations={annotations} dispatcher={dispatcher} mlViasLayer={mlViasLayer} />
         ) : (
           <InspectorBody
             annotations={annotations}
@@ -521,15 +527,147 @@ function InspectorBody({
  * (mask sizing + dataset export). Inference job state is shared via WS so
  * progress a teammate triggered shows here too.
  */
-function MLPanel({ dieId }: { dieId: string }) {
+function MLPanel({
+  dieId,
+  annotations,
+  dispatcher,
+  mlViasLayer
+}: {
+  dieId: string;
+  annotations: DieAnnotations | undefined;
+  dispatcher: ActionDispatcher;
+  mlViasLayer: MLViasLayer | null;
+}) {
   return (
     <div>
       <MLSectionHeader>Inference</MLSectionHeader>
       <InferenceSection dieId={dieId} />
+      <MLSectionHeader>ML Vias</MLSectionHeader>
+      <ApproveSection dieId={dieId} annotations={annotations} dispatcher={dispatcher} mlViasLayer={mlViasLayer} />
+      <MLSectionHeader>CV Cell Detection</MLSectionHeader>
+      <CVSection dieId={dieId} annotations={annotations} dispatcher={dispatcher} />
       <MLSectionHeader>Training</MLSectionHeader>
       <TrainingSection dieId={dieId} />
     </div>
   );
+}
+
+/** Approve ML vias — convert selected predictions to human annotations. */
+function ApproveSection({
+  annotations,
+  dispatcher,
+  mlViasLayer
+}: {
+  dieId: string;
+  annotations: DieAnnotations | undefined;
+  dispatcher: ActionDispatcher;
+  mlViasLayer: MLViasLayer | null;
+}) {
+  const selectedIds = useDieViewerStore((s) => s.selectedIds);
+  const mlViaIds = [...selectedIds].filter(isMlViaId);
+  const count = mlViaIds.length;
+  const vias = (useSession((s) => s.metalStack) ?? DEFAULT_METAL_STACK).vias;
+
+  // Detect via layer from the first selected ML via
+  const detectedLayer = count > 0 && mlViasLayer
+    ? mlViasLayer.findViaById(mlViaIds[0])?.viaLayer
+    : undefined;
+
+  const [selectedViaId, setSelectedViaId] = useState<string | null>(
+    detectedLayer && vias.some((v) => v.id === detectedLayer) ? detectedLayer : (vias[0]?.id ?? null)
+  );
+
+  // Reset selectedViaId when detectedLayer changes (new selection)
+  // We use a ref to track the previous detectedLayer to avoid loop
+  const prevDetectedRef = usePrevious(detectedLayer);
+  if (detectedLayer !== prevDetectedRef && detectedLayer && vias.some((v) => v.id === detectedLayer)) {
+    setSelectedViaId(detectedLayer);
+  }
+
+  const approveSelected = async () => {
+    if (!mlViasLayer || !annotations || !selectedViaId) return;
+    for (const id of mlViaIds) {
+      const hit = mlViasLayer.findViaById(id);
+      if (!hit) continue;
+      void dispatcher.dispatch({
+        kind: "upsertAnnotation",
+        annotation: {
+          id: uuid(),
+          class: "point_via",
+          geometry: { kind: "point", x: hit.x, y: hit.y },
+          source: "approved",
+          layer: selectedViaId,
+        },
+        prevAnnotation: null
+      });
+    }
+  };
+
+  if (count === 0) {
+    return (
+      <div style={{ padding: "12px" }}>
+        <div
+          className="m"
+          style={{ fontSize: 10.5, color: "var(--ink3)", marginBottom: 10 }}
+        >
+          Select ML vias on the die to approve them as permanent annotations.
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ padding: "12px" }}>
+      <div
+        className="m"
+        style={{ fontSize: 10.5, color: "var(--ink3)", marginBottom: 10 }}
+      >
+        {count} ML via{count > 1 ? "s" : ""} selected.
+        {detectedLayer && <span style={{ color: "var(--ink2)" }}> (detected: {detectedLayer})</span>}
+      </div>
+
+      {/* Via layer selector */}
+      <div
+        className="row"
+        style={{ gap: 4, flexWrap: "wrap", marginBottom: 10 }}
+      >
+        <span className="u" style={{ fontSize: 10, minWidth: 40, alignSelf: "center" }}>
+          Set as
+        </span>
+        {vias.map((v) => (
+          <button
+            key={v.id}
+            type="button"
+            className={"chip" + (selectedViaId === v.id ? " on" : "")}
+            style={{
+              cursor: "pointer",
+              borderColor: v.color,
+              ...(selectedViaId === v.id ? { background: v.color, color: "#000" } : {})
+            }}
+            onClick={() => setSelectedViaId(v.id)}
+          >
+            {v.id.toLowerCase()}
+          </button>
+        ))}
+      </div>
+
+      <button
+        type="button"
+        className="btn"
+        style={{ width: "100%", cursor: "pointer" }}
+        onClick={() => void approveSelected()}
+      >
+        Approve as {selectedViaId?.toLowerCase() ?? "via"} ({count})
+      </button>
+    </div>
+  );
+}
+
+/** Returns the previous value of a variable across renders. */
+function usePrevious<T>(value: T): T | undefined {
+  const ref = useRef<T | undefined>(undefined);
+  useEffect(() => { ref.current = value; });
+  return ref.current;
 }
 
 function MLSectionHeader({ children }: { children: ReactNode }) {
@@ -542,6 +680,335 @@ function MLSectionHeader({ children }: { children: ReactNode }) {
       }}
     >
       <span className="u">{children}</span>
+    </div>
+  );
+}
+
+/** CV cell detection: select a reference cell, run contour matching, place results. */
+function CVSection({
+  dieId,
+  annotations,
+  dispatcher
+}: {
+  dieId: string;
+  annotations: DieAnnotations | undefined;
+  dispatcher: ActionDispatcher;
+}) {
+  const selectedIds = useDieViewerStore((s) => s.selectedIds);
+  const [running, setRunning] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [result, setResult] = useState<{ count: number } | null>(null);
+  const [threshold, setThreshold] = useState(0.5);
+  const [rotationSteps, setRotationSteps] = useState(4);
+  const [maxMatches, setMaxMatches] = useState(100);
+  const [showDebug, setShowDebug] = useState(false);
+  const [debugData, setDebugData] = useState<import("shared").CVDebugData | null>(null);
+  const [debugLoading, setDebugLoading] = useState(false);
+  const [tmRunning, setTmRunning] = useState(false);
+
+  // Find the selected cell and its cell type
+  const selectedCellId = [...selectedIds].find((id) => id.startsWith("cell:"))?.slice(5);
+  const selectedCell = annotations?.cells?.find((c) => c.id === selectedCellId);
+  const selectedType = selectedCell
+    ? annotations?.cellTypes?.find((ct) => ct.id === selectedCell.cellTypeId)
+    : null;
+
+  // Check if it has at least one analog device (we can't check directly without
+  // the analog device registry, so we rely on the cell type existing)
+  const canBeRef = !!selectedType;
+
+  const runDetection = async () => {
+    if (!dieId || !selectedCell || !selectedType) return;
+    setRunning(true);
+    setErr(null);
+    setResult(null);
+    try {
+      const overlayLayers = useOverlayLayers.getState().layers;
+      const visibleOverlay = overlayLayers.find((l) => !l.hidden && l.loaded);
+      const res = await cvMatch({
+        dieId,
+        cellTypeId: selectedType.id,
+        cellX: selectedCell.x,
+        cellY: selectedCell.y,
+        overlayFilename: visibleOverlay?.name,
+        threshold,
+        rotationSteps,
+        maxMatches,
+      });
+
+      // Place cells for each match
+      for (const match of res.matches) {
+        if (match.confidence < threshold) continue;
+        void dispatcher.dispatch({
+          kind: "upsertCell",
+          cell: {
+            id: uuid(),
+            cellTypeId: selectedType.id,
+            x: Math.round(match.x - selectedType.cropRect.width / 2),
+            y: Math.round(match.y - selectedType.cropRect.height / 2),
+            rotation: match.rotation as 0 | 90 | 180 | 270,
+            mlDetected: true,
+            mlConfidence: match.confidence,
+          },
+          prevCell: null,
+        });
+      }
+      setResult({ count: res.matches.length });
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "CV detection failed");
+    } finally {
+      setRunning(false);
+    }
+  };
+
+  const runTemplateDetection = async () => {
+    if (!dieId || !selectedCell || !selectedType) return;
+    setTmRunning(true);
+    setErr(null);
+    setResult(null);
+    try {
+      const overlayLayers = useOverlayLayers.getState().layers;
+      const visibleOverlay = overlayLayers.find((l) => !l.hidden && l.loaded);
+      const res = await cvTemplateMatch({
+        dieId,
+        cellTypeId: selectedType.id,
+        cellX: selectedCell.x,
+        cellY: selectedCell.y,
+        overlayFilename: visibleOverlay?.name,
+        threshold,
+        rotationSteps,
+        maxMatches,
+      });
+
+      for (const match of res.matches) {
+        if (match.confidence < threshold) continue;
+        void dispatcher.dispatch({
+          kind: "upsertCell",
+          cell: {
+            id: uuid(),
+            cellTypeId: selectedType.id,
+            x: Math.round(match.x - selectedType.cropRect.width / 2),
+            y: Math.round(match.y - selectedType.cropRect.height / 2),
+            rotation: match.rotation as 0 | 90 | 180 | 270,
+            mlDetected: true,
+            mlConfidence: match.confidence,
+          },
+          prevCell: null,
+        });
+      }
+      setResult({ count: res.matches.length });
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "Template matching failed");
+    } finally {
+      setTmRunning(false);
+    }
+  };
+
+  return (
+    <div style={{ padding: "12px" }}>
+      {!selectedCell && (
+        <div className="m" style={{ fontSize: 10.5, color: "var(--ink3)", marginBottom: 10 }}>
+          Select a cell on the die to use as reference for CV detection.
+        </div>
+      )}
+
+      {selectedCell && selectedType && (
+        <>
+          <div
+            className="m"
+            style={{ fontSize: 10.5, color: "var(--ink2)", marginBottom: 10 }}
+          >
+            Reference: <span className="u">{selectedType.name}</span>
+            <br />
+            Crop: {Math.round(selectedType.cropRect.width)}×{Math.round(selectedType.cropRect.height)} px
+          </div>
+
+          {/* Confidence threshold */}
+          <div className="row" style={{ justifyContent: "space-between", marginBottom: 4 }}>
+            <span className="u" style={{ fontSize: 10 }}>Min confidence</span>
+            <span className="m" style={{ fontSize: 11, color: "var(--ink2)" }}>{threshold.toFixed(2)}</span>
+          </div>
+          <input
+            type="range" min={0} max={1} step={0.01}
+            value={threshold}
+            style={{ width: "100%", marginBottom: 8 }}
+            onChange={(e) => setThreshold(Number(e.target.value))}
+          />
+
+          {/* Rotation steps */}
+          <div className="row" style={{ gap: 4, flexWrap: "wrap", marginBottom: 8 }}>
+            <span className="u" style={{ fontSize: 10, alignSelf: "center" }}>
+              Rotation
+            </span>
+            {[1, 2, 4].map((n) => (
+              <button
+                key={n}
+                type="button"
+                className={"chip" + (rotationSteps === n ? " on" : "")}
+                style={{ cursor: "pointer" }}
+                onClick={() => setRotationSteps(n)}
+              >
+                {n === 4 ? "0°/90°/180°/270°" : n === 2 ? "0°/180°" : "0°"}
+              </button>
+            ))}
+          </div>
+
+          {/* Max matches */}
+          <div className="row" style={{ gap: 4, alignItems: "center", marginBottom: 10 }}>
+            <span className="u" style={{ fontSize: 10 }}>Max matches</span>
+            <input
+              type="number" min={1} max={10000}
+              value={maxMatches}
+              style={{ width: 60, padding: "2px 4px", fontSize: 11, fontFamily: "var(--mono)" }}
+              onChange={(e) => setMaxMatches(Math.max(1, Number(e.target.value)))}
+            />
+          </div>
+
+          <button
+            type="button"
+            className="btn"
+            style={{ width: "100%", cursor: "pointer" }}
+            disabled={running}
+            onClick={() => void runDetection()}
+          >
+            {running ? "Running CV detection (contour)…" : "Run CV detection (contour)"}
+          </button>
+
+          <button
+            type="button"
+            className="btn"
+            style={{ width: "100%", cursor: "pointer", marginTop: 4 }}
+            disabled={tmRunning}
+            onClick={() => void runTemplateDetection()}
+          >
+            {tmRunning ? "Running template match…" : "Run CV detection (template)"}
+          </button>
+
+          {result && (
+            <div className="m" style={{ marginTop: 8, fontSize: 10.5, color: "var(--ink2)" }}>
+              Found {result.count} matches — placed as ML-detected cells.
+            </div>
+          )}
+
+          {err && (
+            <div className="m" style={{ marginTop: 8, fontSize: 10.5, color: "var(--danger, #e36854)" }}>
+              {err}
+            </div>
+          )}
+
+          {/* Debug toggle */}
+          <button
+            type="button"
+            className="btn"
+            style={{ width: "100%", cursor: "pointer", marginTop: 8, opacity: 0.6 }}
+            disabled={debugLoading}
+            onClick={async () => {
+              if (!showDebug) {
+                setDebugLoading(true);
+                setDebugData(null);
+                try {
+                  const ovLayers = useOverlayLayers.getState().layers;
+                  const visible = ovLayers.find((l) => !l.hidden && l.loaded);
+                  const data = await cvDebug({
+                    dieId,
+                    cellTypeId: selectedType!.id,
+                    cellX: selectedCell.x,
+                    cellY: selectedCell.y,
+                    overlayFilename: visible?.name,
+                  });
+                  setDebugData(data);
+                  setShowDebug(true);
+                } catch (e) {
+                  setErr(e instanceof Error ? e.message : "debug failed");
+                } finally {
+                  setDebugLoading(false);
+                }
+              } else {
+                setShowDebug(false);
+              }
+            }}
+          >
+            {debugLoading ? "Loading debug…" : showDebug ? "Hide debug" : "Debug CV"}
+          </button>
+
+          <button
+            type="button"
+            className="btn"
+            style={{ width: "100%", cursor: "pointer", marginTop: 4, opacity: 0.5 }}
+            onClick={async () => {
+              try {
+                const ovLayers = useOverlayLayers.getState().layers;
+                const visible = ovLayers.find((l) => !l.hidden && l.loaded);
+                const result = await cvDebugDump({
+                  dieId,
+                  cellTypeId: selectedType!.id,
+                  cellX: selectedCell.x,
+                  cellY: selectedCell.y,
+                  overlayFilename: visible?.name,
+                });
+                setErr(`Debug dumped to ${result.dump_path}`);
+              } catch (e) {
+                setErr(e instanceof Error ? e.message : "dump failed");
+              }
+            }}
+          >
+            Dump debug to file
+          </button>
+
+          {showDebug && debugData && (
+            <div style={{ marginTop: 8, fontSize: 10, color: "var(--ink2)" }}>
+              <div className="m" style={{ marginBottom: 4 }}>
+                Contours found: {debugData.total_contours_found} · Candidates: {debugData.total_candidates}
+              </div>
+              {debugData.ref_crop_png_b64 && (
+                <div style={{ marginBottom: 6 }}>
+                  <div className="u" style={{ fontSize: 9, marginBottom: 2 }}>Reference crop</div>
+                  <img src={`data:image/png;base64,${debugData.ref_crop_png_b64}`} alt="ref crop"
+                    style={{ maxWidth: "100%", borderRadius: 3 }} />
+                </div>
+              )}
+              {debugData.ref_contour_png_b64 && (
+                <div style={{ marginBottom: 6 }}>
+                  <div className="u" style={{ fontSize: 9, marginBottom: 2 }}>
+                    Reference contours ({debugData.ref_contour_count})
+                    {debugData.ref_contours?.map((rc, i) => (
+                      <span key={i} style={{ fontSize: 8, color: "var(--ink3)", marginLeft: 4 }}>
+                        #{i + 1}: area={rc.area} aspect={rc.aspect}
+                      </span>
+                    ))}
+                  </div>
+                  <img src={`data:image/png;base64,${debugData.ref_contour_png_b64}`} alt="ref contours"
+                    style={{ maxWidth: "100%", borderRadius: 3 }} />
+                </div>
+              )}
+              {debugData.search_preview_png_b64 && (
+                <div style={{ marginBottom: 6 }}>
+                  <div className="u" style={{ fontSize: 9, marginBottom: 2 }}>
+                    Search preview (green=top20, red=candidates)
+                  </div>
+                  <img src={`data:image/jpeg;base64,${debugData.search_preview_png_b64}`} alt="search preview"
+                    style={{ maxWidth: "100%", borderRadius: 3 }} />
+                </div>
+              )}
+              {debugData.top_matches.length > 0 && (
+                <div style={{ marginBottom: 6 }}>
+                  <div className="u" style={{ fontSize: 9, marginBottom: 2 }}>Top matches</div>
+                  <div style={{ maxHeight: 200, overflow: "auto" }}>
+                    {debugData.top_matches.map((m, i) => (
+                      <div key={i} style={{ padding: "2px 0", borderBottom: "1px solid var(--l1)", fontSize: 9 }}>
+                        #{i + 1} conf={m.confidence} score={m.total_score}
+                        shape={m.shape_dist} area={m.area_ratio}
+                        aspect={m.aspect_err} solidity={m.solidity_err}
+                        centroid=({m.centroid[0]},{m.centroid[1]})
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+        </>
+      )}
     </div>
   );
 }
@@ -613,11 +1080,15 @@ function InferenceSection({ dieId }: { dieId: string }) {
     }
   };
 
+  const overlayLayers = useOverlayLayers((s) => s.layers);
+  const visibleOverlay = overlayLayers.find((l) => !l.hidden && l.loaded);
+  const overlayName = visibleOverlay?.name ?? null;
+
   const toggleJob = async () => {
     setBusy("job");
     setErr(null);
     try {
-      const next = running ? await stopMLJob(dieId) : await startMLJob(dieId);
+      const next = running ? await stopMLJob(dieId) : await startMLJob(dieId, overlayName ?? undefined);
       qc.setQueryData(mlJobKey(dieId), next);
     } catch (e) {
       setErr(e instanceof Error ? e.message : "inference job failed");
@@ -655,6 +1126,19 @@ function InferenceSection({ dieId }: { dieId: string }) {
             </option>
           ))}
         </select>
+      </div>
+
+      {/* Source badge */}
+      <div
+        className="row"
+        style={{ gap: 8, alignItems: "center", marginBottom: 8, fontSize: 10, color: "var(--ink3)" }}
+      >
+        <span className="u" style={{ fontSize: 10 }}>
+          Source
+        </span>
+        <span className="m">
+          {overlayName ? `overlay: ${overlayName}` : "base image"}
+        </span>
       </div>
 
       {/* Start / stop */}
@@ -752,12 +1236,15 @@ function TrainingSection({ dieId }: { dieId: string }) {
   const [result, setResult] = useState<
     { ok: true } | { ok: false; msg: string } | null
   >(null);
+  const overlayLayers = useOverlayLayers((s) => s.layers);
+  const visibleOverlay = overlayLayers.find((l) => !l.hidden && l.loaded);
+  const overlayName = visibleOverlay?.name ?? undefined;
 
   const runExport = async () => {
     setExporting(true);
     setResult(null);
     try {
-      await exportMlData(dieId, Math.max(1, Math.round(mlConfig.pointViaSize)));
+      await exportMlData(dieId, Math.max(1, Math.round(mlConfig.pointViaSize)), overlayName);
       setResult({ ok: true });
     } catch (e) {
       setResult({ ok: false, msg: e instanceof Error ? e.message : "failed" });
@@ -774,6 +1261,18 @@ function TrainingSection({ dieId }: { dieId: string }) {
       >
         Real-die sizes baked into the generated training pixel masks. The
         canvas previews these while this tab is open.
+      </div>
+
+      <div
+        className="row"
+        style={{ gap: 8, alignItems: "center", marginBottom: 8, fontSize: 10, color: "var(--ink3)" }}
+      >
+        <span className="u" style={{ fontSize: 10 }}>
+          Source
+        </span>
+        <span className="m">
+          {overlayName ? `overlay: ${overlayName}` : "base image"}
+        </span>
       </div>
 
       <MLSlider
