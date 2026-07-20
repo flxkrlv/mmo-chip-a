@@ -727,39 +727,44 @@ def match_template_pipeline(
     # Sort by confidence desc
     all_matches.sort(key=lambda x: -x[0])
 
-    # Proper NMS using OpenCV's built-in function
-    boxes = []
-    scores_list = []
-    for _, x, y, _ in all_matches:
-        boxes.append([x, y, x + tw, y + th])
-        scores_list.append(1.0)  # dummy, we sort manually
-    if boxes:
-        indices = cv2.dnn.NMSBoxes(
-            boxes,
-            [m[0] for m in all_matches],  # confidence as score
-            0.0,  # score_threshold (already filtered)
-            p.get("nms_iou_thresh", 0.15),
-        )
-        if len(indices) > 0:
-            indices = indices.flatten() if hasattr(indices, 'flatten') else indices
-            kept = [all_matches[i] for i in indices[:p["max_matches"]]]
-        else:
-            kept = []
-    else:
-        kept = []
+    # NMS by IoU + centroid distance — keeps highest-confidence match per cell
+    kept: list[tuple[float, int, int, int]] = []
+    for conf, x, y, angle in all_matches:
+        overlap = False
+        for k_conf, kx, ky, _ in kept:
+            # IoU between (x,y,tw,th) and (kx,ky,tw,th)
+            ix = max(0, min(x + tw, kx + tw) - max(x, kx))
+            iy = max(0, min(y + th, ky + th) - max(y, ky))
+            inter = ix * iy
+            union = tw * th + tw * th - inter
+            iou = inter / union if union > 0 else 0
+            if iou > 0.3:
+                overlap = True
+                break
+            # Also centroid distance for far-away same-pattern cells
+            cx = x + tw // 2; cy = y + th // 2
+            kcx = kx + tw // 2; kcy = ky + th // 2
+            dist = ((cx - kcx)**2 + (cy - kcy)**2)**0.5
+            if dist < 30:
+                overlap = True
+                break
+        if overlap:
+            continue
+        kept.append((conf, x, y, angle))
+        if len(kept) >= p["max_matches"]:
+            break
 
-    # Filter out matches on/very near the reference cell position
+    # Filter out matches on the reference cell itself (not nearby cells)
     ref_cx = rx0 + rw // 2
     ref_cy = ry0 + rh // 2
+    # Use a tight radius: a fraction of the template size
+    ref_tol = min(tw, th) * 0.3
     filtered: list[tuple[float, int, int, int]] = []
     for conf, x, y, angle in kept:
         mx = x + tw // 2
         my = y + th // 2
-        # Distance from reference cell centroid
         dist = ((mx - ref_cx) ** 2 + (my - ref_cy) ** 2) ** 0.5
-        # Skip matches that are on top of the reference cell (within half-diagonal)
-        ref_diag = (rw ** 2 + rh ** 2) ** 0.5 * 0.5
-        if dist < ref_diag:
+        if dist < ref_tol:
             continue
         filtered.append((conf, x, y, angle))
 
