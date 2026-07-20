@@ -5,22 +5,27 @@ Key differences: no GUI, clean functions, rotation detection added, NMS tuned.
 """
 from __future__ import annotations
 
+import os
 import cv2
 import numpy as np
 
 # ── Default detection parameters (matching 2.py's PRESET) ──────────────
 
 DEFAULT_PARAMS = {
-    "shape_thresh": 1.25,
-    "area_lo": 0.5,
-    "area_hi": 2.0,
-    "aspect_thresh": 1.25,
-    "solidity_thresh": 0.60,
-    "extent_thresh": 0.60,
-    "circularity_thresh": 0.75,
-    "min_area": 12,
+    "shape_thresh": 1.5,
+    "area_lo": 0.8,
+    "area_hi": 1.2,
+    "aspect_thresh": 0.5,
+    "solidity_thresh": 0.90,
+    "extent_thresh": 0.90,
+    "circularity_thresh": 0.90,
+    "min_area": 200,
     "min_distance": 10,
+    "approx_epsilon": 0.025,
     "nms_iou_thresh": 0.22,
+    "min_ref_matches": 2,
+    "struct_thresh": 0.25,
+    "detection_mode": "canny",
 }
 
 
@@ -99,10 +104,44 @@ def contour_circularity(cnt: np.ndarray) -> float:
     return 4.0 * np.pi * area / (per * per)
 
 
-def normalize_contour(cnt: np.ndarray, eps_ratio: float = 0.01) -> np.ndarray:
+def normalize_contour(cnt: np.ndarray, eps_ratio: float = 0.025) -> np.ndarray:
+    """Approximate contour with fewer points using Douglas-Peucker.
+    Higher eps_ratio = more aggressive simplification = straighter lines.
+    Default 0.025 = 2.5% of arc length, smoothing pixel noise."""
     eps = eps_ratio * cv2.arcLength(cnt, True)
     approx = cv2.approxPolyDP(cnt, eps, True)
     return approx if len(approx) >= 4 else cnt
+
+
+def _dedup_contours_by_iou(contours: list[np.ndarray],
+                            iou_thresh: float = 0.7) -> list[np.ndarray]:
+    """Deduplicate contours by bounding box IoU, keeping the largest per group.
+    Multiple binarization variants produce shifted versions of the same contour;
+    this keeps only the cleanest (largest area) copy of each."""
+    if not contours:
+        return []
+    rects = [cv2.boundingRect(c) for c in contours]
+    areas = [cv2.contourArea(c) for c in contours]
+    order = sorted(range(len(contours)), key=lambda i: areas[i], reverse=True)
+    keep: list[int] = []
+    used: set[int] = set()
+    for i in order:
+        if i in used:
+            continue
+        keep.append(i)
+        x1, y1, w1, h1 = rects[i]
+        for j in order:
+            if j in used or j == i:
+                continue
+            x2, y2, w2, h2 = rects[j]
+            ix = max(0, min(x1 + w1, x2 + w2) - max(x1, x2))
+            iy = max(0, min(y1 + h1, y2 + h2) - max(y1, y2))
+            inter = ix * iy
+            union = w1 * h1 + w2 * h2 - inter
+            iou = inter / union if union > 0 else 0.0
+            if iou > iou_thresh:
+                used.add(j)
+    return [contours[k] for k in keep]
 
 
 # ── Contour extraction ─────────────────────────────────────────────────
@@ -116,15 +155,24 @@ def choose_best_contour_from_roi(roi_gray: np.ndarray,
     best_cnt = None
     best_score = -1.0
     roi_area = roi_gray.shape[0] * roi_gray.shape[1]
+    h, w = roi_gray.shape[:2]
 
     for bw in variants:
-        contours, _ = cv2.findContours(bw, cv2.RETR_EXTERNAL,
-                                       cv2.CHAIN_APPROX_SIMPLE)
-        for cnt in contours:
+        contours, hierarchy = cv2.findContours(bw, cv2.RETR_TREE,
+                                               cv2.CHAIN_APPROX_SIMPLE)
+        if hierarchy is None:
+            continue
+        hierarchy = hierarchy[0]
+        for i, cnt in enumerate(contours):
             area = cv2.contourArea(cnt)
             if area < min_area:
                 continue
             if area > roi_area * 0.97:
+                continue
+            # Skip top-level contours touching ROI border (edge garbage)
+            x, y, cw, ch = cv2.boundingRect(cnt)
+            if hierarchy[i][3] == -1 and (x <= 2 or y <= 2 or
+                                          x + cw >= w - 2 or y + ch >= h - 2):
                 continue
             ext = contour_extent(cnt)
             sol = contour_solidity(cnt)
@@ -141,25 +189,26 @@ def choose_best_contour_from_roi(roi_gray: np.ndarray,
 
 def extract_all_contours_from_roi(roi_gray: np.ndarray,
                                    min_area: int = 12) -> list[np.ndarray]:
-    """Extract ALL significant contours from a reference ROI.
+    """Extract ALL significant contours from a reference ROI using RETR_TREE.
 
-    Unlike choose_best_contour_from_roi which returns the single best contour,
-    this returns all contours that are:
-      - Not touching the ROI border (likely external cell boundaries)
-      - Above min_area
-      - Not too large (> 97% of ROI)
-    This preserves the unique multi-contour signature of a transistor
-    (pocket boundary + base + emitter + contacts).
+    Returns top-level contours (pocket boundary) AND all nested child contours
+    (base, emitter, collector, contacts). Top-level contours that touch the ROI
+    border are filtered as edge garbage; internal contours are kept regardless
+    of their position relative to the border.
+    Contours from all 6 binarization variants are collected, then deduplicated
+    by IoU (>0.7 = same structure, keep largest).
     """
     variants = build_binary_variants(roi_gray)
-    seen: set[tuple[int, int, int, int]] = set()
     h, w = roi_gray.shape[:2]
-    results: list[np.ndarray] = []
+    collected: list[np.ndarray] = []
 
     for bw in variants:
-        contours, _ = cv2.findContours(bw, cv2.RETR_EXTERNAL,
-                                       cv2.CHAIN_APPROX_SIMPLE)
-        for cnt in contours:
+        contours, hierarchy = cv2.findContours(bw, cv2.RETR_TREE,
+                                               cv2.CHAIN_APPROX_SIMPLE)
+        if hierarchy is None:
+            continue
+        hierarchy = hierarchy[0]
+        for i, cnt in enumerate(contours):
             area = cv2.contourArea(cnt)
             if area < min_area:
                 continue
@@ -168,22 +217,27 @@ def extract_all_contours_from_roi(roi_gray: np.ndarray,
             x, y, cw, ch = cv2.boundingRect(cnt)
             if cw < 3 or ch < 3:
                 continue
-            # Skip contours touching the ROI border (external cell boundary)
-            if x <= 2 or y <= 2 or x + cw >= w - 2 or y + ch >= h - 2:
+            # Top-level contours touching the ROI border = edge garbage → skip.
+            # Nested contours (parent != -1) are always kept — these are the
+            # internal transistor structures (base, emitter, collector).
+            parent = hierarchy[i][3]
+            touches_border = (x <= 2 or y <= 2 or
+                              x + cw >= w - 2 or y + ch >= h - 2)
+            if parent == -1 and touches_border:
                 continue
-            key = (int(x / 4), int(y / 4), int(cw / 4), int(ch / 4))
-            if key in seen:
-                continue
-            seen.add(key)
-            results.append(normalize_contour(cnt))
+            collected.append(normalize_contour(cnt))
 
-    return results
+    # Deduplicate by IoU — different variants produce shifted versions of
+    # the same contour. Keep the largest (cleanest) copy of each.
+    return _dedup_contours_by_iou(collected, iou_thresh=0.7)
 
 
 def find_all_contours(gray: np.ndarray,
                       min_area: int = 12) -> list[np.ndarray]:
-    """Extract all external contours from the image, deduplicating across
-    binary variants by quantised bounding box."""
+    """Extract all external contours (RETR_EXTERNAL = no nesting) from the image,
+    deduplicating across binary variants by quantised bounding box.
+    RETR_EXTERNAL is correct for the search image: base/emitter/collector are
+    disconnected binary regions and each has its own external boundary."""
     all_contours: list[np.ndarray] = []
     seen: set[tuple[int, int, int, int]] = set()
 
@@ -204,6 +258,35 @@ def find_all_contours(gray: np.ndarray,
             all_contours.append(normalize_contour(cnt))
 
     return all_contours
+
+
+def find_all_contours_canny(gray: np.ndarray,
+                            min_area: int = 12) -> list[np.ndarray]:
+    """Find contours using Canny edge detection instead of threshold binarization.
+    
+    Works on uniformly-bright images where threshold methods fail to produce
+    closed regions. Uses bilateral filter → Canny → morphological close to
+    convert faint edges into filled regions.
+    """
+    # Gentle denoise (no CLAHE — preserves raw gradients)
+    den = cv2.bilateralFilter(gray, 5, 30, 30)
+    edges = cv2.Canny(den, 20, 80)
+    # Close gaps in edges so findContours sees filled regions
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+    closed = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel, iterations=2)
+
+    contours, _ = cv2.findContours(closed, cv2.RETR_EXTERNAL,
+                                   cv2.CHAIN_APPROX_SIMPLE)
+    result: list[np.ndarray] = []
+    for cnt in contours:
+        area = cv2.contourArea(cnt)
+        if area < min_area:
+            continue
+        x, y, w, h = cv2.boundingRect(cnt)
+        if w < 3 or h < 3:
+            continue
+        result.append(normalize_contour(cnt))
+    return result
 
 
 # ── Matching ────────────────────────────────────────────────────────────
@@ -326,6 +409,18 @@ def nms_contours(contours: list[np.ndarray],
     return [contours[k] for k in keep]
 
 
+def _principal_angle(cnt: np.ndarray) -> int:
+    """Return the dominant orientation (0 or 90 degrees) of a contour.
+    Uses minAreaRect: if width > height, orientation is 0°, else 90°. 
+    This is robust for Manhattan-geometry transistor contours."""
+    rect = cv2.minAreaRect(cnt)
+    w, h = rect[1]
+    if w >= h:
+        return 0
+    else:
+        return 90
+
+
 # ── Rotation detection ──────────────────────────────────────────────────
 
 
@@ -375,58 +470,123 @@ def detect_rotation(template: np.ndarray, candidate: np.ndarray,
     return best_angle, best_score
 
 
-# ── Main matching pipelines ─────────────────────────────────────────────
+# ── Cluster-based matching ────────────────────────────────────────────
 
 
-def match_contour_pipeline(
-    search_rgb: np.ndarray,
-    ref_bbox: tuple[int, int, int, int],
-    params: dict | None = None,
-) -> list[dict]:
-    """Multi-contour matching pipeline — uses ALL reference contours.
-
-    Instead of picking a single best contour from the reference, this extracts
-    ALL contours from the reference ROI (pocket + base + emitter + contacts)
-    and matches each candidate against all of them. A candidate passes if its
-    best match to any reference contour satisfies the thresholds.
-
-    This matches how 2.py would work when the reference crop contains multiple
-    overlapping structures — each contour contributes shape information.
-    """
-    p = {**DEFAULT_PARAMS, **(params or {})}
-    search_gray = cv2.cvtColor(search_rgb, cv2.COLOR_RGB2GRAY)
-
-    search_pp = preprocess(search_gray)
-
-    rx0, ry0, rw, rh = ref_bbox
-    ref_roi = search_pp[ry0:ry0 + rh, rx0:rx0 + rw]
-
-    # Extract ALL reference contours (not just the best one)
-    ref_cnts = extract_all_contours_from_roi(ref_roi, min_area=p["min_area"])
+def _cluster_radius(ref_cnts: list[np.ndarray]) -> float:
+    """Cluster radius = half the max dimension of the largest reference contour.
+    This keeps radius proportional to the actual cell size, not inflated by
+    distant internal features."""
     if not ref_cnts:
-        # Fall back to best contour if multi-contour finds nothing
-        single = choose_best_contour_from_roi(ref_roi, min_area=p["min_area"])
-        if single is None:
-            return []
-        ref_cnts = [single]
+        return 50.0
+    areas = [cv2.contourArea(c) for c in ref_cnts]
+    largest = ref_cnts[int(np.argmax(areas))]
+    _, _, w, h = cv2.boundingRect(largest)
+    return max(w, h) * 0.5
 
-    # Translate to search-image coords
-    ref_cnts = [c + np.array([[[rx0, ry0]]]) for c in ref_cnts]
 
-    # Unique match candidate ids (tracked by bounding box to avoid dupes)
-    all_cnts = find_all_contours(search_pp, min_area=p["min_area"])
+def _verify_internal_structure(
+    ref_cnts: list[np.ndarray],
+    candidate_cnts: list[np.ndarray],
+    loose_matches: list[tuple[float, np.ndarray, int]],
+    large_refs: set[int],
+) -> float:
+    """Fuzzy structural verification of a candidate's internal contours
+    against the reference contour set.
 
-    # For each search contour, compute best score across ALL reference contours
-    scored_pool: list[tuple[float, np.ndarray]] = []
-    for cnt in all_cnts:
+    Returns a similarity score 0..1 based on:
+      - area_ratio match between candidate/reference relative to pocket
+      - relative position of each internal contour within the candidate crop
+
+    Higher = more similar. Only considers matched internal contours.
+    """
+    if not loose_matches:
+        return 0.0
+
+    ref_areas = [cv2.contourArea(rc) for rc in ref_cnts]
+    pocket_idx = int(np.argmax(ref_areas))
+    ref_pocket_area = ref_areas[pocket_idx]
+    ref_pocket_bbox = cv2.boundingRect(ref_cnts[pocket_idx])
+    ref_pcx = ref_pocket_bbox[0] + ref_pocket_bbox[2] / 2
+    ref_pcy = ref_pocket_bbox[1] + ref_pocket_bbox[3] / 2
+
+    # Find candidate pocket (the one that matched a large reference)
+    cand_pocket = None
+    for _, cnt, idx in loose_matches:
+        if idx in large_refs:
+            cand_pocket = cnt
+            break
+    if cand_pocket is None:
+        return 0.0
+
+    cand_pocket_area = cv2.contourArea(cand_pocket)
+    if cand_pocket_area < 1:
+        return 0.0
+    cb = cv2.boundingRect(cand_pocket)
+    cand_pcx = cb[0] + cb[2] / 2
+    cand_pcy = cb[1] + cb[3] / 2
+
+    # Compute similarity for each internal match
+    scores: list[float] = []
+    for _, cnt, idx in loose_matches:
+        if idx in large_refs:
+            continue  # skip pocket-to-pocket match
+        # Area ratio similarity: (cand_internal / cand_pocket) vs (ref_internal / ref_pocket)
+        cand_internal_area = cv2.contourArea(cnt)
+        ref_internal_area = ref_areas[idx]
+        cand_ratio = cand_internal_area / cand_pocket_area
+        ref_ratio = ref_internal_area / ref_pocket_area
+        ratio_sim = np.exp(-0.5 * ((cand_ratio - ref_ratio) / (0.3 * ref_ratio + 0.01)) ** 2)
+
+        # Relative position similarity: centroid offset normalized by pocket bbox
+        cib = cv2.boundingRect(cnt)
+        cand_off_x = (cib[0] + cib[2] / 2 - cand_pcx) / max(cb[2], 1)
+        cand_off_y = (cib[1] + cib[3] / 2 - cand_pcy) / max(cb[3], 1)
+
+        ref_b = cv2.boundingRect(ref_cnts[idx])
+        ref_off_x = (ref_b[0] + ref_b[2] / 2 - ref_pcx) / max(ref_pocket_bbox[2], 1)
+        ref_off_y = (ref_b[1] + ref_b[3] / 2 - ref_pcy) / max(ref_pocket_bbox[3], 1)
+
+        pos_sim = np.exp(-0.5 * (
+            (cand_off_x - ref_off_x) ** 2 +
+            (cand_off_y - ref_off_y) ** 2
+        ) / (2 * 0.20))
+
+        scores.append(0.6 * ratio_sim + 0.4 * pos_sim)
+
+    return float(np.mean(scores)) if scores else 0.0
+
+
+def _loose_match_search_contours(
+    ref_cnts: list[np.ndarray],
+    search_cnts: list[np.ndarray],
+    p: dict,
+) -> list[tuple[float, np.ndarray, int]]:
+    """First-pass matching with relaxed thresholds.
+    Returns list of (total_score, contour, best_ref_idx)."""
+    ref_areas = [cv2.contourArea(rc) for rc in ref_cnts]
+    scored: list[tuple[float, np.ndarray, int]] = []
+
+    for cnt in search_cnts:
+        cnt_area = cv2.contourArea(cnt)
+        if cnt_area < p["min_area"]:
+            continue
+
         best_score = float("inf")
-        for rc in ref_cnts:
-            ra = cv2.contourArea(rc)
-            m = contour_distance(rc, cnt, ra)
+        best_idx = 0
+        best_metrics = None
+
+        for i, rc in enumerate(ref_cnts):
+            m = contour_distance(rc, cnt, ref_areas[i])
             if m["total"] < best_score:
                 best_score = m["total"]
+                best_idx = i
                 best_metrics = m
-        # Apply filters using the best match metrics
+
+        if best_metrics is None:
+            continue
+
+        # Loose filters — use user params from DEFAULT_PARAMS / GUI
         if not (p["area_lo"] <= best_metrics["ratio"] <= p["area_hi"]):
             continue
         if best_metrics["shape"] > p["shape_thresh"]:
@@ -439,62 +599,249 @@ def match_contour_pipeline(
             continue
         if best_metrics["circ_err"] > p["circularity_thresh"]:
             continue
-        scored_pool.append((best_metrics["total"], cnt))
+        scored.append((best_metrics["total"], cnt, best_idx))
 
-    if not scored_pool:
+    return scored
+
+
+def _cluster_matches(
+    scored: list[tuple[float, np.ndarray, int]],
+    radius: float,
+) -> list[dict]:
+    """Group matches by centroid proximity, return clusters with metadata.
+    Each cluster dict: {centroid, score, matches, ref_ids, n_matches, bbox}"""
+    if not scored:
         return []
 
-    scored_pool.sort(key=lambda x: x[0])
-
-    # Score percentile filter
-    scores_arr = [s for s, _ in scored_pool]
-    limit = np.percentile(scores_arr, 75) + 0.15
-    filtered = [cnt for s, cnt in scored_pool if s <= limit]
-    if not filtered:
-        return []
-
-    # NMS
-    filtered = nms_contours(filtered, iou_thresh=p["nms_iou_thresh"],
-                            center_dist_thresh=p["min_distance"])
-
-    # Re-score against the BEST matching reference contour for each candidate
-    rescored: list[tuple[float, np.ndarray, np.ndarray]] = []  # (score, cnt, best_ref_cnt)
-    for cnt in filtered:
-        best_score = float("inf")
-        best_rc = ref_cnts[0]
-        for rc in ref_cnts:
-            ra = cv2.contourArea(rc)
-            m = contour_distance(rc, cnt, ra)
-            if m["total"] < best_score:
-                best_score = m["total"]
-                best_rc = rc
-        rescored.append((best_score, cnt, best_rc))
-    rescored.sort(key=lambda x: x[0])
-
-    # Build results
-    results: list[dict] = []
-    rotation_steps = p.get("rotation_steps", 4)
-    for total_score, cnt, best_rc in rescored:
+    centers = []
+    for _, cnt, _ in scored:
         x, y, w, h = cv2.boundingRect(cnt)
-        moments = cv2.moments(cnt)
-        if moments["m00"] < 1e-6:
-            cx, cy = x + w // 2, y + h // 2
-        else:
-            cx = int(moments["m10"] / moments["m00"])
-            cy = int(moments["m01"] / moments["m00"])
+        centers.append((x + w / 2, y + h / 2))
+    centroids = np.array(centers, dtype=np.float64)
+    n = len(scored)
+    assigned = [False] * n
+    clusters: list[list[int]] = []
 
-        angle, _ = detect_rotation(best_rc, cnt, steps=rotation_steps)
-        confidence = 1.0 / (1.0 + total_score)
+    for i in range(n):
+        if assigned[i]:
+            continue
+        group = [i]
+        assigned[i] = True
+        ci = centroids[i]
+        for j in range(i + 1, n):
+            if assigned[j]:
+                continue
+            if np.linalg.norm(centroids[j] - ci) <= radius:
+                group.append(j)
+                assigned[j] = True
+        clusters.append(group)
 
-        results.append({
-            "x": cx,
-            "y": cy,
-            "rotation": angle,
-            "confidence": round(confidence, 4),
-            "bbox": [x, y, w, h],
+    result: list[dict] = []
+    for idxs in clusters:
+        entries = [scored[i] for i in idxs]
+        entries.sort(key=lambda x: x[0])
+        ref_ids = set(idx for _, _, idx in entries)
+        points = np.array([centroids[i] for i in idxs])
+        cx, cy = float(points[:, 0].mean()), float(points[:, 1].mean())
+
+        xs = [cv2.boundingRect(cnt)[0] for _, cnt, _ in entries]
+        ys = [cv2.boundingRect(cnt)[1] for _, cnt, _ in entries]
+        ws = [cv2.boundingRect(cnt)[2] for _, cnt, _ in entries]
+        hs = [cv2.boundingRect(cnt)[3] for _, cnt, _ in entries]
+        min_x, min_y = min(xs), min(ys)
+        max_x = max(x + w for x, w in zip(xs, ws))
+        max_y = max(y + h for y, h in zip(ys, hs))
+        bw, bh = max_x - min_x, max_y - min_y
+
+        score = entries[0][0]  # best score in cluster
+        result.append({
+            "centroid": (round(cx), round(cy)),
+            "score": score,
+            "confidence": round(1.0 / (1.0 + score), 4),
+            "ref_ids": sorted(ref_ids),
+            "n_matches": len(entries),
+            "bbox": [min_x, min_y, bw, bh],
+            "ref_count": len(ref_ids),
         })
 
-    return results
+    result.sort(key=lambda c: c["score"])
+    return result
+
+
+def match_contour_pipeline(
+    search_rgb: np.ndarray,
+    ref_bbox: tuple[int, int, int, int],
+    params: dict | None = None,
+) -> list[dict]:
+    """Two-pass cluster-based contour matching.
+
+    Pass 1 (loose): match each search contour (RETR_EXTERNAL) against all
+    reference contours with relaxed thresholds. Track which reference index
+    gave the best match.
+
+    Pass 2 (cluster): group nearby matches into clusters. Require at least
+    ``min_ref_matches`` distinct reference contours in the same spatial
+    cluster. Apply strict user filters (area_lo/hi, aspect, etc.) per
+    reference contour within the cluster.
+
+    Returns one result per passing cluster.
+    """
+    p = {**DEFAULT_PARAMS, **(params or {})}
+    search_gray = cv2.cvtColor(search_rgb, cv2.COLOR_RGB2GRAY)
+    search_pp = preprocess(search_gray)
+
+    rx0, ry0, rw, rh = ref_bbox
+    ref_roi = search_pp[ry0:ry0 + rh, rx0:rx0 + rw]
+
+    # Reference: extract contour set from the crop (RETR_TREE + IoU dedup).
+    # Centroids are crop-local — all comparison is relative.
+    ref_cnts = extract_all_contours_from_roi(ref_roi, min_area=p["min_area"])
+    if not ref_cnts:
+        single = choose_best_contour_from_roi(ref_roi, min_area=p["min_area"])
+        if single is None:
+            return []
+        ref_cnts = [single]
+
+    # Translate to search-image coords for detection_rotation
+    ref_cnts = [c + np.array([[[rx0, ry0]]]) for c in ref_cnts]
+
+    if len(ref_cnts) <= 1:
+        # Fallback: just use match_similar with user's params
+        ref_area = cv2.contourArea(ref_cnts[0])
+        detection_mode = p.get("detection_mode", "threshold")
+        all_cnts = (find_all_contours_canny if detection_mode == "canny" else find_all_contours)(search_pp, min_area=p["min_area"])
+        scored = match_similar(ref_cnts[0], all_cnts, ref_area, p)
+        scored.sort(key=lambda x: x[0])
+        if not scored:
+            return []
+        # NMS
+        cnts = nms_contours([c for _, c in scored],
+                            iou_thresh=p["nms_iou_thresh"],
+                            center_dist_thresh=p["min_distance"])
+        results: list[dict] = []
+        for _, cnt in match_similar(ref_cnts[0], cnts, ref_area, p):
+            x, y, w, h = cv2.boundingRect(cnt)
+            cx = int(x + w / 2)
+            cy = int(y + h / 2)
+            m = contour_distance(ref_cnts[0], cnt, ref_area)
+            results.append({
+                "x": cx, "y": cy, "rotation": 0,
+                "confidence": round(1.0 / (1.0 + m["total"]), 4),
+                "bbox": [x, y, w, h],
+            })
+        return results
+
+    ref_areas = [cv2.contourArea(rc) for rc in ref_cnts]
+    max_ref_area = ref_areas[int(np.argmax(ref_areas))]
+
+    # Stage 1: Find pocket-like contours on the search image
+    detection_mode = p.get("detection_mode", "threshold")
+    search_fn = find_all_contours_canny if detection_mode == "canny" else find_all_contours
+    all_cnts = search_fn(search_pp, min_area=p["min_area"])
+
+    def _pocket_filter(cnt: np.ndarray) -> float | None:
+        """Check if a search contour is pocket-like. Returns match score or None."""
+        area = cv2.contourArea(cnt)
+        if area < p["min_area"]:
+            return None
+        m = contour_distance(ref_cnts[0], cnt, max_ref_area)
+        if not (p["area_lo"] <= m["ratio"] <= p["area_hi"]):
+            return None
+        if m["shape"] > p["shape_thresh"]:
+            return None
+        if m["asp_err"] > p["aspect_thresh"]:
+            return None
+        return m["total"]
+
+    candidates: list[tuple[float, np.ndarray]] = []
+    for cnt in all_cnts:
+        s = _pocket_filter(cnt)
+        if s is not None:
+            candidates.append((s, cnt))
+    if not candidates:
+        return []
+    candidates.sort(key=lambda x: x[0])
+
+    # NMS on pocket candidates
+    pocket_contours = nms_contours(
+        [c for _, c in candidates],
+        iou_thresh=p["nms_iou_thresh"],
+        center_dist_thresh=p["min_distance"],
+    )
+
+    # Stage 2: For each pocket candidate, crop and verify internal structure
+    sorted_idx = sorted(range(len(ref_areas)), key=lambda i: ref_areas[i], reverse=True)
+    large_refs = set(sorted_idx[:2])
+    min_cluster_matches = p.get("min_ref_matches", 2)
+
+    results: list[dict] = []
+    for pocket_cnt in pocket_contours:
+        px, py, pw, ph = cv2.boundingRect(pocket_cnt)
+        pocket_center = (px + pw // 2, py + ph // 2)
+
+        # Crop around this pocket with margin proportional to pocket itself
+        margin = max(pw, ph) // 1
+        cx0 = max(0, px - margin)
+        cy0 = max(0, py - margin)
+        cw = min(search_pp.shape[1] - cx0, pw + 2 * margin)
+        ch = min(search_pp.shape[0] - cy0, ph + 2 * margin)
+        crop = search_pp[cy0:cy0 + ch, cx0:cx0 + cw]
+
+        # Extract contours from this crop using the SAME method as reference
+        crop_cnts = extract_all_contours_from_roi(crop, min_area=p["min_area"])
+
+        if not crop_cnts:
+            continue
+
+        # Translate crop contours back to search-image coords
+        crop_cnts = [c + np.array([[[cx0, cy0]]]) for c in crop_cnts]
+
+        # Match against reference and check internal structure
+        loose = _loose_match_search_contours(ref_cnts, crop_cnts, p)
+        if not loose:
+            continue
+
+        ref_ids = set(idx for _, _, idx in loose)
+        rid_set = set(ref_ids)
+
+        # Must have a large (pocket boundary) match
+        if not (rid_set & large_refs):
+            continue
+
+        # Require at least min_cluster_matches SMALL (internal) matches
+        small_ids = set(rid_set - large_refs)
+        if len(small_ids) < min_cluster_matches:
+            continue
+
+        # Fuzzy structural verification
+        struct_score = _verify_internal_structure(ref_cnts, crop_cnts, loose, large_refs)
+        if struct_score < p.get("struct_thresh", 0.35):
+            continue
+
+        confidence = 1.0 / (1.0 + loose[0][0])
+        # Blend with structural score
+        confidence = 0.5 * confidence + 0.5 * struct_score
+        angle = _principal_angle(pocket_cnt)
+        results.append({
+            "x": pocket_center[0],
+            "y": pocket_center[1],
+            "rotation": angle,
+            "confidence": round(confidence, 4),
+            "bbox": [px, py, pw, ph],
+        })
+
+    # Dedup by proximity: keep highest-confidence result per location
+    deduped: list[dict] = []
+    for r in sorted(results, key=lambda x: -x["confidence"]):
+        is_dup = False
+        for d in deduped:
+            dist = ((r["x"] - d["x"]) ** 2 + (r["y"] - d["y"]) ** 2) ** 0.5
+            if dist < p["min_distance"]:
+                is_dup = True
+                break
+        if not is_dup:
+            deduped.append(r)
+    return deduped[: p.get("max_matches", 100)]
 
 
 # ── Debug pipeline ──────────────────────────────────────────────────────
@@ -505,6 +852,45 @@ def _draw_contour_on_image(image: np.ndarray, cnt: np.ndarray,
     out = image.copy()
     cv2.drawContours(out, [cnt], -1, color, 2)
     return out
+
+
+def _contour_depth(cnt_idx: int, hierarchy: np.ndarray) -> int:
+    """Compute nesting depth of contour at cnt_idx from RETR_TREE hierarchy."""
+    d = 0
+    p = hierarchy[cnt_idx][3]
+    while p != -1:
+        d += 1
+        p = hierarchy[p][3]
+    return d
+
+
+def _find_depth(rc: np.ndarray,
+                 contours_by_var: list[tuple[list[np.ndarray], np.ndarray]]
+                 ) -> int:
+    """Search depth across all binary variants, return first match within 5 px."""
+    rbox = cv2.boundingRect(rc)
+    for cnts, hier in contours_by_var:
+        for j in range(len(cnts)):
+            cbox = cv2.boundingRect(cnts[j])
+            dist = ((rbox[0] - cbox[0]) ** 2 + (rbox[1] - cbox[1]) ** 2) ** 0.5
+            if dist < 5:
+                return _contour_depth(j, hier)
+    return -1
+
+
+def _match_depth_to_ref(ref_cnts: list[np.ndarray],
+                         roi_gray: np.ndarray) -> list[int]:
+    """Match reference contours to hierarchy depths across all binary variants.
+    Searches each variant's RETR_TREE hierarchy for the nearest contour match
+    to each deduplicated reference contour."""
+    if not ref_cnts:
+        return []
+    contours_by_var: list[tuple[list[np.ndarray], np.ndarray]] = []
+    for bw in build_binary_variants(roi_gray):
+        cnts, hier = cv2.findContours(bw, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+        if hier is not None:
+            contours_by_var.append((cnts, hier[0]))
+    return [_find_depth(rc, contours_by_var) for rc in ref_cnts]
 
 
 def _resize_for_preview(image: np.ndarray, max_side: int = 1024) -> np.ndarray:
@@ -540,8 +926,14 @@ def debug_match_pipeline(
     ref_crop_rgb = search_rgb[ry0:ry0 + rh, rx0:rx0 + rw]
     _, cbuf = cv2.imencode(".png", cv2.cvtColor(ref_crop_rgb, cv2.COLOR_RGB2BGR))
     ref_crop_b64 = base64.b64encode(cbuf.tobytes()).decode("ascii")
+
+    # Match hierarchy depths from first binary variant
+    ref_depths = _match_depth_to_ref(ref_cnts, ref_roi)
+    top_level_count = sum(1 for d in ref_depths if d == 0 or d == -1)
+    nested_count = len(ref_depths) - top_level_count
+
     ref_contours_info = []
-    for rc in ref_cnts:
+    for i, rc in enumerate(ref_cnts):
         bx, by, bw_, bh_ = cv2.boundingRect(rc)
         ref_contours_info.append({
             "bbox": [int(bx), int(by), int(bw_), int(bh_)],
@@ -550,6 +942,7 @@ def debug_match_pipeline(
             "solidity": round(contour_solidity(rc), 4),
             "extent": round(contour_extent(rc), 4),
             "circularity": round(contour_circularity(rc), 4),
+            "depth": ref_depths[i] if i < len(ref_depths) else -1,
         })
     colors = [(0, 255, 0), (0, 200, 255), (255, 100, 0), (200, 0, 255), (0, 255, 255)]
     result = {
@@ -565,12 +958,20 @@ def debug_match_pipeline(
         "params_used": p,
     }
     if not ref_cnts: return result
-    black = np.zeros((rh, rw, 3), dtype=np.uint8)
+    overlay = ref_crop_rgb.copy()
     for i, rc in enumerate(ref_cnts):
-        cv2.drawContours(black, [rc - np.array([[[rx0, ry0]]])], -1, colors[i % len(colors)], 2)
-    _, rcbuf = cv2.imencode(".png", black)
+        color = colors[i % len(colors)]
+        cv2.drawContours(overlay, [rc - np.array([[[rx0, ry0]]])], -1, color, 2)
+        bx, by, bw_, bh_ = cv2.boundingRect(rc)
+        depth = ref_depths[i] if i < len(ref_depths) else -1
+        label = f"#{i + 1} d{depth}" if depth >= 0 else f"#{i + 1}"
+        cv2.putText(overlay, label, (bx - rx0 + 2, by - ry0 + 12),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.35, color, 1, cv2.LINE_AA)
+    _, rcbuf = cv2.imencode(".png", cv2.cvtColor(overlay, cv2.COLOR_RGB2BGR))
     result["ref_contour_png_b64"] = base64.b64encode(rcbuf.tobytes()).decode("ascii")
-    all_cnts = find_all_contours(search_pp, min_area=p["min_area"])
+    detection_mode = p.get("detection_mode", "threshold")
+    search_fn = find_all_contours_canny if detection_mode == "canny" else find_all_contours
+    all_cnts = search_fn(search_pp, min_area=p["min_area"])
     result["total_contours_found"] = len(all_cnts)
     if not all_cnts: return result
     all_scored = []
@@ -622,6 +1023,29 @@ def debug_match_pipeline(
             "extent_err": round(s["extent_err"], 4),
             "circularity_err": round(s["circularity_err"], 4)})
     result["top_matches"] = top_matches
+
+    # ── Cluster-based matching (for debug visualization) ──────────────
+    detection_mode = p.get("detection_mode", "threshold")
+    search_fn = find_all_contours_canny if detection_mode == "canny" else find_all_contours
+    all_cnts = search_fn(search_pp, min_area=p["min_area"])
+    loose_scored = _loose_match_search_contours(ref_cnts, all_cnts, p)
+    cluster_debug: list[dict] = []
+    if loose_scored:
+        radius = _cluster_radius(ref_cnts)
+        raw_clusters = _cluster_matches(loose_scored, radius)
+        min_cluster_matches = p.get("min_ref_matches", 2)
+        ref_areas_db = [cv2.contourArea(rc) for rc in ref_cnts]
+        large_refs_db = set(sorted(
+            range(len(ref_areas_db)), key=lambda i: ref_areas_db[i], reverse=True
+        )[:2])
+        for cl in raw_clusters:
+            rid_set = set(cl["ref_ids"])
+            has_large = bool(rid_set & large_refs_db)
+            passed = has_large or cl["ref_count"] >= min_cluster_matches
+            cluster_debug.append({**cl, "passed": passed})
+    result["clusters"] = cluster_debug
+
+    # ── Draw search preview ───────────────────────────────────────────
     sv = cv2.cvtColor(search_rgb, cv2.COLOR_RGB2BGR)
     for s in all_scored:
         xs, ys, ws_, hs_ = s["bbox"]
@@ -629,6 +1053,14 @@ def debug_match_pipeline(
                       (0, 0, 255) if not s["passed"] else (0, 255, 0), 1)
     for i, rc in enumerate(ref_cnts):
         cv2.drawContours(sv, [rc], -1, colors[i % len(colors)], 2)
+    # Draw cluster bboxes
+    for cl in cluster_debug:
+        x, y, w, h = cl["bbox"]
+        color = (0, 255, 0) if cl["passed"] else (0, 0, 255)
+        cv2.rectangle(sv, (x, y), (x + w, y + h), color, 2)
+        label = f'C:{cl["ref_count"]}ref {cl["n_matches"]}m {cl["confidence"]:.2f}'
+        cv2.putText(sv, label, (x + 2, y + 12),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, color, 1, cv2.LINE_AA)
     sv_rs = _resize_for_preview(sv, 2048)
     _, sbuf = cv2.imencode(".jpg", sv_rs, [cv2.IMWRITE_JPEG_QUALITY, 85])
     result["search_preview_png_b64"] = base64.b64encode(sbuf.tobytes()).decode("ascii")

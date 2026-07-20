@@ -705,6 +705,16 @@ function CVSection({
   const [debugData, setDebugData] = useState<import("shared").CVDebugData | null>(null);
   const [debugLoading, setDebugLoading] = useState(false);
   const [tmRunning, setTmRunning] = useState(false);
+  const [showAdvanced, setShowAdvanced] = useState(false);
+  const [minArea, setMinArea] = useState(200);
+  const [minDistance, setMinDistance] = useState(10);
+  const [shapeThresh, setShapeThresh] = useState(1.5);
+  const [areaLo, setAreaLo] = useState(0.8);
+  const [areaHi, setAreaHi] = useState(1.2);
+  const [aspectThresh, setAspectThresh] = useState(0.5);
+  const [solidityThresh, setSolidityThresh] = useState(0.9);
+  const [extentThresh, setExtentThresh] = useState(0.9);
+  const [circularityThresh, setCircularityThresh] = useState(0.9);
 
   // Find the selected cell and its cell type
   const selectedCellId = [...selectedIds].find((id) => id.startsWith("cell:"))?.slice(5);
@@ -734,6 +744,15 @@ function CVSection({
         threshold,
         rotationSteps,
         maxMatches,
+        minArea,
+        minDistance,
+        shapeThresh,
+        areaLo,
+        areaHi,
+        aspectThresh,
+        solidityThresh,
+        extentThresh,
+        circularityThresh,
       });
 
       // Place cells for each match
@@ -864,6 +883,97 @@ function CVSection({
             />
           </div>
 
+          {/* Advanced contour params toggle */}
+          <button
+            type="button"
+            className="btn"
+            style={{ width: "100%", cursor: "pointer", marginBottom: 6, opacity: 0.55, fontSize: 10 }}
+            onClick={() => setShowAdvanced(!showAdvanced)}
+          >
+            {showAdvanced ? "▾ Advanced contour params" : "▸ Advanced contour params"}
+          </button>
+
+          {showAdvanced && (
+            <div style={{ marginBottom: 8, padding: "6px 8px", background: "var(--l1)", borderRadius: 4, fontSize: 10 }}>
+              {/* minArea */}
+              <div className="row" style={{ justifyContent: "space-between", marginBottom: 2 }}>
+                <span className="u" style={{ fontSize: 9 }}>Min area (px²)</span>
+                <span style={{ color: "var(--ink2)", fontFamily: "var(--mono)" }}>{minArea}</span>
+              </div>
+              <input type="range" min={1} max={5000} step={10} value={minArea}
+                style={{ width: "100%", marginBottom: 6 }}
+                onChange={(e) => setMinArea(Number(e.target.value))} />
+
+              {/* minDistance */}
+              <div className="row" style={{ justifyContent: "space-between", marginBottom: 2 }}>
+                <span className="u" style={{ fontSize: 9 }}>NMS min distance (px)</span>
+                <span style={{ color: "var(--ink2)", fontFamily: "var(--mono)" }}>{minDistance}</span>
+              </div>
+              <input type="range" min={1} max={50} step={1} value={minDistance}
+                style={{ width: "100%", marginBottom: 6 }}
+                onChange={(e) => setMinDistance(Number(e.target.value))} />
+
+              {/* shapeThresh */}
+              <div className="row" style={{ justifyContent: "space-between", marginBottom: 2 }}>
+                <span className="u" style={{ fontSize: 9 }}>Shape threshold</span>
+                <span style={{ color: "var(--ink2)", fontFamily: "var(--mono)" }}>{shapeThresh.toFixed(2)}</span>
+              </div>
+              <input type="range" min={0.1} max={3.0} step={0.05} value={shapeThresh}
+                style={{ width: "100%", marginBottom: 6 }}
+                onChange={(e) => setShapeThresh(Number(e.target.value))} />
+
+              {/* areaLo / areaHi */}
+              <div className="row" style={{ justifyContent: "space-between", marginBottom: 2 }}>
+                <span className="u" style={{ fontSize: 9 }}>Area ratio range</span>
+                <span style={{ color: "var(--ink2)", fontFamily: "var(--mono)" }}>{areaLo.toFixed(2)} – {areaHi.toFixed(2)}</span>
+              </div>
+              <div className="row" style={{ gap: 4, marginBottom: 6 }}>
+                <input type="range" min={0.05} max={2.0} step={0.05} value={areaLo}
+                  style={{ flex: 1 }}
+                  onChange={(e) => setAreaLo(Math.min(Number(e.target.value), areaHi))} />
+                <input type="range" min={0.5} max={10.0} step={0.1} value={areaHi}
+                  style={{ flex: 1 }}
+                  onChange={(e) => setAreaHi(Math.max(Number(e.target.value), areaLo))} />
+              </div>
+
+              {/* aspectThresh */}
+              <div className="row" style={{ justifyContent: "space-between", marginBottom: 2 }}>
+                <span className="u" style={{ fontSize: 9 }}>Aspect threshold</span>
+                <span style={{ color: "var(--ink2)", fontFamily: "var(--mono)" }}>{aspectThresh.toFixed(2)}</span>
+              </div>
+              <input type="range" min={0.1} max={3.0} step={0.05} value={aspectThresh}
+                style={{ width: "100%", marginBottom: 6 }}
+                onChange={(e) => setAspectThresh(Number(e.target.value))} />
+
+              {/* solidityThresh */}
+              <div className="row" style={{ justifyContent: "space-between", marginBottom: 2 }}>
+                <span className="u" style={{ fontSize: 9 }}>Solidity threshold</span>
+                <span style={{ color: "var(--ink2)", fontFamily: "var(--mono)" }}>{solidityThresh.toFixed(2)}</span>
+              </div>
+              <input type="range" min={0.05} max={1.0} step={0.05} value={solidityThresh}
+                style={{ width: "100%", marginBottom: 6 }}
+                onChange={(e) => setSolidityThresh(Number(e.target.value))} />
+
+              {/* extentThresh */}
+              <div className="row" style={{ justifyContent: "space-between", marginBottom: 2 }}>
+                <span className="u" style={{ fontSize: 9 }}>Extent threshold</span>
+                <span style={{ color: "var(--ink2)", fontFamily: "var(--mono)" }}>{extentThresh.toFixed(2)}</span>
+              </div>
+              <input type="range" min={0.05} max={1.0} step={0.05} value={extentThresh}
+                style={{ width: "100%", marginBottom: 6 }}
+                onChange={(e) => setExtentThresh(Number(e.target.value))} />
+
+              {/* circularityThresh */}
+              <div className="row" style={{ justifyContent: "space-between", marginBottom: 2 }}>
+                <span className="u" style={{ fontSize: 9 }}>Circularity threshold</span>
+                <span style={{ color: "var(--ink2)", fontFamily: "var(--mono)" }}>{circularityThresh.toFixed(2)}</span>
+              </div>
+              <input type="range" min={0.05} max={1.0} step={0.05} value={circularityThresh}
+                style={{ width: "100%" }}
+                onChange={(e) => setCircularityThresh(Number(e.target.value))} />
+            </div>
+          )}
+
           <button
             type="button"
             className="btn"
@@ -871,7 +981,7 @@ function CVSection({
             disabled={running}
             onClick={() => void runDetection()}
           >
-            {running ? "Running CV detection (contour)…" : "Run CV detection (contour)"}
+            {running ? "Running CV detection contour (EXPERIMENTAL)…" : "Run CV detection contour (EXPERIMENTAL)"}
           </button>
 
           <button
@@ -915,6 +1025,17 @@ function CVSection({
                     cellX: selectedCell.x,
                     cellY: selectedCell.y,
                     overlayFilename: visible?.name,
+                    threshold,
+                    rotationSteps,
+                    minArea,
+                    minDistance,
+                    shapeThresh,
+                    areaLo,
+                    areaHi,
+                    aspectThresh,
+                    solidityThresh,
+                    extentThresh,
+                    circularityThresh,
                   });
                   setDebugData(data);
                   setShowDebug(true);
@@ -945,6 +1066,17 @@ function CVSection({
                   cellX: selectedCell.x,
                   cellY: selectedCell.y,
                   overlayFilename: visible?.name,
+                  threshold,
+                  rotationSteps,
+                  minArea,
+                  minDistance,
+                  shapeThresh,
+                  areaLo,
+                  areaHi,
+                  aspectThresh,
+                  solidityThresh,
+                  extentThresh,
+                  circularityThresh,
                 });
                 setErr(`Debug dumped to ${result.dump_path}`);
               } catch (e) {
@@ -971,9 +1103,16 @@ function CVSection({
                 <div style={{ marginBottom: 6 }}>
                   <div className="u" style={{ fontSize: 9, marginBottom: 2 }}>
                     Reference contours ({debugData.ref_contour_count})
+                    {debugData.ref_contours && (() => {
+                      const top = debugData.ref_contours!.filter((r) => (r.depth ?? -1) <= 0).length;
+                      const nest = debugData.ref_contours!.length - top;
+                      return <span style={{ fontSize: 8, color: "var(--ink3)", marginLeft: 2 }}>
+                        ({top} outer, {nest} nested)
+                      </span>;
+                    })()}
                     {debugData.ref_contours?.map((rc, i) => (
                       <span key={i} style={{ fontSize: 8, color: "var(--ink3)", marginLeft: 4 }}>
-                        #{i + 1}: area={rc.area} aspect={rc.aspect}
+                        #{i + 1} d={rc.depth ?? "?"} area={rc.area} asp={rc.aspect}
                       </span>
                     ))}
                   </div>
@@ -1000,6 +1139,24 @@ function CVSection({
                         shape={m.shape_dist} area={m.area_ratio}
                         aspect={m.aspect_err} solidity={m.solidity_err}
                         centroid=({m.centroid[0]},{m.centroid[1]})
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+              {debugData.clusters && debugData.clusters.length > 0 && (
+                <div style={{ marginBottom: 6 }}>
+                  <div className="u" style={{ fontSize: 9, marginBottom: 2 }}>
+                    Clusters ({debugData.clusters.filter((c) => c.passed).length} passed of {debugData.clusters.length})
+                  </div>
+                  <div style={{ maxHeight: 200, overflow: "auto" }}>
+                    {debugData.clusters.map((cl, i) => (
+                      <div key={i} style={{
+                        padding: "2px 0", borderBottom: "1px solid var(--l1)", fontSize: 9,
+                        color: cl.passed ? "var(--green, #4caf50)" : "var(--ink3)",
+                      }}>
+                        #{i + 1} {cl.passed ? "PASS" : "FAIL"} centroide=({cl.centroid[0]},{cl.centroid[1]})
+                        conf={cl.confidence} ref_ids=[{cl.ref_ids.join(",")}] n_matches={cl.n_matches}
                       </div>
                     ))}
                   </div>

@@ -1071,6 +1071,18 @@ export interface CVMatchRequest {
   shapeThresh?: number;
   areaLo?: number;
   areaHi?: number;
+  /** Minimum contour area in px². Default 12. */
+  minArea?: number;
+  /** NMS center distance threshold in px. Default 10. */
+  minDistance?: number;
+  /** Max aspect ratio error. Default 1.25. */
+  aspectThresh?: number;
+  /** Max solidity error. Default 0.60. */
+  solidityThresh?: number;
+  /** Max extent error. Default 0.60. */
+  extentThresh?: number;
+  /** Max circularity error. Default 0.75. */
+  circularityThresh?: number;
 }
 
 export interface CVMatchResponse {
@@ -1112,6 +1124,19 @@ export interface CVDebugData {
   total_candidates: number;
   /** The actual detection parameters used. */
   params_used: Record<string, unknown>;
+  /** Cluster-based matching results. */
+  clusters?: CVDebugCluster[];
+}
+
+export interface CVDebugCluster {
+  centroid: [number, number];
+  score: number;
+  confidence: number;
+  ref_ids: number[];
+  n_matches: number;
+  bbox: [number, number, number, number];
+  ref_count: number;
+  passed: boolean;
 }
 
 export interface CVDebugScoredContour {
@@ -1148,6 +1173,8 @@ export interface CVRefContour {
   solidity: number;
   extent: number;
   circularity: number;
+  /** Nesting depth (0 = top-level, 1 = child, 2 = grandchild, etc.). */
+  depth?: number;
 }
 
 // ── Analog device detection job ─────────────────────────────────

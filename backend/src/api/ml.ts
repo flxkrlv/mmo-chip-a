@@ -781,12 +781,23 @@ export function createMLRouter(config: {
       fd.append("ref_y", String(refTop));
       fd.append("ref_w", String(refW));
       fd.append("ref_h", String(refH));
-      if (body.threshold != null) fd.append("threshold", String(body.threshold));
-      if (body.rotationSteps != null) fd.append("rotation_steps", String(body.rotationSteps));
-      if (body.maxMatches != null) fd.append("max_matches", String(body.maxMatches));
-      if (body.shapeThresh != null) fd.append("shape_thresh", String(body.shapeThresh));
-      if (body.areaLo != null) fd.append("area_lo", String(body.areaLo));
-      if (body.areaHi != null) fd.append("area_hi", String(body.areaHi));
+      const contourParams: [string, string | undefined][] = [
+        ["threshold", body.threshold?.toFixed(4)],
+        ["rotation_steps", body.rotationSteps?.toFixed(0)],
+        ["max_matches", body.maxMatches?.toFixed(0)],
+        ["shape_thresh", body.shapeThresh?.toFixed(4)],
+        ["area_lo", body.areaLo?.toFixed(4)],
+        ["area_hi", body.areaHi?.toFixed(4)],
+        ["min_area", body.minArea?.toFixed(0)],
+        ["min_distance", body.minDistance?.toFixed(0)],
+        ["aspect_thresh", body.aspectThresh?.toFixed(4)],
+        ["solidity_thresh", body.solidityThresh?.toFixed(4)],
+        ["extent_thresh", body.extentThresh?.toFixed(4)],
+        ["circularity_thresh", body.circularityThresh?.toFixed(4)],
+      ];
+      for (const [key, val] of contourParams) {
+        if (val != null) fd.append(key, val);
+      }
 
       let sidecarRes: Response;
       try {
@@ -885,11 +896,22 @@ export function createMLRouter(config: {
       fd.append("ref_y", String(refTopD));
       fd.append("ref_w", String(refWD));
       fd.append("ref_h", String(refHD));
-      if (body.threshold != null) fd.append("threshold", String(body.threshold));
-      if (body.rotationSteps != null) fd.append("rotation_steps", String(body.rotationSteps));
-      if (body.shapeThresh != null) fd.append("shape_thresh", String(body.shapeThresh));
-      if (body.areaLo != null) fd.append("area_lo", String(body.areaLo));
-      if (body.areaHi != null) fd.append("area_hi", String(body.areaHi));
+      const contourParams: [string, string | undefined][] = [
+        ["threshold", body.threshold?.toFixed(4)],
+        ["rotation_steps", body.rotationSteps?.toFixed(0)],
+        ["shape_thresh", body.shapeThresh?.toFixed(4)],
+        ["area_lo", body.areaLo?.toFixed(4)],
+        ["area_hi", body.areaHi?.toFixed(4)],
+        ["min_area", body.minArea?.toFixed(0)],
+        ["min_distance", body.minDistance?.toFixed(0)],
+        ["aspect_thresh", body.aspectThresh?.toFixed(4)],
+        ["solidity_thresh", body.solidityThresh?.toFixed(4)],
+        ["extent_thresh", body.extentThresh?.toFixed(4)],
+        ["circularity_thresh", body.circularityThresh?.toFixed(4)],
+      ];
+      for (const [key, val] of contourParams) {
+        if (val != null) fd.append(key, val);
+      }
 
       let sidecarRes: Response;
       try {
@@ -958,6 +980,22 @@ export function createMLRouter(config: {
       fd.append("ref_y", String(refTopD));
       fd.append("ref_w", String(refWD));
       fd.append("ref_h", String(refHD));
+      const contourParams: [string, string | undefined][] = [
+        ["threshold", body.threshold?.toFixed(4)],
+        ["rotation_steps", body.rotationSteps?.toFixed(0)],
+        ["shape_thresh", body.shapeThresh?.toFixed(4)],
+        ["area_lo", body.areaLo?.toFixed(4)],
+        ["area_hi", body.areaHi?.toFixed(4)],
+        ["min_area", body.minArea?.toFixed(0)],
+        ["min_distance", body.minDistance?.toFixed(0)],
+        ["aspect_thresh", body.aspectThresh?.toFixed(4)],
+        ["solidity_thresh", body.solidityThresh?.toFixed(4)],
+        ["extent_thresh", body.extentThresh?.toFixed(4)],
+        ["circularity_thresh", body.circularityThresh?.toFixed(4)],
+      ];
+      for (const [key, val] of contourParams) {
+        if (val != null) fd.append(key, val);
+      }
 
       let sidecarRes: Response;
       try {
