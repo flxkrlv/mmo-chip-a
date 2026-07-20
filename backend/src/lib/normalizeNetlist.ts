@@ -6,7 +6,7 @@
  * Vyges-lvs expects SPICE/CDL syntax (`.SUBCKT`/`.ENDS` with dots) and
  * POSITIONAL device parameters: `R1 n1 n2 1k` NOT `R1 (n1 n2) resistor r=1k`.
  * Spectre parenthesized format `(n1 n2)` and `keyword=value` params are
- * NOT parsed by vyges-lvs v0.1.11 (values are silently ignored).
+ * NOT parsed by vyges-lvs v0.1.11–v0.1.18 (values are silently ignored).
  *
  * This normalizer converts Spectre → CDL format before passing to vyges-lvs:
  *   R1 (n1 n2) resistor r=1k  →  R1 n1 n2 1k
@@ -72,7 +72,7 @@ function isDeviceLine(line: string): boolean {
  * Spectre:  R1 (n1 n2) resistor r=1k
  * CDL:      R1 n1 n2 1k
  *
- * vyges-lvs v0.1.13 ONLY parses value from positional tokens (CDL format).
+ * vyges-lvs v0.1.11–v0.1.18 ONLY parses value from positional tokens (CDL format).
  * Parentheses and keyword=value parameters (r=, c=, w=, l=) are silently
  * ignored, so we must convert before passing to vyges-lvs.
  */

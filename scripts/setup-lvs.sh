@@ -3,7 +3,7 @@ set -e
 # setup-lvs.sh — Install vyges-lvs on Linux/macOS
 # Run from repo root after `git clone` and `npm install`.
 
-VERSION="v0.1.13"
+VERSION="v0.1.18"
 echo "=== vyges-lvs $VERSION setup ==="
 
 if command -v vyges-lvs &>/dev/null; then

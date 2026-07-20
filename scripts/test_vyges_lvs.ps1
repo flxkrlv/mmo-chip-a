@@ -1,5 +1,6 @@
 # vyges-lvs SPICE Syntax Test Harness
 # Tests 11 different SPICE netlist syntax patterns
+# vyges-lvs v0.1.15–v0.1.18: all 11/11 pass
 
 param(
     [string]$VygesBin = "C:\Users\user\.cargo\bin\vyges-lvs.exe"
@@ -67,8 +68,10 @@ function Run-Test {
 
         # Run vyges-lvs
         Write-Host "  Running: vyges-lvs run job.lvs --json" -ForegroundColor DarkGray
-        $output = & $VygesBin run $jobFile --json -o $jsonOut 2>&1
-        $exitCode = $LASTEXITCODE
+        $stderrFile = Join-Path $tmpDir "stderr.txt"
+        $sa = $ErrorActionPreference; $ErrorActionPreference = "Continue"
+        $output = & $VygesBin run $jobFile --json -o $jsonOut 2>$stderrFile
+        $exitCode = $LASTEXITCODE; $ErrorActionPreference = $sa
 
         if (Test-Path -LiteralPath $jsonOut) {
             $rawJson = Get-Content -LiteralPath $jsonOut -Raw

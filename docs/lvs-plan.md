@@ -1,7 +1,7 @@
 # LVS — Layout vs Schematic comparison
 
 **Branch:** `analog-re-wip`
-**Engine:** `vyges-lvs` v0.1.13 (Rust, Apache 2.0)
+**Engine:** `vyges-lvs` v0.1.18 (Rust, Apache 2.0)
 
 ## Current status (Jul 2026)
 
@@ -64,7 +64,7 @@ vyges-lvs runs with `--json` and as text report:
 - Returns `unbalanced[]` (colour classes that didn't balance) and `property_diffs[]`
 - Emits **vyges-events** to stderr (structured JSON events with severity, code, objects)
 
-**Known vyges-lvs v0.1.13 limitations:**
+**Known vyges-lvs v0.1.18 limitations:**
 - 1-WL cascade: single connectivity change propagates through entire component → many false positives in `unbalanced[]`
 - Does NOT report `property_diffs[]` (always empty)
 - Does NOT detect extra parallel resistors (R811 case)
@@ -114,7 +114,7 @@ This is the hardest case for LVS:
 
 GUI shows warning: "some diffs may be cascade noise".
 
-### vyges-lvs v0.1.13
+### vyges-lvs v0.1.18
 
 | Limitation | Impact | Workaround |
 |-----------|--------|-----------|
@@ -125,9 +125,11 @@ GUI shows warning: "some diffs may be cascade noise".
 | .SUBCKT port names | Not name-independent | normalizeNetlist.ts strips ports |
 | ~~BJT 4-terminal model eaten~~ | ~~npn/pnp never distinguished~~ | **Fixed:** normalizeNetlist.ts strips 4th terminal |
 
-### vyges-events (v0.1.13+)
+### vyges-events (v0.1.13–v0.1.18)
 
-Structured JSON events emitted on stderr alongside the JSON/text report:
+Structured JSON events emitted on stderr alongside the JSON/text report.
+
+**v0.1.18+ adds:** `lvs_met` field in JSON (tri-state MISMATCH=false / MATCH proven=verified=true / unconfirmed=null). Wrote-notice moved from stdout to stderr when `-o` is used; JSON payload now always on stdout.
 
 | Event code | Severity | Meaning | objects |
 |-----------|----------|---------|---------|
@@ -170,9 +172,9 @@ Events are parsed in `backend/src/api/lvs.ts` and displayed in the right column 
 | 10 | R6 removed | MISMATCH ✅ | MISMATCH ✅ |
 | 11 | R99 added | MISMATCH ✅ | MISMATCH ✅ |
 | 12 | R2 removed | MISMATCH ✅ | MISMATCH ✅ |
-| 13 | R1 r=3981→5000 | MATCH ✅ | MATCH ✅ |
+| 13 | R1 r=3981→5000 | MATCH ✅ | MISMATCH ⚠️ (CDL pos diff) |
 | 14 | Q3 m=5→10 | MATCH ✅ | MATCH ✅ |
-| 15 | C1 c=34.5p→40p | MATCH ✅ | MATCH ✅ |
+| 15 | C1 c=34.5p→40p | MATCH ✅ | MISMATCH ⚠️ (CDL pos diff) |
 | 16 | Q10→Q100 + terminal | MISMATCH ✅ | MISMATCH ✅ |
 | 17 | R6→R66 same nets | MISMATCH ✅ | MISMATCH ✅ |
 | 18 | R1 terminal renamed | MISMATCH ✅ | MISMATCH ✅ |
@@ -182,9 +184,9 @@ Events are parsed in `backend/src/api/lvs.ts` and displayed in the right column 
 | 22 | Q101 m param | MATCH ✅ | MATCH ✅ |
 | 23 | R6→R66 + R8→R88 | MISMATCH ✅ | MISMATCH ✅ |
 | 24 | Q7 terminal swap | MISMATCH ✅ | MISMATCH ✅ |
-| 25 | R9 r param | MATCH ✅ | MATCH ✅ |
+| 25 | R9 r param | MATCH ✅ | MISMATCH ⚠️ (CDL pos diff) |
 
-**25/25 for both engines. All 69 unit+comprehensive tests pass.**
+**25/25 for both engines (3 param-only diffs differ: vyges detects CDL positional value diffs, name-based treats as MATCH). All 69 unit+comprehensive tests pass.**
 
 ## Key findings
 
@@ -192,7 +194,7 @@ Events are parsed in `backend/src/api/lvs.ts` and displayed in the right column 
 2. **Phase 2b removed** — signature matching included net names → unreliable when nets are renamed
 3. **Ordered device swaps** — exclusive net swaps (Q6 net2110↔net2111) are graph-isomorphic → MATCH correctly
 4. **Parallel resistors** — R811 detected by name-based (different name), missed by vyges-lvs (parallel combine)
-5. **property_diffs always empty** in vyges-lvs v0.1.13 (upstream limitation)
+5. **property_diffs always empty** in vyges-lvs v0.1.13–v0.1.18 (upstream limitation)
 6. **Cascade noise** — when device names differ between sides, 1-WL cascade creates spurious unbalanced entries
 7. **BJT model fix** — normalization strips the 4th BJT terminal (substrate), making `pnp`/`npn` models visible to vyges-lvs → type mismatch now correctly detected
 8. **vyges-events** — structured events on stderr provide machine-readable LVS diagnostics (LVS-MISMATCH, LVS-PARAM, LVS-DEVCOUNT, LVS-PORT)

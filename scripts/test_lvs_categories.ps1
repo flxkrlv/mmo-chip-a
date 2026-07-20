@@ -1,13 +1,14 @@
 # test_lvs_categories.ps1
 # LVS category test harness — validates vyges-lvs against 9 error categories.
 # Usage: .\test_lvs_categories.ps1
-# Results: 22/22 pass (as of 2026-07-09, vyges-lvs v0.1.11)
+# Results: 21/23 pass (as of 2026-07-20, vyges-lvs v0.1.18)
 #
 # Key findings:
-#  - property_diffs[] is ALWAYS empty in v0.1.11 (r=/m=/c= not reported)
+#  - property_diffs[] is ALWAYS empty in v0.1.11–v0.1.18 (r=/m=/c= not reported)
 #  - CDL positional params (R1 n1 n2 1k) treated as identity -> MISMATCH
 #  - .SUBCKT port names are NOT name-independent (internal nets are)
-#  - Parallel resistors ARE detected (contrary to earlier docs)
+#  - Parallel resistors detected in CDL, but Spectre format combined (FALSE MATCH)
+#  - Resistor terminals swapped is graph-isomorphic -> MATCH (not a defect)
 #  - buildDiffs Phase 4 post-processing is essential for param diffs
 
 param(
@@ -54,8 +55,10 @@ function Run-Vyges {
         $jobContent = "layout: $layoutFile`nschematic: $schematicFile`ntop: $topCell"
         $jobContent | Set-Content -LiteralPath $jobFile -NoNewline
 
-        $output = & $VygesBin run $jobFile --json -o $jsonOut 2>&1
-        $exitCode = $LASTEXITCODE
+        $stderrFile = Join-Path $tmpDir "stderr.txt"
+        $sa = $ErrorActionPreference; $ErrorActionPreference = "Continue"
+        $output = & $VygesBin run $jobFile --json -o $jsonOut 2>$stderrFile
+        $exitCode = $LASTEXITCODE; $ErrorActionPreference = $sa
 
         if (Test-Path -LiteralPath $jsonOut) {
             $rawJson = Get-Content -LiteralPath $jsonOut -Raw
