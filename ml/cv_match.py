@@ -1073,44 +1073,40 @@ def debug_match_pipeline(
     return result
 
 
+def _tmpl_wh(angle: int, tw: int, th: int) -> tuple[int, int]:
+    """Effective template width/height for a given rotation angle.
+    At 0/180 degrees dimensions are (tw, th), at 90/270 they are swapped (th, tw).
+    """
+    return (tw, th) if angle in (0, 180) else (th, tw)
+
+
 def match_template_pipeline(
     search_rgb: np.ndarray,
     ref_bbox: tuple[int, int, int, int],
     params: dict | None = None,
 ) -> list[dict]:
-    """Template matching pipeline — Sobel filter + matchTemplate + multi-angle + NMS.
-
-    Based on the approach from docs/reference/cv/1/o.py: Sobel edge detection
-    prior to template matching makes it robust to SEM intensity variation.
-    Works on pixel-level patterns (poly-over-diffusion), not contour shapes.
-
-    Args:
-        search_rgb: RGB image of the die region to search.
-        ref_bbox: (x, y, w, h) of the reference cell in search-image coords.
-        params: Override params: threshold (0..1), rotation_steps, max_matches,
-                min_distance.
-
-    Returns:
-        List of matches, each: {x, y, rotation, confidence, bbox}.
-    """
+    """Template matching pipeline — Sobel filter + matchTemplate + multi-angle + NMS."""
     p = {
         "threshold": 0.5,
         "rotation_steps": 4,
         "max_matches": 100,
         "min_distance": 15,
-        "nms_iou_thresh": 0.15,
+        "sobel_ksize": 3,
+        "nms_iou": 0.3,
+        "nms_dist": 30,
         **(params or {}),
     }
 
     search_gray = cv2.cvtColor(search_rgb, cv2.COLOR_RGB2GRAY)
+    ksize = p["sobel_ksize"]
+    if ksize % 2 == 0:
+        ksize += 1
 
-    # Sobel filter
-    sobelx = cv2.Sobel(search_gray, cv2.CV_64F, 1, 0, ksize=3)
-    sobely = cv2.Sobel(search_gray, cv2.CV_64F, 0, 1, ksize=3)
+    sobelx = cv2.Sobel(search_gray, cv2.CV_64F, 1, 0, ksize=ksize)
+    sobely = cv2.Sobel(search_gray, cv2.CV_64F, 0, 1, ksize=ksize)
     search_edges = cv2.magnitude(sobelx, sobely)
     search_edges = cv2.normalize(search_edges, None, 0, 255, cv2.NORM_MINMAX, cv2.CV_8U)
 
-    # Extract reference template from the Sobel image
     rx0, ry0, rw, rh = ref_bbox
     rx0 = max(0, rx0)
     ry0 = max(0, ry0)
@@ -1123,15 +1119,13 @@ def match_template_pipeline(
     tw = ref_template.shape[1]
     th = ref_template.shape[0]
 
-    # Precompute Sobel for all rotated versions of the template
-    # (rotate Sobel image, not original — edges rotate with the structure)
     angles_to_try = [0]
     if p["rotation_steps"] >= 2:
         angles_to_try.append(180)
     if p["rotation_steps"] >= 4:
         angles_to_try.extend([90, 270])
 
-    all_matches: list[tuple[float, int, int, int]] = []  # (confidence, x, y, angle)
+    all_matches: list[tuple[float, int, int, int]] = []
 
     for angle in angles_to_try:
         if angle == 0:
@@ -1156,28 +1150,27 @@ def match_template_pipeline(
     if not all_matches:
         return []
 
-    # Sort by confidence desc
     all_matches.sort(key=lambda x: -x[0])
 
-    # NMS by IoU + centroid distance — keeps highest-confidence match per cell
+    nms_iou = p["nms_iou"]
+    nms_dist = p["nms_dist"]
     kept: list[tuple[float, int, int, int]] = []
     for conf, x, y, angle in all_matches:
+        w, h = _tmpl_wh(angle, tw, th)
         overlap = False
-        for k_conf, kx, ky, _ in kept:
-            # IoU between (x,y,tw,th) and (kx,ky,tw,th)
-            ix = max(0, min(x + tw, kx + tw) - max(x, kx))
-            iy = max(0, min(y + th, ky + th) - max(y, ky))
+        for k_conf, kx, ky, kangle in kept:
+            kw, kh = _tmpl_wh(kangle, tw, th)
+            ix = max(0, min(x + w, kx + kw) - max(x, kx))
+            iy = max(0, min(y + h, ky + kh) - max(y, ky))
             inter = ix * iy
-            union = tw * th + tw * th - inter
+            union = w * h + kw * kh - inter
             iou = inter / union if union > 0 else 0
-            if iou > 0.3:
+            if iou > nms_iou:
                 overlap = True
                 break
-            # Also centroid distance for far-away same-pattern cells
-            cx = x + tw // 2; cy = y + th // 2
-            kcx = kx + tw // 2; kcy = ky + th // 2
-            dist = ((cx - kcx)**2 + (cy - kcy)**2)**0.5
-            if dist < 30:
+            cx = x + w // 2; cy = y + h // 2
+            kcx = kx + kw // 2; kcy = ky + kh // 2
+            if ((cx - kcx)**2 + (cy - kcy)**2)**0.5 < nms_dist:
                 overlap = True
                 break
         if overlap:
@@ -1186,15 +1179,14 @@ def match_template_pipeline(
         if len(kept) >= p["max_matches"]:
             break
 
-    # Filter out matches on the reference cell itself (not nearby cells)
     ref_cx = rx0 + rw // 2
     ref_cy = ry0 + rh // 2
-    # Use a tight radius: a fraction of the template size
     ref_tol = min(tw, th) * 0.3
     filtered: list[tuple[float, int, int, int]] = []
     for conf, x, y, angle in kept:
-        mx = x + tw // 2
-        my = y + th // 2
+        w, h = _tmpl_wh(angle, tw, th)
+        mx = x + w // 2
+        my = y + h // 2
         dist = ((mx - ref_cx) ** 2 + (my - ref_cy) ** 2) ** 0.5
         if dist < ref_tol:
             continue
@@ -1202,12 +1194,13 @@ def match_template_pipeline(
 
     results: list[dict] = []
     for conf, x, y, angle in filtered:
+        w, h = _tmpl_wh(angle, tw, th)
         results.append({
-            "x": x + tw // 2,
-            "y": y + th // 2,
+            "x": x + w // 2,
+            "y": y + h // 2,
             "rotation": angle,
             "confidence": round(conf, 4),
-            "bbox": [x, y, tw, th],
+            "bbox": [x, y, w, h],
         })
 
     return results
