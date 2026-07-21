@@ -1051,6 +1051,16 @@ export interface CVMatchResult {
   confidence: number;
   /** Bounding box [x, y, w, h] in search-image pixel coords. */
   bbox: [number, number, number, number];
+  /** Tree-match struct score (contour only). */
+  tree_match_score?: number;
+  /** Number of ref-tree children (contour only). */
+  n_children_ref?: number;
+  /** Number of matched children in candidate (contour only). */
+  n_children_matched?: number;
+  /** sqrt(cand_pocket_area / ref_pocket_area), isotropic (contour only). */
+  scale?: number;
+  /** How rotation was determined: tree (matched children), inertia (fallback). */
+  orientation_source?: "tree" | "inertia" | "bbox";
 }
 
 export interface CVMatchRequest {
@@ -1061,28 +1071,53 @@ export interface CVMatchRequest {
   cellY?: number;
   /** Overlay filename to search on, or undefined for base image. */
   overlayFilename?: string;
-  /** Confidence threshold (0..1). Default 0.5. */
+  /** Confidence threshold (0..1). Default 0.5 (template only). */
   threshold?: number;
-  /** Number of rotation steps (1, 2, or 4). Default 4. */
+  /** Number of rotation steps (1, 2, or 4). Default 4 (template only). */
   rotationSteps?: number;
   /** Max matches to return. Default 100. */
   maxMatches?: number;
-  /** Advanced contour params (optional, use defaults). */
-  shapeThresh?: number;
-  areaLo?: number;
-  areaHi?: number;
-  /** Minimum contour area in px². Default 12. */
+  /** Sobel kernel size (template only). Default 3. */
+  sobelKsize?: number;
+  /** NMS IoU threshold (template only). Default 0.3. */
+  nmsIou?: number;
+  /** NMS centroid distance threshold in px (template only). Default 30. */
+  nmsDist?: number;
+  detectionMode?: "canny" | "threshold" | "gradient";
+  /** Morphological gradient kernel size (gradient mode only). Default 5. */
+  gradientKernel?: number;
+  /** Minimum contour area in px². Contour default 200. */
   minArea?: number;
   /** NMS center distance threshold in px. Default 10. */
   minDistance?: number;
-  /** Max aspect ratio error. Default 1.25. */
+  /** Min area ratio (cand_pocket / ref_pocket). Contour default 0.6. */
+  areaLo?: number;
+  /** Max area ratio. Contour default 1.8. */
+  areaHi?: number;
+  /** Max aspect error. Contour default 0.5. */
   aspectThresh?: number;
-  /** Max solidity error. Default 0.60. */
-  solidityThresh?: number;
-  /** Max extent error. Default 0.60. */
-  extentThresh?: number;
-  /** Max circularity error. Default 0.75. */
-  circularityThresh?: number;
+  /** Merge sibling contours within this many px. Contour default 6. */
+  mergeDistPx?: number;
+  /** Merge siblings if |log(area_a/area_b)| < ln(1+r). Default 0.4. */
+  mergeAreaRatio?: number;
+  /** EFD harmonics. Default 10. */
+  efdHarmonics?: number;
+  /** Max fuzzy distance to count a child as matched. Default 1.2. */
+  fuzzyThresh?: number;
+  /** Min matched ref children to accept. Slider 1-4, default 2. */
+  minRefChildren?: number;
+  /** Min struct score to accept. Default 0.3. */
+  structThresh?: number;
+  /** Min matched children for tree-based rotation. Default 2. */
+  rotationMinMatches?: number;
+  /** Fuzzy distance weight: EFD. Default 1.0. */
+  wShape?: number;
+  /** Fuzzy distance weight: log area. Default 1.0. */
+  wArea?: number;
+  /** Fuzzy distance weight: 1-IoU. Default 1.0. */
+  wBbox?: number;
+  /** Fuzzy distance weight: position. Default 0.5. */
+  wPos?: number;
 }
 
 export interface CVMatchResponse {
@@ -1102,79 +1137,52 @@ export interface CellMLFlags {
   mlConfidence?: number;
 }
 
+/** A single node in the reference contour tree. */
+export interface CVTreeNode {
+  depth: number;
+  area: number;
+  centroid: [number, number];
+  bbox: [number, number, number, number];
+  inertia_angle: number;
+  children: CVTreeNode[];
+}
+
 /** Debug info returned by the CV debug endpoint. */
 export interface CVDebugData {
   /** Reference crop image as base64 PNG. */
   ref_crop_png_b64: string;
-  /** All extracted reference contours (multi-contour). */
-  ref_contours: CVRefContour[];
-  /** Number of reference contours found. */
+  /** Reference contour tree (contour detection only). */
+  ref_tree: CVTreeNode | null;
+  /** Total number of nodes in ref_tree (root + all descendants). */
   ref_contour_count: number;
-  /** Reference contour visualisation as base64 PNG on black background. */
+  /** Reference tree visualisation as base64 PNG. */
   ref_contour_png_b64: string | null;
-  /** Search image preview (resized) with matched contours drawn, as base64 JPG. */
+  /** Search image preview (resized) with matched bboxes drawn, as base64 JPG. */
   search_preview_png_b64: string | null;
-  /** Detailed metrics for top matches. */
-  top_matches: CVDebugMatch[];
-  /** All scored contours with pass/fail from multi-ref matching. */
-  all_scored?: CVDebugScoredContour[];
-  /** Total contours found in search image before filtering. */
-  total_contours_found: number;
-  /** Number of candidates that passed threshold filtering. */
+  /** Top matches (same shape as CVMatchResult.matches). */
+  top_matches: CVMatchResult[];
+  /** Number of accepted candidates. */
   total_candidates: number;
+  /** Template debug: how many matchTemplate peaks before NMS. */
+  pre_nms_peaks?: number;
+  /** Stage 1: how many raw contours found on the search image. */
+  stage1_raw_count: number;
+  /** Stage 1: how many passed aspect-ratio filter. */
+  stage1_after_aspect: number;
+  /** Stage 1: how many passed NMS. */
+  stage1_after_nms: number;
+  /** Stage 1: how many after clustering (1 per physical location). */
+  stage1_clustered_count: number;
+  /** Stage 2: candidates where no tree was extracted. */
+  stage2_no_tree: number;
+  /** Stage 2: candidates rejected because too few children matched. */
+  stage2_low_children: number;
+  /** Stage 2: candidates rejected because struct score < thresh. */
+  stage2_low_struct: number;
+  /** Stage 2: total matches after tree-matching (before final NMS). */
+  stage2_matches: number;
   /** The actual detection parameters used. */
   params_used: Record<string, unknown>;
-  /** Cluster-based matching results. */
-  clusters?: CVDebugCluster[];
-}
-
-export interface CVDebugCluster {
-  centroid: [number, number];
-  score: number;
-  confidence: number;
-  ref_ids: number[];
-  n_matches: number;
-  bbox: [number, number, number, number];
-  ref_count: number;
-  passed: boolean;
-}
-
-export interface CVDebugScoredContour {
-  bbox: [number, number, number, number];
-  total_score: number;
-  shape_dist: number;
-  area_ratio: number;
-  aspect_err: number;
-  solidity_err: number;
-  extent_err: number;
-  circularity_err: number;
-  passed: boolean;
-}
-
-export interface CVDebugMatch {
-  bbox: [number, number, number, number];
-  centroid: [number, number];
-  rotation: number;
-  confidence: number;
-  total_score: number;
-  shape_dist: number;
-  area_ratio: number;
-  aspect_err: number;
-  solidity_err: number;
-  extent_err: number;
-  circularity_err: number;
-}
-
-/** One reference contour in multi-contour debug output. */
-export interface CVRefContour {
-  bbox: [number, number, number, number];
-  area: number;
-  aspect: number;
-  solidity: number;
-  extent: number;
-  circularity: number;
-  /** Nesting depth (0 = top-level, 1 = child, 2 = grandchild, etc.). */
-  depth?: number;
 }
 
 // ── Analog device detection job ─────────────────────────────────

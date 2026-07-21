@@ -783,17 +783,25 @@ export function createMLRouter(config: {
       fd.append("ref_h", String(refH));
       const contourParams: [string, string | undefined][] = [
         ["threshold", body.threshold?.toFixed(4)],
-        ["rotation_steps", body.rotationSteps?.toFixed(0)],
         ["max_matches", body.maxMatches?.toFixed(0)],
-        ["shape_thresh", body.shapeThresh?.toFixed(4)],
-        ["area_lo", body.areaLo?.toFixed(4)],
-        ["area_hi", body.areaHi?.toFixed(4)],
+        ["detection_mode", body.detectionMode],
+        ["gradient_kernel", body.gradientKernel?.toFixed(0)],
         ["min_area", body.minArea?.toFixed(0)],
         ["min_distance", body.minDistance?.toFixed(0)],
+        ["area_lo", body.areaLo?.toFixed(4)],
+        ["area_hi", body.areaHi?.toFixed(4)],
         ["aspect_thresh", body.aspectThresh?.toFixed(4)],
-        ["solidity_thresh", body.solidityThresh?.toFixed(4)],
-        ["extent_thresh", body.extentThresh?.toFixed(4)],
-        ["circularity_thresh", body.circularityThresh?.toFixed(4)],
+        ["merge_dist_px", body.mergeDistPx?.toFixed(2)],
+        ["merge_area_ratio", body.mergeAreaRatio?.toFixed(4)],
+        ["efd_harmonics", body.efdHarmonics?.toFixed(0)],
+        ["fuzzy_thresh", body.fuzzyThresh?.toFixed(4)],
+        ["min_ref_children", body.minRefChildren?.toFixed(0)],
+        ["struct_thresh", body.structThresh?.toFixed(4)],
+        ["rotation_min_matches", body.rotationMinMatches?.toFixed(0)],
+        ["w_shape", body.wShape?.toFixed(4)],
+        ["w_area", body.wArea?.toFixed(4)],
+        ["w_bbox", body.wBbox?.toFixed(4)],
+        ["w_pos", body.wPos?.toFixed(4)],
       ];
       for (const [key, val] of contourParams) {
         if (val != null) fd.append(key, val);
@@ -898,16 +906,25 @@ export function createMLRouter(config: {
       fd.append("ref_h", String(refHD));
       const contourParams: [string, string | undefined][] = [
         ["threshold", body.threshold?.toFixed(4)],
-        ["rotation_steps", body.rotationSteps?.toFixed(0)],
-        ["shape_thresh", body.shapeThresh?.toFixed(4)],
-        ["area_lo", body.areaLo?.toFixed(4)],
-        ["area_hi", body.areaHi?.toFixed(4)],
+        ["max_matches", body.maxMatches?.toFixed(0)],
+        ["detection_mode", body.detectionMode],
+        ["gradient_kernel", body.gradientKernel?.toFixed(0)],
         ["min_area", body.minArea?.toFixed(0)],
         ["min_distance", body.minDistance?.toFixed(0)],
+        ["area_lo", body.areaLo?.toFixed(4)],
+        ["area_hi", body.areaHi?.toFixed(4)],
         ["aspect_thresh", body.aspectThresh?.toFixed(4)],
-        ["solidity_thresh", body.solidityThresh?.toFixed(4)],
-        ["extent_thresh", body.extentThresh?.toFixed(4)],
-        ["circularity_thresh", body.circularityThresh?.toFixed(4)],
+        ["merge_dist_px", body.mergeDistPx?.toFixed(2)],
+        ["merge_area_ratio", body.mergeAreaRatio?.toFixed(4)],
+        ["efd_harmonics", body.efdHarmonics?.toFixed(0)],
+        ["fuzzy_thresh", body.fuzzyThresh?.toFixed(4)],
+        ["min_ref_children", body.minRefChildren?.toFixed(0)],
+        ["struct_thresh", body.structThresh?.toFixed(4)],
+        ["rotation_min_matches", body.rotationMinMatches?.toFixed(0)],
+        ["w_shape", body.wShape?.toFixed(4)],
+        ["w_area", body.wArea?.toFixed(4)],
+        ["w_bbox", body.wBbox?.toFixed(4)],
+        ["w_pos", body.wPos?.toFixed(4)],
       ];
       for (const [key, val] of contourParams) {
         if (val != null) fd.append(key, val);
@@ -982,16 +999,25 @@ export function createMLRouter(config: {
       fd.append("ref_h", String(refHD));
       const contourParams: [string, string | undefined][] = [
         ["threshold", body.threshold?.toFixed(4)],
-        ["rotation_steps", body.rotationSteps?.toFixed(0)],
-        ["shape_thresh", body.shapeThresh?.toFixed(4)],
-        ["area_lo", body.areaLo?.toFixed(4)],
-        ["area_hi", body.areaHi?.toFixed(4)],
+        ["max_matches", body.maxMatches?.toFixed(0)],
+        ["detection_mode", body.detectionMode],
+        ["gradient_kernel", body.gradientKernel?.toFixed(0)],
         ["min_area", body.minArea?.toFixed(0)],
         ["min_distance", body.minDistance?.toFixed(0)],
+        ["area_lo", body.areaLo?.toFixed(4)],
+        ["area_hi", body.areaHi?.toFixed(4)],
         ["aspect_thresh", body.aspectThresh?.toFixed(4)],
-        ["solidity_thresh", body.solidityThresh?.toFixed(4)],
-        ["extent_thresh", body.extentThresh?.toFixed(4)],
-        ["circularity_thresh", body.circularityThresh?.toFixed(4)],
+        ["merge_dist_px", body.mergeDistPx?.toFixed(2)],
+        ["merge_area_ratio", body.mergeAreaRatio?.toFixed(4)],
+        ["efd_harmonics", body.efdHarmonics?.toFixed(0)],
+        ["fuzzy_thresh", body.fuzzyThresh?.toFixed(4)],
+        ["min_ref_children", body.minRefChildren?.toFixed(0)],
+        ["struct_thresh", body.structThresh?.toFixed(4)],
+        ["rotation_min_matches", body.rotationMinMatches?.toFixed(0)],
+        ["w_shape", body.wShape?.toFixed(4)],
+        ["w_area", body.wArea?.toFixed(4)],
+        ["w_bbox", body.wBbox?.toFixed(4)],
+        ["w_pos", body.wPos?.toFixed(4)],
       ];
       for (const [key, val] of contourParams) {
         if (val != null) fd.append(key, val);
@@ -1060,6 +1086,9 @@ export function createMLRouter(config: {
       if (body.threshold != null) fd.append("threshold", String(body.threshold));
       if (body.rotationSteps != null) fd.append("rotation_steps", String(body.rotationSteps));
       if (body.maxMatches != null) fd.append("max_matches", String(body.maxMatches));
+      if (body.sobelKsize != null) fd.append("sobel_ksize", String(body.sobelKsize));
+      if (body.nmsIou != null) fd.append("nms_iou", String(body.nmsIou));
+      if (body.nmsDist != null) fd.append("nms_dist", String(body.nmsDist));
 
       let sidecarRes: Response;
       try {
@@ -1073,6 +1102,56 @@ export function createMLRouter(config: {
         searchRegion: [0, 0, sW, sH],
         total: data.total,
       } satisfies CVMatchResponse);
+    } catch (error) { next(error); }
+  });
+
+  // ── POST /api/ml/cv/template-debug ─────────────────────────────
+  router.post("/api/ml/cv/template-debug", async (request, response, next) => {
+    try {
+      const body = (request.body ?? {}) as Partial<CVMatchRequest>;
+      if (!body.dieId || !body.cellTypeId) {
+        response.status(400).json({ error: "dieId and cellTypeId are required" }); return;
+      }
+      const { dieId, cellTypeId } = body;
+      const record = await readDieRecord(config.dataRoot, dieId);
+      const annotations = await readAnnotations(config.dataRoot, dieId);
+      const cellType = annotations.cellTypes.find((ct) => ct.id === cellTypeId);
+      if (!cellType) { response.status(404).json({ error: "cellType not found" }); return; }
+      const cellX = body.cellX ?? 0;
+      const cellY = body.cellY ?? 0;
+      const cx0 = Math.round(cellX + cellType.cropRect.x);
+      const cy0 = Math.round(cellY + cellType.cropRect.y);
+      const cx1 = Math.round(cellX + cellType.cropRect.x + cellType.cropRect.width);
+      const cy1 = Math.round(cellY + cellType.cropRect.y + cellType.cropRect.height);
+      const overlayFilename = body.overlayFilename;
+      const sourcePath = overlayFilename
+        ? path.join(config.dataRoot, "overlay-images", dieId, overlayFilename)
+        : record.originalPath;
+      const tmMeta = await sharp(sourcePath, { limitInputPixels: false }).metadata();
+      const sW = tmMeta.width ?? record.width;
+      const sH = tmMeta.height ?? record.height;
+      const left = Math.max(0, cx0); const top = Math.max(0, cy0);
+      const w = Math.min(cx1 - cx0, Math.max(0, sW - left));
+      const h = Math.min(cy1 - cy0, Math.max(0, sH - top));
+      if (w <= 0 || h <= 0) { response.status(400).json({ error: "crop outside bounds" }); return; }
+      const searchBuf = await sharp(sourcePath, { limitInputPixels: false }).png().toBuffer();
+      const fd = new FormData();
+      fd.append("search", new Blob([new Uint8Array(searchBuf)], { type: "image/png" }), "search.png");
+      fd.append("ref_x", String(left)); fd.append("ref_y", String(top));
+      fd.append("ref_w", String(w)); fd.append("ref_h", String(h));
+      if (body.threshold != null) fd.append("threshold", String(body.threshold));
+      if (body.rotationSteps != null) fd.append("rotation_steps", String(body.rotationSteps));
+      if (body.maxMatches != null) fd.append("max_matches", String(body.maxMatches));
+      if (body.sobelKsize != null) fd.append("sobel_ksize", String(body.sobelKsize));
+      if (body.nmsIou != null) fd.append("nms_iou", String(body.nmsIou));
+      if (body.nmsDist != null) fd.append("nms_dist", String(body.nmsDist));
+      let sidecarRes: Response;
+      try {
+        sidecarRes = await fetchSidecar(`${config.mlSidecarUrl}/cv/template-debug`, 120000, { method: "POST", body: fd });
+      } catch { response.status(503).json({ error: "sidecar unreachable" }); return; }
+      if (!sidecarRes.ok) { response.status(502).json({ error: `sidecar /cv/template-debug ${sidecarRes.status}` }); return; }
+      const data = await sidecarRes.json();
+      response.json(data);
     } catch (error) { next(error); }
   });
 

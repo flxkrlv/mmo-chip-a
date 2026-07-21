@@ -216,6 +216,10 @@ export function cvTemplateMatch(params: CVMatchRequest): Promise<CVMatchResponse
   return apiPost<CVMatchResponse>("/api/ml/cv/template-match", params);
 }
 
+export function cvTemplateDebug(params: CVMatchRequest): Promise<CVDebugData> {
+  return apiPost<CVDebugData>("/api/ml/cv/template-debug", params);
+}
+
 export function useMLInferenceJobs(
   options?: MLInferenceJobsQueryOptions
 ): UseQueryResult<MLInferenceJob[], ApiError> {

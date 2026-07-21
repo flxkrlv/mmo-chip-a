@@ -374,23 +374,29 @@ def cv_match(
     ref_y: int = Form(...),
     ref_w: int = Form(...),
     ref_h: int = Form(...),
-    shape_thresh: float = Form(1.25),
-    area_lo: float = Form(0.22),
-    area_hi: float = Form(4.5),
-    aspect_thresh: float = Form(1.25),
-    solidity_thresh: float = Form(0.60),
-    extent_thresh: float = Form(0.60),
-    circularity_thresh: float = Form(0.75),
-    min_area: int = Form(12),
-    min_distance: int = Form(10),
-    rotation_steps: int = Form(4),
+    detection_mode: str = Form("threshold"),
+    gradient_kernel: int = Form(5),
+    min_area: int = Form(5000),
+    min_distance: int = Form(15),
+    area_lo: float = Form(0.6),
+    area_hi: float = Form(1.8),
+    aspect_thresh: float = Form(0.5),
+    merge_dist_px: float = Form(20),
+    merge_area_ratio: float = Form(0.5),
+    efd_harmonics: int = Form(5),
+    fuzzy_thresh: float = Form(1.2),
+    min_ref_children: int = Form(2),
+    struct_thresh: float = Form(0.2),
+    rotation_min_matches: int = Form(2),
+    w_shape: float = Form(0.6),
+    w_area: float = Form(1.0),
+    w_bbox: float = Form(1.0),
+    w_pos: float = Form(0.5),
     max_matches: int = Form(100),
 ) -> dict:
-    """Contour-based cell matching — single preprocessing pass.
-
-    Accepts the full search image and the reference bounding box.
-    Both reference contour and search contours are extracted from the
-    SAME preprocessed image, matching the 2.py approach.
+    """Tree-based contour matching — extracts the pocket→base→emitter hierarchy
+    from both reference and candidate crops, matches them recursively, recovers
+    rotation from the matched children's principal axes.
     """
     search_raw = search.file.read()
     search_arr = np.frombuffer(search_raw, dtype=np.uint8)
@@ -400,23 +406,30 @@ def cv_match(
     search_rgb = cv2.cvtColor(search_bgr, cv2.COLOR_BGR2RGB)
 
     params = {
-        "shape_thresh": shape_thresh,
+        "detection_mode": detection_mode,
+        "gradient_kernel": gradient_kernel,
+        "min_area": min_area,
+        "min_distance": min_distance,
         "area_lo": area_lo,
         "area_hi": area_hi,
         "aspect_thresh": aspect_thresh,
-        "solidity_thresh": solidity_thresh,
-        "extent_thresh": extent_thresh,
-        "circularity_thresh": circularity_thresh,
-        "min_area": min_area,
-        "min_distance": min_distance,
-        "rotation_steps": rotation_steps,
+        "merge_dist_px": merge_dist_px,
+        "merge_area_ratio": merge_area_ratio,
+        "efd_harmonics": efd_harmonics,
+        "fuzzy_thresh": fuzzy_thresh,
+        "min_ref_children": min_ref_children,
+        "struct_thresh": struct_thresh,
+        "rotation_min_matches": rotation_min_matches,
+        "w_shape": w_shape,
+        "w_area": w_area,
+        "w_bbox": w_bbox,
+        "w_pos": w_pos,
+        "max_matches": max_matches,
     }
 
     matches = match_contour_pipeline(search_rgb, (ref_x, ref_y, ref_w, ref_h), params)
-
     if len(matches) > max_matches:
         matches = matches[:max_matches]
-
     return {"matches": matches, "total": len(matches)}
 
 
@@ -427,18 +440,26 @@ def cv_debug(
     ref_y: int = Form(...),
     ref_w: int = Form(...),
     ref_h: int = Form(...),
-    shape_thresh: float = Form(1.25),
-    area_lo: float = Form(0.22),
-    area_hi: float = Form(4.5),
-    aspect_thresh: float = Form(1.25),
-    solidity_thresh: float = Form(0.60),
-    extent_thresh: float = Form(0.60),
-    circularity_thresh: float = Form(0.75),
-    min_area: int = Form(12),
-    min_distance: int = Form(10),
-    rotation_steps: int = Form(4),
+    detection_mode: str = Form("threshold"),
+    gradient_kernel: int = Form(5),
+    min_area: int = Form(5000),
+    min_distance: int = Form(15),
+    area_lo: float = Form(0.6),
+    area_hi: float = Form(1.8),
+    aspect_thresh: float = Form(0.5),
+    merge_dist_px: float = Form(20),
+    merge_area_ratio: float = Form(0.5),
+    efd_harmonics: int = Form(5),
+    fuzzy_thresh: float = Form(1.2),
+    min_ref_children: int = Form(2),
+    struct_thresh: float = Form(0.2),
+    rotation_min_matches: int = Form(2),
+    w_shape: float = Form(0.6),
+    w_area: float = Form(1.0),
+    w_bbox: float = Form(1.0),
+    w_pos: float = Form(0.5),
 ) -> dict:
-    """CV debug endpoint — single preprocessing pass."""
+    """CV debug endpoint — returns ref tree, search preview, and top matches."""
     search_raw = search.file.read()
     search_arr = np.frombuffer(search_raw, dtype=np.uint8)
     search_bgr = cv2.imdecode(search_arr, cv2.IMREAD_COLOR)
@@ -447,16 +468,24 @@ def cv_debug(
     search_rgb = cv2.cvtColor(search_bgr, cv2.COLOR_BGR2RGB)
 
     params = {
-        "shape_thresh": shape_thresh,
+        "detection_mode": detection_mode,
+        "gradient_kernel": gradient_kernel,
+        "min_area": min_area,
+        "min_distance": min_distance,
         "area_lo": area_lo,
         "area_hi": area_hi,
         "aspect_thresh": aspect_thresh,
-        "solidity_thresh": solidity_thresh,
-        "extent_thresh": extent_thresh,
-        "circularity_thresh": circularity_thresh,
-        "min_area": min_area,
-        "min_distance": min_distance,
-        "rotation_steps": rotation_steps,
+        "merge_dist_px": merge_dist_px,
+        "merge_area_ratio": merge_area_ratio,
+        "efd_harmonics": efd_harmonics,
+        "fuzzy_thresh": fuzzy_thresh,
+        "min_ref_children": min_ref_children,
+        "struct_thresh": struct_thresh,
+        "rotation_min_matches": rotation_min_matches,
+        "w_shape": w_shape,
+        "w_area": w_area,
+        "w_bbox": w_bbox,
+        "w_pos": w_pos,
     }
 
     from cv_match import debug_match_pipeline
@@ -470,16 +499,24 @@ def cv_debug_dump(
     ref_y: int = Form(...),
     ref_w: int = Form(...),
     ref_h: int = Form(...),
-    shape_thresh: float = Form(1.25),
-    area_lo: float = Form(0.22),
-    area_hi: float = Form(4.5),
-    aspect_thresh: float = Form(1.25),
-    solidity_thresh: float = Form(0.60),
-    extent_thresh: float = Form(0.60),
-    circularity_thresh: float = Form(0.75),
-    min_area: int = Form(12),
-    min_distance: int = Form(10),
-    rotation_steps: int = Form(4),
+    detection_mode: str = Form("threshold"),
+    gradient_kernel: int = Form(5),
+    min_area: int = Form(5000),
+    min_distance: int = Form(15),
+    area_lo: float = Form(0.6),
+    area_hi: float = Form(1.8),
+    aspect_thresh: float = Form(0.5),
+    merge_dist_px: float = Form(20),
+    merge_area_ratio: float = Form(0.5),
+    efd_harmonics: int = Form(5),
+    fuzzy_thresh: float = Form(1.2),
+    min_ref_children: int = Form(2),
+    struct_thresh: float = Form(0.2),
+    rotation_min_matches: int = Form(2),
+    w_shape: float = Form(0.6),
+    w_area: float = Form(1.0),
+    w_bbox: float = Form(1.0),
+    w_pos: float = Form(0.5),
 ) -> dict:
     """CV debug endpoint — writes debug data to disk for agent analysis."""
     from datetime import datetime
@@ -491,16 +528,24 @@ def cv_debug_dump(
     search_rgb = cv2.cvtColor(search_bgr, cv2.COLOR_BGR2RGB)
 
     params = {
-        "shape_thresh": shape_thresh,
+        "detection_mode": detection_mode,
+        "gradient_kernel": gradient_kernel,
+        "min_area": min_area,
+        "min_distance": min_distance,
         "area_lo": area_lo,
         "area_hi": area_hi,
         "aspect_thresh": aspect_thresh,
-        "solidity_thresh": solidity_thresh,
-        "extent_thresh": extent_thresh,
-        "circularity_thresh": circularity_thresh,
-        "min_area": min_area,
-        "min_distance": min_distance,
-        "rotation_steps": rotation_steps,
+        "merge_dist_px": merge_dist_px,
+        "merge_area_ratio": merge_area_ratio,
+        "efd_harmonics": efd_harmonics,
+        "fuzzy_thresh": fuzzy_thresh,
+        "min_ref_children": min_ref_children,
+        "struct_thresh": struct_thresh,
+        "rotation_min_matches": rotation_min_matches,
+        "w_shape": w_shape,
+        "w_area": w_area,
+        "w_bbox": w_bbox,
+        "w_pos": w_pos,
     }
 
     from cv_match import debug_match_pipeline
@@ -522,9 +567,12 @@ def cv_template_match(
     threshold: float = Form(0.5),
     rotation_steps: int = Form(4),
     max_matches: int = Form(100),
-    min_distance: int = Form(10),
+    min_distance: int = Form(15),
+    sobel_ksize: int = Form(3),
+    nms_iou: float = Form(0.3),
+    nms_dist: int = Form(30),
 ) -> dict:
-    """Template matching (Sobel + matchTemplate) — plan B from o.py."""
+    """Template matching (Sobel + matchTemplate) — multi-angle + NMS."""
     search_raw = search.file.read()
     search_arr = np.frombuffer(search_raw, dtype=np.uint8)
     search_bgr = cv2.imdecode(search_arr, cv2.IMREAD_COLOR)
@@ -537,13 +585,52 @@ def cv_template_match(
         "rotation_steps": rotation_steps,
         "max_matches": max_matches,
         "min_distance": min_distance,
+        "sobel_ksize": sobel_ksize,
+        "nms_iou": nms_iou,
+        "nms_dist": nms_dist,
     }
 
     matches = match_template_pipeline(search_rgb, (ref_x, ref_y, ref_w, ref_h), params)
     return {"matches": matches, "total": len(matches)}
 
 
-@app.get("/models")
+@app.post("/cv/template-debug")
+def cv_template_debug(
+    search: UploadFile = File(...),
+    ref_x: int = Form(...),
+    ref_y: int = Form(...),
+    ref_w: int = Form(...),
+    ref_h: int = Form(...),
+    threshold: float = Form(0.5),
+    rotation_steps: int = Form(4),
+    max_matches: int = Form(100),
+    min_distance: int = Form(15),
+    sobel_ksize: int = Form(3),
+    nms_iou: float = Form(0.3),
+    nms_dist: int = Form(30),
+) -> dict:
+    """Template matching debug — preview with pre/post NMS overlay, Sobel edges."""
+    search_raw = search.file.read()
+    search_arr = np.frombuffer(search_raw, dtype=np.uint8)
+    search_bgr = cv2.imdecode(search_arr, cv2.IMREAD_COLOR)
+    if search_bgr is None:
+        raise HTTPException(status_code=400, detail="could not decode search image")
+    search_rgb = cv2.cvtColor(search_bgr, cv2.COLOR_BGR2RGB)
+
+    params = {
+        "threshold": threshold,
+        "rotation_steps": rotation_steps,
+        "max_matches": max_matches,
+        "min_distance": min_distance,
+        "sobel_ksize": sobel_ksize,
+        "nms_iou": nms_iou,
+        "nms_dist": nms_dist,
+    }
+
+    from cv_match import debug_template_pipeline
+    return debug_template_pipeline(search_rgb, (ref_x, ref_y, ref_w, ref_h), params)
+
+
 def list_models() -> dict:
     """List checkpoint files from both checkpoints/ directories.
 
