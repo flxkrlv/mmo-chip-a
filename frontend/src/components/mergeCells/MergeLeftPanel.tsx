@@ -108,7 +108,9 @@ export function MergeLeftPanel({ dieId, annotations, onCandidateContextMenu }: P
           ))}
 
         {(() => {
-          const mlCells = annotations.cells.filter((c) => c.mlDetected);
+          const mlCells = annotations.cells
+            .filter((c) => c.mlDetected)
+            .sort((a, b) => (b.mlConfidence ?? 0) - (a.mlConfidence ?? 0));
           const mlByType: { name: string; cells: Cell[] }[] = [];
           const seen = new Set<string>();
           for (const c of mlCells) {
@@ -118,7 +120,9 @@ export function MergeLeftPanel({ dieId, annotations, onCandidateContextMenu }: P
               seen.add(key);
               mlByType.push({ name: key, cells: [] });
             }
-            mlByType.find((g) => g.name === key)!.cells.push(c);
+            const group = mlByType.find((g) => g.name === key)!;
+            group.cells.push(c);
+            group.cells.sort((a, b) => (b.mlConfidence ?? 0) - (a.mlConfidence ?? 0));
           }
           return (
             <>

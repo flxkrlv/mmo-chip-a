@@ -312,12 +312,8 @@ export function buildCellAnnotation(
         ctx.font = `${fontSize}px var(--mono, monospace)`;
         ctx.textBaseline = "bottom";
         ctx.textAlign = "right";
-        const tw = ctx.measureText(label).width;
-        const pad = 3 / bounds.zoom;
-        ctx.fillStyle = "rgba(0, 0, 0, 0.55)";
-        ctx.fillRect(w - tw - pad * 2 - 2, h - fontSize - pad * 2, tw + pad * 2, fontSize + pad * 2);
         ctx.fillStyle = "#90caf9";
-        ctx.fillText(label, w - 2 / bounds.zoom, h - pad);
+        ctx.fillText(label, w - 2 / bounds.zoom, h - 2 / bounds.zoom);
       }
 
       ctx.restore();
