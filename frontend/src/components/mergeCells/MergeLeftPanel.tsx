@@ -107,23 +107,77 @@ export function MergeLeftPanel({ dieId, annotations, onCandidateContextMenu }: P
             />
           ))}
 
-        <TreeRow
-          icon={Ic.cell}
-          expand={mlOpen ? "open" : "closed"}
-          label="ML"
-          meta={0}
-          dimmed
-          onToggleExpand={() => setMlOpen(!mlOpen)}
-          onSelect={() => setMlOpen(!mlOpen)}
-        />
-        {mlOpen && (
-          <div
-            className="m"
-            style={{ padding: "6px 16px", fontSize: 10, color: "var(--ink3)" }}
-          >
-            no ML-proposed cells yet
-          </div>
-        )}
+        {(() => {
+          const mlCells = annotations.cells.filter((c) => c.mlDetected);
+          const mlByType: { name: string; cells: Cell[] }[] = [];
+          const seen = new Set<string>();
+          for (const c of mlCells) {
+            const ct = annotations.cellTypes.find((t) => t.id === c.cellTypeId);
+            const key = ct?.name ?? c.cellTypeId;
+            if (!seen.has(key)) {
+              seen.add(key);
+              mlByType.push({ name: key, cells: [] });
+            }
+            mlByType.find((g) => g.name === key)!.cells.push(c);
+          }
+          return (
+            <>
+              <TreeRow
+                icon={Ic.cell}
+                expand={mlCells.length ? (mlOpen ? "open" : "closed") : "leaf"}
+                label="ML"
+                meta={mlCells.length}
+                dimmed
+                onToggleExpand={() => setMlOpen(!mlOpen)}
+                onSelect={() => setMlOpen(!mlOpen)}
+              />
+              {mlOpen &&
+                mlByType.map((g) => (
+                  <div key={g.name}>
+                    <TreeRow
+                      depth={1}
+                      icon={Ic.cell}
+                      label={g.name}
+                      meta={g.cells.length}
+                      monoLabel
+                      dimmed
+                    />
+                    {g.cells.map((c) => {
+                      const sel =
+                        specimenTypeId != null &&
+                        specimenCellId === c.id;
+                      return (
+                        <div
+                          key={c.id}
+                          className={"trow" + (sel ? " sel" : "")}
+                          style={{
+                            padding: "3px 8px 3px 24px",
+                            cursor: "pointer",
+                            fontSize: 10,
+                            fontFamily: "var(--mono)",
+                            color: "var(--ink3)"
+                          }}
+                          onClick={() => {
+                            const ct = annotations.cellTypes.find(
+                              (t) => t.id === c.cellTypeId
+                            );
+                            if (ct) setSpecimen(ct.id, c.id);
+                          }}
+                          onContextMenu={(e) => {
+                            e.preventDefault();
+                            onCandidateContextMenu(c, e.clientX, e.clientY);
+                          }}
+                        >
+                          {c.id.slice(0, 6)} [
+                          {c.mlConfidence?.toFixed(2) ?? "?"}]
+                        </div>
+                      );
+                    })}
+                  </div>
+                ))}
+            </>
+          );
+        })()}
       </div>
 
       <TreeSep />

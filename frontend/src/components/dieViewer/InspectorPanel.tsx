@@ -274,12 +274,17 @@ function resolve(
       const rows: [string, string][] = [
         ["position", `(${Math.round(c.x)}, ${Math.round(c.y)})`]
       ];
+      if (c.rotation) rows.push(["rotation", `${c.rotation}°`]);
       if (ct) {
         rows.push(["size", `${ct.cropRect.width}×${ct.cropRect.height}`]);
         const count = cellTypeCounts?.get(ct.id) ?? 1;
         rows.push(["relationship", count > 1 ? `Linked (×${count})` : "Unique"]);
       }
       rows.push(["flipped", c.flippedV ? "vertical" : "no"]);
+      if (c.mlDetected) {
+        rows.push(["ml status", "CV detected"]);
+        if (c.mlConfidence != null) rows.push(["confidence", c.mlConfidence.toFixed(3)]);
+      }
       base.sub = { kind: "Cell", id: c.id, rows };
       return base;
     }

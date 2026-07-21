@@ -6,6 +6,8 @@ export interface ContextMenuState {
   cellId: string;
   /** The cell currently belongs to a matched type (unmatch is meaningful). */
   canUnmatch: boolean;
+  /** True when the cell was placed by CV detection. */
+  mlDetected?: boolean;
 }
 
 interface Props {
@@ -13,9 +15,10 @@ interface Props {
   onClose: () => void;
   onUnmatch: () => void;
   onJumpToDie: () => void;
+  onDelete?: () => void;
 }
 
-export function MergeContextMenu({ menu, onClose, onUnmatch, onJumpToDie }: Props) {
+export function MergeContextMenu({ menu, onClose, onUnmatch, onJumpToDie, onDelete }: Props) {
   const ref = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -44,6 +47,17 @@ export function MergeContextMenu({ menu, onClose, onUnmatch, onJumpToDie }: Prop
       style={{ position: "fixed", left: x, top: y, zIndex: 1000, minWidth: 180 }}
       onContextMenu={(e) => e.preventDefault()}
     >
+      {menu.mlDetected && (
+        <button
+          className="menu-item"
+          onClick={() => {
+            onDelete?.();
+            onClose();
+          }}
+        >
+          Delete ML Cell
+        </button>
+      )}
       <button
         className="menu-item"
         disabled={!menu.canUnmatch}

@@ -263,6 +263,8 @@ export function buildCellAnnotation(
       const dimmed = !state.selected && !isSibling?.(cell.id) && siblingActive?.();
       if (dimmed) ctx.globalAlpha = 0.1;
 
+      const isMl = cell.mlDetected === true;
+
       if (showShapes) {
         // No outlines on the die view — at die-wide zooms the per-shape
         // strokes add noise without disambiguating anything (the cell box
@@ -271,7 +273,11 @@ export function buildCellAnnotation(
       } else {
         // Solid block so placement structure stays legible (when zoomed out,
         // or for cells that carry no inner shapes at all).
-        ctx.fillStyle = state.selected ? SELECT_FILL : withAlpha(color, CELL_FILL_ALPHA);
+        if (isMl && !state.selected) {
+          ctx.fillStyle = "rgba(100, 180, 255, 0.18)";
+        } else {
+          ctx.fillStyle = state.selected ? SELECT_FILL : withAlpha(color, CELL_FILL_ALPHA);
+        }
         ctx.fillRect(0, 0, w, h);
       }
 
@@ -290,11 +296,30 @@ export function buildCellAnnotation(
       if (state.selected) {
         ctx.strokeStyle = SELECT_COLOR;
         ctx.lineWidth = (CELL_OUTLINE_PX + 1) / bounds.zoom;
+      } else if (isMl) {
+        ctx.strokeStyle = "rgba(100, 180, 255, 0.8)";
+        ctx.lineWidth = CELL_OUTLINE_PX / bounds.zoom;
       } else {
         ctx.strokeStyle = withAlpha(color, CELL_OUTLINE_ALPHA);
         ctx.lineWidth = CELL_OUTLINE_PX / bounds.zoom;
       }
       ctx.strokeRect(0, 0, w, h);
+
+      // CV label overlay — shown only when zoomed in enough to read text
+      if (isMl && bounds.zoom >= 0.3 && cell.mlConfidence != null) {
+        const fontSize = 10 / bounds.zoom;
+        const label = `CV ${cell.mlConfidence.toFixed(2)}`;
+        ctx.font = `${fontSize}px var(--mono, monospace)`;
+        ctx.textBaseline = "bottom";
+        ctx.textAlign = "right";
+        const tw = ctx.measureText(label).width;
+        const pad = 3 / bounds.zoom;
+        ctx.fillStyle = "rgba(0, 0, 0, 0.55)";
+        ctx.fillRect(w - tw - pad * 2 - 2, h - fontSize - pad * 2, tw + pad * 2, fontSize + pad * 2);
+        ctx.fillStyle = "#90caf9";
+        ctx.fillText(label, w - 2 / bounds.zoom, h - pad);
+      }
+
       ctx.restore();
     }
     // hitTest / intersectsRect: default bbox is exact for cells.

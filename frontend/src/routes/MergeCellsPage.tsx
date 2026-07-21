@@ -643,11 +643,9 @@ function Merge({ dieId }: { dieId: string }) {
             dieId={dieId}
             annotations={annotations}
             onCandidateContextMenu={(cell, x, y) => {
-              // Unmatch is meaningless for a sole-member type — it's already
-              // standalone (would just rename it to a fresh singleton).
               const canUnmatch =
                 membersOf(annotations, cell.cellTypeId).length > 1;
-              setMenu({ x, y, cellId: cell.id, canUnmatch });
+              setMenu({ x, y, cellId: cell.id, canUnmatch, mlDetected: !!cell.mlDetected });
             }}
           />
         ) : (
@@ -674,7 +672,7 @@ function Merge({ dieId }: { dieId: string }) {
               const canUnmatch = annotations
                 ? membersOf(annotations, cell.cellTypeId).length > 1
                 : false;
-              setMenu({ x, y, cellId: cell.id, canUnmatch });
+              setMenu({ x, y, cellId: cell.id, canUnmatch, mlDetected: !!cell.mlDetected });
             }}
           />
           <MergeBottomBar
@@ -718,6 +716,12 @@ function Merge({ dieId }: { dieId: string }) {
           onJumpToDie={() => {
             const c = annotations ? cellById(annotations, menu.cellId) : null;
             if (c) jumpToDie(c);
+          }}
+          onDelete={() => {
+            const c = annotations ? cellById(annotations, menu.cellId) : null;
+            if (c) {
+              void dispatcher.dispatch({ kind: "removeCell", cell: c });
+            }
           }}
         />
       )}
