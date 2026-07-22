@@ -729,7 +729,7 @@ def match_contour_pipeline(
                 "confidence": round(1.0 / (1.0 + m["total"]), 4),
                 "bbox": [x, y, w, h],
             })
-        return results
+    return results
 
     ref_areas = [cv2.contourArea(rc) for rc in ref_cnts]
     max_ref_area = ref_areas[int(np.argmax(ref_areas))]
@@ -1204,3 +1204,188 @@ def match_template_pipeline(
         })
 
     return results
+
+
+def debug_template_pipeline(
+    search_rgb: np.ndarray,
+    ref_bbox: tuple[int, int, int, int],
+    params: dict | None = None,
+) -> dict:
+    """Template matching debug — Sobel edges, multi-angle matchTemplate, NMS overlay."""
+    import base64
+
+    p = {
+        "threshold": 0.5,
+        "rotation_steps": 4,
+        "max_matches": 100,
+        "min_distance": 15,
+        "sobel_ksize": 3,
+        "nms_iou": 0.3,
+        "nms_dist": 30,
+        **(params or {}),
+    }
+
+    search_gray = cv2.cvtColor(search_rgb, cv2.COLOR_RGB2GRAY)
+    ksize = p["sobel_ksize"]
+    if ksize % 2 == 0:
+        ksize += 1
+
+    sobelx = cv2.Sobel(search_gray, cv2.CV_64F, 1, 0, ksize=ksize)
+    sobely = cv2.Sobel(search_gray, cv2.CV_64F, 0, 1, ksize=ksize)
+    search_edges = cv2.magnitude(sobelx, sobely)
+    search_edges = cv2.normalize(search_edges, None, 0, 255, cv2.NORM_MINMAX, cv2.CV_8U)
+
+    rx0, ry0, rw, rh = ref_bbox
+    rx0 = max(0, rx0); ry0 = max(0, ry0)
+    rw = min(rw, search_gray.shape[1] - rx0)
+    rh = min(rh, search_gray.shape[0] - ry0)
+
+    ref_crop_rgb = search_rgb[ry0:ry0 + rh, rx0:rx0 + rw]
+    _, cbuf = cv2.imencode(".png", cv2.cvtColor(ref_crop_rgb, cv2.COLOR_RGB2BGR))
+    ref_crop_b64 = base64.b64encode(cbuf.tobytes()).decode("ascii")
+
+    result: dict = {
+        "ref_crop_png_b64": ref_crop_b64,
+        "ref_tree": None,
+        "ref_contour_count": 0,
+        "ref_contour_png_b64": None,
+        "ref_template_png_b64": None,
+        "search_edges_png_b64": None,
+        "search_preview_png_b64": None,
+        "top_matches": [],
+        "total_candidates": 0,
+        "pre_nms_peaks": 0,
+        "stage1_raw_count": 0,
+        "stage1_after_aspect": 0,
+        "stage1_after_nms": 0,
+        "stage1_clustered_count": 0,
+        "stage2_no_tree": 0,
+        "stage2_low_children": 0,
+        "stage2_low_struct": 0,
+        "stage2_matches": 0,
+        "params_used": p,
+    }
+
+    if rw <= 0 or rh <= 0:
+        return result
+
+    ref_template = search_edges[ry0:ry0 + rh, rx0:rx0 + rw]
+    tw, th = ref_template.shape[1], ref_template.shape[0]
+
+    ref_vis = cv2.cvtColor(ref_template, cv2.COLOR_GRAY2BGR)
+    _, rbuf = cv2.imencode(".png", ref_vis)
+    result["ref_template_png_b64"] = base64.b64encode(rbuf.tobytes()).decode("ascii")
+
+    edges_vis = cv2.cvtColor(search_edges, cv2.COLOR_GRAY2BGR)
+    edges_rs = _resize_for_preview(edges_vis, 2048)
+    _, ebuf = cv2.imencode(".jpg", edges_rs, [cv2.IMWRITE_JPEG_QUALITY, 85])
+    result["search_edges_png_b64"] = base64.b64encode(ebuf.tobytes()).decode("ascii")
+
+    angles_to_try = [0]
+    if p["rotation_steps"] >= 2:
+        angles_to_try.append(180)
+    if p["rotation_steps"] >= 4:
+        angles_to_try.extend([90, 270])
+
+    all_matches: list[tuple[float, int, int, int]] = []
+
+    for angle in angles_to_try:
+        if angle == 0:
+            tmpl = ref_template
+        elif angle == 90:
+            tmpl = cv2.rotate(ref_template, cv2.ROTATE_90_CLOCKWISE)
+        elif angle == 180:
+            tmpl = cv2.rotate(ref_template, cv2.ROTATE_180)
+        elif angle == 270:
+            tmpl = cv2.rotate(ref_template, cv2.ROTATE_90_COUNTERCLOCKWISE)
+        else:
+            continue
+
+        if tmpl.shape[0] > search_edges.shape[0] or tmpl.shape[1] > search_edges.shape[1]:
+            continue
+
+        match_result = cv2.matchTemplate(search_edges, tmpl, cv2.TM_CCOEFF_NORMED)
+        locations = np.where(match_result >= p["threshold"])
+        for pt in zip(*locations[::-1]):
+            all_matches.append((float(match_result[pt[1], pt[0]]), int(pt[0]), int(pt[1]), angle))
+
+    result["pre_nms_peaks"] = len(all_matches)
+
+    if not all_matches:
+        return result
+
+    all_matches.sort(key=lambda x: -x[0])
+
+    nms_iou = p["nms_iou"]
+    nms_dist = p["nms_dist"]
+    kept: list[tuple[float, int, int, int]] = []
+    for conf, x, y, angle in all_matches:
+        w, h = _tmpl_wh(angle, tw, th)
+        overlap = False
+        for k_conf, kx, ky, kangle in kept:
+            kw, kh = _tmpl_wh(kangle, tw, th)
+            ix = max(0, min(x + w, kx + kw) - max(x, kx))
+            iy = max(0, min(y + h, ky + kh) - max(y, ky))
+            inter = ix * iy
+            union = w * h + kw * kh - inter
+            iou = inter / union if union > 0 else 0
+            if iou > nms_iou:
+                overlap = True
+                break
+            cx = x + w // 2; cy = y + h // 2
+            kcx = kx + kw // 2; kcy = ky + kh // 2
+            if ((cx - kcx)**2 + (cy - kcy)**2)**0.5 < nms_dist:
+                overlap = True
+                break
+        if overlap:
+            continue
+        kept.append((conf, x, y, angle))
+        if len(kept) >= p["max_matches"]:
+            break
+
+    ref_cx = rx0 + rw // 2
+    ref_cy = ry0 + rh // 2
+    ref_tol = min(tw, th) * 0.3
+    filtered: list[tuple[float, int, int, int]] = []
+    for conf, x, y, angle in kept:
+        w, h = _tmpl_wh(angle, tw, th)
+        mx = x + w // 2
+        my = y + h // 2
+        dist = ((mx - ref_cx) ** 2 + (my - ref_cy) ** 2) ** 0.5
+        if dist < ref_tol:
+            continue
+        filtered.append((conf, x, y, angle))
+
+    filtered.sort(key=lambda x: -x[0])
+
+    top_matches: list[dict] = []
+    for conf, x, y, angle in filtered:
+        w, h = _tmpl_wh(angle, tw, th)
+        top_matches.append({
+            "x": x + w // 2,
+            "y": y + h // 2,
+            "rotation": angle,
+            "confidence": round(conf, 4),
+            "bbox": [x, y, w, h],
+        })
+
+    result["top_matches"] = top_matches
+    result["total_candidates"] = len(top_matches)
+
+    sv = cv2.cvtColor(search_edges, cv2.COLOR_GRAY2BGR)
+    for conf, x, y, angle in filtered:
+        w, h = _tmpl_wh(angle, tw, th)
+        hue = int(conf * 120)
+        bgr = cv2.cvtColor(np.uint8([[[hue, 255, 200]]]), cv2.COLOR_HSV2BGR)[0][0]
+        color = (int(bgr[0]), int(bgr[1]), int(bgr[2]))
+        cv2.rectangle(sv, (x, y), (x + w, y + h), color, 2)
+        label = f"{conf:.2f} {angle}d"
+        cv2.putText(sv, label, (x + 2, y + 12),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.35, color, 1, cv2.LINE_AA)
+    cv2.rectangle(sv, (rx0, ry0), (rx0 + rw, ry0 + rh), (0, 255, 0), 2)
+
+    sv_rs = _resize_for_preview(sv, 2048)
+    _, sbuf = cv2.imencode(".jpg", sv_rs, [cv2.IMWRITE_JPEG_QUALITY, 85])
+    result["search_preview_png_b64"] = base64.b64encode(sbuf.tobytes()).decode("ascii")
+
+    return result

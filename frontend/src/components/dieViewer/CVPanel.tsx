@@ -269,21 +269,21 @@ function TemplateSection({
                 Pre-NMS peaks: {tmDebugData.pre_nms_peaks ?? "?"} ·{" "}
                 Candidates: {tmDebugData.total_candidates}
               </div>
-              {(tmDebugData as any).search_edges_png_b64 && (
+              {tmDebugData.search_edges_png_b64 && (
                 <div style={{ marginBottom: 6 }}>
                   <div className="u" style={{ fontSize: 9, marginBottom: 2 }}>Sobel edges</div>
                   <img
-                    src={`data:image/jpeg;base64,${(tmDebugData as any).search_edges_png_b64}`}
+                    src={`data:image/jpeg;base64,${tmDebugData.search_edges_png_b64}`}
                     alt="sobel edges"
                     style={{ maxWidth: "100%", borderRadius: 3 }}
                   />
                 </div>
               )}
-              {(tmDebugData as any).ref_template_png_b64 && (
+              {tmDebugData.ref_template_png_b64 && (
                 <div style={{ marginBottom: 6 }}>
                   <div className="u" style={{ fontSize: 9, marginBottom: 2 }}>Reference template (Sobel)</div>
                   <img
-                    src={`data:image/png;base64,${(tmDebugData as any).ref_template_png_b64}`}
+                    src={`data:image/png;base64,${tmDebugData.ref_template_png_b64}`}
                     alt="ref template"
                     style={{ maxWidth: "100%", borderRadius: 3 }}
                   />
@@ -292,13 +292,30 @@ function TemplateSection({
               {tmDebugData.search_preview_png_b64 && (
                 <div style={{ marginBottom: 6 }}>
                   <div className="u" style={{ fontSize: 9, marginBottom: 2 }}>
-                    Search preview (colors = rotation angles)
+                    Search preview (color = confidence: red → green)
                   </div>
                   <img
                     src={`data:image/jpeg;base64,${tmDebugData.search_preview_png_b64}`}
                     alt="search preview"
                     style={{ maxWidth: "100%", borderRadius: 3 }}
                   />
+                </div>
+              )}
+              {tmDebugData.top_matches.length > 0 && (
+                <div style={{ marginBottom: 6 }}>
+                  <div className="u" style={{ fontSize: 9, marginBottom: 2 }}>
+                    Matches ({tmDebugData.top_matches.length} cells, sorted by confidence)
+                  </div>
+                  <div style={{ maxHeight: 200, overflow: "auto", fontFamily: "var(--mono)", fontSize: 10 }}>
+                    {tmDebugData.top_matches.map((m, i) => {
+                      const hue = Math.round(m.confidence * 120);
+                      return (
+                        <div key={i} style={{ padding: "1px 0", color: `hsl(${hue},80%,45%)` }}>
+                          [{m.confidence.toFixed(2)}] {m.rotation}° bbox: ({m.bbox[0]}, {m.bbox[1]}, {m.bbox[2]}, {m.bbox[3]})
+                        </div>
+                      );
+                    })}
+                  </div>
                 </div>
               )}
             </div>

@@ -1165,6 +1165,10 @@ export interface CVDebugData {
   total_candidates: number;
   /** Template debug: how many matchTemplate peaks before NMS. */
   pre_nms_peaks?: number;
+  /** Template debug: Sobel edges of search image as base64 JPG. */
+  search_edges_png_b64?: string;
+  /** Template debug: Sobel reference template as base64 PNG. */
+  ref_template_png_b64?: string;
   /** Stage 1: how many raw contours found on the search image. */
   stage1_raw_count: number;
   /** Stage 1: how many passed aspect-ratio filter. */
