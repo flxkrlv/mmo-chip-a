@@ -268,6 +268,13 @@ export const Ic = {
       <path d="M2.5 13.5h11" />
     </>
   ),
+  upload: Icon(
+    <>
+      <path d="M8 13.5v-8" />
+      <path d="M4.5 9L8 5.5 11.5 9" />
+      <path d="M2.5 2.5h11" />
+    </>
+  ),
   warn: Icon(
     <>
       <path d="M8 2.5L14.5 13.5h-13z" />

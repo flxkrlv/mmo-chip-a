@@ -3,7 +3,7 @@ import type { DieAnnotations } from "shared";
 import { Ic } from "../../icons";
 import { useOverlayLayers } from "../../state/overlayLayers";
 import { useSession, DEFAULT_METAL_STACK, buildMetalStack, fetchMetalStack } from "../../state/session";
-import { apiPut } from "../../api/client";
+import { apiPut, apiUpload } from "../../api/client";
 import {
   CELL_COLOR_OPTIONS,
   NET_COLOR_OPTIONS,
@@ -96,8 +96,9 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
   const addLayer = useOverlayLayers((s) => s.addLayer);
   const setLayerHidden = useOverlayLayers((s) => s.setLayerHidden);
 
-  const fileInputRef = useRef<HTMLInputElement>(null);
-  const onFilePick = useCallback(
+  const localFileInputRef = useRef<HTMLInputElement>(null);
+  const serverFileInputRef = useRef<HTMLInputElement>(null);
+  const onLocalFilePick = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
       const files = e.target.files;
       if (!files) return;
@@ -113,13 +114,36 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
         };
         img.src = url;
       }
-      // Reset so the same file can be picked again.
       e.target.value = "";
     },
     [addLayer]
   );
 
   const dieId = useSession((s) => s.dieId);
+  const [uploadingFiles, setUploadingFiles] = useState(false);
+  const onUploadToServer = useCallback(
+    (e: React.ChangeEvent<HTMLInputElement>) => {
+      const files = e.target.files;
+      if (!files || !dieId) return;
+      setUploadingFiles(true);
+      const tasks = Array.from(files).map(async (file) => {
+        const form = new FormData();
+        form.append("file", file);
+        await apiUpload(`/api/dies/${dieId}/overlay-images/upload`, form);
+        const url = URL.createObjectURL(file);
+        const img = new Image();
+        await new Promise<void>((resolve, reject) => {
+          img.onload = () => resolve();
+          img.onerror = () => reject(new Error("image load failed"));
+          img.src = url;
+        });
+        addLayer(file.name.replace(/\.[^.]+$/, ""), img);
+      });
+      Promise.allSettled(tasks).then(() => setUploadingFiles(false));
+      e.target.value = "";
+    },
+    [addLayer, dieId]
+  );
   const [loadingTestImages, setLoadingTestImages] = useState(false);
   const onLoadFromServer = useCallback(() => {
     if (!dieId || loadingTestImages) return;
@@ -552,9 +576,19 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
           {/* Add image buttons */}
           <TreeRow
             depth={1}
+            icon={Ic.upload}
+            label={
+              <span style={{ color: "var(--accent)" }}>
+                {uploadingFiles ? "Uploading…" : "Upload to Server…"}
+              </span>
+            }
+            onSelect={() => serverFileInputRef.current?.click()}
+          />
+          <TreeRow
+            depth={1}
             icon={Ic.plus}
-            label={<span style={{ color: "var(--accent)" }}>Add from File…</span>}
-            onSelect={() => fileInputRef.current?.click()}
+            label={<span style={{ color: "var(--ink2)" }}>Add local only…</span>}
+            onSelect={() => localFileInputRef.current?.click()}
           />
           <TreeRow
             depth={1}
@@ -567,12 +601,20 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
             onSelect={onLoadFromServer}
           />
           <input
-            ref={fileInputRef}
+            ref={serverFileInputRef}
             type="file"
             accept="image/png,image/jpeg,image/gif,image/webp"
             multiple
             style={{ display: "none" }}
-            onChange={onFilePick}
+            onChange={onUploadToServer}
+          />
+          <input
+            ref={localFileInputRef}
+            type="file"
+            accept="image/png,image/jpeg,image/gif,image/webp"
+            multiple
+            style={{ display: "none" }}
+            onChange={onLocalFilePick}
           />
           {overlayLayers.length === 0 && (
             <div
@@ -595,12 +637,9 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
               lineHeight: 1.4
             }}
           >
-            <strong>Server path:</strong> copy files to the current die's folder
-            <code style={{ display: "block", marginTop: 2, padding: "2px 4px", background: "var(--bg)", borderRadius: 2 }}>
-              data/overlay-images/{dieId}/
-            </code>
-            then click <strong>Load from Server</strong> to add. Images persist
-            across page reloads. Upload via Add from File → server upload.
+            <strong>Upload to Server</strong> saves images to the die's folder and loads them.
+            <strong> Load from Server</strong> picks up images already on disk.
+            <strong> Add local only</strong> loads into browser memory (lost on reload).
           </div>
           {overlayLayers.map((layer) => (
             <TreeRow
