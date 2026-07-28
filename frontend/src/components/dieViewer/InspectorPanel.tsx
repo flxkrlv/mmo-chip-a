@@ -757,7 +757,7 @@ function InferenceSection({ dieId }: { dieId: string }) {
 
   const overlayLayers = useOverlayLayers((s) => s.layers);
   const visibleOverlay = overlayLayers.find((l) => !l.hidden && l.loaded);
-  const overlayName = visibleOverlay?.name ?? null;
+  const overlayName = visibleOverlay?.serverFilename ?? visibleOverlay?.name ?? null;
 
   const toggleJob = async () => {
     setBusy("job");
@@ -913,7 +913,7 @@ function TrainingSection({ dieId }: { dieId: string }) {
   >(null);
   const overlayLayers = useOverlayLayers((s) => s.layers);
   const visibleOverlay = overlayLayers.find((l) => !l.hidden && l.loaded);
-  const overlayName = visibleOverlay?.name ?? undefined;
+  const overlayName = visibleOverlay?.serverFilename ?? visibleOverlay?.name ?? undefined;
 
   const runExport = async () => {
     setExporting(true);

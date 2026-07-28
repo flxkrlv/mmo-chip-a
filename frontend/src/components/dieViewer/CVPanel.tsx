@@ -82,7 +82,7 @@ function dispatchMatch(
 
 function visibleOverlayName(): string | undefined {
   const ov = useOverlayLayers.getState().layers.find((l) => !l.hidden && l.loaded);
-  return ov?.name;
+  return ov?.serverFilename ?? ov?.name;
 }
 
 // ── Template section (stable, no changes from prior behavior) ────────

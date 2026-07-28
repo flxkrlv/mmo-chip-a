@@ -18,17 +18,18 @@ export async function fetchOverlayImageList(
 
 /**
  * Load an overlay image from the backend and return a loaded HTMLImageElement.
- * Also returns the original filename (minus extension) for use as a layer name.
+ * Also returns the original filename (minus extension) for use as a layer name,
+ * and the full server filename (with extension) for backend API calls.
  */
 export function loadOverlayImageFromServer(
   dieId: string,
   filename: string
-): Promise<{ image: HTMLImageElement; name: string }> {
+): Promise<{ image: HTMLImageElement; name: string; serverFilename: string }> {
   return new Promise((resolve, reject) => {
     const img = new Image();
     img.onload = () => {
       const name = filename.replace(/\.[^.]+$/, "");
-      resolve({ image: img, name });
+      resolve({ image: img, name, serverFilename: filename });
     };
     img.onerror = () => reject(new Error(`Failed to load image: ${filename}`));
     img.src = `/api/dies/${encodeURIComponent(dieId)}/overlay-images/${encodeURIComponent(filename)}`;

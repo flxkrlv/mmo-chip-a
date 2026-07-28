@@ -137,7 +137,7 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
           img.onerror = () => reject(new Error("image load failed"));
           img.src = url;
         });
-        addLayer(file.name.replace(/\.[^.]+$/, ""), img);
+        addLayer(file.name.replace(/\.[^.]+$/, ""), img, undefined, file.name);
       });
       Promise.allSettled(tasks).then(() => setUploadingFiles(false));
       e.target.value = "";
@@ -156,7 +156,7 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
         );
         for (const result of results) {
           if (result.status === "fulfilled") {
-            addLayer(result.value.name, result.value.image);
+            addLayer(result.value.name, result.value.image, undefined, result.value.serverFilename);
           }
         }
         setLoadingTestImages(false);

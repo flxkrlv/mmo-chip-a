@@ -8,6 +8,9 @@ export interface OverlayLayerEntry {
   id: string;
   /** Human-readable name editable in the UI. */
   name: string;
+  /** Original filename on the server (with extension). Used when
+   *  referencing the file in backend API calls (e.g. template matching). */
+  serverFilename?: string;
   /** Object URL or backend URL for the image resource. */
   src: string;
   /** The loaded HTMLImageElement (null until loaded). */
@@ -34,7 +37,7 @@ interface OverlayLayersState {
   baseImageVisible: boolean;
 
   /** Add a new layer from a loaded HTMLImageElement. Returns the layer id. */
-  addLayer: (name: string, image: HTMLImageElement, hidden?: boolean) => string;
+  addLayer: (name: string, image: HTMLImageElement, hidden?: boolean, serverFilename?: string) => string;
   /** Remove a layer by id. */
   removeLayer: (id: string) => void;
   /** Toggle visibility of a layer. */
@@ -59,11 +62,12 @@ export const useOverlayLayers = create<OverlayLayersState>()((set, get) => ({
   layers: [],
   baseImageVisible: true,
 
-  addLayer: (name, image, hidden = false) => {
+  addLayer: (name, image, hidden = false, serverFilename) => {
     const id = uuid();
     const entry: OverlayLayerEntry = {
       id,
       name,
+      serverFilename,
       src: image.src,
       image,
       loaded: true,

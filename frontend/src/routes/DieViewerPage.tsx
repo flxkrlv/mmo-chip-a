@@ -707,7 +707,7 @@ function DieViewer({ dieId }: { dieId: string }) {
         ).then((results) => {
           for (const r of results) {
             if (r.status === "fulfilled") {
-              addLayer(r.value.name, r.value.image, true); // hidden by default
+              addLayer(r.value.name, r.value.image, true, r.value.serverFilename); // hidden by default
             }
           }
         })
