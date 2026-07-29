@@ -729,7 +729,7 @@ def match_contour_pipeline(
                 "confidence": round(1.0 / (1.0 + m["total"]), 4),
                 "bbox": [x, y, w, h],
             })
-    return results
+        return results
 
     ref_areas = [cv2.contourArea(rc) for rc in ref_cnts]
     max_ref_area = ref_areas[int(np.argmax(ref_areas))]
@@ -1389,3 +1389,261 @@ def debug_template_pipeline(
     result["search_preview_png_b64"] = base64.b64encode(sbuf.tobytes()).decode("ascii")
 
     return result
+
+
+def akaze_verify_matches(
+    search_rgb: np.ndarray,
+    matches: list[dict],
+    ref_patch: np.ndarray,
+    params: dict | None = None,
+) -> dict:
+    """AKAZE-based post-verification: compare each detected cell against the reference.
+
+    Args:
+        search_rgb: Full search image (RGB).
+        matches: List of match dicts from template pipeline.
+        ref_patch: Grayscale reference patch (the user-selected cell).
+        params: Optional params dict.
+
+    Returns:
+        {kept: [...], removed: [...], ref_similarities: [...]}
+    """
+    p = {
+        "sift_threshold": 0.5,
+        "ratio_thresh": 0.75,
+        "padding": 0.15,
+        "blur_ksize": 0,
+        "use_sobel": False,
+        **(params or {}),
+    }
+
+    if len(matches) < 1:
+        return {"kept": list(matches), "removed": [], "ref_similarities": []}
+
+    search_gray = cv2.cvtColor(search_rgb, cv2.COLOR_RGB2GRAY)
+    h_img, w_img = search_gray.shape[:2]
+
+    # Extract ROI patches around each match
+    padding = p["padding"]
+    raw_patches: list[np.ndarray] = []
+    valid_indices: list[int] = []
+
+    for i, m in enumerate(matches):
+        bx, by, bw, bh = m["bbox"]
+        px = int(bw * padding)
+        py = int(bh * padding)
+        x0 = max(0, bx - px)
+        y0 = max(0, by - py)
+        x1 = min(w_img, bx + bw + px)
+        y1 = min(h_img, by + bh + py)
+        patch = search_gray[y0:y1, x0:x1]
+        if patch.size == 0 or patch.shape[0] < 4 or patch.shape[1] < 4:
+            continue
+        raw_patches.append(patch)
+        valid_indices.append(i)
+
+    if len(raw_patches) < 1:
+        return {"kept": list(matches), "removed": [], "ref_similarities": []}
+
+    # Preprocess: ref + match patches
+    ref_gray = ref_patch if len(ref_patch.shape) == 2 else cv2.cvtColor(ref_patch, cv2.COLOR_RGB2GRAY)
+    all_patches = [ref_gray] + raw_patches
+    all_processed = _akaze_preprocess(all_patches, p)
+    proc_ref = all_processed[0]
+    proc_matches = all_processed[1:]
+
+    # Compute AKAZE descriptors
+    detector = getattr(cv2, 'xfeatures2d_AKAZE', cv2).create() if hasattr(cv2, 'xfeatures2d_AKAZE') else cv2.AKAZE_create()
+    kp_ref, des_ref = detector.detectAndCompute(proc_ref, None)
+    bf = cv2.BFMatcher(cv2.NORM_HAMMING)
+
+    # Compare each match against reference
+    sift_thresh = p["sift_threshold"]
+    ref_sims: list[float] = []
+    kept: list[dict] = []
+    removed: list[dict] = []
+    all_sims: list[float] = []
+
+    for idx, orig_idx in enumerate(valid_indices):
+        kp_m, des_m = detector.detectAndCompute(proc_matches[idx], None)
+        sim = 0.0
+        if des_ref is not None and des_m is not None and len(kp_ref) >= 2 and len(kp_m) >= 2:
+            try:
+                raw_matches = bf.knnMatch(des_ref, des_m, k=2)
+            except cv2.error:
+                raw_matches = []
+            good = 0
+            total = 0
+            for pair in raw_matches:
+                if len(pair) < 2:
+                    continue
+                total += 1
+                m, nn = pair
+                if m.distance < p["ratio_thresh"] * nn.distance:
+                    good += 1
+            if total > 0:
+                sim = good / max(min(len(kp_ref), len(kp_m)), 1)
+                # Penalize when match has fewer keypoints than reference
+                sim = sim * len(kp_m) / max(len(kp_ref), 1)
+
+        all_sims.append(sim)
+        m_dict = dict(matches[orig_idx])
+        m_dict["akaze_similarity"] = round(sim, 4)
+        if sim >= sift_thresh:
+            kept.append(m_dict)
+        else:
+            removed.append(m_dict)
+
+    # Include matches too small to extract patches (keep them)
+    for i, m in enumerate(matches):
+        if i not in valid_indices:
+            kept.append(dict(m))
+            all_sims.append(0.0)
+
+    return {
+        "kept": kept,
+        "removed": removed,
+        "ref_similarities": [round(s, 4) for s in all_sims],
+    }
+
+
+def _akaze_preprocess(patches: list[np.ndarray], params: dict) -> list[np.ndarray]:
+    """Optional preprocessing for AKAZE: Gaussian blur and/or Sobel edges."""
+    blur_ksize = params.get("blur_ksize", 0)
+    use_sobel = params.get("use_sobel", False)
+    if blur_ksize < 1 and not use_sobel:
+        return patches
+    result = []
+    for patch in patches:
+        p = patch
+        if blur_ksize >= 1:
+            k = blur_ksize if blur_ksize % 2 == 1 else blur_ksize + 1
+            p = cv2.GaussianBlur(p, (k, k), 0)
+        if use_sobel:
+            sx = cv2.Sobel(p, cv2.CV_64F, 1, 0, ksize=3)
+            sy = cv2.Sobel(p, cv2.CV_64F, 0, 1, ksize=3)
+            p = cv2.convertScaleAbs(np.sqrt(sx ** 2 + sy ** 2))
+        result.append(p)
+    return result
+
+
+def akaze_debug_matches(
+    search_rgb: np.ndarray,
+    matches: list[dict],
+    ref_patch: np.ndarray,
+    params: dict | None = None,
+    max_pairs: int = 6,
+) -> dict:
+    """Debug AKAZE: draw ref-vs-each keypoint matches for each detected cell.
+
+    Returns images as base64 PNG + per-cell keypoint stats.
+    """
+    import base64
+
+    p = {
+        "ratio_thresh": 0.75,
+        "padding": 0.15,
+        "blur_ksize": 0,
+        "use_sobel": False,
+        **(params or {}),
+    }
+
+    if len(matches) < 1:
+        return {"pair_images": [], "cell_stats": []}
+
+    search_gray = cv2.cvtColor(search_rgb, cv2.COLOR_RGB2GRAY)
+    h_img, w_img = search_gray.shape[:2]
+
+    padding = p["padding"]
+    raw_patches: list[np.ndarray] = []
+    valid_indices: list[int] = []
+
+    for i, m in enumerate(matches):
+        bx, by, bw, bh = m["bbox"]
+        px = int(bw * padding)
+        py = int(bh * padding)
+        x0 = max(0, bx - px)
+        y0 = max(0, by - py)
+        x1 = min(w_img, bx + bw + px)
+        y1 = min(h_img, by + bh + py)
+        patch = search_gray[y0:y1, x0:x1]
+        if patch.size == 0 or patch.shape[0] < 4 or patch.shape[1] < 4:
+            continue
+        raw_patches.append(patch)
+        valid_indices.append(i)
+
+    if len(raw_patches) < 1:
+        return {"pair_images": [], "cell_stats": []}
+
+    # Preprocess: ref + match patches
+    ref_gray = ref_patch if len(ref_patch.shape) == 2 else cv2.cvtColor(ref_patch, cv2.COLOR_RGB2GRAY)
+    all_patches = [ref_gray] + raw_patches
+    all_processed = _akaze_preprocess(all_patches, p)
+    proc_ref = all_processed[0]
+    proc_matches = all_processed[1:]
+
+    # Compute ref descriptors once
+    detector = getattr(cv2, 'xfeatures2d_AKAZE', cv2).create() if hasattr(cv2, 'xfeatures2d_AKAZE') else cv2.AKAZE_create()
+    kp_ref, des_ref = detector.detectAndCompute(proc_ref, None)
+    bf = cv2.BFMatcher(cv2.NORM_HAMMING)
+
+    # Compare each match against ref, collect stats and images
+    cell_stats = []
+    pair_images = []
+    scored: list[tuple[float, int, list, object, object]] = []  # (sim, idx, good_matches, kp_m, des_m)
+
+    for idx, orig_idx in enumerate(valid_indices):
+        kp_m, des_m = detector.detectAndCompute(proc_matches[idx], None)
+        sim = 0.0
+        good_matches = []
+        if des_ref is not None and des_m is not None and len(kp_ref) >= 2 and len(kp_m) >= 2:
+            try:
+                raw = bf.knnMatch(des_ref, des_m, k=2)
+            except cv2.error:
+                raw = []
+            for pair in raw:
+                if len(pair) < 2:
+                    continue
+                m, nn = pair
+                if m.distance < p["ratio_thresh"] * nn.distance:
+                    good_matches.append(m)
+            if len(kp_ref) > 0:
+                sim = len(good_matches) / max(min(len(kp_ref), len(kp_m)), 1)
+                # Penalize when match has fewer keypoints than reference
+                sim = sim * len(kp_m) / max(len(kp_ref), 1)
+
+        cell_stats.append({
+            "match_index": orig_idx,
+            "confidence": round(matches[orig_idx].get("confidence", 0), 4),
+            "n_keypoints": len(kp_m) if kp_m else 0,
+            "ref_sim": round(sim, 4),
+            "has_descriptors": des_m is not None,
+        })
+        scored.append((sim, idx, good_matches, kp_m, des_m))
+
+    # Draw top pairs by sim (ref vs each)
+    scored.sort(key=lambda x: x[0], reverse=True)
+    for sim, idx, good_matches, kp_m, des_m in scored[:max_pairs]:
+        if kp_m is None or des_m is None:
+            continue
+        canvas = cv2.drawMatches(
+            proc_ref, kp_ref, proc_matches[idx], kp_m,
+            good_matches, None,
+            matchColor=(0, 255, 0),
+            singlePointColor=(0, 0, 255),
+        )
+        _, buf = cv2.imencode('.png', canvas)
+        pair_images.append({
+            "cell_i": -1,  # -1 = reference
+            "cell_j": valid_indices[idx],
+            "similarity": round(sim, 4),
+            "n_good_matches": len(good_matches),
+            "n_kp_i": len(kp_ref) if kp_ref else 0,
+            "n_kp_j": len(kp_m),
+            "image_png_b64": base64.b64encode(buf.tobytes()).decode("ascii"),
+        })
+
+    return {
+        "pair_images": pair_images,
+        "cell_stats": cell_stats,
+    }

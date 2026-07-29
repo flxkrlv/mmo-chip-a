@@ -1061,6 +1061,8 @@ export interface CVMatchResult {
   scale?: number;
   /** How rotation was determined: tree (matched children), inertia (fallback). */
   orientation_source?: "tree" | "inertia" | "bbox";
+  /** AKAZE pairwise similarity score (added by akaze_verify_matches). */
+  akaze_similarity?: number;
 }
 
 export interface CVMatchRequest {
@@ -1118,6 +1120,59 @@ export interface CVMatchRequest {
   wBbox?: number;
   /** Fuzzy distance weight: position. Default 0.5. */
   wPos?: number;
+  /** AKAZE verify threshold (0..1). Cells with pairwise similarity below this are removed. Default 0.5. */
+  sift_threshold?: number;
+}
+
+export interface AKAZEReverifyRequest {
+  dieId: string;
+  cellTypeId: string;
+  /** Matches from the previous template run. */
+  matches: CVMatchResult[];
+  /** Overlay filename to search on, or undefined for base image. */
+  overlayFilename?: string;
+  /** Reference cell X position (for extracting the ref patch). */
+  cellX?: number;
+  /** Reference cell Y position. */
+  cellY?: number;
+  /** AKAZE verify threshold (0..1). Default 0.5. */
+  sift_threshold?: number;
+  /** Gaussian blur kernel size (0 = disabled, must be odd). */
+  blur_ksize?: number;
+  /** Apply Sobel edge detection before AKAZE. */
+  use_sobel?: boolean;
+}
+
+export interface AKAZEReverifyResponse {
+  /** Matches that passed verification. */
+  kept: CVMatchResult[];
+  /** Matches removed by AKAZE verify. */
+  removed: CVMatchResult[];
+  /** Per-match similarity to reference (same order as input matches). */
+  ref_similarities?: number[];
+}
+
+export interface AKAZEDebugPairImage {
+  cell_i: number;
+  cell_j: number;
+  similarity: number;
+  n_good_matches: number;
+  n_kp_i: number;
+  n_kp_j: number;
+  image_png_b64: string;
+}
+
+export interface AKAZEDebugCellStat {
+  match_index: number;
+  confidence: number;
+  n_keypoints: number;
+  ref_sim: number;
+  has_descriptors: boolean;
+}
+
+export interface AKAZEDebugResponse {
+  pair_images: AKAZEDebugPairImage[];
+  cell_stats: AKAZEDebugCellStat[];
 }
 
 export interface CVMatchResponse {

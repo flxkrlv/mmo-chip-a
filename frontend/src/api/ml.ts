@@ -6,6 +6,9 @@ import {
   type UseQueryResult
 } from "@tanstack/react-query";
 import type {
+  AKAZEReverifyRequest,
+  AKAZEReverifyResponse,
+  AKAZEDebugResponse,
   CVDebugData,
   CVMatchRequest,
   CVMatchResponse,
@@ -218,6 +221,14 @@ export function cvTemplateMatch(params: CVMatchRequest): Promise<CVMatchResponse
 
 export function cvTemplateDebug(params: CVMatchRequest): Promise<CVDebugData> {
   return apiPost<CVDebugData>("/api/ml/cv/template-debug", params);
+}
+
+export function cvAkazeVerify(params: AKAZEReverifyRequest): Promise<AKAZEReverifyResponse> {
+  return apiPost<AKAZEReverifyResponse>("/api/ml/cv/akaze-verify", params);
+}
+
+export function cvAkazeDebug(params: AKAZEReverifyRequest & { max_pairs?: number }): Promise<AKAZEDebugResponse> {
+  return apiPost<AKAZEDebugResponse>("/api/ml/cv/akaze-debug", params);
 }
 
 export function useMLInferenceJobs(

@@ -30,7 +30,7 @@ from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel
 
 from augment import normalize_only
-from cv_match import match_contour_pipeline, match_template_pipeline
+from cv_match import akaze_verify_matches, akaze_debug_matches, match_contour_pipeline, match_template_pipeline
 from heatmap import extract_components, extract_peaks, extract_trace_polylines
 from model import build_model, infer_num_classes
 from tiling import tile_predict
@@ -629,6 +629,94 @@ def cv_template_debug(
 
     from cv_match import debug_template_pipeline
     return debug_template_pipeline(search_rgb, (ref_x, ref_y, ref_w, ref_h), params)
+
+
+@app.post("/cv/akaze-verify")
+def cv_akaze_verify(
+    search: UploadFile = File(...),
+    matches_json: str = Form(...),
+    ref_x: int = Form(...),
+    ref_y: int = Form(...),
+    ref_w: int = Form(...),
+    ref_h: int = Form(...),
+    sift_threshold: float = Form(0.5),
+    ratio_thresh: float = Form(0.75),
+    padding: float = Form(0.15),
+    blur_ksize: int = Form(0),
+    use_sobel: bool = Form(False),
+) -> dict:
+    """AKAZE-based post-verification: compare each match against the reference cell."""
+    import json
+
+    search_raw = search.file.read()
+    search_arr = np.frombuffer(search_raw, dtype=np.uint8)
+    search_bgr = cv2.imdecode(search_arr, cv2.IMREAD_COLOR)
+    if search_bgr is None:
+        raise HTTPException(status_code=400, detail="could not decode search image")
+    search_rgb = cv2.cvtColor(search_bgr, cv2.COLOR_BGR2RGB)
+
+    # Extract reference patch
+    ref_patch = search_bgr[ref_y:ref_y+ref_h, ref_x:ref_x+ref_w]
+    if ref_patch.size == 0:
+        raise HTTPException(status_code=400, detail="ref patch is empty")
+
+    try:
+        matches = json.loads(matches_json)
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=400, detail="invalid matches_json")
+
+    params = {
+        "sift_threshold": sift_threshold,
+        "ratio_thresh": ratio_thresh,
+        "padding": padding,
+        "blur_ksize": blur_ksize,
+        "use_sobel": use_sobel,
+    }
+
+    return akaze_verify_matches(search_rgb, matches, ref_patch, params)
+
+
+@app.post("/cv/akaze-debug")
+def cv_akaze_debug(
+    search: UploadFile = File(...),
+    matches_json: str = Form(...),
+    ref_x: int = Form(...),
+    ref_y: int = Form(...),
+    ref_w: int = Form(...),
+    ref_h: int = Form(...),
+    ratio_thresh: float = Form(0.75),
+    padding: float = Form(0.15),
+    blur_ksize: int = Form(0),
+    use_sobel: bool = Form(False),
+    max_pairs: int = Form(6),
+) -> dict:
+    """AKAZE debug — draw ref-vs-each keypoint matches."""
+    import json
+
+    search_raw = search.file.read()
+    search_arr = np.frombuffer(search_raw, dtype=np.uint8)
+    search_bgr = cv2.imdecode(search_arr, cv2.IMREAD_COLOR)
+    if search_bgr is None:
+        raise HTTPException(status_code=400, detail="could not decode search image")
+    search_rgb = cv2.cvtColor(search_bgr, cv2.COLOR_BGR2RGB)
+
+    ref_patch = search_bgr[ref_y:ref_y+ref_h, ref_x:ref_x+ref_w]
+    if ref_patch.size == 0:
+        raise HTTPException(status_code=400, detail="ref patch is empty")
+
+    try:
+        matches = json.loads(matches_json)
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=400, detail="invalid matches_json")
+
+    params = {
+        "ratio_thresh": ratio_thresh,
+        "padding": padding,
+        "blur_ksize": blur_ksize,
+        "use_sobel": use_sobel,
+    }
+
+    return akaze_debug_matches(search_rgb, matches, ref_patch, params, max_pairs=max_pairs)
 
 
 def list_models() -> dict:

@@ -3,6 +3,7 @@ import path from "node:path";
 import { Router } from "express";
 import sharp from "sharp";
 import type {
+  AKAZEReverifyRequest,
   CVMatchRequest,
   CVMatchResponse,
   CVMatchResult,
@@ -1150,6 +1151,115 @@ export function createMLRouter(config: {
         sidecarRes = await fetchSidecar(`${config.mlSidecarUrl}/cv/template-debug`, 120000, { method: "POST", body: fd });
       } catch { response.status(503).json({ error: "sidecar unreachable" }); return; }
       if (!sidecarRes.ok) { response.status(502).json({ error: `sidecar /cv/template-debug ${sidecarRes.status}` }); return; }
+      const data = await sidecarRes.json();
+      response.json(data);
+    } catch (error) { next(error); }
+  });
+
+  // ── POST /api/ml/cv/akaze-verify ────────────────────────────────
+  router.post("/api/ml/cv/akaze-verify", async (request, response, next) => {
+    try {
+      const body = (request.body ?? {}) as Partial<AKAZEReverifyRequest>;
+      if (!body.dieId || !body.cellTypeId || !body.matches) {
+        response.status(400).json({ error: "dieId, cellTypeId, and matches are required" }); return;
+      }
+      const { dieId, cellTypeId } = body;
+      const record = await readDieRecord(config.dataRoot, dieId);
+      const annotations = await readAnnotations(config.dataRoot, dieId);
+      const cellType = annotations.cellTypes.find((ct) => ct.id === cellTypeId);
+      if (!cellType) { response.status(404).json({ error: "cellType not found" }); return; }
+
+      const overlayFilename = body.overlayFilename;
+      const sourcePath = overlayFilename
+        ? path.join(config.dataRoot, "overlay-images", dieId, overlayFilename)
+        : record.originalPath;
+
+      // Extract ref patch coords (same logic as template-match)
+      const cellX = body.cellX ?? 0;
+      const cellY = body.cellY ?? 0;
+      const cx0 = Math.round(cellX + cellType.cropRect.x);
+      const cy0 = Math.round(cellY + cellType.cropRect.y);
+      const cx1 = Math.round(cellX + cellType.cropRect.x + cellType.cropRect.width);
+      const cy1 = Math.round(cellY + cellType.cropRect.y + cellType.cropRect.height);
+      const tmMeta = await sharp(sourcePath, { limitInputPixels: false }).metadata();
+      const sW = tmMeta.width ?? record.width;
+      const sH = tmMeta.height ?? record.height;
+      const left = Math.max(0, cx0);
+      const top = Math.max(0, cy0);
+      const w = Math.min(cx1 - cx0, Math.max(0, sW - left));
+      const h = Math.min(cy1 - cy0, Math.max(0, sH - top));
+
+      const searchBuf = await sharp(sourcePath, { limitInputPixels: false }).png().toBuffer();
+      const fd = new FormData();
+      fd.append("search", new Blob([new Uint8Array(searchBuf)], { type: "image/png" }), "search.png");
+      fd.append("matches_json", JSON.stringify(body.matches));
+      fd.append("ref_x", String(left));
+      fd.append("ref_y", String(top));
+      fd.append("ref_w", String(w));
+      fd.append("ref_h", String(h));
+      if (body.sift_threshold != null) fd.append("sift_threshold", String(body.sift_threshold));
+      if (body.blur_ksize != null) fd.append("blur_ksize", String(body.blur_ksize));
+      if (body.use_sobel != null) fd.append("use_sobel", String(body.use_sobel));
+
+      let sidecarRes: Response;
+      try {
+        sidecarRes = await fetchSidecar(`${config.mlSidecarUrl}/cv/akaze-verify`, 120000, { method: "POST", body: fd });
+      } catch { response.status(503).json({ error: "sidecar unreachable" }); return; }
+      if (!sidecarRes.ok) { response.status(502).json({ error: `sidecar /cv/akaze-verify ${sidecarRes.status}` }); return; }
+      const data = await sidecarRes.json();
+      response.json(data);
+    } catch (error) { next(error); }
+  });
+
+  // ── POST /api/ml/cv/akaze-debug ──────────────────────────────────
+  router.post("/api/ml/cv/akaze-debug", async (request, response, next) => {
+    try {
+      const body = (request.body ?? {}) as Partial<AKAZEReverifyRequest & { max_pairs?: number }>;
+      if (!body.dieId || !body.cellTypeId || !body.matches) {
+        response.status(400).json({ error: "dieId, cellTypeId, and matches are required" }); return;
+      }
+      const { dieId, cellTypeId } = body;
+      const record = await readDieRecord(config.dataRoot, dieId);
+      const annotations = await readAnnotations(config.dataRoot, dieId);
+      const cellType = annotations.cellTypes.find((ct) => ct.id === cellTypeId);
+      if (!cellType) { response.status(404).json({ error: "cellType not found" }); return; }
+
+      const overlayFilename = body.overlayFilename;
+      const sourcePath = overlayFilename
+        ? path.join(config.dataRoot, "overlay-images", dieId, overlayFilename)
+        : record.originalPath;
+
+      const cellX = body.cellX ?? 0;
+      const cellY = body.cellY ?? 0;
+      const cx0 = Math.round(cellX + cellType.cropRect.x);
+      const cy0 = Math.round(cellY + cellType.cropRect.y);
+      const cx1 = Math.round(cellX + cellType.cropRect.x + cellType.cropRect.width);
+      const cy1 = Math.round(cellY + cellType.cropRect.y + cellType.cropRect.height);
+      const tmMeta = await sharp(sourcePath, { limitInputPixels: false }).metadata();
+      const sW = tmMeta.width ?? record.width;
+      const sH = tmMeta.height ?? record.height;
+      const left = Math.max(0, cx0);
+      const top = Math.max(0, cy0);
+      const w = Math.min(cx1 - cx0, Math.max(0, sW - left));
+      const h = Math.min(cy1 - cy0, Math.max(0, sH - top));
+
+      const searchBuf = await sharp(sourcePath, { limitInputPixels: false }).png().toBuffer();
+      const fd = new FormData();
+      fd.append("search", new Blob([new Uint8Array(searchBuf)], { type: "image/png" }), "search.png");
+      fd.append("matches_json", JSON.stringify(body.matches));
+      fd.append("ref_x", String(left));
+      fd.append("ref_y", String(top));
+      fd.append("ref_w", String(w));
+      fd.append("ref_h", String(h));
+      if (body.max_pairs != null) fd.append("max_pairs", String(body.max_pairs));
+      if (body.blur_ksize != null) fd.append("blur_ksize", String(body.blur_ksize));
+      if (body.use_sobel != null) fd.append("use_sobel", String(body.use_sobel));
+
+      let sidecarRes: Response;
+      try {
+        sidecarRes = await fetchSidecar(`${config.mlSidecarUrl}/cv/akaze-debug`, 120000, { method: "POST", body: fd });
+      } catch { response.status(503).json({ error: "sidecar unreachable" }); return; }
+      if (!sidecarRes.ok) { response.status(502).json({ error: `sidecar /cv/akaze-debug ${sidecarRes.status}` }); return; }
       const data = await sidecarRes.json();
       response.json(data);
     } catch (error) { next(error); }

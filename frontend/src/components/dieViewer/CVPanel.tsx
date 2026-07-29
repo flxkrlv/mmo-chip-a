@@ -4,7 +4,7 @@ import type { ActionDispatcher } from "../../api/actions";
 import { uuid } from "../../lib/uuid";
 import { useOverlayLayers } from "../../state/overlayLayers";
 import { useDieViewerStore } from "../../state/dieViewer";
-import { cvDebug, cvDebugDump, cvMatch, cvTemplateDebug, cvTemplateMatch } from "../../api/ml";
+import { cvDebug, cvDebugDump, cvMatch, cvTemplateDebug, cvTemplateMatch, cvAkazeVerify, cvAkazeDebug } from "../../api/ml";
 
 function useRefCell(annotations: DieAnnotations | undefined) {
   const selectedIds = useDieViewerStore((s) => s.selectedIds);
@@ -63,12 +63,13 @@ function dispatchMatch(
     rotation: 0 | 90 | 180 | 270;
     confidence: number;
   }
-) {
-  if (m.confidence < minConfidence) return;
+): string | null {
+  if (m.confidence < minConfidence) return null;
+  const id = uuid();
   void dispatcher.dispatch({
     kind: "upsertCell",
     cell: {
-      id: uuid(),
+      id,
       cellTypeId,
       x: Math.round(m.x - cropW / 2),
       y: Math.round(m.y - cropH / 2),
@@ -78,6 +79,7 @@ function dispatchMatch(
     },
     prevCell: null,
   });
+  return id;
 }
 
 function visibleOverlayName(): string | undefined {
@@ -110,6 +112,17 @@ function TemplateSection({
   const [showTmDebug, setShowTmDebug] = useState(false);
   const [tmDebugData, setTmDebugData] = useState<import("shared").CVDebugData | null>(null);
   const [tmDebugLoading, setTmDebugLoading] = useState(false);
+  const [lastMatches, setLastMatches] = useState<import("shared").CVMatchResult[]>([]);
+  const [matchCellIds, setMatchCellIds] = useState<(string | null)[]>([]);
+  const [siftThreshold, setSiftThreshold] = useState(0.5);
+  const [akazeBlurKsize, setAkazeBlurKsize] = useState(0);
+  const [akazeUseSobel, setAkazeUseSobel] = useState(false);
+  const [akazeRunning, setAkazeRunning] = useState(false);
+  const [akazeResult, setAkazeResult] = useState<{ kept: number; removed: number; removedNames: string[] } | null>(null);
+  const [akazeErr, setAkazeErr] = useState<string | null>(null);
+  const [showAkazeDebug, setShowAkazeDebug] = useState(false);
+  const [akazeDebugData, setAkazeDebugData] = useState<import("shared").AKAZEDebugResponse | null>(null);
+  const [akazeDebugLoading, setAkazeDebugLoading] = useState(false);
 
   const ready = !!dieId && !!cell && !!type;
 
@@ -132,14 +145,18 @@ function TemplateSection({
         nmsIou,
         nmsDist,
       });
+      const cellIds: (string | null)[] = [];
       for (const m of res.matches) {
-        dispatchMatch(dispatcher, type!.id, type!.cropRect.width, type!.cropRect.height, threshold, {
+        const id = dispatchMatch(dispatcher, type!.id, type!.cropRect.width, type!.cropRect.height, threshold, {
           x: m.x,
           y: m.y,
           rotation: m.rotation,
           confidence: m.confidence,
         });
+        cellIds.push(id);
       }
+      setLastMatches(res.matches);
+      setMatchCellIds(cellIds);
       setResult({ count: res.matches.length });
     } catch (e) {
       setErr(e instanceof Error ? e.message : "Template matching failed");
@@ -201,6 +218,168 @@ function TemplateSection({
             {running ? "Running template match…" : "Run template matching"}
           </button>
           <StatusLine result={result} err={err} />
+
+          {lastMatches.length >= 2 && (
+            <div style={{ marginTop: 8, padding: "6px 8px", background: "var(--l1)", borderRadius: 4 }}>
+              <div className="m" style={{ fontSize: 9.5, color: "var(--ink3)", marginBottom: 6, fontStyle: "italic" }}>
+                AKAZE verify: compare detected cells among themselves. Cells that don't match the consensus are removed.
+              </div>
+              <SliderRow label="AKAZE threshold" value={siftThreshold}
+                min={0.1} max={0.9} step={0.05}
+                format={(v) => v.toFixed(2)}
+                onChange={setSiftThreshold} />
+              <SliderRow label="Blur kernel" value={akazeBlurKsize}
+                min={0} max={15} step={2}
+                format={(v) => v === 0 ? "off" : `${v}×${v}`}
+                onChange={setAkazeBlurKsize} />
+              <div className="row" style={{ gap: 4, alignItems: "center", marginBottom: 6 }}>
+                <label style={{ fontSize: 9, cursor: "pointer", display: "flex", alignItems: "center", gap: 4 }}>
+                  <input type="checkbox" checked={akazeUseSobel}
+                    onChange={(e) => setAkazeUseSobel(e.target.checked)} />
+                  Sobel edges
+                </label>
+              </div>
+              <button
+                type="button"
+                className="btn"
+                style={{ width: "100%", cursor: "pointer", marginTop: 4 }}
+                disabled={!ready || akazeRunning}
+                onClick={async () => {
+                  setAkazeRunning(true);
+                  setAkazeErr(null);
+                  setAkazeResult(null);
+                  try {
+                    const res = await cvAkazeVerify({
+                      dieId: dieId!,
+                      cellTypeId: type!.id,
+                      matches: lastMatches,
+                      overlayFilename: visibleOverlayName(),
+                      cellX: cell!.x,
+                      cellY: cell!.y,
+                      sift_threshold: siftThreshold,
+                      blur_ksize: akazeBlurKsize || undefined,
+                      use_sobel: akazeUseSobel || undefined,
+                    });
+
+                    // Find original indices of removed matches by x/y/confidence
+                    const removedIndices = new Set<number>();
+                    for (const rm of res.removed) {
+                      const idx = lastMatches.findIndex(
+                        (m, i) => !removedIndices.has(i) && m.x === rm.x && m.y === rm.y && m.confidence === rm.confidence
+                      );
+                      if (idx !== -1) removedIndices.add(idx);
+                    }
+
+                    // Dispatch removeCell for each removed match
+                    for (const idx of removedIndices) {
+                      const cellId = matchCellIds[idx];
+                      if (!cellId) continue;
+                      const cellToRemove = annotations?.cells?.find((c) => c.id === cellId);
+                      if (cellToRemove) {
+                        void dispatcher.dispatch({ kind: "removeCell", cell: cellToRemove });
+                      }
+                    }
+
+                    // Update matchCellIds: clear removed entries
+                    setMatchCellIds((prev) => {
+                      const next = [...prev];
+                      for (const idx of removedIndices) next[idx] = null;
+                      return next;
+                    });
+
+                    setAkazeResult({
+                      kept: res.kept.length,
+                      removed: res.removed.length,
+                      removedNames: res.removed.map((m) => `sim=${(m.akaze_similarity ?? 0).toFixed(2)}`),
+                    });
+                  } catch (e) {
+                    setAkazeErr(e instanceof Error ? e.message : "AKAZE verify failed");
+                  } finally {
+                    setAkazeRunning(false);
+                  }
+                }}
+              >
+                {akazeRunning ? "Running AKAZE verify…" : "AKAZE Verify"}
+              </button>
+              {akazeResult && (
+                <div className="m" style={{ marginTop: 6, fontSize: 10, color: "var(--ink2)" }}>
+                  Kept: {akazeResult.kept} · Removed: {akazeResult.removed}
+                  {akazeResult.removedNames.length > 0 && (
+                    <span style={{ color: "var(--danger, #e36854)" }}>
+                      {" "}— removed [{akazeResult.removedNames.join(", ")}] (conf &lt; {siftThreshold.toFixed(2)})
+                    </span>
+                  )}
+                </div>
+              )}
+              {akazeErr && (
+                <div className="m" style={{ marginTop: 6, fontSize: 10, color: "var(--danger, #e36854)" }}>
+                  {akazeErr}
+                </div>
+              )}
+              <button
+                type="button"
+                className="btn"
+                style={{ width: "100%", cursor: "pointer", marginTop: 6, opacity: 0.6 }}
+                disabled={!ready || akazeDebugLoading}
+                onClick={async () => {
+                  if (showAkazeDebug) { setShowAkazeDebug(false); return; }
+                  setAkazeDebugLoading(true);
+                  setAkazeDebugData(null);
+                  try {
+                    const data = await cvAkazeDebug({
+                      dieId: dieId!,
+                      cellTypeId: type!.id,
+                      matches: lastMatches,
+                      overlayFilename: visibleOverlayName(),
+                      cellX: cell!.x,
+                      cellY: cell!.y,
+                      max_pairs: 6,
+                      blur_ksize: akazeBlurKsize || undefined,
+                      use_sobel: akazeUseSobel || undefined,
+                    });
+                    setAkazeDebugData(data);
+                    setShowAkazeDebug(true);
+                  } catch (e) {
+                    setAkazeErr(e instanceof Error ? e.message : "AKAZE debug failed");
+                  } finally {
+                    setAkazeDebugLoading(false);
+                  }
+                }}
+              >
+                {akazeDebugLoading ? "Loading AKAZE debug…" : showAkazeDebug ? "Hide AKAZE debug" : "Debug AKAZE"}
+              </button>
+              {showAkazeDebug && akazeDebugData && (
+                <div style={{ marginTop: 8, fontSize: 10, color: "var(--ink2)" }}>
+                  {akazeDebugData.cell_stats.length > 0 && (
+                    <div style={{ marginBottom: 6 }}>
+                      <div className="u" style={{ fontSize: 9, marginBottom: 2 }}>
+                        Cell keypoints ({akazeDebugData.cell_stats.length} cells)
+                      </div>
+                      <div style={{ maxHeight: 120, overflow: "auto", fontFamily: "var(--mono)" }}>
+                        {akazeDebugData.cell_stats.map((s, i) => (
+                          <div key={i} style={{ padding: "1px 0" }}>
+                            [{s.confidence.toFixed(2)}] kp={s.n_keypoints} sim={s.ref_sim.toFixed(3)} {s.has_descriptors ? "" : "(no desc)"}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  {akazeDebugData.pair_images.map((p, i) => (
+                    <div key={i} style={{ marginBottom: 6 }}>
+                      <div className="u" style={{ fontSize: 9, marginBottom: 2 }}>
+                        Pair ref↔#{p.cell_j} · sim={p.similarity.toFixed(3)} · good={p.n_good_matches} ({p.n_kp_i}↔{p.n_kp_j} kp)
+                      </div>
+                      <img
+                        src={`data:image/png;base64,${p.image_png_b64}`}
+                        alt={`AKAZE match pair ${i}`}
+                        style={{ maxWidth: "100%", borderRadius: 3 }}
+                      />
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
 
           <button
             type="button"
