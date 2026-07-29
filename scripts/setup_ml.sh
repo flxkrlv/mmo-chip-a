@@ -102,7 +102,7 @@ fi
 # --- Install dependencies ---
 echo "Installing ML dependencies (this may take a while)..."
 # Non-torch packages first
-$PIP install opencv-python numpy scipy pillow tqdm fastapi uvicorn python-multipart
+$PIP install opencv-contrib-python-headless numpy scipy pillow tqdm fastapi uvicorn python-multipart
 
 if [ "$HAS_NVIDIA" -eq 1 ]; then
     echo "NVIDIA CUDA GPU detected — installing CUDA PyTorch"
