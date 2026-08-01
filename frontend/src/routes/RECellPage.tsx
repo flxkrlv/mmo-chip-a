@@ -28,6 +28,7 @@ import { usePreferences } from "../state/preferences";
 import { fitRectViewport } from "../renderer/TiledCanvas";
 import { isTypingTarget } from "../lib/keyboard";
 import { CELL_RE_HOTKEYS } from "../lib/hotkeys";
+import { ShortcutsPanel } from "../components/dieViewer/ShortcutsPanel";
 import { useOverlayHotkeys } from "../lib/useOverlayHotkeys";
 import {
   PASTE_OFFSET,
@@ -115,6 +116,12 @@ function RE({ dieId }: { dieId: string }) {
   const annotationsQ = useAnnotations(dieId);
   useAnnotationsWebSocket(dieId);
   useOverlayHotkeys();
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  useEffect(() => {
+    const handler = () => setShortcutsOpen((v) => !v);
+    window.addEventListener("toggle-shortcuts", handler);
+    return () => window.removeEventListener("toggle-shortcuts", handler);
+  }, []);
   const annotations = annotationsQ.data;
   const dispatcher = useActionDispatcher(dieId);
 
@@ -553,6 +560,12 @@ function RE({ dieId }: { dieId: string }) {
         return;
       }
       if (meta || e.altKey) return;
+      // Ctrl+/ or ? → keyboard shortcuts help
+      if ((meta && e.key === "/") || (e.key === "?" && !meta && !e.altKey)) {
+        e.preventDefault();
+        setShortcutsOpen((v) => !v);
+        return;
+      }
       // Tool hotkeys from central registry.
       const reToolId = CELL_RE_HOTKEYS[e.key.toLowerCase()];
       if (reToolId) {
@@ -990,6 +1003,7 @@ function RE({ dieId }: { dieId: string }) {
           />
         );
       })()}
+      <ShortcutsPanel open={shortcutsOpen} onClose={() => setShortcutsOpen(false)} />
     </AppShell>
   );
 }

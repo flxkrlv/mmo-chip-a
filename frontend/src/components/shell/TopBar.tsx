@@ -135,6 +135,15 @@ export function TopBar({ breadcrumb, meta, savedAgo, onUndo, onRedo, canUndo, ca
         </>
       )}
 
+      <button
+        className="btn ghost"
+        title="Keyboard shortcuts (Ctrl+/)"
+        onClick={() => window.dispatchEvent(new CustomEvent("toggle-shortcuts"))}
+        style={{ fontSize: 12, fontWeight: 600, color: "var(--ink3)" }}
+      >
+        ?
+      </button>
+
       {/* Online users */}
       <OnlineUsersPanel />
 

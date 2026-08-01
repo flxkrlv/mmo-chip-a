@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { DieAnnotations } from "shared";
 import { Ic } from "../../icons";
 import { useOverlayLayers } from "../../state/overlayLayers";
@@ -44,6 +44,8 @@ type Props = {
   onDeviceSelect?: (cellId: string) => void;
   /** Navigate to the RE Cell tab for this cell. */
   onOpenInRE?: (cellId: string, cellTypeId: string) => void;
+  /** Mutable ref — parent can set .current to a function that opens search. */
+  searchOpenRef?: React.MutableRefObject<(() => void) | null>;
 };
 
 /** Session-group key for the "ML Regions" parent (it spans two annotation
@@ -62,7 +64,7 @@ const BASE_IMAGES_KEY = "base-images";
 /** Session-group key for the "Overlay Layers" section. */
 const OVERLAY_LAYERS_KEY = "overlay-layers";
 
-export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabels, onDeviceSelect, onOpenInRE }: Props) {
+export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabels, onDeviceSelect, onOpenInRE, searchOpenRef }: Props) {
   const expandedSections = usePreferences((s) => s.expandedSections);
   const hiddenKinds = usePreferences((s) => s.hiddenKinds);
   const toggleSection = usePreferences((s) => s.toggleSectionExpanded);
@@ -98,6 +100,34 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
 
   const localFileInputRef = useRef<HTMLInputElement>(null);
   const serverFileInputRef = useRef<HTMLInputElement>(null);
+
+  // ── Search ──────────────────────────────────────────────────────
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
+  const searchInputRef = useRef<HTMLInputElement>(null);
+
+  // Expose toggleSearch() to parent via ref.
+  useEffect(() => {
+    if (searchOpenRef) {
+      searchOpenRef.current = () => {
+        setSearchOpen((prev) => {
+          if (prev) {
+            // Already open → close.
+            setSearchQuery("");
+            return false;
+          }
+          // Closed → open and focus.
+          setTimeout(() => searchInputRef.current?.focus(), 0);
+          return true;
+        });
+      };
+    }
+    return () => { if (searchOpenRef) searchOpenRef.current = null; };
+  }, [searchOpenRef]);
+
+  const q = searchQuery.toLowerCase().trim();
+  const matchNet = useCallback((name: string) => !q || name.toLowerCase().includes(q), [q]);
+  const matchCell = useCallback((name: string) => !q || name.toLowerCase().includes(q), [q]);
   const onLocalFilePick = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
       const files = e.target.files;
@@ -225,13 +255,65 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
     if (ids.length) onFocus?.(ids);
   };
 
+  // Filtered lists for search.
+  const filteredNets = q ? annotations.nets.filter((n) => matchNet(n.name || n.id)) : annotations.nets;
+  const filteredCellsByType = q
+    ? cellsByType
+        .map((g) => ({
+          ...g,
+          cells: g.cells.filter((c) =>
+            matchCell(g.cellType.name || g.cellType.id) ||
+            matchCell(deviceLabels?.get(c.id) ?? "") ||
+            matchCell(c.id)
+          ),
+        }))
+        .filter((g) => g.cells.length > 0)
+    : cellsByType;
+
   return (
     <div className="tree" style={{ overflow: "auto", flex: "1 1 auto", minHeight: 0 }}>
+      {/* Search input ──────────────────────────────────────────────────── */}
+      {searchOpen && (
+        <div style={{ padding: "4px 8px", borderBottom: "1px solid var(--l2)" }}>
+          <input
+            ref={searchInputRef}
+            type="text"
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Escape") {
+                setSearchQuery("");
+                setSearchOpen(false);
+              }
+              if (e.key === "Enter" && q) {
+                // Focus first match.
+                const firstNet = filteredNets[0];
+                const firstCell = filteredCellsByType[0]?.cells[0];
+                if (firstNet) { focus([`net:${firstNet.id}`]); return; }
+                if (firstCell) { focus([`cell:${firstCell.id}`]); return; }
+              }
+            }}
+            placeholder="Search nets, cells, pins…"
+            autoFocus
+            style={{
+              width: "100%",
+              fontSize: 11,
+              padding: "3px 6px",
+              background: "var(--bg)",
+              color: "var(--ink)",
+              border: "1px solid var(--l2)",
+              borderRadius: 4,
+              outline: "none",
+            }}
+          />
+        </div>
+      )}
+
       {/* Nets ------------------------------------------------------------ */}
       <TreeRow
         expand={isOpen("net") ? "open" : "closed"}
         label="Nets"
-        meta={annotations.nets.length}
+        meta={q ? `${filteredNets.length}/${annotations.nets.length}` : annotations.nets.length}
         controls={<NetSettingsButton />}
         visibility={visibilityFor("net")}
         onToggleExpand={() => toggleSection("net")}
@@ -239,7 +321,7 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
         onDoubleClick={() => focus(netIdsAll)}
       />
       {isOpen("net") &&
-        annotations.nets.map((net) => {
+        filteredNets.map((net) => {
           const id = `net:${net.id}`;
           const netColor = netColors[id] ?? globalNetColor;
           return (
@@ -268,7 +350,7 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
       <TreeRow
         expand={isOpen("cell") ? "open" : "closed"}
         label="Cells"
-        meta={annotations.cells.length}
+        meta={q ? `${filteredCellsByType.reduce((s, g) => s + g.cells.length, 0)}/${annotations.cells.length}` : annotations.cells.length}
         controls={<CellSettingsButton />}
         visibility={visibilityFor("cell")}
         onToggleExpand={() => toggleSection("cell")}
@@ -276,7 +358,7 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
         onDoubleClick={() => focus(cellIdsAll)}
       />
       {isOpen("cell") &&
-        cellsByType.map((group) => {
+        filteredCellsByType.map((group) => {
           const groupKey = `cellType:${group.cellType.id}`;
           const open = expandedGroups.includes(groupKey);
           return (

@@ -36,6 +36,7 @@ import {
   populateAnnotationLayer
 } from "../renderer/annotations/dieAnnotations";
 import { OutlineTree } from "../components/dieViewer/OutlineTree";
+import { ShortcutsPanel } from "../components/dieViewer/ShortcutsPanel";
 import {
   CenteredStatus,
   CursorReadout,
@@ -179,6 +180,13 @@ function DieViewer({ dieId }: { dieId: string }) {
   const queryClient = useQueryClient();
   const canvasHandle = useRef<TiledCanvasHandle>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+  const outlineSearchRef = useRef<(() => void) | null>(null);
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  useEffect(() => {
+    const handler = () => setShortcutsOpen((v) => !v);
+    window.addEventListener("toggle-shortcuts", handler);
+    return () => window.removeEventListener("toggle-shortcuts", handler);
+  }, []);
 
   const activeTool = useDieViewerStore((s) => s.activeTool);
   const setActiveTool = useDieViewerStore((s) => s.setActiveTool);
@@ -307,6 +315,20 @@ function DieViewer({ dieId }: { dieId: string }) {
     const onKey = (e: KeyboardEvent) => {
       if (e.repeat || isTypingTarget(e.target)) return;
 
+      // Ctrl+F → open outline tree search
+      if ((e.metaKey || e.ctrlKey) && !e.shiftKey && e.key === "f") {
+        e.preventDefault();
+        outlineSearchRef.current?.();
+        return;
+      }
+
+      // Ctrl+/ or ? → keyboard shortcuts help
+      if (((e.metaKey || e.ctrlKey) && e.key === "/") || (e.key === "?" && !e.ctrlKey && !e.metaKey && !e.altKey)) {
+        e.preventDefault();
+        setShortcutsOpen((v) => !v);
+        return;
+      }
+
       // ── Modifier-action hotkeys (lookup in central registry) ────
       const modDef = DIE_VIEWER_MOD_HOTKEYS[e.key];
       if (modDef && modDef.ctrl === (e.metaKey || e.ctrlKey) && modDef.shift === e.shiftKey) {
@@ -401,6 +423,13 @@ function DieViewer({ dieId }: { dieId: string }) {
             return;
           }
         }
+      }
+
+      // Ctrl+Shift+S → screenshot (PNG download, 4K with overlays)
+      if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === "s") {
+        e.preventDefault();
+        takeScreenshot();
+        return;
       }
 
       if (e.metaKey || e.ctrlKey) return; // other ctrl combos → handled by undo/redo
@@ -2674,6 +2703,50 @@ function DieViewer({ dieId }: { dieId: string }) {
 
   const minZoom = die ? (1 / Math.max(die.width, die.height)) * 50 : 0.01;
 
+  // Screenshot: composite main canvas + analog overlay at 4K resolution.
+  const takeScreenshot = useCallback(() => {
+    const section = containerRef.current;
+    if (!section) return;
+    const canvases = section.querySelectorAll("canvas");
+    if (canvases.length === 0) return;
+    // First canvas = main tiled canvas; subsequent canvases are overlays
+    // (analog highlights, comment overlay, etc.)
+    const mainCanvas = canvases[0] as HTMLCanvasElement;
+    const srcW = mainCanvas.width;
+    const srcH = mainCanvas.height;
+    if (srcW === 0 || srcH === 0) return;
+
+    // Target: 4K (3840px on longest side, keep aspect ratio).
+    const TARGET_LONGEST = 3840;
+    const scale = Math.min(TARGET_LONGEST / srcW, TARGET_LONGEST / srcH, 1);
+    const outW = Math.round(srcW * scale);
+    const outH = Math.round(srcH * scale);
+
+    const out = document.createElement("canvas");
+    out.width = outW;
+    out.height = outH;
+    const ctx = out.getContext("2d")!;
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = "high";
+
+    // Draw each canvas layer in order.
+    for (const c of canvases) {
+      ctx.drawImage(c as HTMLCanvasElement, 0, 0, outW, outH);
+    }
+
+    out.toBlob((blob) => {
+      if (!blob) return;
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `${die?.name ?? "die"}_screenshot.png`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    }, "image/png");
+  }, [die?.name]);
+
   return (
     <AppShell
       breadcrumb={die?.name ?? `die · ${dieId}`}
@@ -2698,6 +2771,7 @@ function DieViewer({ dieId }: { dieId: string }) {
             <div
               style={{ width: 1, height: 18, background: "var(--l2)", margin: "0 2px" }}
             />
+
             <button className="btn ghost" title="Zoom out" onClick={zoomOut}>
               {Ic.zoomOut}
             </button>
@@ -2710,6 +2784,13 @@ function DieViewer({ dieId }: { dieId: string }) {
             </button>
             <button className="btn ghost" title="100%" onClick={oneToOne}>
               1:1
+            </button>
+            <button
+              className="btn ghost"
+              title="Screenshot (Ctrl+Shift+S)"
+              onClick={takeScreenshot}
+            >
+              {Ic.download}
             </button>
           </div>
         }
@@ -2729,8 +2810,16 @@ function DieViewer({ dieId }: { dieId: string }) {
         }}
       >
         <aside style={panelStyle}>
-          <div className="ph">
+          <div className="ph" style={{ paddingRight: 8 }}>
             <span className="u">Items</span>
+            <button
+              className="btn ghost"
+              title="Search (Ctrl+F)"
+              onClick={() => outlineSearchRef.current?.()}
+              style={{ padding: "2px 0", marginLeft: "auto" }}
+            >
+              {Ic.search}
+            </button>
           </div>
           <OutlineTree
             annotations={annotations}
@@ -2739,6 +2828,7 @@ function DieViewer({ dieId }: { dieId: string }) {
             deviceLabels={deviceLabels}
             onDeviceSelect={(id) => { const d = analogDevices.find((x:any) => x._cellId === id || (x as any)._cellId === id); if(d) setSelectedDevice(d) }}
             onOpenInRE={dieId ? (cellId, cellTypeId) => navigate(`/re?die=${encodeURIComponent(dieId)}&type=${encodeURIComponent(cellTypeId)}&cell=${encodeURIComponent(cellId)}`) : undefined}
+            searchOpenRef={outlineSearchRef}
           />
         </aside>
         <section
@@ -3192,6 +3282,7 @@ function DieViewer({ dieId }: { dieId: string }) {
           }}
         />
       )}
+      <ShortcutsPanel open={shortcutsOpen} onClose={() => setShortcutsOpen(false)} />
     </AppShell>
   );
 }

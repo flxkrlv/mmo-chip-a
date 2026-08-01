@@ -96,7 +96,8 @@ function AuthGate({ children }: { children: React.ReactNode }) {
         if (cancelled) return;
 
         if (!status.authEnabled) {
-          // Auth disabled on server — proceed without token
+          // Auth disabled — set dev identity so components that need userId/username work
+          setAuth("dev-token", "dev", "dev");
           setNeedsLogin(false);
           setReady(true);
           return;

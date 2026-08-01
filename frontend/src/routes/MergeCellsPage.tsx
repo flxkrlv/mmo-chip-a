@@ -22,6 +22,7 @@ import { useMergeStore } from "../state/mergeCells";
 import { usePreferences } from "../state/preferences";
 import { fitRectViewport } from "../renderer/TiledCanvas";
 import { isTypingTarget } from "../lib/keyboard";
+import { ShortcutsPanel } from "../components/dieViewer/ShortcutsPanel";
 import {
   MergeCanvas,
   type CellView,
@@ -79,6 +80,12 @@ function Merge({ dieId }: { dieId: string }) {
   const annotationsQ = useAnnotations(dieId);
   useAnnotationsWebSocket(dieId);
   useOverlayHotkeys();
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  useEffect(() => {
+    const handler = () => setShortcutsOpen((v) => !v);
+    window.addEventListener("toggle-shortcuts", handler);
+    return () => window.removeEventListener("toggle-shortcuts", handler);
+  }, []);
   const annotations = annotationsQ.data;
   const dispatcher = useActionDispatcher(dieId);
 
@@ -436,6 +443,12 @@ function Merge({ dieId }: { dieId: string }) {
       if (c) setCandidate(c.cell.id);
     };
     const onKey = (e: KeyboardEvent) => {
+      // Ctrl+/ or ? → keyboard shortcuts help (before ctrl guard)
+      if ((e.metaKey || e.ctrlKey) && e.key === "/") {
+        e.preventDefault();
+        setShortcutsOpen((v) => !v);
+        return;
+      }
       if (e.metaKey || e.ctrlKey) return;
       if (isTypingTarget(e.target)) return;
       // Merge mode shortcuts (Alt+1..Alt+5)
@@ -446,6 +459,11 @@ function Merge({ dieId }: { dieId: string }) {
           setMode(mode);
           return;
         }
+      }
+      if (e.key === "?") {
+        e.preventDefault();
+        setShortcutsOpen((v) => !v);
+        return;
       }
       switch (e.key) {
         case "ArrowLeft":
@@ -737,6 +755,7 @@ function Merge({ dieId }: { dieId: string }) {
           onConfirm={doMerge}
         />
       )}
+      <ShortcutsPanel open={shortcutsOpen} onClose={() => setShortcutsOpen(false)} />
     </AppShell>
   );
 }

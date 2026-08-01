@@ -17,14 +17,6 @@ interface Props {
   devices?: AnalogDevice[];
 }
 
-const KIND_LABEL: Record<string, string> = {
-  mos: "MOS", bjt_npn: "NPN", bjt_pnp: "PNP",
-  jfet_n: "NJF", jfet_p: "PJF",
-  resistor: "RES", capacitor: "CAP",
-  diode: "DIO", zener: "ZNR", schottky: "SCH",
-  inductor: "IND", unknown: "?",
-};
-
 export function AnalogDiePanel({ annotations, devices: devicesProp }: Props) {
   const [sheetROpen, setSheetROpen] = useState(false);
 
@@ -65,21 +57,6 @@ export function AnalogDiePanel({ annotations, devices: devicesProp }: Props) {
 
   return (
     <div style={{ padding: "8px 12px", fontSize: 11 }}>
-      {/* Device count by kind */}
-      <div className="u" style={{ fontSize: 10, color: "var(--ink3)", marginBottom: 4 }}>
-        DEVICES · {stats.total}
-      </div>
-      {Object.entries(stats.byKind)
-        .sort(([, a], [, b]) => b - a)
-        .map(([kind, count]) => (
-          <div key={kind} style={{ display: "flex", justifyContent: "space-between", padding: "1px 0" }}>
-            <span>{KIND_LABEL[kind] ?? kind}</span>
-            <span className="m">{count}</span>
-          </div>
-        ))}
-
-      <div style={{ borderTop: "1px solid var(--l1)", margin: "8px 0 6px" }} />
-
       {/* um/px read-only */}
       <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
         <span style={{ fontSize: 10, color: "var(--ink3)" }}>Scale</span>
