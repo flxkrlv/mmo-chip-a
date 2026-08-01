@@ -131,7 +131,7 @@ import { createLiveValue } from "../lib/liveValue";
 import type { WirePreview } from "../components/dieViewer/WireDraftOverlay";
 import { ANNOTATION_KIND_VALUES } from "../state/annotationKinds";
 import { DEFAULT_ML_CONFIG, useDieViewerStore } from "../state/dieViewer";
-import { useOverlayLayers } from "../state/overlayLayers";
+import { useOverlayLayers, saveOverlaySettingsToPrefs, applyOverlaySettingsFromPrefs } from "../state/overlayLayers";
 import { usePreferences } from "../state/preferences";
 import { useSession, DEFAULT_METAL_STACK, fetchMetalStack } from "../state/session";
 import { useUserStatus } from "../lib/useUserStatus";
@@ -710,9 +710,22 @@ function DieViewer({ dieId }: { dieId: string }) {
               addLayer(r.value.name, r.value.image, true, r.value.serverFilename); // hidden by default
             }
           }
+          // Restore persisted visibility/opacity/offset settings.
+          applyOverlaySettingsFromPrefs(dieId);
         })
       )
     );
+  }, [dieId]);
+
+  // Persist overlay layer settings (visibility, opacity, offset) on change.
+  useEffect(() => {
+    if (!dieId) return;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const unsub = useOverlayLayers.subscribe(() => {
+      if (timer !== null) clearTimeout(timer);
+      timer = setTimeout(() => saveOverlaySettingsToPrefs(dieId), 500);
+    });
+    return () => { unsub(); if (timer !== null) clearTimeout(timer); };
   }, [dieId]);
 
   // Seed the (mockup, client-side) ML config from the die's annotations once

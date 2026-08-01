@@ -1,5 +1,7 @@
 import { create } from "zustand";
 import { uuid } from "../lib/uuid";
+import { usePreferences } from "./preferences";
+import type { OverlayLayerPersistedSettings } from "./preferences";
 
 // ── Types ───────────────────────────────────────────────────────────
 
@@ -136,3 +138,36 @@ export const useOverlayLayers = create<OverlayLayersState>()((set, get) => ({
 
   toggleBaseImage: () => set((s) => ({ baseImageVisible: !s.baseImageVisible }))
 }));
+
+// ── Persistence helpers ─────────────────────────────────────────────
+
+/** Save current overlay layer settings to preferences (localStorage). */
+export function saveOverlaySettingsToPrefs(dieId: string): void {
+  const layers = useOverlayLayers.getState().layers;
+  const settings: Record<string, OverlayLayerPersistedSettings> = {};
+  for (const l of layers) {
+    if (!l.serverFilename) continue;
+    settings[l.serverFilename] = {
+      hidden: l.hidden,
+      opacity: l.opacity,
+      offsetX: l.offsetX,
+      offsetY: l.offsetY,
+    };
+  }
+  usePreferences.getState().saveOverlayLayerSettings(dieId, settings);
+}
+
+/** Apply persisted overlay settings to the currently loaded layers. */
+export function applyOverlaySettingsFromPrefs(dieId: string): void {
+  const saved = usePreferences.getState().overlayLayerSettings[dieId];
+  if (!saved) return;
+  const state = useOverlayLayers.getState();
+  for (const layer of state.layers) {
+    const s = layer.serverFilename ? saved[layer.serverFilename] : undefined;
+    if (!s) continue;
+    if (s.hidden !== layer.hidden) state.setLayerHidden(layer.id, s.hidden);
+    if (s.opacity !== layer.opacity) state.setLayerOpacity(layer.id, s.opacity);
+    if (s.offsetX !== layer.offsetX || s.offsetY !== layer.offsetY)
+      state.setLayerOffset(layer.id, s.offsetX, s.offsetY);
+  }
+}

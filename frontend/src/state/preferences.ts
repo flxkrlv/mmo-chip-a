@@ -19,6 +19,14 @@ import {
   type AnnotationKind
 } from "./annotationKinds";
 
+/** Persisted display settings for a single overlay layer. */
+export interface OverlayLayerPersistedSettings {
+  hidden: boolean;
+  opacity: number;
+  offsetX: number;
+  offsetY: number;
+}
+
 interface PreferencesState {
   /** Base width (world units) for net wires. The renderer's screen clamp
    *  applies on top of this. */
@@ -151,6 +159,9 @@ interface PreferencesState {
   /** RE Cell: label size preset for analog overlay text (instance name,
    *  terminal letters). 0=small, 1=medium, 2=large. Default 1. */
   reAnalogLabelScale: 0 | 1 | 2;
+  /** Per-die overlay layer display settings (visibility, opacity, offset).
+   *  Keyed by dieId → serverFilename. */
+  overlayLayerSettings: Record<string, Record<string, OverlayLayerPersistedSettings>>;
 }
 
 interface PreferencesActions {
@@ -226,6 +237,7 @@ interface PreferencesActions {
   setReDeviceLabelsVisible: (visible: boolean) => void;
   setReTerminalLabelsVisible: (visible: boolean) => void;
   setReAnalogLabelScale: (scale: 0 | 1 | 2) => void;
+  saveOverlayLayerSettings: (dieId: string, settings: Record<string, OverlayLayerPersistedSettings>) => void;
 }
 
 const DEFAULT_EXPANDED_SECTIONS: AnnotationKind[] = ["net", "via", "roi"];
@@ -283,6 +295,7 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
         reDeviceLabelsVisible: true,
         reTerminalLabelsVisible: true,
         reAnalogLabelScale: 1,
+        overlayLayerSettings: {},
 
         setNetWidth: (width) => set({ netWidth: width }),
         setNetColor: (color) => set({ netColor: color }),
@@ -450,6 +463,10 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
         setReDeviceLabelsVisible: (visible) => set({ reDeviceLabelsVisible: visible }),
         setReTerminalLabelsVisible: (visible) => set({ reTerminalLabelsVisible: visible }),
         setReAnalogLabelScale: (scale) => set({ reAnalogLabelScale: scale }),
+        saveOverlayLayerSettings: (dieId, settings) =>
+          set((state) => ({
+            overlayLayerSettings: { ...state.overlayLayerSettings, [dieId]: settings }
+          })),
       }),
       {
         name: "mmo-chip-preferences",
@@ -502,7 +519,8 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
           resistorOpacity: state.resistorOpacity,
           reDeviceLabelsVisible: state.reDeviceLabelsVisible,
           reTerminalLabelsVisible: state.reTerminalLabelsVisible,
-          reAnalogLabelScale: state.reAnalogLabelScale
+          reAnalogLabelScale: state.reAnalogLabelScale,
+          overlayLayerSettings: state.overlayLayerSettings
         })
       }
     )
