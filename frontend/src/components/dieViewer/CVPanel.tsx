@@ -222,7 +222,7 @@ function TemplateSection({
           {lastMatches.length >= 2 && (
             <div style={{ marginTop: 8, padding: "6px 8px", background: "var(--l1)", borderRadius: 4 }}>
               <div className="m" style={{ fontSize: 9.5, color: "var(--ink3)", marginBottom: 6, fontStyle: "italic" }}>
-                AKAZE verify: compare detected cells among themselves. Cells that don't match the consensus are removed.
+                AKAZE verify — cells below similarity threshold will be removed.
               </div>
               <SliderRow label="AKAZE threshold" value={siftThreshold}
                 min={0.1} max={0.9} step={0.05}

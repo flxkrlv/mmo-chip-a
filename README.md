@@ -162,10 +162,31 @@ Each device gets a stable UUID from `kind + position + subType`. Renames and par
 | `via1`–`via5` | Via layers |
 | `contact` | Contacts |
 
+### Screenshot
+
+`Ctrl+Shift+S` exports the current die view as PNG (4K resolution, composited with all overlay layers including analog device highlights). Download button also in SubBar.
+
+### Search
+
+`Ctrl+F` opens a filter input in the Outline Tree. Type to filter nets/cells by name. Enter focuses the first match on canvas. Esc closes. Search icon in "Items" header.
+
 ### Miscellaneous
 
 - **Net ID overlay:** human-readable net names on die viewer (toggle in side panel). VDD/GND hidden  
 - **Layout comments:** clickable annotation icons with text, author, replies (WebSocket sync)
+- **Keyboard shortcuts panel:** `Ctrl+/` opens a modal with all shortcuts grouped by category. `?` button in TopBar
+
+---
+
+## CV Cell Detection
+
+Computer vision tools for automated cell instance detection. Available in the right panel (CV tab).
+
+| Method | Status | Description |
+|--------|--------|-------------|
+| **Template matching** | Stable | Sobel-based template matching against a reference crop. Main working method for cell detection. |
+| **AKAZE verify** | Optional | Compares detected cells pairwise via AKAZE keypoints. Cells below similarity threshold are removed. Used to filter false positives after template matching. |
+| **Contour detection** | Experimental | Tree-based contour matching. Not reliable yet. |
 
 ---
 
@@ -241,6 +262,9 @@ Full export preserves original + overlay images. Preferences exported from local
 | `Ctrl+C` / `⌘C` | Copy cell / shape |
 | `Ctrl+V` / `⌘V` | Paste |
 | `Shift+U` | Make Unique (cell) |
+| `Ctrl+Shift+S` | Screenshot (PNG, 4K) |
+| `Ctrl+F` | Search nets / cells |
+| `Ctrl+/` | Keyboard shortcuts panel |
 | Space (hold) | Temporary pan |
 
 ### Cell RE
@@ -259,6 +283,8 @@ Full export preserves original + overlay images. Preferences exported from local
 | `Ctrl+Shift+B` | Toggle base image |
 | `]` / `[` | Next / previous overlay layer only |
 | `Ctrl+Shift+1..8` | Show only overlay layer N |
+
+Overlay layer settings (visibility, opacity, offset) are persisted per-die in localStorage. **Upload to Server** saves images to the die's folder for automatic reload.
 
 ### Analog Netlist
 
