@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { DieAnnotations } from "shared";
 import { Ic } from "../../icons";
+import { useToast } from "../Toast";
 import { useOverlayLayers } from "../../state/overlayLayers";
 import { useSession, DEFAULT_METAL_STACK, buildMetalStack, fetchMetalStack } from "../../state/session";
 import { apiPut, apiUpload } from "../../api/client";
@@ -65,6 +66,7 @@ const BASE_IMAGES_KEY = "base-images";
 const OVERLAY_LAYERS_KEY = "overlay-layers";
 
 export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabels, onDeviceSelect, onOpenInRE, searchOpenRef }: Props) {
+  const toast = useToast();
   const expandedSections = usePreferences((s) => s.expandedSections);
   const hiddenKinds = usePreferences((s) => s.hiddenKinds);
   const toggleSection = usePreferences((s) => s.toggleSectionExpanded);
@@ -157,17 +159,21 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
       if (!files || !dieId) return;
       setUploadingFiles(true);
       const tasks = Array.from(files).map(async (file) => {
-        const form = new FormData();
-        form.append("file", file);
-        await apiUpload(`/api/dies/${dieId}/overlay-images/upload`, form);
-        const url = URL.createObjectURL(file);
-        const img = new Image();
-        await new Promise<void>((resolve, reject) => {
-          img.onload = () => resolve();
-          img.onerror = () => reject(new Error("image load failed"));
-          img.src = url;
-        });
-        addLayer(file.name.replace(/\.[^.]+$/, ""), img, undefined, file.name);
+        try {
+          const form = new FormData();
+          form.append("file", file);
+          await apiUpload(`/api/dies/${dieId}/overlay-images/upload`, form);
+          const url = URL.createObjectURL(file);
+          const img = new Image();
+          await new Promise<void>((resolve, reject) => {
+            img.onload = () => resolve();
+            img.onerror = () => reject(new Error("image load failed"));
+            img.src = url;
+          });
+          addLayer(file.name.replace(/\.[^.]+$/, ""), img, undefined, file.name);
+        } catch (err) {
+          toast.error(`Failed to upload ${file.name}`, (err as Error).message);
+        }
       });
       Promise.allSettled(tasks).then(() => setUploadingFiles(false));
       e.target.value = "";
@@ -685,7 +691,7 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
           <input
             ref={serverFileInputRef}
             type="file"
-            accept="image/png,image/jpeg,image/gif,image/webp"
+            accept="image/png,image/jpeg"
             multiple
             style={{ display: "none" }}
             onChange={onUploadToServer}
@@ -693,7 +699,7 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
           <input
             ref={localFileInputRef}
             type="file"
-            accept="image/png,image/jpeg,image/gif,image/webp"
+            accept="image/png,image/jpeg"
             multiple
             style={{ display: "none" }}
             onChange={onLocalFilePick}

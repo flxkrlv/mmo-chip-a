@@ -7,6 +7,7 @@ import {
   useState,
   type PointerEvent as ReactPointerEvent,
 } from "react";
+import { useDialog } from "../Dialog";
 import type {
   CmosDomain,
   ExtractedNet,
@@ -354,6 +355,7 @@ function CmosDumpButton({
 }: {
   extraction: InferredCellExtraction;
 }) {
+  const dialog = useDialog();
   const [copied, setCopied] = useState(false);
   // Same name-resolution rule as the schematic itself: user-labelled
   // nets show by name (VDD / GND / explicit inputs), the rest as
@@ -370,9 +372,9 @@ function CmosDumpButton({
       setCopied(true);
       setTimeout(() => setCopied(false), 1500);
     } catch {
-      window.prompt("CMOS dump (Cmd+C to copy):", text);
+      await dialog.prompt("CMOS dump (Cmd+C to copy):", text);
     }
-  }, [extraction, netName]);
+  }, [extraction, netName, dialog]);
   return (
     <button
       type="button"

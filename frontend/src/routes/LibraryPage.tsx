@@ -7,12 +7,16 @@ import { StatusBar } from "../components/shell/StatusBar";
 import { ThumbCard } from "../components/library/ThumbCard";
 import { Ic } from "../icons";
 import { usePageStatus } from "../lib/useUserStatus";
+import { useToast } from "../components/Toast";
+import { useDialog } from "../components/Dialog";
 
 export function LibraryPage() {
   const { items, isLoading, error, refetch } = useLibraryItems();
   usePageStatus(null);
   const importMutation = useImportDie();
   const importProjectMutation = useImportProject();
+  const toast = useToast();
+  const dialog = useDialog();
   const navigate = useNavigate();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const projectFileInputRef = useRef<HTMLInputElement>(null);
@@ -40,8 +44,8 @@ export function LibraryPage() {
     if (!file) return;
     try {
       await importMutation.mutateAsync(file);
-    } catch {
-      // toast/error UI will be wired later — for now keep mutation.error visible
+    } catch (err) {
+      toast.error("Import failed", (err as Error).message);
     }
   }
 
@@ -59,10 +63,8 @@ export function LibraryPage() {
         const apiErr = err as { status?: number; body?: { error?: string; dieId?: string; name?: string } };
         if (apiErr?.status === 409 && apiErr.body) {
           const b = apiErr.body;
-          const action = window.prompt(
-            `Die "${b.name}" already exists (ID: ${b.dieId}).` +
-            `\nEnter a new name to import as a copy, or leave empty to cancel.` +
-            `\n\n(To overwrite, first delete the existing die and retry.)`
+          const action = await dialog.prompt(
+            `Die "${b.name}" already exists (ID: ${b.dieId}).\nEnter a new name to import as a copy, or leave empty to cancel.\n\n(To overwrite, first delete the existing die and retry.)`
           );
           if (action && action.trim()) {
             try {
@@ -72,11 +74,11 @@ export function LibraryPage() {
               });
               navigate(`/die/${result2.dieId}`);
             } catch (err2: unknown) {
-              alert(`Import failed: ${(err2 as Error).message}`);
+              toast.error("Import failed", (err2 as Error).message);
             }
           }
         } else {
-          alert(`Import failed: ${(err as Error).message}`);
+          toast.error("Import failed", (err as Error).message);
         }
       }
     },
@@ -119,7 +121,7 @@ export function LibraryPage() {
         <input
           ref={fileInputRef}
           type="file"
-          accept="image/*"
+          accept="image/png,image/jpeg"
           style={{ display: "none" }}
           onChange={handleFileChange}
         />

@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, type ReactNode } from "react";
+import { useDialog } from "../Dialog";
 import { useQueryClient } from "@tanstack/react-query";
 import type { DieAnnotations, MLInferenceJob, WireLayer } from "shared";
 import type { ActionDispatcher } from "../../api/actions";
@@ -716,6 +717,7 @@ function jobStatusLine(job: MLInferenceJob | null | undefined): string {
 /** Model dropdown, start/stop, live job progress, confidence threshold. */
 function InferenceSection({ dieId }: { dieId: string }) {
   const qc = useQueryClient();
+  const dialog = useDialog();
   const models = useMLModels();
   const status = useMLStatus();
   const job = useMLJob(dieId);
@@ -733,7 +735,7 @@ function InferenceSection({ dieId }: { dieId: string }) {
   const switchModel = async (name: string) => {
     if (!name || name === residentName) return;
     if (
-      !window.confirm(
+      !await dialog.confirm(
         "Switching the model clears every cached inference result for all " +
           "dies — you'll need to re-run inference. Continue?"
       )

@@ -28,6 +28,8 @@ import {
 } from "../renderer/layers/MLViasLayer";
 import { OverlayImageLayer } from "../renderer/layers/OverlayImageLayer";
 import { DIE_VIEWER_HOTKEYS, DIE_VIEWER_MOD_HOTKEYS, GLOBAL_HOTKEYS, METAL_HOTKEYS, VIA_HOTKEYS } from "../lib/hotkeys";
+import { useToast } from "../components/Toast";
+import { useDialog } from "../components/Dialog";
 
 import { RulerOverlay, type RulerDraft } from "../components/dieViewer/RulerOverlay";
 import {
@@ -173,6 +175,8 @@ export function DieViewerPage() {
 function DieViewer({ dieId }: { dieId: string }) {
   const { data: die, isLoading, error } = useDie(dieId);
   const { data: annotations } = useAnnotations(dieId);
+  const toast = useToast();
+  const dialog = useDialog();
   useAnnotationsWebSocket(dieId);
   // Always-fresh annotations for the (stable) pointer router's shape editing.
   const annotationsRef = useRef(annotations);
@@ -1728,7 +1732,7 @@ function DieViewer({ dieId }: { dieId: string }) {
                 reservedByName: null,
                 reservedAt: null,
               };
-              apiPut(`/api/dies/${dieId}/floorplan/${region.id}`, region).catch(console.error);
+              apiPut(`/api/dies/${dieId}/floorplan/${region.id}`, region).catch((e) => toast.error("Failed to save floorplan", e instanceof Error ? e.message : String(e)));
               useFloorplanStore.getState().upsertRegion(region);
               useFloorplanStore.getState().selectRegion(region.id);
               queryClient.invalidateQueries({ queryKey: annotationKeys.forDie(dieId) });
@@ -2456,7 +2460,7 @@ function DieViewer({ dieId }: { dieId: string }) {
    * their existing "promote sub-selection to whole net" meaning.
    */
   const onCanvasDoubleClick = useCallback(
-    (event: React.MouseEvent<HTMLDivElement>) => {
+    async (event: React.MouseEvent<HTMLDivElement>) => {
       const tool = useDieViewerStore.getState().activeTool;
       if (tool === "wire") {
         wire.commitWire({ dropLast: true });
@@ -2481,7 +2485,7 @@ function DieViewer({ dieId }: { dieId: string }) {
             reservedByName: null,
             reservedAt: null,
           };
-          apiPut(`/api/dies/${dieId}/floorplan/${region.id}`, region).catch(console.error);
+          apiPut(`/api/dies/${dieId}/floorplan/${region.id}`, region).catch((e) => toast.error("Failed to save floorplan", e instanceof Error ? e.message : String(e)));
           useFloorplanStore.getState().upsertRegion(region);
           useFloorplanStore.getState().setDraft(null);
           useFloorplanStore.getState().selectRegion(region.id);
@@ -2503,7 +2507,7 @@ function DieViewer({ dieId }: { dieId: string }) {
                 Math.abs(r.x1 - draft.x1) < 0.5 &&
                 Math.abs(r.y1 - draft.y1) < 0.5
             )?.lengthUm ?? 0;
-          const input = window.prompt(
+          const input = await dialog.prompt(
             `Ruler: ${Math.round(lenPx).toLocaleString()} px\nEnter known size in µm:`,
             cachedUm > 0 ? String(cachedUm) : ""
           );
@@ -2519,7 +2523,7 @@ function DieViewer({ dieId }: { dieId: string }) {
             }
           }
         } else {
-          window.alert("Draw a ruler first (drag to draw a yellow line), then double-click to set scale.");
+          await dialog.confirm("Draw a ruler first (drag to draw a yellow line), then double-click to set scale.");
         }
         return;
       }
@@ -2604,7 +2608,7 @@ function DieViewer({ dieId }: { dieId: string }) {
         navigate(`/re?die=${encodeURIComponent(dieId)}&type=${encodeURIComponent(cellTypeId)}&cell=${encodeURIComponent(cellId)}`);
       }
     },
-    [annotationLayer, mlViasLayer, wire, startWireAt, navigate, dieId]
+    [annotationLayer, mlViasLayer, wire, startWireAt, navigate, dieId, dialog]
   );
 
   // Zoom button handlers read the latest viewport from the live store at

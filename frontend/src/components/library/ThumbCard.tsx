@@ -4,6 +4,8 @@ import type { DieSummary, ImportJob, MLInferenceJob } from "shared";
 import { useDeleteDie, useExportProject, useRenameDie } from "../../api/dies";
 import { Menu, type MenuItemDef } from "../Menu";
 import { formatPercent, formatPixels, formatTileProgress } from "../../lib/format";
+import { useToast } from "../Toast";
+import { useDialog } from "../Dialog";
 
 function thumbnailUrl(dieId: string): string {
   return `/api/dies/${dieId}/tiles/0/0/0`;
@@ -110,12 +112,14 @@ function DieCardActions({ die }: { die: DieSummary }) {
   const deleteMutation = useDeleteDie();
   const exportMutation = useExportProject();
   const renameMutation = useRenameDie();
+  const toast = useToast();
+  const dialog = useDialog();
   const [pending, setPending] = useState<string | null>(null);
 
-  function doExport(mode: "light" | "full") {
+  async function doExport(mode: "light" | "full") {
     if (pending) return;
     setPending(`Preparing ${mode} export… (this may take a while for large images)`);
-    const includePreferences = window.confirm(
+    const includePreferences = await dialog.confirm(
       `Include browser preferences (net colors, viewport, …)?\n\n` +
       `Cancel = export project data only.\nOK = include preferences too.`
     );
@@ -137,15 +141,15 @@ function DieCardActions({ die }: { die: DieSummary }) {
         },
         onError: (err) => {
           setPending(null);
-          alert(`Export failed: ${err.message}`);
+          toast.error("Export failed", err.message);
         }
       }
     );
   }
 
-  function doRename() {
+  async function doRename() {
     if (pending) return;
-    const newName = window.prompt(`Rename "${die.name}" to:`, die.name);
+    const newName = await dialog.prompt(`Rename "${die.name}" to:`, die.name);
     if (!newName || newName.trim() === die.name) return;
     setPending("renaming…");
     renameMutation.mutate(
@@ -154,7 +158,7 @@ function DieCardActions({ die }: { die: DieSummary }) {
         onSuccess: () => setPending(null),
         onError: (err) => {
           setPending(null);
-          alert(`Rename failed: ${err.message}`);
+          toast.error("Rename failed", err.message);
         }
       }
     );
@@ -182,8 +186,8 @@ function DieCardActions({ die }: { die: DieSummary }) {
       label: pending === "deleting…" ? "deleting…" : "Delete",
       danger: true,
       disabled: isBusy,
-      onSelect: () => {
-        if (!window.confirm(`Delete "${die.name}"? This cannot be undone.`)) return;
+      onSelect: async () => {
+        if (!await dialog.confirm(`Delete "${die.name}"? This cannot be undone.`)) return;
         setPending("deleting…");
         deleteMutation.mutate(die.id, {
           onSettled: () => setPending(null)

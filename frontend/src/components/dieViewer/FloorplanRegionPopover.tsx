@@ -10,6 +10,7 @@ import type { DieAnnotations, FloorplanRegion } from "shared";
 import { apiPut, apiDelete } from "../../api/client";
 import { collectDieWideAnalogDevices } from "../../api/dieWideAnalog";
 import { useAuth } from "../../state/auth";
+import { useToast } from "../Toast";
 import { useFloorplanStore } from "../../state/floorplan";
 import {
   deviceInRegion,
@@ -107,6 +108,7 @@ export function FloorplanRegionPopover({
   const upsertRegion = useFloorplanStore((s) => s.upsertRegion);
   const removeRegion = useFloorplanStore((s) => s.removeRegion);
   const selectRegion = useFloorplanStore((s) => s.selectRegion);
+  const toast = useToast();
   const popoverRef = useRef<HTMLDivElement>(null);
 
   // ── Port detection (B3) ───────────────────────────────────
@@ -285,7 +287,7 @@ export function FloorplanRegionPopover({
               renamePromises.push(
                 apiPut(`/api/dies/${dieId}/nets/${uuid}`, renamed)
                   .then(() => {})
-                  .catch((e) => console.error(`Failed to rename net ${uuid}:`, e))
+                  .catch((e) => toast.error(`Failed to rename net ${uuid}`, e instanceof Error ? e.message : String(e)))
               );
             }
           }
@@ -296,7 +298,7 @@ export function FloorplanRegionPopover({
               renamePromises.push(
                 apiPut(`/api/dies/${dieId}/nets/${uuid}`, reverted)
                   .then(() => {})
-                  .catch((e) => console.error(`Failed to revert net ${uuid}:`, e))
+                  .catch((e) => toast.error(`Failed to revert net ${uuid}`, e instanceof Error ? e.message : String(e)))
               );
             }
           }
@@ -327,7 +329,7 @@ export function FloorplanRegionPopover({
           onSaved?.();
           return; // ← early return, we already saved the region
         } catch (e) {
-          console.error("Failed to rename annotation nets:", e);
+          toast.error("Failed to rename annotation nets", e instanceof Error ? e.message : String(e));
           // Fall through to the regular save below
         }
       }
@@ -348,11 +350,11 @@ export function FloorplanRegionPopover({
       originalNetNamesRef.current = null;
       onSaved?.();
     } catch (err) {
-      console.error("Failed to save floorplan region:", err);
+      toast.error("Failed to save floorplan region", err instanceof Error ? err.message : String(err));
     } finally {
       setSaving(false);
     }
-  }, [region, dieId, name, color, saving, upsertRegion, onSaved, buildPortAliasesForSave, annotations]);
+  }, [region, dieId, name, color, saving, upsertRegion, onSaved, buildPortAliasesForSave, annotations, toast]);
 
   const handleDelete = useCallback(async () => {
     if (deleting) return;
@@ -364,11 +366,11 @@ export function FloorplanRegionPopover({
       selectRegion(null);
       onSaved?.();
     } catch (err) {
-      console.error("Failed to delete floorplan region:", err);
+      toast.error("Failed to delete floorplan region", err instanceof Error ? err.message : String(err));
     } finally {
       setDeleting(false);
     }
-  }, [region.id, dieId, deleting, removeRegion, selectRegion, onSaved]);
+  }, [region.id, dieId, deleting, removeRegion, selectRegion, onSaved, toast]);
 
   // Compute popover position from region's first point
   const firstP = region.geometry[0] || { x: 0, y: 0 };
@@ -516,7 +518,7 @@ export function FloorplanRegionPopover({
                 setDirty(false);
                 onSaved?.();
               } catch (err) {
-                console.error("Failed to reserve:", err);
+                toast.error("Failed to reserve", err instanceof Error ? err.message : String(err));
               }
             }}
             disabled={saving}

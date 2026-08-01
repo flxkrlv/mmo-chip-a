@@ -7,6 +7,7 @@ import {
   useState,
   type PointerEvent as ReactPointerEvent,
 } from "react";
+import { useDialog } from "../Dialog";
 import type { CellExtraction } from "../../lib/extraction";
 import {
   layoutNetlist,
@@ -447,6 +448,7 @@ function CopyDumpButton({
   extraction: Extract<CellExtraction, { kind: "inferred" }>;
   netName: (id: number) => string;
 }) {
+  const dialog = useDialog();
   const [copied, setCopied] = useState(false);
   const onClick = useCallback(async () => {
     const text = dumpNetlist(extraction, netName);
@@ -458,9 +460,9 @@ function CopyDumpButton({
       // Clipboard API can fail on insecure origins or when the user
       // denies permission — fall back to a window prompt so the text
       // is at least selectable manually.
-      window.prompt("Netlist dump (Cmd+C to copy):", text);
+      await dialog.prompt("Netlist dump (Cmd+C to copy):", text);
     }
-  }, [extraction, netName]);
+  }, [extraction, netName, dialog]);
   return (
     <button
       type="button"
