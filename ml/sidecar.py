@@ -719,6 +719,7 @@ def cv_akaze_debug(
     return akaze_debug_matches(search_rgb, matches, ref_patch, params, max_pairs=max_pairs)
 
 
+@app.get("/models")
 def list_models() -> dict:
     """List checkpoint files from both checkpoints/ directories.
 
