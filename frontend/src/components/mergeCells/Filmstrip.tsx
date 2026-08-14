@@ -1,8 +1,10 @@
 import type { Cell } from "shared";
 import { cellCropUrl, type Candidate } from "../../lib/mergeCells";
+import { topVisibleOverlaySourceId, useOverlayLayers } from "../../state/overlayLayers";
 
 interface Props {
   dieId: string;
+  overlaySourceId?: string;
   candidates: Candidate[];
   selectedId: string | null;
   onPick: (cell: Cell) => void;
@@ -12,6 +14,8 @@ interface Props {
 /** Horizontal, scrollable strip of the candidates still left to match
  *  (already-merged ones are dropped — they live in the left panel). */
 export function Filmstrip({ dieId, candidates, selectedId, onPick, onContextMenu }: Props) {
+  useOverlayLayers((s) => s.layers);
+  const overlaySourceId = topVisibleOverlaySourceId();
   const visible = candidates.filter((c) => !c.done);
   return (
     <div
@@ -59,7 +63,7 @@ export function Filmstrip({ dieId, candidates, selectedId, onPick, onContextMenu
             }}
           >
             <img
-              src={cellCropUrl(dieId, cell)}
+              src={cellCropUrl(dieId, cell, overlaySourceId)}
               alt=""
               loading="lazy"
               style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }}

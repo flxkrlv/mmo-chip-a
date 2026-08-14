@@ -156,14 +156,20 @@ export function candidatesFor(
 // re-aligning (which changes the cell's x/y) naturally yields a fresh crop.
 // We mirror x/y into the query so the *browser* cache busts too.
 
-export function cellCropUrl(dieId: string, cell: Cell): string {
+export function cellCropUrl(dieId: string, cell: Cell, overlaySourceId?: string): string {
   const x = Math.max(0, Math.round(cell.x));
   const y = Math.max(0, Math.round(cell.y));
-  return `/api/dies/${dieId}/cells/${cell.id}/crop?x=${x}&y=${y}`;
+  const source = overlaySourceId
+    ? `&overlaySourceId=${encodeURIComponent(overlaySourceId)}`
+    : "";
+  return `/api/dies/${dieId}/cells/${cell.id}/crop?x=${x}&y=${y}${source}`;
 }
 
-export function cellTypeCropUrl(dieId: string, cellTypeId: string): string {
-  return `/api/dies/${dieId}/cell-types/${cellTypeId}/crop`;
+export function cellTypeCropUrl(dieId: string, cellTypeId: string, overlaySourceId?: string): string {
+  const source = overlaySourceId
+    ? `?overlaySourceId=${encodeURIComponent(overlaySourceId)}`
+    : "";
+  return `/api/dies/${dieId}/cell-types/${cellTypeId}/crop${source}`;
 }
 
 // ── Action builders ──────────────────────────────────────────────────

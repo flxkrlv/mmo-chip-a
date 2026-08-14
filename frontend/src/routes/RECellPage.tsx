@@ -30,6 +30,7 @@ import { isTypingTarget } from "../lib/keyboard";
 import { CELL_RE_HOTKEYS } from "../lib/hotkeys";
 import { ShortcutsPanel } from "../components/dieViewer/ShortcutsPanel";
 import { useOverlayHotkeys } from "../lib/useOverlayHotkeys";
+import { topVisibleOverlaySourceId, useOverlayLayers } from "../state/overlayLayers";
 import {
   PASTE_OFFSET,
   resolveActiveCell,
@@ -116,6 +117,11 @@ function RE({ dieId }: { dieId: string }) {
   const annotationsQ = useAnnotations(dieId);
   useAnnotationsWebSocket(dieId);
   useOverlayHotkeys();
+  const overlayLayers = useOverlayLayers((s) => s.layers);
+  const previewOverlaySourceId = useMemo(
+    () => topVisibleOverlaySourceId(),
+    [overlayLayers]
+  );
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   useEffect(() => {
     const handler = () => setShortcutsOpen((v) => !v);
@@ -583,9 +589,9 @@ function RE({ dieId }: { dieId: string }) {
   // metadata); fall back to the cell-type crop template when the type has no
   // member instances yet (rare, but the page still needs imagery to draw on).
   const imageUrl = cell
-    ? cellCropUrl(dieId, cell)
+    ? cellCropUrl(dieId, cell, previewOverlaySourceId)
     : cellType
-      ? cellTypeCropUrl(dieId, cellType.id)
+      ? cellTypeCropUrl(dieId, cellType.id, previewOverlaySourceId)
       : null;
   const cellInstanceCount = cellType
     ? membersOf(annotations!, cellType.id).length

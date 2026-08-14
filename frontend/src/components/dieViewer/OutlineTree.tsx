@@ -98,6 +98,7 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
   // Overlay layers (user-loaded images).
   const overlayLayers = useOverlayLayers((s) => s.layers);
   const addLayer = useOverlayLayers((s) => s.addLayer);
+  const addTiledLayer = useOverlayLayers((s) => s.addTiledLayer);
   const setLayerHidden = useOverlayLayers((s) => s.setLayerHidden);
 
   const localFileInputRef = useRef<HTMLInputElement>(null);
@@ -160,9 +161,10 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
       setUploadingFiles(true);
       const tasks = Array.from(files).map(async (file) => {
         try {
-          const form = new FormData();
-          form.append("file", file);
-          await apiUpload(`/api/dies/${dieId}/overlay-images/upload`, form);
+          const mod = await import("../../api/overlayImages");
+          const uploaded = await mod.uploadOverlayImage(dieId, file);
+          addTiledLayer(uploaded.image);
+          return;
           const url = URL.createObjectURL(file);
           const img = new Image();
           await new Promise<void>((resolve, reject) => {
@@ -661,21 +663,17 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
       />
       {overlayLayersOpen && (
         <>
-          {/* Add image buttons */}
           <TreeRow
             depth={1}
             icon={Ic.upload}
-            label={
-              <span style={{ color: "var(--accent)" }}>
-                {uploadingFiles ? "Uploading…" : "Upload to Server…"}
-              </span>
-            }
+            label={<span style={{ color: "var(--accent)" }}>{uploadingFiles ? "Uploading…" : "Add tiled overlay…"}</span>}
             onSelect={() => serverFileInputRef.current?.click()}
           />
+          {/* Legacy local-only image support. Server uploads are in Base Images. */}
           <TreeRow
             depth={1}
             icon={Ic.plus}
-            label={<span style={{ color: "var(--ink2)" }}>Add local only…</span>}
+            label={<span style={{ color: "var(--ink2)" }}>Add legacy static overlay…</span>}
             onSelect={() => localFileInputRef.current?.click()}
           />
           <TreeRow
@@ -691,7 +689,7 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
           <input
             ref={serverFileInputRef}
             type="file"
-            accept="image/png,image/jpeg"
+            accept="image/png,image/jpeg,image/webp"
             multiple
             style={{ display: "none" }}
             onChange={onUploadToServer}

@@ -52,6 +52,7 @@ import {
 import { alignVias, viasToCanonical } from "../lib/viaAlign";
 import { MERGE_HOTKEYS } from "../lib/hotkeys";
 import { useOverlayHotkeys } from "../lib/useOverlayHotkeys";
+import { topVisibleOverlaySourceId, useOverlayLayers } from "../state/overlayLayers";
 
 export function MergeCellsPage() {
   const [params] = useSearchParams();
@@ -80,6 +81,11 @@ function Merge({ dieId }: { dieId: string }) {
   const annotationsQ = useAnnotations(dieId);
   useAnnotationsWebSocket(dieId);
   useOverlayHotkeys();
+  const overlayLayers = useOverlayLayers((s) => s.layers);
+  const previewOverlaySourceId = useMemo(
+    () => topVisibleOverlaySourceId(),
+    [overlayLayers]
+  );
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   useEffect(() => {
     const handler = () => setShortcutsOpen((v) => !v);
@@ -212,8 +218,8 @@ function Merge({ dieId }: { dieId: string }) {
         cellType: specimenType,
         cell: specimenCell,
         imageUrl: specimenCell
-          ? cellCropUrl(dieId, specimenCell)
-          : cellTypeCropUrl(dieId, specimenType.id),
+          ? cellCropUrl(dieId, specimenCell, previewOverlaySourceId)
+          : cellTypeCropUrl(dieId, specimenType.id, previewOverlaySourceId),
         mlVias: specimenViasQ.data ?? null
       }
     : null;
@@ -222,7 +228,7 @@ function Merge({ dieId }: { dieId: string }) {
       ? {
           cellType: candidateType,
           cell: candidateCell,
-          imageUrl: cellCropUrl(dieId, candidateCell),
+          imageUrl: cellCropUrl(dieId, candidateCell, previewOverlaySourceId),
           mlVias: candidateViasQ.data ?? null
         }
       : null;

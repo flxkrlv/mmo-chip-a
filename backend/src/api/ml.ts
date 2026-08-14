@@ -1,6 +1,6 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import { Router } from "express";
+import { Router, type Request } from "express";
 import sharp from "sharp";
 import type {
   AKAZEReverifyRequest,
@@ -17,6 +17,7 @@ import type {
   MLViasTilesResponse
 } from "shared";
 import { createMLJobManager } from "../ml/jobs.js";
+import { resolveOverlayOriginalPath } from "./overlayImages.js";
 import {
   createMLPredictor,
   INFERENCE_MIN_DISTANCE,
@@ -46,6 +47,26 @@ async function fetchSidecar(
   } finally {
     clearTimeout(timer);
   }
+}
+
+function requestUserId(request: Request): string {
+  const user = (request as Request & { user?: { userId?: unknown } }).user;
+  return typeof user?.userId === "string" && user.userId.length > 0 ? user.userId : "dev";
+}
+
+async function resolveRequestedOverlayPath(params: {
+  request: Request;
+  dataRoot: string;
+  dieId: string;
+  sourceId: string | undefined;
+}): Promise<string | undefined> {
+  if (!params.sourceId) return undefined;
+  return (await resolveOverlayOriginalPath({
+    dataRoot: params.dataRoot,
+    userId: requestUserId(params.request),
+    dieId: params.dieId,
+    sourceId: params.sourceId
+  })) ?? undefined;
 }
 
 export function createMLRouter(config: {
@@ -225,7 +246,7 @@ export function createMLRouter(config: {
         const overlayFilename = typeof body.overlayFilename === "string" && body.overlayFilename.length > 0
           ? body.overlayFilename
           : undefined;
-        response.json(await jobs.startJob(request.params.dieId, overlayFilename));
+        response.json(await jobs.startJob(request.params.dieId, overlayFilename, requestUserId(request)));
       } catch (error) {
         if (send503IfUnavailable(error, response)) return;
         next(error);
@@ -319,9 +340,16 @@ export function createMLRouter(config: {
           return;
         }
 
-        const overlayPath = overlaySource
-          ? path.join(config.dataRoot, "overlay-images", dieId, overlaySource)
-          : undefined;
+        const overlayPath = await resolveRequestedOverlayPath({
+          request,
+          dataRoot: config.dataRoot,
+          dieId,
+          sourceId: overlaySource
+        });
+        if (overlaySource && !overlayPath) {
+          response.status(404).json({ error: "Visible image source not found" });
+          return;
+        }
 
         let result: Awaited<ReturnType<typeof predictor.runPrediction>>;
         try {
@@ -753,9 +781,17 @@ export function createMLRouter(config: {
 
       // Determine source image
       const overlayFilename = body.overlayFilename;
-      const sourcePath = overlayFilename
-        ? path.join(config.dataRoot, "overlay-images", dieId, overlayFilename)
-        : record.originalPath;
+      const requestedSource = await resolveRequestedOverlayPath({
+        request,
+        dataRoot: config.dataRoot,
+        dieId,
+        sourceId: overlayFilename
+      });
+      if (overlayFilename && !requestedSource) {
+        response.status(404).json({ error: "Visible image source not found" });
+        return;
+      }
+      const sourcePath = requestedSource ?? record.originalPath;
 
       const sourceMeta = await sharp(sourcePath, { limitInputPixels: false }).metadata();
       const sW = sourceMeta.width ?? record.width;
@@ -879,9 +915,17 @@ export function createMLRouter(config: {
       const cy1 = Math.round(cellY + cellType.cropRect.y + cellType.cropRect.height);
 
       const overlayFilename = body.overlayFilename;
-      const sourcePath = overlayFilename
-        ? path.join(config.dataRoot, "overlay-images", dieId, overlayFilename)
-        : record.originalPath;
+      const requestedSource = await resolveRequestedOverlayPath({
+        request,
+        dataRoot: config.dataRoot,
+        dieId,
+        sourceId: overlayFilename
+      });
+      if (overlayFilename && !requestedSource) {
+        response.status(404).json({ error: "Visible image source not found" });
+        return;
+      }
+      const sourcePath = requestedSource ?? record.originalPath;
 
       const debugMeta = await sharp(sourcePath, { limitInputPixels: false }).metadata();
       const dW = debugMeta.width ?? record.width;
@@ -977,9 +1021,17 @@ export function createMLRouter(config: {
       const cx1 = Math.round(cellX + cellType.cropRect.x + cellType.cropRect.width);
       const cy1 = Math.round(cellY + cellType.cropRect.y + cellType.cropRect.height);
       const overlayFilename = body.overlayFilename;
-      const sourcePath = overlayFilename
-        ? path.join(config.dataRoot, "overlay-images", dieId, overlayFilename)
-        : record.originalPath;
+      const requestedSource = await resolveRequestedOverlayPath({
+        request,
+        dataRoot: config.dataRoot,
+        dieId,
+        sourceId: overlayFilename
+      });
+      if (overlayFilename && !requestedSource) {
+        response.status(404).json({ error: "Visible image source not found" });
+        return;
+      }
+      const sourcePath = requestedSource ?? record.originalPath;
       const ddMeta = await sharp(sourcePath, { limitInputPixels: false }).metadata();
       const dW = ddMeta.width ?? record.width;
       const dH = ddMeta.height ?? record.height;
@@ -1066,9 +1118,17 @@ export function createMLRouter(config: {
       const cx1 = Math.round(cellX + cellType.cropRect.x + cellType.cropRect.width);
       const cy1 = Math.round(cellY + cellType.cropRect.y + cellType.cropRect.height);
       const overlayFilename = body.overlayFilename;
-      const sourcePath = overlayFilename
-        ? path.join(config.dataRoot, "overlay-images", dieId, overlayFilename)
-        : record.originalPath;
+      const requestedSource = await resolveRequestedOverlayPath({
+        request,
+        dataRoot: config.dataRoot,
+        dieId,
+        sourceId: overlayFilename
+      });
+      if (overlayFilename && !requestedSource) {
+        response.status(404).json({ error: "Visible image source not found" });
+        return;
+      }
+      const sourcePath = requestedSource ?? record.originalPath;
       const tmMeta = await sharp(sourcePath, { limitInputPixels: false }).metadata();
       const sW = tmMeta.width ?? record.width;
       const sH = tmMeta.height ?? record.height;
@@ -1125,9 +1185,17 @@ export function createMLRouter(config: {
       const cx1 = Math.round(cellX + cellType.cropRect.x + cellType.cropRect.width);
       const cy1 = Math.round(cellY + cellType.cropRect.y + cellType.cropRect.height);
       const overlayFilename = body.overlayFilename;
-      const sourcePath = overlayFilename
-        ? path.join(config.dataRoot, "overlay-images", dieId, overlayFilename)
-        : record.originalPath;
+      const requestedSource = await resolveRequestedOverlayPath({
+        request,
+        dataRoot: config.dataRoot,
+        dieId,
+        sourceId: overlayFilename
+      });
+      if (overlayFilename && !requestedSource) {
+        response.status(404).json({ error: "Visible image source not found" });
+        return;
+      }
+      const sourcePath = requestedSource ?? record.originalPath;
       const tmMeta = await sharp(sourcePath, { limitInputPixels: false }).metadata();
       const sW = tmMeta.width ?? record.width;
       const sH = tmMeta.height ?? record.height;
@@ -1170,9 +1238,17 @@ export function createMLRouter(config: {
       if (!cellType) { response.status(404).json({ error: "cellType not found" }); return; }
 
       const overlayFilename = body.overlayFilename;
-      const sourcePath = overlayFilename
-        ? path.join(config.dataRoot, "overlay-images", dieId, overlayFilename)
-        : record.originalPath;
+      const requestedSource = await resolveRequestedOverlayPath({
+        request,
+        dataRoot: config.dataRoot,
+        dieId,
+        sourceId: overlayFilename
+      });
+      if (overlayFilename && !requestedSource) {
+        response.status(404).json({ error: "Visible image source not found" });
+        return;
+      }
+      const sourcePath = requestedSource ?? record.originalPath;
 
       // Extract ref patch coords (same logic as template-match)
       const cellX = body.cellX ?? 0;
@@ -1225,9 +1301,17 @@ export function createMLRouter(config: {
       if (!cellType) { response.status(404).json({ error: "cellType not found" }); return; }
 
       const overlayFilename = body.overlayFilename;
-      const sourcePath = overlayFilename
-        ? path.join(config.dataRoot, "overlay-images", dieId, overlayFilename)
-        : record.originalPath;
+      const requestedSource = await resolveRequestedOverlayPath({
+        request,
+        dataRoot: config.dataRoot,
+        dieId,
+        sourceId: overlayFilename
+      });
+      if (overlayFilename && !requestedSource) {
+        response.status(404).json({ error: "Visible image source not found" });
+        return;
+      }
+      const sourcePath = requestedSource ?? record.originalPath;
 
       const cellX = body.cellX ?? 0;
       const cellY = body.cellY ?? 0;

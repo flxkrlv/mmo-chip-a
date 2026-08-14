@@ -337,3 +337,9 @@ docs/
 ```
 
 Key extraction files: `dieWideAnalog.ts`, `simpleAnalog.ts`, `spice.ts` (`frontend/src/`).
+
+## v1.4-alpha â€” multilayer dynamic tiled overlays
+
+The die viewer now uses a **multilayer dynamic tiled renderer** for user overlay images. It renders only the visible tiles of the active viewport, keeps a coarse preview while sharp tiles load, prioritizes the current pan/zoom target, and preserves layer visibility, opacity, order, offsets, per-user storage, and top-visible-layer ML/CV selection. Merge Cells and RE Cell retain lightweight static server-side crop previews sourced from the selected tiled overlay; existing layer hotkeys update those previews.
+
+See [`docs/CHANGELOG_2026-08-14_TILED_OVERLAY_RELEASE.md`](docs/CHANGELOG_2026-08-14_TILED_OVERLAY_RELEASE.md) for the implementation summary and [`docs/PERSISTENT_LEVEL_IMAGES_PLAN.md`](docs/PERSISTENT_LEVEL_IMAGES_PLAN.md) for the deferred cold-latency optimization plan.

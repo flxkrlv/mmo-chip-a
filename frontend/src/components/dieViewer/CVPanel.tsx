@@ -2,7 +2,7 @@ import { useState } from "react";
 import type { DieAnnotations } from "shared";
 import type { ActionDispatcher } from "../../api/actions";
 import { uuid } from "../../lib/uuid";
-import { useOverlayLayers } from "../../state/overlayLayers";
+import { topVisibleOverlaySourceId } from "../../state/overlayLayers";
 import { useDieViewerStore } from "../../state/dieViewer";
 import { cvDebug, cvDebugDump, cvMatch, cvTemplateDebug, cvTemplateMatch, cvAkazeVerify, cvAkazeDebug } from "../../api/ml";
 
@@ -83,8 +83,7 @@ function dispatchMatch(
 }
 
 function visibleOverlayName(): string | undefined {
-  const ov = useOverlayLayers.getState().layers.find((l) => !l.hidden && l.loaded);
-  return ov?.serverFilename ?? ov?.name;
+  return topVisibleOverlaySourceId();
 }
 
 // ── Template section (stable, no changes from prior behavior) ────────

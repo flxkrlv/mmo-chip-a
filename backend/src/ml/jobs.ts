@@ -1,5 +1,6 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
+import { resolveOverlayOriginalPath } from "../api/overlayImages.js";
 import type { MLInferenceJob } from "shared";
 import {
   listMLJobs,
@@ -29,7 +30,7 @@ export interface MLJobManager {
   /** Every persisted job (stale "running" jobs reconciled to "stopped"). */
   listJobs(): Promise<MLInferenceJob[]>;
   /** Begin (or resume) a die-wide inference sweep. overlayFilename optional — when set, run inference on that overlay. */
-  startJob(dieId: string, overlayFilename?: string): Promise<MLInferenceJob>;
+  startJob(dieId: string, overlayFilename?: string, userId?: string): Promise<MLInferenceJob>;
   /** Request the running sweep to stop after the current tile. */
   stopJob(dieId: string): Promise<MLInferenceJob>;
 }
@@ -147,7 +148,8 @@ export function createMLJobManager(config: {
     record: DieRecord,
     hash: string | null,
     job: MLInferenceJob,
-    sweep: ActiveSweep
+    sweep: ActiveSweep,
+    userId: string
   ): Promise<void> {
     const nativeZ = record.maxZoomLevel;
     const { columns, rows } = nativeGrid(record);
@@ -158,8 +160,16 @@ export function createMLJobManager(config: {
 
     const ovKey = overlayKey(record.id, job.overlayFilename);
     const overlayPath = job.overlayFilename
-      ? path.join(dataRoot, "overlay-images", record.id, job.overlayFilename)
+      ? await resolveOverlayOriginalPath({
+          dataRoot,
+          userId,
+          dieId: record.id,
+          sourceId: job.overlayFilename
+        }) ?? undefined
       : undefined;
+    if (job.overlayFilename && !overlayPath) {
+      throw new Error("Visible image source not found");
+    }
 
     let completed = 0;
     let lastBroadcast = 0;
@@ -248,7 +258,7 @@ export function createMLJobManager(config: {
     }
   }
 
-  async function startJob(dieId: string, overlayFilename?: string): Promise<MLInferenceJob> {
+  async function startJob(dieId: string, overlayFilename?: string, userId = "dev"): Promise<MLInferenceJob> {
     if (active.has(dieId)) return getJob(dieId);
 
     const record = await readDieRecord(dataRoot, dieId);
@@ -275,7 +285,7 @@ export function createMLJobManager(config: {
     const sweep: ActiveSweep = { cancel: false };
     active.set(dieId, sweep);
     await persistAndBroadcast({ ...job });
-    void runSweep(record, hash, job, sweep);
+    void runSweep(record, hash, job, sweep, userId);
     return job;
   }
 

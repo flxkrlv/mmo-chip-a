@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useImperativeHandle, useRef, type Ref } from "react";
 import { TiledRenderer } from "./TiledRenderer";
 import { useCanvasGestures } from "./useCanvasGestures";
+import type { Rect } from "../lib/geometry";
 import type { Layer, Viewport } from "./types";
 import type {
   Interaction,
@@ -21,6 +22,8 @@ export type {
 export interface TiledCanvasHandle {
   setViewport: (v: Viewport) => void;
   getViewport: () => Viewport;
+  /** Current visible world rect, based on CSS canvas dimensions. */
+  getWorldRect: () => Rect | null;
   invalidate: () => void;
   /** Re-renders all visible tiles immediately on the next frame. */
   refresh: () => void;
@@ -93,6 +96,19 @@ export function TiledCanvas({
     () => ({
       setViewport,
       getViewport: () => viewportRef.current,
+      getWorldRect: () => {
+        const canvas = canvasRef.current;
+        if (!canvas) return null;
+        const rect = canvas.getBoundingClientRect();
+        if (rect.width <= 0 || rect.height <= 0) return null;
+        const viewport = viewportRef.current;
+        return {
+          x: viewport.originX,
+          y: viewport.originY,
+          width: rect.width / viewport.zoom,
+          height: rect.height / viewport.zoom
+        };
+      },
       invalidate: () => rendererRef.current?.invalidate(),
       refresh: () => rendererRef.current?.invalidate(),
       centerOn: (worldX, worldY, zoom) => {

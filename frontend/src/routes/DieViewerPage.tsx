@@ -26,7 +26,7 @@ import {
   isMlViaId,
   parseMlViaId
 } from "../renderer/layers/MLViasLayer";
-import { OverlayImageLayer } from "../renderer/layers/OverlayImageLayer";
+import { OverlayImageLayer, type OverlayViewportStats } from "../renderer/layers/OverlayImageLayer";
 import { DIE_VIEWER_HOTKEYS, DIE_VIEWER_MOD_HOTKEYS, GLOBAL_HOTKEYS, METAL_HOTKEYS, VIA_HOTKEYS } from "../lib/hotkeys";
 import { useToast } from "../components/Toast";
 import { useDialog } from "../components/Dialog";
@@ -183,6 +183,13 @@ function DieViewer({ dieId }: { dieId: string }) {
   annotationsRef.current = annotations;
   const queryClient = useQueryClient();
   const canvasHandle = useRef<TiledCanvasHandle>(null);
+  const [liveRenderStatus, setLiveRenderStatus] = useState<{
+    total: number;
+    loaded: number;
+    pending: number;
+    preview: boolean;
+    lastRenderMs: number;
+  } | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const outlineSearchRef = useRef<(() => void) | null>(null);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
@@ -733,21 +740,24 @@ function DieViewer({ dieId }: { dieId: string }) {
     // Clear any stale overlay layers from a previous project.
     useOverlayLayers.getState().clearLayers();
     const addLayer = useOverlayLayers.getState().addLayer;
-    import("../api/overlayImages").then((mod) =>
-      mod.fetchOverlayImageList(dieId).then((list) =>
-        Promise.allSettled(
-          list.images.map((img) => mod.loadOverlayImageFromServer(dieId, img.name))
-        ).then((results) => {
-          for (const r of results) {
-            if (r.status === "fulfilled") {
-              addLayer(r.value.name, r.value.image, true, r.value.serverFilename); // hidden by default
-            }
+    const addTiledLayer = useOverlayLayers.getState().addTiledLayer;
+    void import("../api/overlayImages").then(async (mod) => {
+      const list = await mod.fetchOverlayImageList(dieId);
+      for (const source of list.images) {
+        if (source.legacy) {
+          try {
+            const legacy = await mod.loadOverlayImageFromServer(dieId, source.originalFilename);
+            addLayer(legacy.name, legacy.image, true, legacy.serverFilename);
+          } catch (error) {
+            console.warn("Failed to load legacy overlay", source.name, error);
           }
-          // Restore persisted visibility/opacity/offset settings.
-          applyOverlaySettingsFromPrefs(dieId);
-        })
-      )
-    );
+        } else {
+          addTiledLayer(source, true); // Preserve the prior auto-load hidden default.
+        }
+      }
+      // Restore persisted visibility/opacity/offset settings.
+      applyOverlaySettingsFromPrefs(dieId);
+    });
   }, [dieId]);
 
   // Persist overlay layer settings (visibility, opacity, offset) on change.
@@ -823,12 +833,18 @@ function DieViewer({ dieId }: { dieId: string }) {
     for (const entry of overlayEntries) {
       let layer = map.get(entry.id);
       if (!layer || layer.id !== `overlay:${entry.id}`) {
-        layer = new OverlayImageLayer(`overlay:${entry.id}`, {
+        layer = new OverlayImageLayer(`overlay:${entry.id}`, dieId ?? "", {
           getImage: () => {
             const live = useOverlayLayers
               .getState()
               .layers.find((l) => l.id === entry.id);
             return live?.image ?? null;
+          },
+          getSource: () => {
+            const live = useOverlayLayers
+              .getState()
+              .layers.find((l) => l.id === entry.id);
+            return live?.source ?? null;
           },
           getHidden: () => {
             const live = useOverlayLayers
@@ -867,6 +883,60 @@ function DieViewer({ dieId }: { dieId: string }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [overlayEntries.length, overlayEntries.map((e) => e.id).join(",")]);
 
+  // Render-status snapshots are intentionally sampled rather than pushed on
+  // every tile event. Four updates per second make progress visible without
+  // turning network decoding into a React render loop.
+  useEffect(() => {
+    const collect = () => {
+      const world = canvasHandle.current?.getWorldRect();
+      if (!world) {
+        setLiveRenderStatus((previous) => (previous == null ? previous : null));
+        return;
+      }
+      const stats: OverlayViewportStats[] = [];
+      for (const layer of overlayLayerInstancesRef.current.values()) {
+        const snapshot = layer.getViewportStats(world, canvasHandle.current?.getViewport().zoom ?? 1);
+        if (snapshot) stats.push(snapshot);
+      }
+      if (stats.length === 0) {
+        setLiveRenderStatus((previous) => (previous == null ? previous : null));
+        return;
+      }
+      const next = {
+        total: stats.reduce((sum, stat) => sum + stat.total, 0),
+        loaded: stats.reduce((sum, stat) => sum + stat.loaded, 0),
+        pending: stats.reduce((sum, stat) => sum + stat.pending, 0),
+        preview: stats.some((stat) => stat.preview),
+        lastRenderMs: Math.max(...stats.map((stat) => stat.lastRenderMs ?? 0))
+      };
+      setLiveRenderStatus((previous) =>
+        previous &&
+        previous.total === next.total &&
+        previous.loaded === next.loaded &&
+        previous.pending === next.pending &&
+        previous.preview === next.preview &&
+        Math.round(previous.lastRenderMs) === Math.round(next.lastRenderMs)
+          ? previous
+          : next
+      );
+    };
+    collect();
+    const interval = window.setInterval(collect, 250);
+    return () => window.clearInterval(interval);
+  }, [overlayLayerInstances]);
+
+  const liveRenderStatusText = useMemo(() => {
+    if (!liveRenderStatus) return null;
+    const duration = `${Math.round(liveRenderStatus.lastRenderMs)} ms`;
+    if (liveRenderStatus.preview && liveRenderStatus.pending > 0) {
+      const noun = liveRenderStatus.pending === 1 ? "tile" : "tiles";
+      return `render preview / ${liveRenderStatus.pending} sharp ${noun} loading`;
+    }
+    if (liveRenderStatus.pending > 0) {
+      return `render ${liveRenderStatus.loaded}/${liveRenderStatus.total} / ${liveRenderStatus.pending} loading / ${duration}`;
+    }
+    return `render ${liveRenderStatus.total} tiles / ${duration}`;
+  }, [liveRenderStatus]);
   const allLayers = useMemo<Layer[]>(() => {
     // Paint order: die image → overlay layers → ML via overlay → user annotations.
     const out: Layer[] = [...layers];
@@ -3206,6 +3276,7 @@ function DieViewer({ dieId }: { dieId: string }) {
           die?.name,
           <CursorReadout key="cursor" store={cursorLive} />,
           <ZoomReadout key="zoom" store={viewportLive} />,
+          liveRenderStatusText,
           annotations ? annotationsSummary(annotations) : null,
           annotations?.umPerPx != null
             ? `scale: ${annotations.umPerPx.toFixed(3)} µm/px`
