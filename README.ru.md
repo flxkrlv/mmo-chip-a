@@ -336,8 +336,8 @@ docs/
 
 Ключевые файлы экстракции: `dieWideAnalog.ts`, `simpleAnalog.ts`, `spice.ts` (`frontend/src/`).
 
-## v1.4-alpha â€” Ð¼Ð½Ð¾Ð³Ð¾ÑÐ»Ð¾Ð¹Ð½Ñ‹Ðµ Ð´Ð¸Ð½Ð°Ð¼Ð¸Ñ‡ÐµÑÐºÐ¸Ðµ tiled overlays
+## v1.4-alpha — многослойные динамические tiled overlays
 
-Ð’ die viewer Ñ€ÐµÐ°Ð»Ð¸Ð·Ð¾Ð²Ð°Ð½ **Ð¼Ð½Ð¾Ð³Ð¾ÑÐ»Ð¾Ð¹Ð½Ñ‹Ð¹ Ð´Ð¸Ð½Ð°Ð¼Ð¸Ñ‡ÐµÑÐºÐ¸Ð¹ tiled renderer** Ð¿Ð¾Ð»ÑŒÐ·Ð¾Ð²Ð°Ñ‚ÐµÐ»ÑŒÑÐºÐ¸Ñ… overlay images. ÐžÐ½ Ð¾Ñ‚Ð¾Ð±Ñ€Ð°Ð¶Ð°ÐµÑ‚ Ñ‚Ð¾Ð»ÑŒÐºÐ¾ tiles Ñ‚ÐµÐºÑƒÑ‰ÐµÐ³Ð¾ viewport, ÑƒÐ´ÐµÑ€Ð¶Ð¸Ð²Ð°ÐµÑ‚ coarse preview Ð´Ð¾ Ð·Ð°Ð³Ñ€ÑƒÐ·ÐºÐ¸ sharp tiles, Ð¿Ñ€Ð¸Ð¾Ñ€Ð¸Ñ‚Ð¸Ð·Ð¸Ñ€ÑƒÐµÑ‚ Ð°ÐºÑ‚ÑƒÐ°Ð»ÑŒÐ½ÑƒÑŽ Ñ†ÐµÐ»ÑŒ pan/zoom Ð¸ ÑÐ¾Ñ…Ñ€Ð°Ð½ÑÐµÑ‚ visibility, opacity, Ð¿Ð¾Ñ€ÑÐ´Ð¾Ðº, offsets, Ð¿Ð¾Ð»ÑŒÐ·Ð¾Ð²Ð°Ñ‚ÐµÐ»ÑŒÑÐºÐ¾Ðµ Ñ…Ñ€Ð°Ð½ÐµÐ½Ð¸Ðµ Ð¸ ML/CV-Ð²Ñ‹Ð±Ð¾Ñ€ Ð²ÐµÑ€Ñ…Ð½ÐµÐ³Ð¾ Ð²Ð¸Ð´Ð¸Ð¼Ð¾Ð³Ð¾ ÑÐ»Ð¾Ñ. Merge Cells Ð¸ RE Cell Ð¿Ñ€Ð¾Ð´Ð¾Ð»Ð¶Ð°ÑŽÑ‚ Ð¸ÑÐ¿Ð¾Ð»ÑŒÐ·Ð¾Ð²Ð°Ñ‚ÑŒ Ð»Ñ‘Ð³ÐºÐ¸Ðµ ÑÑ‚Ð°Ñ‚Ð¸Ñ‡Ð½Ñ‹Ðµ server-side crop previews, Ð½Ð¾ Ñ‚ÐµÐ¿ÐµÑ€ÑŒ Ð¿Ð¾Ð»ÑƒÑ‡Ð°ÑŽÑ‚ Ð¸Ñ… Ð¸Ð· Ð²Ñ‹Ð±Ñ€Ð°Ð½Ð½Ð¾Ð³Ð¾ tiled overlay; ÑÑƒÑ‰ÐµÑÑ‚Ð²ÑƒÑŽÑ‰Ð¸Ðµ layer hotkeys Ð¾Ð±Ð½Ð¾Ð²Ð»ÑÑŽÑ‚ ÑÑ‚Ð¸ previews.
+В die viewer реализован **многослойный динамический tiled renderer** пользовательских overlay images. Он отображает только tiles текущего viewport, удерживает coarse preview до загрузки sharp tiles, приоритизирует актуальную цель pan/zoom и сохраняет visibility, opacity, порядок, offsets, пользовательское хранение и ML/CV-выбор верхнего видимого слоя. Merge Cells и RE Cell продолжают использовать лёгкие статичные server-side crop previews, но теперь получают их из выбранного tiled overlay; существующие layer hotkeys обновляют эти previews.
 
-ÐŸÐ¾Ð´Ñ€Ð¾Ð±Ð½Ñ‹Ð¹ Ð¶ÑƒÑ€Ð½Ð°Ð» Ñ€ÐµÐ°Ð»Ð¸Ð·Ð°Ñ†Ð¸Ð¸ Ð½Ð°Ñ…Ð¾Ð´Ð¸Ñ‚ÑÑ Ð² [`docs/CHANGELOG_2026-08-14_TILED_OVERLAY_RELEASE.md`](docs/CHANGELOG_2026-08-14_TILED_OVERLAY_RELEASE.md), Ð° Ð¾Ñ‚Ð»Ð¾Ð¶ÐµÐ½Ð½Ñ‹Ð¹ Ð¿Ð»Ð°Ð½ Ð¾Ð¿Ñ‚Ð¸Ð¼Ð¸Ð·Ð°Ñ†Ð¸Ð¸ cold latency â€” Ð² [`docs/PERSISTENT_LEVEL_IMAGES_PLAN.md`](docs/PERSISTENT_LEVEL_IMAGES_PLAN.md).
+Подробный журнал реализации находится в [`docs/CHANGELOG_2026-08-14_TILED_OVERLAY_RELEASE.md`](docs/CHANGELOG_2026-08-14_TILED_OVERLAY_RELEASE.md), а отложенный план оптимизации cold latency — в [`docs/PERSISTENT_LEVEL_IMAGES_PLAN.md`](docs/PERSISTENT_LEVEL_IMAGES_PLAN.md).
