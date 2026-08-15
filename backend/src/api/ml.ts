@@ -1099,6 +1099,120 @@ export function createMLRouter(config: {
     }
   });
 
+  type CVTemplateMatchJob = {
+    id: string;
+    status: "queued" | "running" | "completed" | "cancelled" | "failed";
+    stage: string;
+    percentage: number;
+    startedAt: string;
+    updatedAt: string;
+    finishedAt: string | null;
+    elapsedMs: number;
+    cancelRequested: boolean;
+    error: string | null;
+    result?: unknown;
+    controller: AbortController;
+  };
+  const cvTemplateMatchJobs = new Map<string, CVTemplateMatchJob>();
+
+  const cvTemplateMatchSnapshot = (job: CVTemplateMatchJob) => {
+    const { controller: _controller, ...snapshot } = job;
+    return snapshot;
+  };
+  const updateCVTemplateMatchJob = (job: CVTemplateMatchJob, patch: Partial<CVTemplateMatchJob>) => {
+    Object.assign(job, patch, { updatedAt: new Date().toISOString() });
+    job.elapsedMs = Date.now() - Date.parse(job.startedAt);
+  };
+  const runCVTemplateMatchJob = async (job: CVTemplateMatchJob, request: import("express").Request) => {
+    while (cvTemplateActive) await cvTemplateActive.catch(() => undefined);
+    if (job.cancelRequested) {
+      updateCVTemplateMatchJob(job, { status: "cancelled", stage: "cancelled", percentage: 100, finishedAt: new Date().toISOString() });
+      return;
+    }
+    const work = (async () => {
+      updateCVTemplateMatchJob(job, { status: "running", stage: "preprocessing", percentage: 3 });
+      try {
+        const origin = `${request.protocol}://${request.get("host")}`;
+        const headers: Record<string, string> = {
+          "content-type": "application/json",
+          "x-cv-job-id": job.id,
+        };
+        const authorization = request.header("authorization");
+        if (authorization) headers.authorization = authorization;
+        let progressEndpointUnavailable = false;
+        const pollProgress = async () => {
+          if (progressEndpointUnavailable) return;
+          try {
+            const progressResponse = await fetch(`${config.mlSidecarUrl}/cv/template-match-progress/${job.id}`);
+            if (progressResponse.status === 404) {
+              progressEndpointUnavailable = true;
+              return;
+            }
+            if (!progressResponse.ok) return;
+            const progress = await progressResponse.json() as { stage?: string; percentage?: number };
+            updateCVTemplateMatchJob(job, {
+              stage: progress.stage || "sidecar",
+              percentage: Math.max(job.percentage, Number(progress.percentage) || 0),
+            });
+          } catch {
+            // Progress is auxiliary; matching itself remains authoritative.
+          }
+        };
+        const progressTimer = setInterval(() => { void pollProgress(); }, 400);
+        await pollProgress();
+        let response: Response;
+        try {
+          response = await fetch(`${origin}/api/ml/cv/template-match`, {
+            method: "POST",
+            headers,
+            body: JSON.stringify(request.body),
+            signal: job.controller.signal,
+          });
+        } finally {
+          clearInterval(progressTimer);
+        }
+        if (!response.ok) throw new Error((await response.text()) || `template-match failed (${response.status})`);
+        updateCVTemplateMatchJob(job, { stage: "finalizing", percentage: 99 });
+        job.result = await response.json();
+        updateCVTemplateMatchJob(job, { status: "completed", stage: "done", percentage: 100, finishedAt: new Date().toISOString() });
+      } catch (error) {
+        if (job.cancelRequested || (error instanceof Error && error.name === "AbortError")) {
+          updateCVTemplateMatchJob(job, { status: "cancelled", stage: "cancelled", percentage: 100, finishedAt: new Date().toISOString(), error: null });
+        } else {
+          updateCVTemplateMatchJob(job, { status: "failed", stage: "error", percentage: 100, finishedAt: new Date().toISOString(), error: error instanceof Error ? error.message : "template matching failed" });
+        }
+      }
+    })();
+    cvTemplateActive = work;
+    try { await work; } finally { if (cvTemplateActive === work) cvTemplateActive = null; }
+  };
+
+  router.post("/api/ml/cv/template-match-jobs", async (request, response) => {
+    const now = new Date().toISOString();
+    const job: CVTemplateMatchJob = {
+      id: crypto.randomUUID(), status: "queued", stage: "queued", percentage: 0,
+      startedAt: now, updatedAt: now, finishedAt: null, elapsedMs: 0,
+      cancelRequested: false, error: null, controller: new AbortController(),
+    };
+    cvTemplateMatchJobs.set(job.id, job);
+    void runCVTemplateMatchJob(job, request);
+    response.status(202).json(cvTemplateMatchSnapshot(job));
+  });
+  router.get("/api/ml/cv/template-match-jobs/:jobId", (request, response) => {
+    const job = cvTemplateMatchJobs.get(request.params.jobId);
+    if (!job) { response.status(404).json({ error: "job not found" }); return; }
+    response.json(cvTemplateMatchSnapshot(job));
+  });
+  router.post("/api/ml/cv/template-match-jobs/:jobId/cancel", (request, response) => {
+    const job = cvTemplateMatchJobs.get(request.params.jobId);
+    if (!job) { response.status(404).json({ error: "job not found" }); return; }
+    job.cancelRequested = true;
+    void fetch(`${config.mlSidecarUrl}/cv/template-match-cancel/${job.id}`, { method: "POST" }).catch(() => undefined);
+    job.controller.abort();
+    updateCVTemplateMatchJob(job, { stage: "cancelled", status: job.status === "queued" ? "cancelled" : job.status, percentage: job.status === "queued" ? 100 : job.percentage });
+    response.json(cvTemplateMatchSnapshot(job));
+  });
+
   // ── POST /api/ml/cv/template-match ──────────────────────────────
   router.post("/api/ml/cv/template-match", async (request, response, next) => {
     try {
@@ -1154,7 +1268,7 @@ export function createMLRouter(config: {
 
       let sidecarRes: Response;
       try {
-        sidecarRes = await fetchSidecar(`${config.mlSidecarUrl}/cv/template-match`, 120000, { method: "POST", body: fd });
+        sidecarRes = await fetchSidecar(`${config.mlSidecarUrl}/cv/template-match`, 30 * 60 * 1000, { method: "POST", body: fd, headers: request.header("x-cv-job-id") ? { "x-cv-job-id": request.header("x-cv-job-id")! } : undefined });
       } catch { response.status(503).json({ error: "sidecar unreachable" }); return; }
       if (!sidecarRes.ok) { response.status(502).json({ error: `sidecar /cv/template-match ${sidecarRes.status}` }); return; }
       const data = await sidecarRes.json();
@@ -1165,6 +1279,112 @@ export function createMLRouter(config: {
         total: data.total,
       } satisfies CVMatchResponse);
     } catch (error) { next(error); }
+  });
+
+  type CVTemplateJob = {
+    id: string;
+    status: "queued" | "running" | "completed" | "cancelled" | "failed";
+    stage: string;
+    percentage: number;
+    startedAt: string;
+    updatedAt: string;
+    finishedAt: string | null;
+    elapsedMs: number;
+    cancelRequested: boolean;
+    error: string | null;
+    result?: unknown;
+    controller: AbortController;
+  };
+  const cvTemplateJobs = new Map<string, CVTemplateJob>();
+  let cvTemplateActive: Promise<void> | null = null;
+
+  const cvJobSnapshot = (job: CVTemplateJob) => {
+    const { controller: _controller, ...snapshot } = job;
+    return snapshot;
+  };
+  const updateCVTemplateJob = (job: CVTemplateJob, patch: Partial<CVTemplateJob>) => {
+    Object.assign(job, patch, { updatedAt: new Date().toISOString() });
+    job.elapsedMs = Date.now() - Date.parse(job.startedAt);
+  };
+  const runCVTemplateJob = async (job: CVTemplateJob, request: import("express").Request) => {
+    while (cvTemplateActive) await cvTemplateActive.catch(() => undefined);
+    if (job.cancelRequested) {
+      updateCVTemplateJob(job, { status: "cancelled", stage: "cancelled", percentage: 100, finishedAt: new Date().toISOString() });
+      return;
+    }
+    const work = (async () => {
+      updateCVTemplateJob(job, { status: "running", stage: "sidecar", percentage: 15 });
+      try {
+        const origin = `${request.protocol}://${request.get("host")}`;
+        const headers: Record<string, string> = { "content-type": "application/json", "x-cv-job-id": job.id };
+        const authorization = request.header("authorization");
+        if (authorization) headers.authorization = authorization;
+        const pollProgress = async () => {
+          try {
+            const progressResponse = await fetch(`${config.mlSidecarUrl}/cv/template-debug-progress/${job.id}`);
+            if (!progressResponse.ok) return;
+            const progress = await progressResponse.json() as { stage?: string; percentage?: number };
+            updateCVTemplateJob(job, {
+              stage: progress.stage || "sidecar",
+              percentage: Math.max(job.percentage, Number(progress.percentage) || 0),
+            });
+          } catch {
+            // Progress is diagnostic; the template job remains authoritative.
+          }
+        };
+        const progressTimer = setInterval(() => { void pollProgress(); }, 400);
+        await pollProgress();
+        let response: Response;
+        try {
+          response = await fetch(`${origin}/api/ml/cv/template-debug`, {
+            method: "POST",
+            headers,
+            body: JSON.stringify(request.body),
+            signal: job.controller.signal,
+          });
+        } finally {
+          clearInterval(progressTimer);
+        }
+        if (!response.ok) throw new Error((await response.text()) || `template-debug failed (${response.status})`);
+        updateCVTemplateJob(job, { stage: "finalizing", percentage: 90 });
+        job.result = await response.json();
+        updateCVTemplateJob(job, { status: "completed", stage: "done", percentage: 100, finishedAt: new Date().toISOString() });
+      } catch (error) {
+        if (job.cancelRequested || (error instanceof Error && error.name === "AbortError")) {
+          updateCVTemplateJob(job, { status: "cancelled", stage: "cancelled", percentage: 100, finishedAt: new Date().toISOString(), error: null });
+        } else {
+          updateCVTemplateJob(job, { status: "failed", stage: "error", percentage: 100, finishedAt: new Date().toISOString(), error: error instanceof Error ? error.message : "template-debug failed" });
+        }
+      }
+    })();
+    cvTemplateActive = work;
+    try { await work; } finally { if (cvTemplateActive === work) cvTemplateActive = null; }
+  };
+
+  router.post("/api/ml/cv/template-debug-jobs", async (request, response) => {
+    const now = new Date().toISOString();
+    const job: CVTemplateJob = {
+      id: crypto.randomUUID(), status: "queued", stage: "queued", percentage: 0,
+      startedAt: now, updatedAt: now, finishedAt: null, elapsedMs: 0,
+      cancelRequested: false, error: null, controller: new AbortController(),
+    };
+    cvTemplateJobs.set(job.id, job);
+    void runCVTemplateJob(job, request);
+    response.status(202).json(cvJobSnapshot(job));
+  });
+  router.get("/api/ml/cv/template-debug-jobs/:jobId", (request, response) => {
+    const job = cvTemplateJobs.get(request.params.jobId);
+    if (!job) { response.status(404).json({ error: "job not found" }); return; }
+    response.json(cvJobSnapshot(job));
+  });
+  router.post("/api/ml/cv/template-debug-jobs/:jobId/cancel", (request, response) => {
+    const job = cvTemplateJobs.get(request.params.jobId);
+    if (!job) { response.status(404).json({ error: "job not found" }); return; }
+    job.cancelRequested = true;
+    void fetch(`${config.mlSidecarUrl}/cv/template-debug-cancel/${job.id}`, { method: "POST" }).catch(() => undefined);
+    job.controller.abort();
+    updateCVTemplateJob(job, { stage: "cancelled", status: job.status === "queued" ? "cancelled" : job.status, percentage: job.status === "queued" ? 100 : job.percentage });
+    response.json(cvJobSnapshot(job));
   });
 
   // ── POST /api/ml/cv/template-debug ─────────────────────────────
@@ -1217,7 +1437,7 @@ export function createMLRouter(config: {
       if (body.nmsDist != null) fd.append("nms_dist", String(body.nmsDist));
       let sidecarRes: Response;
       try {
-        sidecarRes = await fetchSidecar(`${config.mlSidecarUrl}/cv/template-debug`, 120000, { method: "POST", body: fd });
+        sidecarRes = await fetchSidecar(`${config.mlSidecarUrl}/cv/template-debug`, 30 * 60 * 1000, { method: "POST", body: fd, headers: request.header("x-cv-job-id") ? { "x-cv-job-id": request.header("x-cv-job-id")! } : undefined });
       } catch { response.status(503).json({ error: "sidecar unreachable" }); return; }
       if (!sidecarRes.ok) { response.status(502).json({ error: `sidecar /cv/template-debug ${sidecarRes.status}` }); return; }
       const data = await sidecarRes.json();

@@ -4,7 +4,7 @@ import type { ActionDispatcher } from "../../api/actions";
 import { uuid } from "../../lib/uuid";
 import { topVisibleOverlaySourceId } from "../../state/overlayLayers";
 import { useDieViewerStore } from "../../state/dieViewer";
-import { cvDebug, cvDebugDump, cvMatch, cvTemplateDebug, cvTemplateMatch, cvAkazeVerify, cvAkazeDebug } from "../../api/ml";
+import { cvDebug, cvDebugDump, cvMatch, cvTemplateDebug, startCVTemplateMatchJob, getCVTemplateMatchJob, cancelCVTemplateMatchJob, startCVTemplateDebugJob, getCVTemplateDebugJob, cancelCVTemplateDebugJob, cvAkazeVerify, cvAkazeDebug } from "../../api/ml";
 
 function useRefCell(annotations: DieAnnotations | undefined) {
   const selectedIds = useDieViewerStore((s) => s.selectedIds);
@@ -99,6 +99,7 @@ function TemplateSection({
 }) {
   const { cell, type } = useRefCell(annotations);
   const [running, setRunning] = useState(false);
+  const [tmMatchJob, setTmMatchJob] = useState<import("../../api/ml").CVTemplateMatchJob | null>(null);
   const [threshold, setThreshold] = useState(0.5);
   const [rotationSteps, setRotationSteps] = useState(4);
   const [maxMatches, setMaxMatches] = useState(100);
@@ -109,6 +110,7 @@ function TemplateSection({
   const [err, setErr] = useState<string | null>(null);
   const [showTmAdvanced, setShowTmAdvanced] = useState(false);
   const [showTmDebug, setShowTmDebug] = useState(false);
+  const [tmDebugJob, setTmDebugJob] = useState<import("../../api/ml").CVTemplateDebugJob | null>(null);
   const [tmDebugData, setTmDebugData] = useState<import("shared").CVDebugData | null>(null);
   const [tmDebugLoading, setTmDebugLoading] = useState(false);
   const [lastMatches, setLastMatches] = useState<import("shared").CVMatchResult[]>([]);
@@ -131,7 +133,7 @@ function TemplateSection({
     setErr(null);
     setResult(null);
     try {
-      const res = await cvTemplateMatch({
+      const initial = await startCVTemplateMatchJob({
         dieId: dieId!,
         cellTypeId: type!.id,
         cellX: cell!.x,
@@ -144,6 +146,18 @@ function TemplateSection({
         nmsIou,
         nmsDist,
       });
+      setTmMatchJob(initial);
+      let current = initial;
+      while (current.status === "queued" || current.status === "running") {
+        await new Promise((resolve) => setTimeout(resolve, 400));
+        current = await getCVTemplateMatchJob(initial.id);
+        setTmMatchJob(current);
+      }
+      if (current.status === "cancelled") return;
+      if (current.status !== "completed" || !current.result) {
+        throw new Error(current.error ?? "Template matching failed");
+      }
+      const res = current.result;
       const cellIds: (string | null)[] = [];
       for (const m of res.matches) {
         const id = dispatchMatch(dispatcher, type!.id, type!.cropRect.width, type!.cropRect.height, threshold, {
@@ -214,8 +228,21 @@ function TemplateSection({
             disabled={!ready || running}
             onClick={() => void run()}
           >
-            {running ? "Running template match…" : "Run template matching"}
+            {running ? `Template matching ${tmMatchJob?.percentage ?? 0}%` : "Run template matching"}
           </button>
+          {running && tmMatchJob && (
+            <div style={{ marginTop: 5, fontSize: 10 }}>
+              <div style={{ display: "flex", justifyContent: "space-between" }}>
+                <span>{tmMatchJob.stage}</span><span>{tmMatchJob.percentage}%</span>
+              </div>
+              <progress value={tmMatchJob.percentage} max={100} style={{ width: "100%" }} />
+              <button
+                type="button"
+                className="btn"
+                onClick={async () => setTmMatchJob(await cancelCVTemplateMatchJob(tmMatchJob.id))}
+              >Cancel template matching</button>
+            </div>
+          )}
           <StatusLine result={result} err={err} />
 
           {lastMatches.length >= 2 && (
@@ -416,7 +443,7 @@ function TemplateSection({
               setTmDebugLoading(true);
               setTmDebugData(null);
               try {
-                const data = await cvTemplateDebug({
+                const initial = await startCVTemplateDebugJob({
                   dieId: dieId!,
                   cellTypeId: type!.id,
                   cellX: cell!.x,
@@ -429,8 +456,19 @@ function TemplateSection({
                   nmsIou,
                   nmsDist,
                 });
-                setTmDebugData(data as import("shared").CVDebugData);
-                setShowTmDebug(true);
+                setTmDebugJob(initial);
+                let current = initial;
+                while (current.status === "queued" || current.status === "running") {
+                  await new Promise((resolve) => setTimeout(resolve, 500));
+                  current = await getCVTemplateDebugJob(initial.id);
+                  setTmDebugJob(current);
+                }
+                if (current.status === "completed" && current.result) {
+                  setTmDebugData(current.result);
+                  setShowTmDebug(true);
+                } else if (current.status === "failed") {
+                  throw new Error(current.error ?? "template debug failed");
+                }
               } catch (e) {
                 setErr(e instanceof Error ? e.message : "template debug failed");
               } finally {
@@ -441,6 +479,22 @@ function TemplateSection({
             {tmDebugLoading ? "Loading template debug…" : showTmDebug ? "Hide template debug" : "Debug template"}
           </button>
 
+          {tmDebugLoading && tmDebugJob && (
+            <div style={{ marginTop: 5, fontSize: 10 }}>
+              <div style={{ display: "flex", justifyContent: "space-between" }}>
+                <span>{tmDebugJob.stage}</span><span>{tmDebugJob.percentage}%</span>
+              </div>
+              <progress value={tmDebugJob.percentage} max={100} style={{ width: "100%" }} />
+              <button
+                type="button"
+                className="btn"
+                onClick={async () => {
+                  const cancelled = await cancelCVTemplateDebugJob(tmDebugJob.id);
+                  setTmDebugJob(cancelled);
+                }}
+              >Cancel template debug</button>
+            </div>
+          )}
           {showTmDebug && tmDebugData && (
             <div style={{ marginTop: 8, fontSize: 10, color: "var(--ink2)" }}>
               <div className="m" style={{ marginBottom: 4 }}>

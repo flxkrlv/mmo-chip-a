@@ -223,6 +223,58 @@ export function cvTemplateDebug(params: CVMatchRequest): Promise<CVDebugData> {
   return apiPost<CVDebugData>("/api/ml/cv/template-debug", params);
 }
 
+export interface CVTemplateMatchJob {
+  id: string;
+  status: "queued" | "running" | "completed" | "cancelled" | "failed";
+  stage: string;
+  percentage: number;
+  startedAt: string;
+  updatedAt: string;
+  finishedAt: string | null;
+  elapsedMs: number;
+  cancelRequested: boolean;
+  error: string | null;
+  result?: CVMatchResponse;
+}
+
+export function startCVTemplateMatchJob(params: CVMatchRequest): Promise<CVTemplateMatchJob> {
+  return apiPost<CVTemplateMatchJob>("/api/ml/cv/template-match-jobs", params);
+}
+
+export function getCVTemplateMatchJob(jobId: string): Promise<CVTemplateMatchJob> {
+  return apiGet<CVTemplateMatchJob>(`/api/ml/cv/template-match-jobs/${jobId}`);
+}
+
+export function cancelCVTemplateMatchJob(jobId: string): Promise<CVTemplateMatchJob> {
+  return apiPost<CVTemplateMatchJob>(`/api/ml/cv/template-match-jobs/${jobId}/cancel`, {});
+}
+
+export interface CVTemplateDebugJob {
+  id: string;
+  status: "queued" | "running" | "completed" | "cancelled" | "failed";
+  stage: string;
+  percentage: number;
+  startedAt: string;
+  updatedAt: string;
+  finishedAt: string | null;
+  elapsedMs: number;
+  cancelRequested: boolean;
+  error: string | null;
+  result?: CVDebugData;
+}
+
+export function startCVTemplateDebugJob(params: CVMatchRequest): Promise<CVTemplateDebugJob> {
+  return apiPost<CVTemplateDebugJob>("/api/ml/cv/template-debug-jobs", params);
+}
+
+export function getCVTemplateDebugJob(jobId: string): Promise<CVTemplateDebugJob> {
+  return apiGet<CVTemplateDebugJob>(`/api/ml/cv/template-debug-jobs/${jobId}`);
+}
+
+export function cancelCVTemplateDebugJob(jobId: string): Promise<CVTemplateDebugJob> {
+  return apiPost<CVTemplateDebugJob>(`/api/ml/cv/template-debug-jobs/${jobId}/cancel`, {});
+}
+
 export function cvAkazeVerify(params: AKAZEReverifyRequest): Promise<AKAZEReverifyResponse> {
   return apiPost<AKAZEReverifyResponse>("/api/ml/cv/akaze-verify", params);
 }

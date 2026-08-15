@@ -16,6 +16,12 @@ import base64
 import hashlib
 import math
 import os
+
+# Prefer a responsive desktop over maximum single-job throughput.
+os.environ.setdefault("OMP_NUM_THREADS", "1")
+os.environ.setdefault("MKL_NUM_THREADS", "1")
+os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
+os.environ.setdefault("NUMEXPR_NUM_THREADS", "1")
 import threading
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -26,7 +32,7 @@ import cv2
 import numpy as np
 import torch
 import uvicorn
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, Header, HTTPException, UploadFile
 from pydantic import BaseModel
 
 from augment import normalize_only
@@ -174,6 +180,60 @@ class TrainBody(BaseModel):
 class ReloadBody(BaseModel):
     checkpoint_path: str
 
+
+
+
+# CV resource safety: keep the desktop responsive on large die images.
+# All heavy CV endpoints share one gate; the job layer will provide queueing/cancel.
+CV_OPENCV_THREADS = max(1, int(os.getenv("CV_OPENCV_THREADS", "1")))
+CV_TORCH_THREADS = max(1, int(os.getenv("CV_TORCH_THREADS", "1")))
+CV_TORCH_INTEROP_THREADS = max(1, int(os.getenv("CV_TORCH_INTEROP_THREADS", "1")))
+CV_GATE_WAIT_SECONDS = max(0.0, float(os.getenv("CV_GATE_WAIT_SECONDS", "0.25")))
+CV_RESOURCE_GATE = threading.BoundedSemaphore(1)
+CANCELLED_CV_JOBS: set[str] = set()
+CV_JOB_PROGRESS: dict[str, dict] = {}
+
+try:
+    cv2.setNumThreads(CV_OPENCV_THREADS)
+except Exception:
+    pass
+try:
+    torch.set_num_threads(CV_TORCH_THREADS)
+    torch.set_num_interop_threads(CV_TORCH_INTEROP_THREADS)
+except Exception:
+    # PyTorch may reject changing inter-op threads after work has started.
+    pass
+
+
+def cv_resource_guard(fn):
+    """Serialize heavy CV requests and fail fast instead of freezing the host."""
+    from functools import wraps
+
+    @wraps(fn)
+    def guarded(*args, **kwargs):
+        acquired = CV_RESOURCE_GATE.acquire(timeout=CV_GATE_WAIT_SECONDS)
+        if not acquired:
+            raise HTTPException(
+                status_code=429,
+                detail={
+                    "code": "cv_busy",
+                    "message": "Another CV operation is already using the resource budget",
+                },
+            )
+        try:
+            return fn(*args, **kwargs)
+        except MemoryError as exc:
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "code": "resource_exhausted",
+                    "message": "CV operation exceeded the available memory budget",
+                },
+            ) from exc
+        finally:
+            CV_RESOURCE_GATE.release()
+
+    return guarded
 
 app = FastAPI(title="chiptool-ml-sidecar")
 
@@ -558,8 +618,10 @@ def cv_debug_dump(
 
 
 @app.post("/cv/template-match")
+@cv_resource_guard
 def cv_template_match(
     search: UploadFile = File(...),
+    job_id: str | None = Header(default=None, alias="x-cv-job-id"),
     ref_x: int = Form(...),
     ref_y: int = Form(...),
     ref_w: int = Form(...),
@@ -594,9 +656,41 @@ def cv_template_match(
     return {"matches": matches, "total": len(matches)}
 
 
+def update_cv_job_progress(job_id: str, stage: str, completed: int, total: int, percentage: int) -> None:
+    CV_JOB_PROGRESS[job_id] = {
+        "stage": stage,
+        "completed": completed,
+        "total": total,
+        "percentage": max(0, min(99, int(percentage))),
+    }
+
+
+@app.get("/cv/template-match-progress/{job_id}")
+def cv_template_match_progress(job_id: str) -> dict:
+    return CV_JOB_PROGRESS.get(job_id, {"stage": "queued", "completed": 0, "total": 1, "percentage": 0})
+
+
+@app.post("/cv/template-match-cancel/{job_id}")
+def cv_template_match_cancel(job_id: str) -> dict:
+    CANCELLED_CV_JOBS.add(job_id)
+    return {"ok": True, "job_id": job_id}
+
+
+@app.get("/cv/template-debug-progress/{job_id}")
+def cv_template_debug_progress(job_id: str) -> dict:
+    return CV_JOB_PROGRESS.get(job_id, {"stage": "queued", "completed": 0, "total": 1, "percentage": 0})
+
+
+@app.post("/cv/template-debug-cancel/{job_id}")
+def cv_template_debug_cancel(job_id: str) -> dict:
+    CANCELLED_CV_JOBS.add(job_id)
+    return {"ok": True, "job_id": job_id}
+
 @app.post("/cv/template-debug")
+@cv_resource_guard
 def cv_template_debug(
     search: UploadFile = File(...),
+    job_id: str | None = Header(default=None, alias="x-cv-job-id"),
     ref_x: int = Form(...),
     ref_y: int = Form(...),
     ref_w: int = Form(...),
@@ -628,7 +722,16 @@ def cv_template_debug(
     }
 
     from cv_match import debug_template_pipeline
-    return debug_template_pipeline(search_rgb, (ref_x, ref_y, ref_w, ref_h), params)
+    if job_id:
+        update_cv_job_progress(job_id, "preprocessing", 0, 1, 3)
+        params["cancel_check"] = lambda: job_id in CANCELLED_CV_JOBS
+        params["progress_callback"] = lambda stage, completed, total, percentage: update_cv_job_progress(
+            job_id, stage, completed, total, percentage
+        )
+    result = debug_template_pipeline(search_rgb, (ref_x, ref_y, ref_w, ref_h), params)
+    if job_id:
+        update_cv_job_progress(job_id, "done", 1, 1, 99)
+    return result
 
 
 @app.post("/cv/akaze-verify")

@@ -6,6 +6,7 @@ Key differences: no GUI, clean functions, rotation detection added, NMS tuned.
 from __future__ import annotations
 
 import os
+import gc
 import cv2
 import numpy as np
 
@@ -917,6 +918,8 @@ def debug_match_pipeline(
     rx0 = max(0, rx0); ry0 = max(0, ry0)
     rw = min(rw, search_gray.shape[1] - rx0)
     rh = min(rh, search_gray.shape[0] - ry0)
+    del search_gray
+    gc.collect()
     ref_roi = search_pp[ry0:ry0 + rh, rx0:rx0 + rw]
     ref_cnts = extract_all_contours_from_roi(ref_roi, min_area=p["min_area"])
     if not ref_cnts:
@@ -926,6 +929,8 @@ def debug_match_pipeline(
     ref_crop_rgb = search_rgb[ry0:ry0 + rh, rx0:rx0 + rw]
     _, cbuf = cv2.imencode(".png", cv2.cvtColor(ref_crop_rgb, cv2.COLOR_RGB2BGR))
     ref_crop_b64 = base64.b64encode(cbuf.tobytes()).decode("ascii")
+    del search_rgb, ref_crop_rgb
+    gc.collect()
 
     # Match hierarchy depths from first binary variant
     ref_depths = _match_depth_to_ref(ref_cnts, ref_roi)
@@ -1085,7 +1090,7 @@ def match_template_pipeline(
     ref_bbox: tuple[int, int, int, int],
     params: dict | None = None,
 ) -> list[dict]:
-    """Template matching pipeline — Sobel filter + matchTemplate + multi-angle + NMS."""
+    """Template matching pipeline â€” Sobel filter + matchTemplate + multi-angle + NMS."""
     p = {
         "threshold": 0.5,
         "rotation_steps": 4,
@@ -1097,15 +1102,28 @@ def match_template_pipeline(
         **(params or {}),
     }
 
+    cancel_check = p.pop("cancel_check", None)
+    progress_callback = p.pop("progress_callback", None)
+
+    def report(stage: str, completed: int, total: int, percentage: int) -> None:
+        if progress_callback is None:
+            return
+        try:
+            progress_callback(stage, completed, total, percentage)
+        except Exception:
+            pass
+
+    report("preprocessing", 0, 1, 3)
     search_gray = cv2.cvtColor(search_rgb, cv2.COLOR_RGB2GRAY)
     ksize = p["sobel_ksize"]
     if ksize % 2 == 0:
         ksize += 1
 
-    sobelx = cv2.Sobel(search_gray, cv2.CV_64F, 1, 0, ksize=ksize)
-    sobely = cv2.Sobel(search_gray, cv2.CV_64F, 0, 1, ksize=ksize)
+    sobelx = cv2.Sobel(search_gray, cv2.CV_32F, 1, 0, ksize=ksize)
+    sobely = cv2.Sobel(search_gray, cv2.CV_32F, 0, 1, ksize=ksize)
     search_edges = cv2.magnitude(sobelx, sobely)
     search_edges = cv2.normalize(search_edges, None, 0, 255, cv2.NORM_MINMAX, cv2.CV_8U)
+    del sobelx, sobely
 
     rx0, ry0, rw, rh = ref_bbox
     rx0 = max(0, rx0)
@@ -1115,6 +1133,9 @@ def match_template_pipeline(
     if rw <= 0 or rh <= 0:
         return []
 
+    del search_gray, search_rgb
+    gc.collect()
+    report("preprocessing", 1, 1, 15)
     ref_template = search_edges[ry0:ry0 + rh, rx0:rx0 + rw]
     tw = ref_template.shape[1]
     th = ref_template.shape[0]
@@ -1126,8 +1147,13 @@ def match_template_pipeline(
         angles_to_try.extend([90, 270])
 
     all_matches: list[tuple[float, int, int, int]] = []
+    total_angles = max(1, len(angles_to_try))
+    report("matching", 0, total_angles, 15)
 
-    for angle in angles_to_try:
+    for angle_index, angle in enumerate(angles_to_try, start=1):
+        if cancel_check and cancel_check():
+            raise RuntimeError("cv_cancelled")
+        report(f"matching {angle}°", angle_index - 1, total_angles, 15 + round(70 * (angle_index - 1) / total_angles))
         if angle == 0:
             tmpl = ref_template
         elif angle == 90:
@@ -1143,13 +1169,22 @@ def match_template_pipeline(
             continue
 
         result = cv2.matchTemplate(search_edges, tmpl, cv2.TM_CCOEFF_NORMED)
-        locations = np.where(result >= p["threshold"])
-        for pt in zip(*locations[::-1]):
-            all_matches.append((float(result[pt[1], pt[0]]), int(pt[0]), int(pt[1]), angle))
+        flat = result.ravel()
+        reserve = min(flat.size, max(1000, int(p["max_matches"]) * 32))
+        if reserve > 0:
+            top_indices = np.argpartition(flat, -reserve)[-reserve:]
+            top_indices = top_indices[flat[top_indices] >= p["threshold"]]
+            for flat_index in top_indices:
+                y, x = divmod(int(flat_index), result.shape[1])
+                all_matches.append((float(result[y, x]), x, y, angle))
+        del result
+        gc.collect()
+        report(f"matching {angle}°", angle_index, total_angles, 15 + round(70 * angle_index / total_angles))
 
     if not all_matches:
         return []
 
+    report("filtering candidates", total_angles, total_angles, 90)
     all_matches.sort(key=lambda x: -x[0])
 
     nms_iou = p["nms_iou"]
@@ -1203,6 +1238,7 @@ def match_template_pipeline(
             "bbox": [x, y, w, h],
         })
 
+    report("done", total_angles, total_angles, 99)
     return results
 
 
@@ -1224,25 +1260,44 @@ def debug_template_pipeline(
         "nms_dist": 30,
         **(params or {}),
     }
+    cancel_check = p.pop("cancel_check", None)
+    progress_callback = p.pop("progress_callback", None)
 
+    def report(stage: str, completed: int, total: int, percentage: int) -> None:
+        if progress_callback is None:
+            return
+        try:
+            progress_callback(stage, completed, total, percentage)
+        except Exception:
+            # Diagnostics must never break CV inference.
+            pass
+
+    report("preprocessing", 0, 1, 3)
     search_gray = cv2.cvtColor(search_rgb, cv2.COLOR_RGB2GRAY)
     ksize = p["sobel_ksize"]
     if ksize % 2 == 0:
         ksize += 1
 
-    sobelx = cv2.Sobel(search_gray, cv2.CV_64F, 1, 0, ksize=ksize)
-    sobely = cv2.Sobel(search_gray, cv2.CV_64F, 0, 1, ksize=ksize)
+    sobelx = cv2.Sobel(search_gray, cv2.CV_32F, 1, 0, ksize=ksize)
+    sobely = cv2.Sobel(search_gray, cv2.CV_32F, 0, 1, ksize=ksize)
     search_edges = cv2.magnitude(sobelx, sobely)
     search_edges = cv2.normalize(search_edges, None, 0, 255, cv2.NORM_MINMAX, cv2.CV_8U)
+    del sobelx, sobely
+    gc.collect()
+    report("preprocessing", 1, 1, 15)
 
     rx0, ry0, rw, rh = ref_bbox
     rx0 = max(0, rx0); ry0 = max(0, ry0)
     rw = min(rw, search_gray.shape[1] - rx0)
     rh = min(rh, search_gray.shape[0] - ry0)
+    del search_gray
+    gc.collect()
 
     ref_crop_rgb = search_rgb[ry0:ry0 + rh, rx0:rx0 + rw]
     _, cbuf = cv2.imencode(".png", cv2.cvtColor(ref_crop_rgb, cv2.COLOR_RGB2BGR))
     ref_crop_b64 = base64.b64encode(cbuf.tobytes()).decode("ascii")
+    del search_rgb, ref_crop_rgb
+    gc.collect()
 
     result: dict = {
         "ref_crop_png_b64": ref_crop_b64,
@@ -1288,8 +1343,11 @@ def debug_template_pipeline(
         angles_to_try.extend([90, 270])
 
     all_matches: list[tuple[float, int, int, int]] = []
+    total_angles = max(1, len(angles_to_try))
+    report("matching", 0, total_angles, 15)
 
-    for angle in angles_to_try:
+    for angle_index, angle in enumerate(angles_to_try, start=1):
+        report(f"matching {angle}°", angle_index - 1, total_angles, 15 + round(70 * (angle_index - 1) / total_angles))
         if angle == 0:
             tmpl = ref_template
         elif angle == 90:
@@ -1305,10 +1363,25 @@ def debug_template_pipeline(
             continue
 
         match_result = cv2.matchTemplate(search_edges, tmpl, cv2.TM_CCOEFF_NORMED)
-        locations = np.where(match_result >= p["threshold"])
-        for pt in zip(*locations[::-1]):
-            all_matches.append((float(match_result[pt[1], pt[0]]), int(pt[0]), int(pt[1]), angle))
+        if cancel_check and cancel_check():
+            raise RuntimeError("cv_cancelled")
+        # Keep candidate memory bounded. A full boolean mask plus all coordinate
+        # arrays can exceed RAM when the threshold is permissive. We keep a
+        # confidence-ranked reserve large enough for NMS, then run the existing
+        # exact NMS logic on that reserve.
+        flat = match_result.ravel()
+        reserve = min(flat.size, max(1000, int(p["max_matches"]) * 32))
+        if reserve > 0:
+            top_indices = np.argpartition(flat, -reserve)[-reserve:]
+            top_indices = top_indices[flat[top_indices] >= p["threshold"]]
+            for flat_index in top_indices:
+                y, x = divmod(int(flat_index), match_result.shape[1])
+                all_matches.append((float(match_result[y, x]), x, y, angle))
+        del match_result
+        gc.collect()
+        report(f"matching {angle}°", angle_index, total_angles, 15 + round(70 * angle_index / total_angles))
 
+    report("filtering candidates", total_angles, total_angles, 88)
     result["pre_nms_peaks"] = len(all_matches)
 
     if not all_matches:
@@ -1372,6 +1445,7 @@ def debug_template_pipeline(
     result["top_matches"] = top_matches
     result["total_candidates"] = len(top_matches)
 
+    report("building preview", total_angles, total_angles, 95)
     sv = cv2.cvtColor(search_edges, cv2.COLOR_GRAY2BGR)
     for conf, x, y, angle in filtered:
         w, h = _tmpl_wh(angle, tw, th)
@@ -1388,6 +1462,7 @@ def debug_template_pipeline(
     _, sbuf = cv2.imencode(".jpg", sv_rs, [cv2.IMWRITE_JPEG_QUALITY, 85])
     result["search_preview_png_b64"] = base64.b64encode(sbuf.tobytes()).decode("ascii")
 
+    report("done", total_angles, total_angles, 99)
     return result
 
 
