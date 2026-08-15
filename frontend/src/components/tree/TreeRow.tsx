@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import type { ReactNode, DragEventHandler } from "react";
 import { Ic } from "../../icons";
 
 export type ExpandState = "open" | "closed" | "leaf";
@@ -19,6 +19,12 @@ export type TreeRowProps = {
   onDoubleClick?: () => void;
   /** Triple-click the row (e.g. to solo layer selectability). */
   onTripleClick?: () => void;
+  /** Optional native drag/drop hooks for reorderable rows. */
+  draggable?: boolean;
+  onDragStart?: DragEventHandler<HTMLDivElement>;
+  onDragOver?: DragEventHandler<HTMLDivElement>;
+  onDrop?: DragEventHandler<HTMLDivElement>;
+  onDragEnd?: DragEventHandler<HTMLDivElement>;
   /** Render an eye / eye-off button at the right end; click toggles visibility. */
   visibility?: { visible: boolean; onToggle: () => void };
   /** Render a lock / unlock button next to the eye; click toggles selectability. */
@@ -45,6 +51,11 @@ export function TreeRow({
   onSelect,
   onDoubleClick,
   onTripleClick,
+  draggable,
+  onDragStart,
+  onDragOver,
+  onDrop,
+  onDragEnd,
   visibility,
   selectable,
   controls
@@ -52,6 +63,11 @@ export function TreeRow({
   return (
     <div
       className={"trow" + (selected ? " sel" : "")}
+      draggable={draggable}
+      onDragStart={onDragStart}
+      onDragOver={onDragOver}
+      onDrop={onDrop}
+      onDragEnd={onDragEnd}
       style={{
         paddingLeft: 4 + depth * 12,
         opacity: dimmed ? 0.58 : 1,

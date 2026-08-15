@@ -61,3 +61,10 @@ The implementation is covered by full frontend/backend build checks and backend 
 ## Russian summary
 
 Система использует общий для LAN-команды tiled storage на уровне die и персональные browser settings слоёв. Рендерер остаётся progressive и viewport-driven: видимые tiles загружаются с приоритетом, coarse preview исключает чёрные кадры, а arrival одного source tile перерисовывает только его область. Project export переносит manifest и original каждого overlay без производных tiles; import безопасно перепривязывает пути и заново строит cache по требованию.
+
+## Personal layer organization
+
+Overlay layers now support **per-user drag-and-drop ordering** in the Outline tree. The chosen order is persisted in browser preferences and does not alter the shared team manifest or any other user's view.
+
+Layer display names can be changed with a **double-click inline rename**. Names are stored per user, default to the original filename, and support Unicode text including Cyrillic characters. Visibility, opacity, offsets, order, and display names remain personal settings, while ML/CV continues to select the top visible layer for the current user.
+

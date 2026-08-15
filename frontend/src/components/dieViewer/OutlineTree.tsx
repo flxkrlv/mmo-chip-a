@@ -100,6 +100,8 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
   const addLayer = useOverlayLayers((s) => s.addLayer);
   const addTiledLayer = useOverlayLayers((s) => s.addTiledLayer);
   const setLayerHidden = useOverlayLayers((s) => s.setLayerHidden);
+  const moveLayer = useOverlayLayers((s) => s.moveLayer);
+  const [draggedOverlayIndex, setDraggedOverlayIndex] = useState<number | null>(null);
 
   const localFileInputRef = useRef<HTMLInputElement>(null);
   const serverFileInputRef = useRef<HTMLInputElement>(null);
@@ -719,12 +721,23 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
             <strong> Load from Server</strong> picks up images already on disk.
             <strong> Add overlay image</strong> quick upload, same as above.
           </div>
-          {overlayLayers.map((layer) => (
+          {overlayLayers.map((layer, index) => (
             <TreeRow
               key={layer.id}
               depth={1}
               icon={Ic.image}
-              label={layer.name}
+              draggable
+              onDragStart={() => setDraggedOverlayIndex(index)}
+              onDragOver={(event) => event.preventDefault()}
+              onDrop={(event) => {
+                event.preventDefault();
+                if (draggedOverlayIndex != null && draggedOverlayIndex !== index) {
+                  moveLayer(draggedOverlayIndex, index);
+                }
+                setDraggedOverlayIndex(null);
+              }}
+              onDragEnd={() => setDraggedOverlayIndex(null)}
+              label={<OverlayLayerLabel layerId={layer.id} name={layer.name} />}
               controls={
                 <OverlayLayerSettings layerId={layer.id} />
               }
@@ -1072,6 +1085,46 @@ function ViaSettingsButton() {
         </>
       )}
     </SettingsPopover>
+  );
+}
+
+/** Personal display name editor for a shared overlay source. */
+function OverlayLayerLabel({ layerId, name }: { layerId: string; name: string }) {
+  const renameLayer = useOverlayLayers((s) => s.renameLayer);
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(name);
+  useEffect(() => { if (!editing) setDraft(name); }, [name, editing]);
+  const commit = () => {
+    const next = draft.trim().slice(0, 120);
+    if (next) renameLayer(layerId, next);
+    setEditing(false);
+  };
+  if (editing) {
+    return (
+      <input
+        autoFocus
+        value={draft}
+        maxLength={120}
+        onChange={(event) => setDraft(event.target.value)}
+        onClick={(event) => event.stopPropagation()}
+        onDoubleClick={(event) => event.stopPropagation()}
+        onKeyDown={(event) => {
+          if (event.key === "Enter") commit();
+          if (event.key === "Escape") { setDraft(name); setEditing(false); }
+        }}
+        onBlur={commit}
+        style={{ width: "100%", minWidth: 0, background: "var(--l1)", color: "inherit", border: "1px solid var(--accent)" }}
+      />
+    );
+  }
+  return (
+    <span
+      title="Double-click to rename"
+      onDoubleClick={(event) => { event.stopPropagation(); setEditing(true); }}
+      style={{ cursor: "text" }}
+    >
+      {name}
+    </span>
   );
 }
 

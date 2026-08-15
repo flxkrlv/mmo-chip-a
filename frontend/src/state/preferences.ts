@@ -25,6 +25,10 @@ export interface OverlayLayerPersistedSettings {
   opacity: number;
   offsetX: number;
   offsetY: number;
+  /** Personal presentation name; source identity remains serverFilename. */
+  name?: string;
+  /** Personal visual-stack position; lower values paint below higher values. */
+  order?: number;
 }
 
 interface PreferencesState {

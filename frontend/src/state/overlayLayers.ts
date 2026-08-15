@@ -92,7 +92,14 @@ export function saveOverlaySettingsToPrefs(dieId: string): void {
   const settings: Record<string, OverlayLayerPersistedSettings> = {};
   for (const layer of useOverlayLayers.getState().layers) {
     if (!layer.serverFilename) continue;
-    settings[layer.serverFilename] = { hidden: layer.hidden, opacity: layer.opacity, offsetX: layer.offsetX, offsetY: layer.offsetY };
+    settings[layer.serverFilename] = {
+      hidden: layer.hidden,
+      opacity: layer.opacity,
+      offsetX: layer.offsetX,
+      offsetY: layer.offsetY,
+      name: layer.name,
+      order: useOverlayLayers.getState().layers.indexOf(layer)
+    };
   }
   usePreferences.getState().saveOverlayLayerSettings(dieId, settings);
 }
@@ -104,8 +111,21 @@ export function applyOverlaySettingsFromPrefs(dieId: string): void {
   for (const layer of state.layers) {
     const settings = layer.serverFilename ? saved[layer.serverFilename] : undefined;
     if (!settings) continue;
+    if (typeof settings.name === "string" && settings.name.trim()) {
+      state.renameLayer(layer.id, settings.name);
+    }
     state.setLayerHidden(layer.id, settings.hidden);
     state.setLayerOpacity(layer.id, settings.opacity);
     state.setLayerOffset(layer.id, settings.offsetX, settings.offsetY);
   }
+  const current = useOverlayLayers.getState().layers;
+  const ordered = [...current].sort((a, b) => {
+    const ao = a.serverFilename ? saved[a.serverFilename]?.order : undefined;
+    const bo = b.serverFilename ? saved[b.serverFilename]?.order : undefined;
+    return (ao ?? Number.MAX_SAFE_INTEGER) - (bo ?? Number.MAX_SAFE_INTEGER);
+  });
+  if (ordered.some((layer, index) => layer.id !== current[index]?.id)) {
+    useOverlayLayers.setState({ layers: ordered });
+  }
 }
+
