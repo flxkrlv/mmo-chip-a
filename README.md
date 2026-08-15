@@ -338,8 +338,12 @@ docs/
 
 Key extraction files: `dieWideAnalog.ts`, `simpleAnalog.ts`, `spice.ts` (`frontend/src/`).
 
-## v1.4-alpha â€” multilayer dynamic tiled overlays
+## v1.4-alpha - shared multilayer dynamic tiled overlays
 
-The die viewer now uses a **multilayer dynamic tiled renderer** for user overlay images. It renders only the visible tiles of the active viewport, keeps a coarse preview while sharp tiles load, prioritizes the current pan/zoom target, and preserves layer visibility, opacity, order, offsets, per-user storage, and top-visible-layer ML/CV selection. Merge Cells and RE Cell retain lightweight static server-side crop previews sourced from the selected tiled overlay; existing layer hotkeys update those previews.
+The die viewer uses a **multilayer dynamic tiled renderer** for overlay images. Overlay sources are **shared by the LAN team for each die**, while each browser keeps its own layer visibility, opacity, order, and offsets in local preferences. The renderer requests only tiles relevant to the active viewport, keeps a coarse preview while sharp tiles load, prioritizes the current pan/zoom target, and invalidates only the output tiles affected when an overlay source tile arrives.
 
-See [`docs/CHANGELOG_2026-08-14_TILED_OVERLAY_RELEASE.md`](docs/CHANGELOG_2026-08-14_TILED_OVERLAY_RELEASE.md) for the implementation summary and [`docs/PERSISTENT_LEVEL_IMAGES_PLAN.md`](docs/PERSISTENT_LEVEL_IMAGES_PLAN.md) for the deferred cold-latency optimization plan.
+ML/CV actions use the top visible overlay selected in the requesting user's browser and preserve that source as a job snapshot. Merge Cells and RE Cell retain lightweight server-side static crop previews from the selected shared tiled overlay; the existing layer hotkeys update those previews.
+
+A full project export contains each shared overlay's portable `manifest.json` and original image only. Generated `tiles/` are excluded, and the imported manifest is rebound to the new server path; coarse levels are regenerated in the background and remaining tiles stay lazy.
+
+See [`docs/CHANGELOG_2026-08-14_TILED_OVERLAY_RELEASE.md`](docs/CHANGELOG_2026-08-14_TILED_OVERLAY_RELEASE.md) for the current architecture and implementation summary, and [`docs/PERSISTENT_LEVEL_IMAGES_PLAN.md`](docs/PERSISTENT_LEVEL_IMAGES_PLAN.md) for the deferred cold-latency optimization plan.

@@ -1,66 +1,63 @@
-# Релизный журнал — tiled overlay migration
+# Tiled Overlay Architecture Update
 
-**Дата:** 14 августа 2026  
-**Целевой тег:** `v1.4-alpha`  
-**Ветка:** `analog-re-wip`
+> **Scope:** This document records the tiled-overlay implementation introduced with the `v1.4-alpha` renderer baseline and its subsequent LAN/team-sharing and project-bundle updates.
 
-## Итог
+## Purpose
 
-В приложение внедрён **многослойный динамический tiled renderer для overlay images**. Он заменяет прежнюю модель, в которой крупный overlay загружался в браузер как единый `HTMLImageElement`. Новая архитектура сохраняет привычную логику overlay layers, но запрашивает и декодирует только необходимые части изображения для текущего viewport.
+The legacy static overlay path decoded complete client-side images and became unusable for very large source files. The current system renders only viewport-relevant source tiles on Canvas 2D and supports an arbitrary ordered stack of overlay layers.
 
-## Что реализовано сегодня
+## Current storage and ownership model
 
-| Область | Реализовано |
+| Concern | Current behavior |
 |---|---|
-| Per-user storage | Пользовательские tiled overlays хранятся изолированно по `userId`; для каждого изображения создаются manifest и tile pyramid. |
-| Форматы | PNG/JPEG/WebP принимаются сервером; alpha сохраняется в PNG tiles, непрозрачный контент — в JPEG tiles. |
-| Многослойный renderer | Любое число tiled overlay layers, с сохранением visibility, opacity, order, offsets, автозагрузки и legacy-state. |
-| Progressive rendering | Сначала отображается coarse preview, затем sharp target tiles; это предотвращает чёрный кадр при zoom. |
-| Приоритизация | Browser requests идут center-first; viewport epoch вытесняет stale queued tiles после pan/zoom. |
-| Server scheduler | Bounded priority queue, coalescing одинаковых cold requests, `Server-Timing` и cache/queue/generation метрики. |
-| Coarse warm-up | Levels 0–1 подготавливаются после upload во время idle grace period и не конкурируют с interactive requests. |
-| ML/CV semantics | Inference/training и jobs используют original **верхнего видимого overlay layer** в scope текущего пользователя. |
-| GUI | Overlay Layers отделены от Base Images; новые tiled изображения добавляются только в Overlay Layers; legacy static upload сохранён как backward compatibility. |
-| Live render status | Status bar показывает количество visible tiles, состояние preview/loading и время текущей render wave. |
-| Static previews | Merge Cells, RE Cell и Filmstrip используют компактные серверные JPEG crops из выбранного tiled original; hotkeys `[` / `]` и номерные shortcuts меняют source preview. |
-| Security/cache | Crop preview source разрешается только через user-scoped `resolveOverlayOriginalPath`; cache разделён по `userId` и `overlaySourceId`. |
+| Overlay source images | Shared by the LAN team for each `dieId` under `overlay-images/<dieId>/<sourceId>/`. |
+| Layer visibility, opacity, order, offsets | Personal browser preferences; changing them does not alter the shared source or another user's view. |
+| ML/CV source choice | The browser supplies its top visible tiled source; the job keeps this source id as a snapshot. |
+| Merge Cells / RE Cell | Server-side small static crops are generated from the selected shared tiled overlay. |
+| Legacy static overlays | Retained only for backwards compatibility; new overlay uploads use the tiled path. |
 
-## Совместимость и инварианты
+## Rendering pipeline
 
-1. Legacy static overlays остаются доступными для старых сохранённых данных, но новые uploads используют tiled путь.
-2. ML/CV выбирает последний видимый layer с положительной opacity, как и до миграции.
-3. Обычный tiled API и private original routing не принимают произвольные filesystem paths.
-4. Base Images и Overlay Layers остаются логически раздельными в UI.
-5. Невидимые overlays не инициируют rendering work; нижние видимые overlays по-прежнему поддерживают смешивание через opacity.
-
-## Отложенная следующая оптимизация
-
-План persistent intermediate level images сохранён отдельно в [`PERSISTENT_LEVEL_IMAGES_PLAN.md`](./PERSISTENT_LEVEL_IMAGES_PLAN.md). Он описывает хранение промежуточных downsampled levels, resumable background generation и fallback к original. Цель — уменьшить cold latency на промежуточных zoom levels, где сервер сейчас иногда должен декодировать очень большой original ради небольшого tile.
-
-## Проверки перед релизом
-
-| Команда | Результат |
+| Capability | Implementation |
 |---|---|
-| `npm run build -w frontend` | успешно |
-| `npm run build -w backend` | успешно |
-| `npm run test -w backend` | 15/15 успешно |
-| `git diff --check` | ошибок whitespace нет; остались только предупреждения LF/CRLF в ранее изменённых файлах |
+| Progressive display | Coarse pyramid tiles stay visible until sharper tiles arrive, avoiding black frames. |
+| Targeting | Tile requests are center-first and assigned a viewport epoch so a new pan/zoom outranks stale queued work. |
+| Server work | Cold generation is bounded by a priority scheduler, coalesces duplicate requests, and exposes cache/queue/generation timing headers. |
+| Client work | Source tiles are cached per overlay source; hidden layers do not draw or request viewport tiles. |
+| Repaint granularity | A loaded overlay source tile invalidates only its translated world rect, matching the Base Image tile-local repaint model rather than invalidating the full viewport. |
+| Resource lifecycle | Removed overlay instances release cached images, scratch canvas, and callbacks through `dispose()`. |
+| Status visibility | The lower status bar reports visible target-tile readiness, loading state, coarse-preview state, and render-wave timing. |
 
-## Основные затронутые компоненты
+## Project export and import
 
-- `backend/src/api/overlayImages.ts`
-- `backend/src/api/ml.ts`
-- `backend/src/api/tiles.ts`
-- `backend/src/ml/jobs.ts`
-- `frontend/src/state/overlayLayers.ts`
-- `frontend/src/renderer/layers/OverlayImageLayer.ts`
-- `frontend/src/renderer/TiledCanvas.tsx`
-- `frontend/src/routes/DieViewerPage.tsx`
-- `frontend/src/routes/MergeCellsPage.tsx`
-- `frontend/src/routes/RECellPage.tsx`
-- `frontend/src/components/mergeCells/Filmstrip.tsx`
-- `frontend/src/components/dieViewer/OutlineTree.tsx`
+A full project bundle transfers **primary assets, not derived cache**.
 
-## English summary
+```text
+overlay-images/
+  <source-id>/
+    manifest.json
+    original.png | original.jpg | original.webp
+```
 
-**v1.4-alpha implements a multilayer dynamic tiled overlay renderer.** Large user overlays are stored privately per user, rendered progressively from a tile pyramid, prioritized for the active viewport, and selected consistently by ML/CV from the top visible layer. Merge Cells and RE Cell retain lightweight static server-side crop previews, now sourced from the selected tiled overlay and updated by the existing layer hotkeys.
+Generated `tiles/z/x/y.*` are excluded from export and rejected during import. The exporter writes a portable manifest without a host-specific absolute `originalPath`. The importer validates archive paths and strict overlay entry names, restores the original, rewrites `manifest.originalPath` for the target server, and schedules background generation of coarse levels 0-1. All other tiles are regenerated lazily by the normal tile endpoint.
+
+## Validation status
+
+The implementation is covered by full frontend/backend build checks and backend tests. The focused project-I/O tests verify that export includes manifest plus original but not generated tiles, that the manifest is portable, and that derived tile entries are rejected on import.
+
+## Key files
+
+| Area | Files |
+|---|---|
+| Shared overlay storage and tile generation | `backend/src/api/overlayImages.ts` |
+| ML/CV source resolution and jobs | `backend/src/api/ml.ts`, `backend/src/ml/jobs.ts` |
+| Static crop previews | `backend/src/api/tiles.ts` |
+| Compact project bundles | `backend/src/api/projectIO.ts`, `backend/src/projectIO.test.ts` |
+| Layer state and top-visible selection | `frontend/src/state/overlayLayers.ts` |
+| Multilayer renderer | `frontend/src/renderer/layers/OverlayImageLayer.ts` |
+| Viewer status and layer lifecycle | `frontend/src/routes/DieViewerPage.tsx` |
+| Layer upload GUI | `frontend/src/components/dieViewer/OutlineTree.tsx` |
+
+## Russian summary
+
+Система использует общий для LAN-команды tiled storage на уровне die и персональные browser settings слоёв. Рендерер остаётся progressive и viewport-driven: видимые tiles загружаются с приоритетом, coarse preview исключает чёрные кадры, а arrival одного source tile перерисовывает только его область. Project export переносит manifest и original каждого overlay без производных tiles; import безопасно перепривязывает пути и заново строит cache по требованию.

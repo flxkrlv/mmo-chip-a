@@ -1,73 +1,47 @@
-# Persistent Level Images — отложенный план оптимизации tiled overlays
+# Deferred Plan: Persistent Overlay Level Images
 
-## Контекст
+> **Status:** Deferred. The current shared tiled-overlay system is functional and uses lazy tile generation from the original image. This document describes the next large cold-latency optimization only; it is not required for project export/import.
 
-Текущий tiled overlay pipeline хранит пользовательский original и manifest, а финальные tiles строятся лениво. Это сохраняет быстрый upload, но при первом запросе tile на новом масштабе сервер может снова открыть и декодировать очень большой original. Для source порядка 500 MB это создаёт плавающую cold latency, хотя браузеру нужен только один небольшой tile.
+## Problem addressed
 
-## Цель
+On a cold request at an intermediate zoom, the server can still need to decode a very large overlay original before extracting and resizing a small tile. This is the remaining source of variable first-sharp-tile latency after scheduling and tile-local invalidation improvements.
 
-Сократить cold latency промежуточных zoom levels без изменения публичного tile API, многопользовательской изоляции или семантики верхнего видимого слоя для ML/CV.
+## Proposed model
 
-> Каждый tile уровня `z` должен вырезаться из уже подготовленного raster-изображения близкого масштаба, а не каждый раз из полного original, когда это возможно.
-
-## Целевая структура хранения
-
-Для каждого user-scoped tiled overlay сохранить:
+For each shared overlay source in `overlay-images/<dieId>/<sourceId>/`, persist downsampled source images beside `manifest.json` and `original.*`:
 
 ```text
-overlay-images/{userId}/{dieId}/{sourceId}/
+overlay-images/<dieId>/<sourceId>/
   manifest.json
-  original.{png|jpg|webp}       # полный источник, нужен на максимальной детализации
+  original.png | original.jpg | original.webp
   levels/
-    level-0.{png|jpg}           # coarsest preview
-    level-1.{png|jpg}
-    level-2.{png|jpg}
+    level-1.jpg | level-1.png
+    level-2.jpg | level-2.png
     ...
-  tiles/{z}/{x}/{y}.{png|jpg}   # финальные browser tiles, как сейчас
+  tiles/                         # still derived, disposable cache
 ```
 
-Непрозрачные levels следует сохранять в JPEG/WebP; уровни с alpha — в PNG/WebP lossless. Формат должен совпадать с alpha-семантикой manifest и не менять текущий формат tile endpoint.
+Each cold tile is cropped from the closest suitable persistent level instead of repeatedly decoding the full original. The full-resolution original remains necessary only for the most detailed level.
 
-## Поведение генерации
+## Design constraints
 
-| Этап | Поведение |
+| Requirement | Decision |
 |---|---|
-| Upload | Сохранить original и manifest; вернуть результат без ожидания полной pyramid. |
-| Первые 750 ms idle | Как сейчас, подготовить coarse tile levels 0–1 с низким приоритетом. |
-| Background job | Построить persistent level images от coarse к detail, с ограниченной concurrency. |
-| Cold tile request | Если level image для нужного `z` готов, открыть его и вырезать tile; иначе использовать существующий lazy fallback из original. |
-| Повторный запрос | Использовать disk-cached tile без повторной генерации. |
+| Ownership | Sources remain shared per die; personal layer settings remain browser-local. |
+| Export/import | Project archives continue to include only manifest plus original. Persistent levels and `tiles/` are regenerated on the target server. |
+| Alpha | Preserve alpha-capable formats such as PNG for alpha sources; use JPEG/WebP for opaque levels. |
+| Upload UX | Upload returns after manifest/original creation. Persistent levels build in bounded background work. |
+| Interruptions | Generation must be resumable and safe to retry after server restart. |
+| Current responsiveness | Interactive visible tile requests remain higher priority than background level creation. |
 
-Генерация должна быть resumable и idempotent: наличие валидного level file пропускает уже выполненную работу. При удалении overlay надо удалить original, manifest, levels и tiles в пределах user-scoped directory.
+## Suggested rollout
 
-## Инварианты, которые нельзя менять
+1. Extend the manifest with an optional persistent-level version/status field.
+2. Add a bounded resumable level builder, initiated after upload and import.
+3. Use the nearest ready persistent level in tile extraction, falling back to original if absent.
+4. Measure cold tile p50/p95 before and after on the actual LAN hardware.
+5. Add cache cleanup/regeneration tooling only after production measurements confirm the storage/latency trade-off.
 
-1. API tiles остаётся `/api/dies/:dieId/overlay-images/:sourceId/tiles/:z/:x/:y`.
-2. `resolveOverlayOriginalPath` остаётся user-scoped; никаких произвольных filesystem paths из query/body.
-3. ML/CV продолжает выбирать верхний видимый overlay layer через текущую логику.
-4. Legacy static overlays остаются только backward compatibility и не требуют migration.
-5. Coarse preview не должен исчезать: при недоступности persistent level всегда остаётся текущий lazy path.
+## Expected outcome
 
-## Реализация по шагам
-
-1. Расширить manifest: версия схемы, `levelImages` с путями/status/format/размерами и error state.
-2. Добавить helper `ensureLevelImage(manifest, z)` с temp file + atomic rename, аналогично безопасной генерации tiles.
-3. Создать bounded background scheduler, отдельный от interactive tile scheduler; interactive viewport requests всегда приоритетнее.
-4. Изменить `ensureTile`: выбирать ближайший готовый level image; fallback — original.
-5. Добавить upload/job progress в metadata, без блокировки UI.
-6. Добавить тесты на alpha, JPEG, restart/resume, user isolation, fallback и cleanup.
-7. Измерить cold `X-Tile-Generation-Ms` до/после на крупном original и сравнить p50/p95.
-
-## Ожидаемый эффект и компромиссы
-
-Промежуточные zoom levels перестают требовать decode полного original для каждого cold tile. Это уменьшает CPU, I/O и latency при первом pan/zoom после cache eviction или рестарта. Максимальный zoom всё ещё может обращаться к original, потому что для полной детализации другого источника нет.
-
-Цена оптимизации — дополнительная disk storage и фоновая обработка. Для геометрической пирамиды дополнительное число пикселей уровней имеет порядок одной трети исходного raster до учёта сжатия; фактический размер зависит от JPEG/PNG/WebP и alpha.
-
-## Критерии приёмки
-
-- После restart первый tile промежуточного zoom строится из persistent level, а не полного original.
-- Current tile API, frontend renderer и hotkeys не требуют изменений.
-- Пользователь не получает чужой original или level image.
-- Coarse preview и stale queue supersession продолжают работать.
-- Наблюдаемо сокращаются p95 `X-Tile-Generation-Ms` и пользовательское время до первого sharp tile.
+This change should reduce cold intermediate-zoom latency and server decode pressure for very large overlay originals. It does not replace the existing viewport priority queue, progressive coarse preview, tile-local invalidation, or shared project-bundle contract; it complements them.

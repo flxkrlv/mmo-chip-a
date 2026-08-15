@@ -336,8 +336,12 @@ docs/
 
 Ключевые файлы экстракции: `dieWideAnalog.ts`, `simpleAnalog.ts`, `spice.ts` (`frontend/src/`).
 
-## v1.4-alpha — многослойные динамические tiled overlays
+## v1.4-alpha - общие многослойные динамические tiled overlays
 
-В die viewer реализован **многослойный динамический tiled renderer** пользовательских overlay images. Он отображает только tiles текущего viewport, удерживает coarse preview до загрузки sharp tiles, приоритизирует актуальную цель pan/zoom и сохраняет visibility, opacity, порядок, offsets, пользовательское хранение и ML/CV-выбор верхнего видимого слоя. Merge Cells и RE Cell продолжают использовать лёгкие статичные server-side crop previews, но теперь получают их из выбранного tiled overlay; существующие layer hotkeys обновляют эти previews.
+Во viewer реализован **многослойный динамический tiled renderer** для overlay images. Источники overlay являются **общими для LAN-команды в рамках die**, а visibility, opacity, порядок и offsets каждого слоя сохраняются локально в browser preferences конкретного пользователя. Renderer запрашивает только tiles активного viewport, сохраняет coarse preview до прихода sharp tiles, приоритизирует текущую цель pan/zoom и перерисовывает только затронутые output tiles после загрузки source tile.
 
-Подробный журнал реализации находится в [`docs/CHANGELOG_2026-08-14_TILED_OVERLAY_RELEASE.md`](docs/CHANGELOG_2026-08-14_TILED_OVERLAY_RELEASE.md), а отложенный план оптимизации cold latency — в [`docs/PERSISTENT_LEVEL_IMAGES_PLAN.md`](docs/PERSISTENT_LEVEL_IMAGES_PLAN.md).
+ML/CV действие берёт верхний видимый overlay, выбранный в browser отправившего пользователя, и фиксирует этот source как snapshot фоновой job. Merge Cells и RE Cell сохраняют лёгкие server-side static crop previews выбранного общего tiled overlay; существующие layer hotkeys обновляют эти previews.
+
+Full project export содержит только portable `manifest.json` и original image каждого общего overlay. Производные `tiles/` в архив не входят; при import manifest перепривязывается к пути нового сервера, coarse levels создаются в фоне, а остальные tiles остаются lazy.
+
+Подробности актуальной архитектуры находятся в [`docs/CHANGELOG_2026-08-14_TILED_OVERLAY_RELEASE.md`](docs/CHANGELOG_2026-08-14_TILED_OVERLAY_RELEASE.md), а отложенный план ускорения cold latency - в [`docs/PERSISTENT_LEVEL_IMAGES_PLAN.md`](docs/PERSISTENT_LEVEL_IMAGES_PLAN.md).
