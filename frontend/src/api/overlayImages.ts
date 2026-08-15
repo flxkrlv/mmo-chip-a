@@ -72,7 +72,7 @@ export function loadOverlayImageFromFile(file: File): Promise<{ image: HTMLImage
   return new Promise((resolve, reject) => {
     const url = URL.createObjectURL(file);
     const img = new Image();
-    img.onload = () => resolve({ image: img, name: file.name.replace(/\.[^.]+$/, "") });
+    img.onload = () => { URL.revokeObjectURL(url); resolve({ image: img, name: file.name.replace(/\.[^.]+$/, "") }); };
     img.onerror = () => { URL.revokeObjectURL(url); reject(new Error(`Failed to load image: ${file.name}`)); };
     img.src = url;
   });

@@ -22,6 +22,10 @@ import multer from "multer";
 import { ZipArchive } from "archiver";
 import type { Archiver } from "archiver";
 import AdmZip from "adm-zip";
+import {
+  preGenerateCoarseLevels,
+  type OverlayImageManifest
+} from "./overlayImages.js";
 import { listDieRecords, readDieRecord, writeDieRecord } from "../store.js";
 import type { DieRecord } from "../types.js";
 
@@ -64,6 +68,73 @@ function readJsonSafe<T>(raw: string, fallback: T): T {
 
 async function ensureDir(dir: string): Promise<void> {
   await fs.mkdir(dir, { recursive: true });
+}
+
+const SAFE_OVERLAY_SOURCE_ID = /^[a-zA-Z0-9_-]+$/;
+const OVERLAY_ORIGINAL_NAME = /^original\.(?:png|jpe?g|webp)$/i;
+
+/** Reject archive traversal and keep all imported paths within their assigned root. */
+function archiveRelativePath(entryName: string, prefix: string): string | null {
+  if (!entryName.startsWith(prefix)) return null;
+  const relative = entryName.slice(prefix.length);
+  if (
+    !relative ||
+    relative.startsWith("/") ||
+    relative.includes("\\") ||
+    path.posix.isAbsolute(relative) ||
+    relative.split("/").some((part) => !part || part === "." || part === "..")
+  ) {
+    throw new ProjectIOError(400, `Unsafe archive path: ${entryName}`);
+  }
+  return relative;
+}
+
+function archiveTarget(root: string, relative: string): string {
+  const resolvedRoot = path.resolve(root);
+  const target = path.resolve(resolvedRoot, ...relative.split("/"));
+  if (!target.startsWith(`${resolvedRoot}${path.sep}`)) {
+    throw new ProjectIOError(400, `Unsafe archive path: ${relative}`);
+  }
+  return target;
+}
+
+async function appendCompactOverlayImages(
+  archive: Archiver,
+  dataRoot: string,
+  dieId: string
+): Promise<void> {
+  const overlayDir = path.join(dataRoot, "overlay-images", dieId);
+  let entries: import("node:fs").Dirent[];
+  try {
+    entries = await fs.readdir(overlayDir, { withFileTypes: true });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+    throw error;
+  }
+  for (const entry of entries) {
+    if (!entry.isDirectory() || !SAFE_OVERLAY_SOURCE_ID.test(entry.name)) continue;
+    const sourceDir = path.join(overlayDir, entry.name);
+    const manifestFile = path.join(sourceDir, "manifest.json");
+    let manifest: OverlayImageManifest;
+    try {
+      manifest = JSON.parse(await fs.readFile(manifestFile, "utf8")) as OverlayImageManifest;
+    } catch {
+      continue;
+    }
+    if (!manifest || manifest.id !== entry.name) continue;
+    const originalName = path.basename(manifest.originalPath);
+    if (!OVERLAY_ORIGINAL_NAME.test(originalName)) continue;
+    const originalFile = path.join(sourceDir, originalName);
+    if (!(await fileExists(originalFile))) continue;
+    // Do not leak a host-specific originalPath in the portable archive.
+    archive.append(
+      JSON.stringify({ ...manifest, originalPath: originalName }, null, 2),
+      { name: `overlay-images/${entry.name}/manifest.json` }
+    );
+    archive.file(originalFile, {
+      name: `overlay-images/${entry.name}/${originalName}`
+    });
+  }
 }
 
 // ═════════════════════════════════════════════════════════════════════
@@ -152,13 +223,7 @@ async function queueExport(
     });
 
     await measure("overlay-images/", async () => {
-      const d = path.join(dataRoot, "overlay-images", dieId);
-      if (await fileExists(d)) {
-        for (const f of await fs.readdir(d)) {
-          const fp = path.join(d, f);
-          archive.file(fp, { name: `overlay-images/${f}` });
-        }
-      }
+      await appendCompactOverlayImages(archive, dataRoot, dieId);
     });
   }
 
@@ -234,9 +299,9 @@ async function handleImport(
   const exportRoot = path.join(dieDir, "export");
   for (const e of entries) {
     if (!e.entryName.startsWith("export/") || e.isDirectory) continue;
-    const rel = e.entryName.slice("export/".length);
+    const rel = archiveRelativePath(e.entryName, "export/");
     if (!rel) continue;
-    const target = path.join(exportRoot, rel);
+    const target = archiveTarget(exportRoot, rel);
     await ensureDir(path.dirname(target));
     await fs.writeFile(target, e.getData());
   }
@@ -245,9 +310,10 @@ async function handleImport(
   let restoredOriginalFile: string | null = null;
   for (const e of entries) {
     if (!e.entryName.startsWith("original/") || e.isDirectory) continue;
-    const rel = e.entryName.slice("original/".length);
+    const rel = archiveRelativePath(e.entryName, "original/");
     if (!rel) continue;
-    const target = path.join(dieDir, "original", rel);
+    const target = archiveTarget(path.join(dieDir, "original"), rel);
+    await ensureDir(path.dirname(target));
     await fs.writeFile(target, e.getData());
     if (!restoredOriginalFile) restoredOriginalFile = target;
   }
@@ -298,11 +364,70 @@ async function handleImport(
 
   const overlayDir = path.join(dataRoot, "overlay-images", targetDieId);
   await ensureDir(overlayDir);
+  const importedOverlays = new Map<
+    string,
+    { manifest?: Buffer; original?: { name: string; data: Buffer } }
+  >();
   for (const e of entries) {
     if (!e.entryName.startsWith("overlay-images/") || e.isDirectory) continue;
-    const rel = e.entryName.slice("overlay-images/".length);
+    const rel = archiveRelativePath(e.entryName, "overlay-images/");
     if (!rel) continue;
-    await fs.writeFile(path.join(overlayDir, rel), e.getData());
+    const parts = rel.split("/");
+    if (parts.length !== 2 || !SAFE_OVERLAY_SOURCE_ID.test(parts[0])) {
+      throw new ProjectIOError(400, `Invalid overlay archive entry: ${e.entryName}`);
+    }
+    const [sourceId, fileName] = parts;
+    const item = importedOverlays.get(sourceId) ?? {};
+    if (fileName === "manifest.json") {
+      if (item.manifest) throw new ProjectIOError(400, `Duplicate overlay manifest: ${sourceId}`);
+      item.manifest = e.getData();
+    } else if (OVERLAY_ORIGINAL_NAME.test(fileName)) {
+      if (item.original) throw new ProjectIOError(400, `Duplicate overlay original: ${sourceId}`);
+      item.original = { name: fileName, data: e.getData() };
+    } else {
+      throw new ProjectIOError(400, `Unsupported overlay archive entry: ${e.entryName}`);
+    }
+    importedOverlays.set(sourceId, item);
+  }
+  for (const [sourceId, item] of importedOverlays) {
+    if (!item.manifest || !item.original) {
+      throw new ProjectIOError(400, `Overlay ${sourceId} must contain manifest.json and original image`);
+    }
+    const manifest = readJsonSafe<OverlayImageManifest>(
+      item.manifest.toString("utf8"),
+      null as unknown as OverlayImageManifest
+    );
+    if (!manifest || manifest.id !== sourceId) {
+      throw new ProjectIOError(400, `Invalid overlay manifest: ${sourceId}`);
+    }
+    const sourceDir = archiveTarget(overlayDir, sourceId);
+    await ensureDir(sourceDir);
+    const originalPath = path.join(sourceDir, item.original.name);
+    await fs.writeFile(originalPath, item.original.data);
+    const reboundManifest: OverlayImageManifest = {
+      ...manifest,
+      id: sourceId,
+      originalPath,
+      originalFilename: manifest.originalFilename || item.original.name,
+      size: item.original.data.length,
+      ready: true,
+      updatedAt: new Date().toISOString()
+    };
+    await fs.writeFile(
+      path.join(sourceDir, "manifest.json"),
+      JSON.stringify(reboundManifest, null, 2),
+      "utf8"
+    );
+    const timer = setTimeout(() => {
+      void preGenerateCoarseLevels({
+        dataRoot,
+        dieId: targetDieId,
+        manifest: reboundManifest
+      }).catch((error) => {
+        console.warn("Failed to pre-generate imported overlay preview tiles", error);
+      });
+    }, 750);
+    timer.unref?.();
   }
 
   return {

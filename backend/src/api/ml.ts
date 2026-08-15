@@ -49,11 +49,6 @@ async function fetchSidecar(
   }
 }
 
-function requestUserId(request: Request): string {
-  const user = (request as Request & { user?: { userId?: unknown } }).user;
-  return typeof user?.userId === "string" && user.userId.length > 0 ? user.userId : "dev";
-}
-
 async function resolveRequestedOverlayPath(params: {
   request: Request;
   dataRoot: string;
@@ -63,7 +58,6 @@ async function resolveRequestedOverlayPath(params: {
   if (!params.sourceId) return undefined;
   return (await resolveOverlayOriginalPath({
     dataRoot: params.dataRoot,
-    userId: requestUserId(params.request),
     dieId: params.dieId,
     sourceId: params.sourceId
   })) ?? undefined;
@@ -246,7 +240,7 @@ export function createMLRouter(config: {
         const overlayFilename = typeof body.overlayFilename === "string" && body.overlayFilename.length > 0
           ? body.overlayFilename
           : undefined;
-        response.json(await jobs.startJob(request.params.dieId, overlayFilename, requestUserId(request)));
+        response.json(await jobs.startJob(request.params.dieId, overlayFilename));
       } catch (error) {
         if (send503IfUnavailable(error, response)) return;
         next(error);
@@ -494,9 +488,16 @@ export function createMLRouter(config: {
         throw error;
       }
 
-      const overlayPath = overlaySource
-        ? path.join(config.dataRoot, "overlay-images", dieId, overlaySource)
-        : undefined;
+      const overlayPath = await resolveRequestedOverlayPath({
+        request,
+        dataRoot: config.dataRoot,
+        dieId,
+        sourceId: overlaySource
+      });
+      if (overlaySource && !overlayPath) {
+        response.status(404).json({ error: "Visible image source not found" });
+        return;
+      }
 
       let result: Awaited<ReturnType<typeof predictor.runPrediction>>;
       try {

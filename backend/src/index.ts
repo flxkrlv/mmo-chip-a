@@ -6,6 +6,13 @@ if (!process.env.UV_THREADPOOL_SIZE) {
 }
 
 async function main() {
+  const os = await import("node:os");
+  const sharp = (await import("sharp")).default;
+  // Cache decoded image data between tile generation calls for the same file.
+  sharp.cache({ memory: 256, files: 100, items: 200 });
+  // Use half of available cores — leave the rest for Express, die tiles, ML.
+  sharp.concurrency(Math.max(1, Math.floor((os.availableParallelism?.() ?? 4) / 2)));
+
   const { createApp } = await import("./app.js");
   const { config } = await import("./config.js");
   const { ensureDataStore } = await import("./store.js");

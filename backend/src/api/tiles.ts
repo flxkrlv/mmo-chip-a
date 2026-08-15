@@ -6,17 +6,16 @@ import { resolveOverlayOriginalPath } from "./overlayImages.js";
 import { readAnnotations, readDieRecord } from "../store.js";
 import type { createTileScheduler } from "../tileScheduler.js";
 
-function requestUserId(request: Request): string {
-  const user = (request as Request & { user?: { userId?: unknown } }).user;
-  return typeof user?.userId === "string" && user.userId.length > 0
-    ? user.userId
-    : "dev";
+const SAFE_ID = /^[a-zA-Z0-9_-]+$/;
+
+function assertSafeId(value: string): void {
+  if (!SAFE_ID.test(value)) throw new Error("Invalid id");
 }
 
 /**
  * Resolves the source for small static previews. A tiled overlay is always
- * resolved inside the current user's namespace; legacy/base-image previews
- * retain the historical original-image fallback when no source is selected.
+ * resolved in the shared namespace; legacy/base-image previews retain the
+ * historical original-image fallback when no source is selected.
  */
 async function resolveCropOriginalPath(params: {
   request: Request;
@@ -28,7 +27,6 @@ async function resolveCropOriginalPath(params: {
   if (sourceId) {
     return resolveOverlayOriginalPath({
       dataRoot: params.dataRoot,
-      userId: requestUserId(params.request),
       dieId: params.dieId,
       sourceId
     });
@@ -42,7 +40,6 @@ async function resolveCropOriginalPath(params: {
 function cropCachePath(params: {
   dataRoot: string;
   dieId: string;
-  userId: string;
   overlaySourceId: string | undefined;
   basename: string;
 }): string {
@@ -50,8 +47,7 @@ function cropCachePath(params: {
     params.dataRoot,
     "dies",
     params.dieId,
-    "cell-crops",
-    encodeURIComponent(params.userId)
+    "cell-crops"
   );
   const sourcePrefix = params.overlaySourceId
     ? `overlay-${encodeURIComponent(params.overlaySourceId)}-`
@@ -68,6 +64,7 @@ export function createTilesRouter(config: {
   router.get("/api/dies/:dieId/cells/:cellId/crop", async (request, response, next) => {
     try {
       const { dieId, cellId } = request.params;
+      assertSafeId(dieId);
       const record = await readDieRecord(config.dataRoot, dieId);
       const annotations = await readAnnotations(config.dataRoot, dieId);
 
@@ -89,7 +86,6 @@ export function createTilesRouter(config: {
       const cachePath = cropCachePath({
         dataRoot: config.dataRoot,
         dieId,
-        userId: requestUserId(request),
         overlaySourceId,
         basename: `${cellId}-${left}-${top}.jpg`
       });
@@ -126,6 +122,7 @@ export function createTilesRouter(config: {
   router.get("/api/dies/:dieId/cell-types/:cellTypeId/crop", async (request, response, next) => {
     try {
       const { dieId, cellTypeId } = request.params;
+      assertSafeId(dieId);
       const record = await readDieRecord(config.dataRoot, dieId);
       const annotations = await readAnnotations(config.dataRoot, dieId);
 
@@ -147,7 +144,6 @@ export function createTilesRouter(config: {
       const cachePath = cropCachePath({
         dataRoot: config.dataRoot,
         dieId,
-        userId: requestUserId(request),
         overlaySourceId,
         basename: `ct-${cellTypeId}.jpg`
       });
@@ -189,6 +185,7 @@ export function createTilesRouter(config: {
   router.get("/api/dies/:dieId/tiles/:z/:x/:y", async (request, response, next) => {
     try {
       const { dieId, z, x, y } = request.params;
+      assertSafeId(dieId);
       const record = await readDieRecord(config.dataRoot, dieId);
       const zIndex = Number(z);
       const xIndex = Number(x);

@@ -131,28 +131,28 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
   const q = searchQuery.toLowerCase().trim();
   const matchNet = useCallback((name: string) => !q || name.toLowerCase().includes(q), [q]);
   const matchCell = useCallback((name: string) => !q || name.toLowerCase().includes(q), [q]);
+
+  const dieId = useSession((s) => s.dieId);
+  const [uploadingLegacy, setUploadingLegacy] = useState(false);
   const onLocalFilePick = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
       const files = e.target.files;
-      if (!files) return;
-      for (let i = 0; i < files.length; i++) {
-        const file = files[i];
-        const url = URL.createObjectURL(file);
-        const img = new Image();
-        img.onload = () => {
-          addLayer(
-            file.name.replace(/\.[^.]+$/, ""),
-            img
-          );
-        };
-        img.src = url;
-      }
+      if (!files || !dieId) return;
+      setUploadingLegacy(true);
+      const tasks = Array.from(files).map(async (file) => {
+        try {
+          const mod = await import("../../api/overlayImages");
+          const uploaded = await mod.uploadOverlayImage(dieId, file);
+          addTiledLayer(uploaded.image);
+        } catch (err) {
+          toast.error(`Failed to upload ${file.name}`, (err as Error).message);
+        }
+      });
+      Promise.allSettled(tasks).then(() => setUploadingLegacy(false));
       e.target.value = "";
     },
-    [addLayer]
+    [addTiledLayer, dieId]
   );
-
-  const dieId = useSession((s) => s.dieId);
   const [uploadingFiles, setUploadingFiles] = useState(false);
   const onUploadToServer = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -164,15 +164,6 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
           const mod = await import("../../api/overlayImages");
           const uploaded = await mod.uploadOverlayImage(dieId, file);
           addTiledLayer(uploaded.image);
-          return;
-          const url = URL.createObjectURL(file);
-          const img = new Image();
-          await new Promise<void>((resolve, reject) => {
-            img.onload = () => resolve();
-            img.onerror = () => reject(new Error("image load failed"));
-            img.src = url;
-          });
-          addLayer(file.name.replace(/\.[^.]+$/, ""), img, undefined, file.name);
         } catch (err) {
           toast.error(`Failed to upload ${file.name}`, (err as Error).message);
         }
@@ -180,7 +171,7 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
       Promise.allSettled(tasks).then(() => setUploadingFiles(false));
       e.target.value = "";
     },
-    [addLayer, dieId]
+    [addTiledLayer, dieId]
   );
   const [loadingTestImages, setLoadingTestImages] = useState(false);
   const onLoadFromServer = useCallback(() => {
@@ -669,11 +660,11 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
             label={<span style={{ color: "var(--accent)" }}>{uploadingFiles ? "Uploading…" : "Add tiled overlay…"}</span>}
             onSelect={() => serverFileInputRef.current?.click()}
           />
-          {/* Legacy local-only image support. Server uploads are in Base Images. */}
+          {/* Quick overlay upload — same endpoint, simpler label. */}
           <TreeRow
             depth={1}
             icon={Ic.plus}
-            label={<span style={{ color: "var(--ink2)" }}>Add legacy static overlay…</span>}
+            label={<span style={{ color: "var(--ink2)" }}>{uploadingLegacy ? "Uploading…" : "Add overlay image…"}</span>}
             onSelect={() => localFileInputRef.current?.click()}
           />
           <TreeRow
@@ -711,8 +702,9 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
                 lineHeight: 1.5
               }}
             >
-              Load PNG/GIF/WebP images as semi-transparent overlays on the die
-              view. Use visibility and opacity to compare layers.
+              Load PNG/JPEG/WebP images as semi-transparent overlays on the die
+              view. All uploaded images are shared across users. Use visibility
+              and opacity to compare layers.
             </div>
           )}
           <div
@@ -723,9 +715,9 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
               lineHeight: 1.4
             }}
           >
-            <strong>Upload to Server</strong> saves images to the die's folder and loads them.
+            <strong>Add tiled overlay</strong> uploads an image to the server — available to all users, persists across sessions.
             <strong> Load from Server</strong> picks up images already on disk.
-            <strong> Add local only</strong> loads into browser memory (lost on reload).
+            <strong> Add overlay image</strong> quick upload, same as above.
           </div>
           {overlayLayers.map((layer) => (
             <TreeRow

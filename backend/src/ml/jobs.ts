@@ -30,7 +30,7 @@ export interface MLJobManager {
   /** Every persisted job (stale "running" jobs reconciled to "stopped"). */
   listJobs(): Promise<MLInferenceJob[]>;
   /** Begin (or resume) a die-wide inference sweep. overlayFilename optional — when set, run inference on that overlay. */
-  startJob(dieId: string, overlayFilename?: string, userId?: string): Promise<MLInferenceJob>;
+  startJob(dieId: string, overlayFilename?: string): Promise<MLInferenceJob>;
   /** Request the running sweep to stop after the current tile. */
   stopJob(dieId: string): Promise<MLInferenceJob>;
 }
@@ -148,8 +148,7 @@ export function createMLJobManager(config: {
     record: DieRecord,
     hash: string | null,
     job: MLInferenceJob,
-    sweep: ActiveSweep,
-    userId: string
+    sweep: ActiveSweep
   ): Promise<void> {
     const nativeZ = record.maxZoomLevel;
     const { columns, rows } = nativeGrid(record);
@@ -162,7 +161,6 @@ export function createMLJobManager(config: {
     const overlayPath = job.overlayFilename
       ? await resolveOverlayOriginalPath({
           dataRoot,
-          userId,
           dieId: record.id,
           sourceId: job.overlayFilename
         }) ?? undefined
@@ -258,7 +256,7 @@ export function createMLJobManager(config: {
     }
   }
 
-  async function startJob(dieId: string, overlayFilename?: string, userId = "dev"): Promise<MLInferenceJob> {
+  async function startJob(dieId: string, overlayFilename?: string): Promise<MLInferenceJob> {
     if (active.has(dieId)) return getJob(dieId);
 
     const record = await readDieRecord(dataRoot, dieId);
@@ -285,7 +283,7 @@ export function createMLJobManager(config: {
     const sweep: ActiveSweep = { cancel: false };
     active.set(dieId, sweep);
     await persistAndBroadcast({ ...job });
-    void runSweep(record, hash, job, sweep, userId);
+    void runSweep(record, hash, job, sweep);
     return job;
   }
 

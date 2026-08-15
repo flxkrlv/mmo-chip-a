@@ -876,8 +876,11 @@ function DieViewer({ dieId }: { dieId: string }) {
       instances.push(layer);
     }
     // Remove stale instances.
-    for (const [id] of map) {
-      if (!overlayEntries.find((l) => l.id === id)) map.delete(id);
+    for (const [id, layer] of map) {
+      if (!overlayEntries.find((l) => l.id === id)) {
+        layer.dispose();
+        map.delete(id);
+      }
     }
     return instances;
     // eslint-disable-next-line react-hooks/exhaustive-deps

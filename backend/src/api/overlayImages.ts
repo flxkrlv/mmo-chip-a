@@ -1,16 +1,18 @@
 /**
- * Per-user tiled overlay image storage.
+ * Shared tiled overlay image storage.
  *
- * The public routes intentionally retain their historical `overlay-images`
- * name so existing UI and saved preferences keep working.  New uploads are
- * stored as an image manifest plus a lazy-generated tile pyramid under the
- * authenticated user's namespace.  Legacy flat files remain readable through
- * the original-file route until they are migrated.
+ * All users see the same overlay images.  Uploads are stored as an image
+ * manifest plus a lazy-generated tile pyramid under a shared directory.
+ * Per-user render settings (visibility, opacity, offset) live in each
+ * browser's localStorage.
+ *
+ * Legacy flat files remain readable through the original-file route.
  */
 import crypto from "node:crypto";
 import { promises as fs } from "node:fs";
+import os from "node:os";
 import path from "node:path";
-import { Router, type Request } from "express";
+import { Router } from "express";
 import multer from "multer";
 import sharp from "sharp";
 import { buildLevels } from "../dieImport/importer.js";
@@ -47,44 +49,31 @@ interface OverlayImageListItem extends Omit<OverlayImageManifest, "originalPath"
   legacy?: boolean;
 }
 
-function currentUserId(request: Request): string {
-  const candidate = (request as Request & { user?: { userId?: unknown } }).user
-    ?.userId;
-  return typeof candidate === "string" && candidate.length > 0 ? candidate : "dev";
-}
-
 function assertSafeId(value: string): void {
   if (!SAFE_ID.test(value)) throw new Error("Invalid overlay image id");
 }
 
-function userDieDir(dataRoot: string, userId: string, dieId: string): string {
-  assertSafeId(userId);
-  assertSafeId(dieId);
-  return path.join(dataRoot, "overlay-images", "users", userId, dieId);
-}
-
-function sourceDir(dataRoot: string, userId: string, dieId: string, id: string): string {
-  assertSafeId(id);
-  return path.join(userDieDir(dataRoot, userId, dieId), id);
-}
-
-function manifestPath(dataRoot: string, userId: string, dieId: string, id: string): string {
-  return path.join(sourceDir(dataRoot, userId, dieId, id), "manifest.json");
-}
-
-function legacyDir(dataRoot: string, dieId: string): string {
+function dieOverlayDir(dataRoot: string, dieId: string): string {
   assertSafeId(dieId);
   return path.join(dataRoot, "overlay-images", dieId);
 }
 
+function sourceDir(dataRoot: string, dieId: string, id: string): string {
+  assertSafeId(id);
+  return path.join(dieOverlayDir(dataRoot, dieId), id);
+}
+
+function manifestPath(dataRoot: string, dieId: string, id: string): string {
+  return path.join(sourceDir(dataRoot, dieId, id), "manifest.json");
+}
+
 async function readManifest(
   dataRoot: string,
-  userId: string,
   dieId: string,
   id: string
 ): Promise<OverlayImageManifest | null> {
   try {
-    const raw = await fs.readFile(manifestPath(dataRoot, userId, dieId, id), "utf8");
+    const raw = await fs.readFile(manifestPath(dataRoot, dieId, id), "utf8");
     const value = JSON.parse(raw) as OverlayImageManifest;
     if (!value || value.id !== id || !value.originalPath) return null;
     return value;
@@ -99,18 +88,17 @@ function toListItem(manifest: OverlayImageManifest): OverlayImageListItem {
   return item;
 }
 
-async function listPersonalManifests(
+async function listManifests(
   dataRoot: string,
-  userId: string,
   dieId: string
 ): Promise<OverlayImageListItem[]> {
-  const dir = userDieDir(dataRoot, userId, dieId);
+  const dir = dieOverlayDir(dataRoot, dieId);
   try {
     const entries = await fs.readdir(dir, { withFileTypes: true });
     const manifests = await Promise.all(
       entries
         .filter((entry) => entry.isDirectory() && SAFE_ID.test(entry.name))
-        .map((entry) => readManifest(dataRoot, userId, dieId, entry.name))
+        .map((entry) => readManifest(dataRoot, dieId, entry.name))
     );
     return manifests
       .filter((item): item is OverlayImageManifest => item !== null)
@@ -124,7 +112,7 @@ async function listPersonalManifests(
 
 async function listLegacyFiles(dataRoot: string, dieId: string): Promise<OverlayImageListItem[]> {
   try {
-    const dir = legacyDir(dataRoot, dieId);
+    const dir = dieOverlayDir(dataRoot, dieId);
     const entries = await fs.readdir(dir, { withFileTypes: true });
     const images = await Promise.all(
       entries
@@ -161,13 +149,19 @@ async function listLegacyFiles(dataRoot: string, dieId: string): Promise<Overlay
 async function writeManifest(manifest: OverlayImageManifest): Promise<void> {
   const target = path.join(path.dirname(manifest.originalPath), "manifest.json");
   const temp = `${target}.${crypto.randomBytes(4).toString("hex")}.tmp`;
-  await fs.writeFile(temp, JSON.stringify(manifest, null, 2), "utf8");
-  await fs.rename(temp, target);
+  try {
+    await fs.writeFile(temp, JSON.stringify(manifest, null, 2), "utf8");
+    await fs.rename(temp, target);
+  } catch (error) {
+    await fs.rm(temp, { force: true }).catch(() => {});
+    throw error;
+  }
 }
 
 const MAX_CONCURRENT_TILE_GENERATIONS = Math.max(
-  1,
-  Math.min(8, Number(process.env.TILE_GENERATION_CONCURRENCY ?? 2) || 2)
+  2,
+  Math.min(8, Number(process.env.TILE_GENERATION_CONCURRENCY ?? 0) ||
+    Math.max(2, os.availableParallelism?.() ?? 4))
 );
 
 interface TileGenerationResult {
@@ -227,7 +221,6 @@ function scheduleTileGeneration<T>(
 
 async function ensureTile(params: {
   manifest: OverlayImageManifest;
-  userId: string;
   dataRoot: string;
   dieId: string;
   z: number;
@@ -236,7 +229,7 @@ async function ensureTile(params: {
   priority: number;
 }): Promise<TileGenerationResult> {
   const target = path.join(
-    sourceDir(params.dataRoot, params.userId, params.dieId, params.manifest.id),
+    sourceDir(params.dataRoot, params.dieId, params.manifest.id),
     "tiles",
     String(params.z),
     `${params.x}_${params.y}.${params.manifest.tileFormat}`
@@ -248,7 +241,7 @@ async function ensureTile(params: {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
   }
 
-  const key = `${params.userId}/${params.dieId}/${params.manifest.id}/${params.z}/${params.x}/${params.y}`;
+  const key = `${params.dieId}/${params.manifest.id}/${params.z}/${params.x}/${params.y}`;
   const existing = pendingTileGenerations.get(key);
   if (existing) return existing;
 
@@ -270,7 +263,6 @@ async function ensureTile(params: {
 
 async function ensureTileImpl(params: {
   manifest: OverlayImageManifest;
-  userId: string;
   dataRoot: string;
   dieId: string;
   z: number;
@@ -284,7 +276,7 @@ async function ensureTileImpl(params: {
   }
   const ext = manifest.tileFormat;
   const target = path.join(
-    sourceDir(params.dataRoot, params.userId, params.dieId, manifest.id),
+    sourceDir(params.dataRoot, params.dieId, manifest.id),
     "tiles",
     String(z),
     `${x}_${y}.${ext}`
@@ -308,32 +300,35 @@ async function ensureTileImpl(params: {
 
   await fs.mkdir(path.dirname(target), { recursive: true });
   const temp = `${target}.${crypto.randomBytes(4).toString("hex")}.tmp`;
-  const pipeline = sharp(manifest.originalPath, {
-    limitInputPixels: false,
-    sequentialRead: true
-  })
-    .extract({ left: sourceLeft, top: sourceTop, width: sourceWidth, height: sourceHeight })
-    .resize({ width, height, fit: "fill", kernel: sharp.kernel.lanczos3 });
-  if (manifest.tileFormat === "png") {
-    await pipeline.png({ compressionLevel: 6 }).toFile(temp);
-  } else {
-    await pipeline.jpeg({ quality: 90, chromaSubsampling: "4:4:4" }).toFile(temp);
+  try {
+    const pipeline = sharp(manifest.originalPath, {
+      limitInputPixels: false,
+      sequentialRead: true
+    })
+      .extract({ left: sourceLeft, top: sourceTop, width: sourceWidth, height: sourceHeight })
+      .resize({ width, height, fit: "fill", kernel: sharp.kernel.lanczos2 });
+    if (manifest.tileFormat === "png") {
+      await pipeline.png({ compressionLevel: 6 }).toFile(temp);
+    } else {
+      await pipeline.jpeg({ quality: 85, chromaSubsampling: "4:2:0" }).toFile(temp);
+    }
+    await fs.rename(temp, target);
+  } catch (error) {
+    await fs.rm(temp, { force: true }).catch(() => {});
+    throw error;
   }
-  await fs.rename(temp, target);
   return target;
 }
 
-/** Resolve a tiled overlay original inside the authenticated user's namespace. */
+/** Resolve a tiled overlay original in the shared namespace. */
 export async function resolveOverlayOriginalPath(params: {
   dataRoot: string;
-  userId: string;
   dieId: string;
   sourceId: string;
 }): Promise<string | null> {
   if (!SAFE_ID.test(params.sourceId)) return null;
   const manifest = await readManifest(
     params.dataRoot,
-    params.userId,
     params.dieId,
     params.sourceId
   );
@@ -346,10 +341,9 @@ export async function resolveOverlayOriginalPath(params: {
   }
 }
 
-async function preGenerateCoarseLevels(params: {
+export async function preGenerateCoarseLevels(params: {
   manifest: OverlayImageManifest;
   dataRoot: string;
-  userId: string;
   dieId: string;
 }): Promise<void> {
   // Level 0 is normally one tile; level 1 is still tiny.  Run this as idle
@@ -383,12 +377,8 @@ export function createOverlayImagesRouter(config: { dataRoot: string }) {
   router.get("/api/dies/:dieId/overlay-images/list", async (request, response, next) => {
     try {
       const dieId = String(request.params.dieId);
-      const userId = currentUserId(request);
-      const personal = await listPersonalManifests(config.dataRoot, userId, dieId);
-      // Legacy files were previously global.  Keep them visible only in the
-      // unauthenticated/dev namespace; authenticated users receive only their
-      // own sources, preventing cross-user image disclosure.
-      const legacy = userId === "dev" ? await listLegacyFiles(config.dataRoot, dieId) : [];
+      const personal = await listManifests(config.dataRoot, dieId);
+      const legacy = await listLegacyFiles(config.dataRoot, dieId);
       response.json({ images: [...legacy, ...personal] });
     } catch (error) {
       next(error);
@@ -409,7 +399,6 @@ export function createOverlayImagesRouter(config: { dataRoot: string }) {
           response.status(400).json({ error: "Only PNG, JPEG and WebP images are supported" });
           return;
         }
-        const userId = currentUserId(request);
         const dieId = String(request.params.dieId);
         const metadata = await sharp(tempFile.path, { limitInputPixels: false }).metadata();
         if (!metadata.width || !metadata.height) {
@@ -417,7 +406,7 @@ export function createOverlayImagesRouter(config: { dataRoot: string }) {
           return;
         }
         const id = crypto.randomUUID().replace(/-/g, "");
-        const dir = sourceDir(config.dataRoot, userId, dieId, id);
+        const dir = sourceDir(config.dataRoot, dieId, id);
         await fs.mkdir(dir, { recursive: true });
         const extension = path.extname(tempFile.originalname).toLowerCase() || ".img";
         const originalPath = path.join(dir, `original${extension}`);
@@ -450,7 +439,6 @@ export function createOverlayImagesRouter(config: { dataRoot: string }) {
           void preGenerateCoarseLevels({
             manifest,
             dataRoot: config.dataRoot,
-            userId,
             dieId
           }).catch((error) => {
             console.warn("Failed to pre-generate overlay preview tiles", error);
@@ -466,13 +454,12 @@ export function createOverlayImagesRouter(config: { dataRoot: string }) {
 
   router.get("/api/dies/:dieId/overlay-images/:id/tiles/:z/:x/:y", async (request, response, next) => {
     try {
-      const userId = currentUserId(request);
       const { dieId, id, z, x, y } = request.params;
       if (!SAFE_ID.test(id) || ![z, x, y].every((part) => /^\d+$/.test(part))) {
         response.status(400).json({ error: "Invalid tile coordinates" });
         return;
       }
-      const manifest = await readManifest(config.dataRoot, userId, dieId, id);
+      const manifest = await readManifest(config.dataRoot, dieId, id);
       if (!manifest) {
         response.status(404).json({ error: "Overlay image not found" });
         return;
@@ -487,7 +474,6 @@ export function createOverlayImagesRouter(config: { dataRoot: string }) {
       const tile = await ensureTile({
         manifest,
         dataRoot: config.dataRoot,
-        userId,
         dieId,
         z: Number(z),
         x: Number(x),
@@ -515,10 +501,8 @@ export function createOverlayImagesRouter(config: { dataRoot: string }) {
 
   router.get("/api/dies/:dieId/overlay-images/:id/original", async (request, response, next) => {
     try {
-      const userId = currentUserId(request);
       const originalPath = await resolveOverlayOriginalPath({
         dataRoot: config.dataRoot,
-        userId,
         dieId: request.params.dieId,
         sourceId: request.params.id
       });
@@ -543,7 +527,7 @@ export function createOverlayImagesRouter(config: { dataRoot: string }) {
         response.status(400).json({ error: "Invalid filename" });
         return;
       }
-      const filePath = path.join(legacyDir(config.dataRoot, dieId), safeName);
+      const filePath = path.join(dieOverlayDir(config.dataRoot, dieId), safeName);
       await fs.access(filePath);
       response.sendFile(filePath);
     } catch (error) {

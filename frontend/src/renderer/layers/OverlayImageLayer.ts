@@ -97,12 +97,7 @@ export class OverlayImageLayer implements Layer {
     if (!source?.ready) return null;
 
     const targetLevel = this.pickLevel(source, zoom);
-    const previewReady = this.hasLoadedTileAtLevel(source, 0);
-    // Before the first coarse tile arrives, only report that initial preview
-    // request. Reporting sharp tiles here would imply requests that drawTiled
-    // intentionally has not started yet.
-    const statsLevel = previewReady ? targetLevel : 0;
-    const level = source.levels[statsLevel];
+    const level = source.levels[targetLevel];
     if (!level) return null;
 
     const offsetX = this.display.getOffsetX();
@@ -125,12 +120,12 @@ export class OverlayImageLayer implements Layer {
     for (let x = minX; x <= maxX; x += 1) {
       for (let y = minY; y <= maxY; y += 1) {
         total += 1;
-        const tile = this.cache.get(`${source.id}/${statsLevel}/${x}/${y}`);
+        const tile = this.cache.get(`${source.id}/${targetLevel}/${x}/${y}`);
         if (tile?.loaded && !tile.failed) loaded += 1;
       }
     }
     const pending = total - loaded;
-    const key = `${source.id}/${statsLevel}/${minX}/${maxX}/${minY}/${maxY}`;
+    const key = `${source.id}/${targetLevel}/${minX}/${maxX}/${minY}/${maxY}`;
     const now = performance.now();
     if (this.viewportStatsKey !== key) {
       this.viewportStatsKey = key;
@@ -145,7 +140,7 @@ export class OverlayImageLayer implements Layer {
       total,
       loaded,
       pending,
-      preview: previewReady && targetLevel > 0 && pending > 0,
+      preview: targetLevel > 0 && pending > 0,
       lastRenderMs:
         this.viewportStatsCompletedMs ?? Math.max(0, now - this.viewportStatsStartedAt)
     };
@@ -202,26 +197,16 @@ export class OverlayImageLayer implements Layer {
   ): void {
     const targetLevel = this.pickLevel(source, bounds.zoom);
 
-    // The coarsest level is normally one 512px tile.  Request it before any
-    // expensive detailed level, so a first cold visit quickly has a preview.
-    const previewReady = this.hasLoadedTileAtLevel(source, 0);
-    if (!previewReady) {
-      const scratch = this.getScratch(bounds);
-      const scratchCtx = scratch.getContext("2d");
-      if (!scratchCtx) return;
-      this.prepareScratchContext(scratchCtx, bounds);
-      this.drawLevel(scratchCtx, source, 0, bounds.world, true);
-      this.blitScratch(ctx, scratch, opacity);
-      return;
-    }
-
+    // Progressive enhancement: draw every coarser level whose tiles we already
+    // have in cache, then overdraw the target level.  This means there's always
+    // some content visible while finer tiles are still loading — no black flash
+    // when zooming in.  We only fire network requests for the target level, so
+    // coarser levels are pure-cache reads.
     const scratch = this.getScratch(bounds);
     const scratchCtx = scratch.getContext("2d");
     if (!scratchCtx) return;
     this.prepareScratchContext(scratchCtx, bounds);
 
-    // First paint every already-cached coarse level. Do not initiate requests
-    // for those levels; the target level below owns detailed fetching.
     for (let z = 0; z < targetLevel; z += 1) {
       this.drawLevel(scratchCtx, source, z, bounds.world, false);
     }
@@ -264,24 +249,14 @@ export class OverlayImageLayer implements Layer {
   }
 
   private pickLevel(source: OverlayImageSource, zoom: number): number {
+    const levels = source.levels;
     const maxScale = 1 / Math.max(zoom, 1e-6);
-    for (let z = 0; z < source.levels.length; z += 1) {
-      if (source.levels[z].scale <= maxScale) return z;
+    for (let z = 0; z < levels.length; z++) {
+      if (levels[z].scale <= maxScale) return z;
     }
-    return Math.max(0, source.levels.length - 1);
+    return levels.length - 1;
   }
 
-  private hasLoadedTileAtLevel(source: OverlayImageSource, z: number): boolean {
-    const level = source.levels[z];
-    if (!level) return false;
-    for (let x = 0; x < level.columns; x += 1) {
-      for (let y = 0; y < level.rows; y += 1) {
-        const tile = this.cache.get(`${source.id}/${z}/${x}/${y}`);
-        if (!tile?.loaded || tile.failed) return false;
-      }
-    }
-    return level.columns > 0 && level.rows > 0;
-  }
 
   private drawLevel(
     ctx: CanvasRenderingContext2D,
@@ -345,6 +320,35 @@ export class OverlayImageLayer implements Layer {
     }
   }
 
+  /**
+   * Repaint only the world-space area affected by one source tile.  This mirrors
+   * DieImageLayer and avoids invalidating every visible canvas tile whenever a
+   * sharp overlay tile arrives.
+   */
+  private invalidateTileRect(
+    source: OverlayImageSource,
+    z: number,
+    x: number,
+    y: number,
+    image?: HTMLImageElement
+  ): void {
+    const level = source.levels[z];
+    if (!level) return;
+    const tileWorldSize = source.tileSize * level.scale;
+    const width = image?.naturalWidth
+      ? image.naturalWidth * level.scale
+      : tileWorldSize;
+    const height = image?.naturalHeight
+      ? image.naturalHeight * level.scale
+      : tileWorldSize;
+    this.invalidateCb?.({
+      x: this.display.getOffsetX() + x * tileWorldSize,
+      y: this.display.getOffsetY() + y * tileWorldSize,
+      width,
+      height
+    });
+  }
+
   private getOrLoadTile(
     source: OverlayImageSource,
     z: number,
@@ -372,12 +376,12 @@ export class OverlayImageLayer implements Layer {
     image.onload = () => {
       tile.loaded = true;
       this.recordTileMetric("load", requestedAt);
-      this.invalidateCb?.(this.worldRect() ?? undefined);
+      this.invalidateTileRect(source, z, x, y, image);
     };
     image.onerror = () => {
       tile.failed = true;
       this.recordTileMetric("error", requestedAt);
-      this.invalidateCb?.(this.worldRect() ?? undefined);
+      this.invalidateTileRect(source, z, x, y);
     };
     image.src = `/api/dies/${encodeURIComponent(this.dieId)}/overlay-images/${encodeURIComponent(source.id)}/tiles/${z}/${x}/${y}?p=${priority}`;
     this.evictIfNeeded();
@@ -410,13 +414,15 @@ export class OverlayImageLayer implements Layer {
 
   private evictIfNeeded(): void {
     if (this.cache.size <= MAX_IMAGE_TILES_CACHED) return;
-    const count = this.cache.size - MAX_IMAGE_TILES_CACHED;
-    // Keep the coarse preview whenever possible; it is tiny and makes future
-    // zoom transitions visibly progressive instead of black.
-    const victims = [...this.cache.entries()]
-      .filter(([, tile]) => tile.z !== 0)
-      .sort((a, b) => a[1].lastUsed - b[1].lastUsed)
-      .slice(0, count);
-    for (const [key] of victims) this.cache.delete(key);
+    const entries = [...this.cache.entries()].sort((a, b) => a[1].lastUsed - b[1].lastUsed);
+    const drop = this.cache.size - MAX_IMAGE_TILES_CACHED;
+    for (let i = 0; i < drop; i++) this.cache.delete(entries[i][0]);
+  }
+
+  dispose(): void {
+    this.invalidateCb = null;
+    this.cache.clear();
+    this.scratch?.remove();
+    this.scratch = null;
   }
 }
