@@ -308,7 +308,6 @@ Overlay layer settings (visibility, opacity, offset) are persisted per-die in lo
 - **DMOS, Schottky diode, VPNP, JFET** — no detection or markers  
 - **Wire matching** — tolerance = contact size × 0.5; dense routing may false-positive  
 - **Polyline post-edit** — stretch/reshape (only redraw from scratch)  
-- **Overlay image serialization** into JSON (currently static)  
 - **Hierarchical netlist + floorplan:** needs real-world testing (alias collision, rename speed)
 
 ---
@@ -316,8 +315,6 @@ Overlay layer settings (visibility, opacity, offset) are persisted per-die in lo
 ## ⚠️ Disclaimer
 
 **Still alpha / WIP.** Only unit tests for extraction (22 tests: 18 pass, 4 skip). No e2e tests, no tests for overlay, wire matching, SPICE export, or cross-tab navigation.
-
-
 
 ---
 
