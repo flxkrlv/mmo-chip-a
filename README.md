@@ -270,6 +270,12 @@ Full export preserves original + overlay images. Preferences exported from local
 | `Ctrl+/` | Keyboard shortcuts panel |
 | Space (hold) | Temporary pan |
 
+### Ruler tool
+
+Press `K` and drag across the die to measure. Measurements are orthogonal by default. Create multiple rulers, use `S` to select one, `Shift+click` to select several, and click empty canvas space to clear the ruler selection. Press `Delete` to remove selected rulers or `Shift+K` to remove all rulers.
+
+Set the scale with double-click or right-click → **Set scale from ruler**. After scale is set, lengths are shown in µm; values below 1 µm are shown in nm. At zoom below 20%, inactive rulers are hidden while the current preview and selected ruler remain visible.
+
 ### Cell RE
 
 | Key | Tool |
