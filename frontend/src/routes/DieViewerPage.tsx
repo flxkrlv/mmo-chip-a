@@ -2653,7 +2653,7 @@ function DieViewer({ dieId }: { dieId: string }) {
             )?.lengthUm ?? 0;
           const input = await dialog.prompt(
             `Ruler: ${Math.round(lenPx).toLocaleString()} px\nEnter known size in µm:`,
-            cachedUm > 0 ? String(cachedUm) : ""
+            cachedUm > 0 ? cachedUm.toFixed(2) : ""
           );
           if (input !== null) {
             const um = parseFloat(input);
@@ -3423,7 +3423,7 @@ function DieViewer({ dieId }: { dieId: string }) {
             if (!ruler || ruler.lengthPx <= 0) return;
             const input = await dialog.prompt(
               `Ruler: ${Math.round(ruler.lengthPx).toLocaleString()} px\nEnter known size in µm:`,
-              annotationsRef.current?.umPerPx ? String(ruler.lengthPx * annotationsRef.current.umPerPx) : ""
+              annotationsRef.current?.umPerPx ? (ruler.lengthPx * annotationsRef.current.umPerPx).toFixed(2) : ""
             );
             if (input === null) return;
             const um = parseFloat(input);

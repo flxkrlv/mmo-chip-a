@@ -103,12 +103,14 @@ export function DialogProvider({ children }: { children: React.ReactNode }) {
         createPortal(
           <div
             className="dark dialog-overlay"
-            onClick={handleCancel}
+            onPointerDown={(e) => {
+              if (e.target === e.currentTarget) handleCancel();
+            }}
             onKeyDown={handleKeyDown}
           >
             <div
               className="popover dialog-box"
-              onClick={(e) => e.stopPropagation()}
+              onPointerDown={(e) => e.stopPropagation()}
             >
               {request.title && (
                 <div className="dialog-title">{request.title}</div>
