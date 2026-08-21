@@ -297,13 +297,8 @@ export const Ic = {
   ),
   ruler: Icon(
     <>
-      <path d="M2.5 13.5v-3h11v3" />
-      <path d="M3.5 10.5v-1" />
-      <path d="M5.5 10.5v-1" />
-      <path d="M7.5 10.5v-1" />
-      <path d="M9.5 10.5v-1" />
-      <path d="M11.5 10.5v-1" />
-      <path d="M4.5 2.5v11M11.5 2.5v11" />
+      <path d="M2 5.5h12" />
+      <path d="M3 5.5v4M5 5.5v2.5M7 5.5v4M9 5.5v2.5M11 5.5v4M13 5.5v2.5" />
     </>
   ),
   rulerOrtho: Icon(

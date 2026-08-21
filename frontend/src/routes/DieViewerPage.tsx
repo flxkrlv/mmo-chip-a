@@ -1589,7 +1589,9 @@ function DieViewer({ dieId }: { dieId: string }) {
     if (actions.length === 0) return;
     void dispatcher.dispatch(actions.length === 1 ? actions[0] : { kind: "batch", actions });
     setSelectedRulerIds(new Set());
-  }, [dispatcher, selectedRulerIds]);
+    rulerDraftLive.set(null);
+    rulerPendingLive.set(null);
+  }, [dispatcher, selectedRulerIds, rulerDraftLive, rulerPendingLive]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -3413,6 +3415,8 @@ function DieViewer({ dieId }: { dieId: string }) {
             if (!ruler) return;
             void dispatcher.dispatch({ kind: "removeRuler", ruler });
             setSelectedRulerIds(new Set());
+            rulerDraftLive.set(null);
+            rulerPendingLive.set(null);
           }}
           onSetScaleFromRuler={async () => {
             const ruler = annotationsRef.current?.rulers?.find((r) => r.id === contextMenu.hitRulerId);
