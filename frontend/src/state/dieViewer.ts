@@ -151,7 +151,7 @@ const INITIAL_STATE: DieViewerState = {
   activeMetalId: null,
   activeViaId: null,
   guideAxis: "x",
-  measureMode: "free",
+  measureMode: "ortho",
   showRulerPx: true,
   showRulerUm: true,
   showRulerNm: false,

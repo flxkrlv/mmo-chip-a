@@ -1594,7 +1594,7 @@ function DieViewer({ dieId }: { dieId: string }) {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if ((e.key !== "Delete" && e.key !== "Backspace") || isTypingTarget(e.target)) return;
-      if (useDieViewerStore.getState().activeTool !== "measure" || selectedRulerIds.size === 0) return;
+      if (selectedRulerIds.size === 0) return;
       e.preventDefault();
       deleteSelectedRulers();
     };
@@ -1727,7 +1727,7 @@ function DieViewer({ dieId }: { dieId: string }) {
       if (spacePanRef.current) return "pan";
       const tool = useDieViewerStore.getState().activeTool;
 
-      if (tool === "measure") {
+      if (tool === "measure" || tool === "select") {
         const vp = viewportLive.get();
         const tolerance = vp ? 10 / vp.zoom : 10;
         const hit = (annotationsRef.current?.rulers ?? []).find((ruler) =>
@@ -3418,7 +3418,7 @@ function DieViewer({ dieId }: { dieId: string }) {
             const ruler = annotationsRef.current?.rulers?.find((r) => r.id === contextMenu.hitRulerId);
             if (!ruler || ruler.lengthPx <= 0) return;
             const input = await dialog.prompt(
-              `Ruler: ${Math.round(ruler.lengthPx).toLocaleString()} px\\nEnter known size in µm:`,
+              `Ruler: ${Math.round(ruler.lengthPx).toLocaleString()} px\nEnter known size in µm:`,
               annotationsRef.current?.umPerPx ? String(ruler.lengthPx * annotationsRef.current.umPerPx) : ""
             );
             if (input === null) return;
