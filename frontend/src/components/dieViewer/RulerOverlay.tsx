@@ -54,6 +54,13 @@ function drawRuler(
   const p2 = worldToScreen(ruler.x2, ruler.y2);
   const midX = (p1.x + p2.x) / 2;
   const midY = (p1.y + p2.y) / 2;
+  const screenLength = Math.hypot(p2.x - p1.x, p2.y - p1.y) || 1;
+  const nx = -(p2.y - p1.y) / screenLength;
+  const ny = (p2.x - p1.x) / screenLength;
+  const fontSize = Math.min(18, 11 + Math.max(0, Math.log2(Math.max(vp.zoom, 1))));
+  const labelOffset = fontSize + 8;
+  const labelX = midX + nx * labelOffset;
+  const labelY = midY + ny * labelOffset;
 
   ctx.save();
   ctx.strokeStyle = selected ? "#ffffff" : "#ffd966";
@@ -71,14 +78,15 @@ function drawRuler(
     ctx.fill();
   }
 
-  ctx.font = "11px var(--mono, monospace)";
+  ctx.font = `${fontSize}px var(--mono, monospace)`;
   ctx.textAlign = "center";
-  ctx.textBaseline = "bottom";
+  ctx.textBaseline = "middle";
   const textWidth = ctx.measureText(label).width;
+  const boxHeight = fontSize + 8;
   ctx.fillStyle = selected ? "rgba(55,55,55,0.92)" : "rgba(0,0,0,0.75)";
-  ctx.fillRect(midX - textWidth / 2 - 6, midY - 18, textWidth + 12, 20);
+  ctx.fillRect(labelX - textWidth / 2 - 6, labelY - boxHeight / 2, textWidth + 12, boxHeight);
   ctx.fillStyle = selected ? "#ffffff" : "#ffd966";
-  ctx.fillText(label, midX, midY - 1);
+  ctx.fillText(label, labelX, labelY);
   ctx.restore();
 }
 
@@ -90,7 +98,7 @@ export function RulerOverlay({
   viewportStore,
   selectedIds = new Set<string>(),
   umPerPx = 0,
-  showPx = true,
+  showPx = false,
   showUm = true,
   showNm = false,
 }: RulerOverlayProps) {
@@ -114,6 +122,7 @@ export function RulerOverlay({
       const ctx = canvas.getContext("2d");
       if (!ctx) return;
       ctx.clearRect(0, 0, w, h);
+      if (vp.zoom < 0.2) return;
       for (const ruler of rulers) {
         drawRuler(
           ctx,

@@ -152,7 +152,7 @@ const INITIAL_STATE: DieViewerState = {
   activeViaId: null,
   guideAxis: "x",
   measureMode: "ortho",
-  showRulerPx: true,
+  showRulerPx: false,
   showRulerUm: true,
   showRulerNm: false,
   mlConfig: { ...DEFAULT_ML_CONFIG },
