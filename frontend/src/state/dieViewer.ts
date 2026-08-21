@@ -91,6 +91,10 @@ interface DieViewerState {
   /** Ruler tool measurement mode. "free" = draw at any angle;
    *  "h" = horizontal only; "v" = vertical only. */
   measureMode: "free" | "h" | "v" | "ortho" | "diag";
+  /** Ruler label display preferences. */
+  showRulerPx: boolean;
+  showRulerUm: boolean;
+  showRulerNm: boolean;
   /** Draft ML config edited from the ML tab (mockup: client-side, seeded from
    *  the die's `annotations.mlConfig`). Source-pixel units. */
   mlConfig: DieMLConfig;
@@ -121,6 +125,7 @@ interface DieViewerActions {
   setActiveViaId: (id: string | null) => void;
   setGuideAxis: (axis: "x" | "y") => void;
   setMeasureMode: (mode: "free" | "h" | "v" | "ortho" | "diag") => void;
+  setRulerDisplay: (patch: Partial<Pick<DieViewerState, "showRulerPx" | "showRulerUm" | "showRulerNm">>) => void;
   /** Patch the draft ML config (one or more fields). */
   setMlConfig: (patch: Partial<DieMLConfig>) => void;
   /** Set the live ML-via cardinality — called by the layer when tiles load. */
@@ -147,6 +152,9 @@ const INITIAL_STATE: DieViewerState = {
   activeViaId: null,
   guideAxis: "x",
   measureMode: "free",
+  showRulerPx: true,
+  showRulerUm: true,
+  showRulerNm: false,
   mlConfig: { ...DEFAULT_ML_CONFIG },
   mlViasCount: 0,
   clipboardCells: []
@@ -226,6 +234,7 @@ export const useDieViewerStore = create<DieViewerState & DieViewerActions>()((se
   setActiveViaId: (id) => set({ activeViaId: id }),
   setGuideAxis: (axis) => set({ guideAxis: axis }),
   setMeasureMode: (mode) => set({ measureMode: mode }),
+  setRulerDisplay: (patch) => set(patch),
   setMlConfig: (patch) =>
     set((state) => ({ mlConfig: { ...state.mlConfig, ...patch } })),
   setMlViasCount: (count) => {

@@ -247,7 +247,10 @@ Full-экспорт сохраняет оригинал + overlay-изображ
 | `Q` | Via down (на конце превью, переключение на пред. металл) |
 | `B` | Multi-wire / Bus |
 | `O` | Via tool (повторно → цикл типа via) |
-| `K` | Линейка |
+| `K` | Линейка: рисовать несколько рулеток |
+| `Shift+K` | Удалить все рулетки |
+| `Delete` | Удалить выбранные рулетки |
+| ПКМ по рулетке | `Delete ruler` или `Set scale from ruler`; double-click сохраняет shortcut Set Scale |
 | `R` | Add Cell |
 | `P` | I/O Point |
 | `F` | Fit to Screen / Pan |

@@ -155,6 +155,10 @@ function toolOptions(tool: ToolKind, multiWireHint?: string): ReactNode {
 function MeasureOptions() {
   const mode = useDieViewerStore((s) => s.measureMode);
   const setMode = useDieViewerStore((s) => s.setMeasureMode);
+  const showPx = useDieViewerStore((s) => s.showRulerPx);
+  const showUm = useDieViewerStore((s) => s.showRulerUm);
+  const showNm = useDieViewerStore((s) => s.showRulerNm);
+  const setDisplay = useDieViewerStore((s) => s.setRulerDisplay);
   return (
     <>
       <span className="u" style={{ fontSize: 10 }}>
@@ -180,6 +184,20 @@ function MeasureOptions() {
             {label}
           </button>
         ))}
+      </span>
+      <span className="row" style={{ gap: 6, marginLeft: 6 }}>
+        <label className="check" title="Show source-pixel length">
+          <input type="checkbox" checked={showPx} onChange={(e) => setDisplay({ showRulerPx: e.target.checked })} />
+          px
+        </label>
+        <label className="check" title="Show micrometre length; values below 1 µm are shown in nm">
+          <input type="checkbox" checked={showUm} onChange={(e) => setDisplay({ showRulerUm: e.target.checked })} />
+          µm
+        </label>
+        <label className="check" title="Show nanometre length instead of µm">
+          <input type="checkbox" checked={showNm} onChange={(e) => setDisplay({ showRulerNm: e.target.checked })} />
+          nm
+        </label>
       </span>
     </>
   );

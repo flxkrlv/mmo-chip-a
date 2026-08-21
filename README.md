@@ -247,7 +247,10 @@ Full export preserves original + overlay images. Preferences exported from local
 | `Q` | Via down (wire-end preview, switches to prev metal) |
 | `B` | Multi-wire / Bus |
 | `O` | Via tool (repeat → cycle via type) |
-| `K` | Ruler / Measurement |
+| `K` | Ruler / Measurement: draw multiple rulers |
+| `Shift+K` | Delete all rulers |
+| `Delete` | Delete selected ruler(s) |
+| Right-click ruler | `Delete ruler` or `Set scale from ruler`; double-click remains a Set Scale shortcut |
 | `R` | Add Cell |
 | `P` | I/O Point |
 | `F` | Fit to Screen / Pan |

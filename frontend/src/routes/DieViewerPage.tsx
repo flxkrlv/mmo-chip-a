@@ -116,6 +116,7 @@ import type { AnnotationAction } from "../api/actions";
 import { parseNetPartId, type DrawAnchor } from "../lib/netGraph";
 import {
   normalizeRect,
+  distancePointToSegment,
   pointInRect,
   rectCornerAt,
   rectCorners,
@@ -257,6 +258,19 @@ function DieViewer({ dieId }: { dieId: string }) {
   const shiftLive = useMemo(() => createLiveValue<boolean>(false), []);
   const rulerDraftLive = useMemo(() => createLiveValue<RulerDraft | null>(null), []);
   const rulerPendingLive = useMemo(() => createLiveValue<RulerDraft | null>(null), []);
+  const [selectedRulerIds, setSelectedRulerIds] = useState<ReadonlySet<string>>(new Set());
+  const rulerDisplay = useDieViewerStore((s) => ({
+    showPx: s.showRulerPx,
+    showUm: s.showRulerUm,
+    showNm: s.showRulerNm,
+  }));
+  useEffect(() => {
+    const existing = new Set((annotations?.rulers ?? []).map((r) => r.id));
+    setSelectedRulerIds((current) => {
+      const next = new Set([...current].filter((id) => existing.has(id)));
+      return next.size === current.size ? current : next;
+    });
+  }, [annotations?.rulers]);
 
   // Shift state captured from pointer-move, read by the click handler (which
   // has no event of its own).
@@ -390,6 +404,18 @@ function DieViewer({ dieId }: { dieId: string }) {
             if (!cell) return;
             e.preventDefault();
             void dispatcherRef.current.dispatch(buildMakeUniqueAction(ann, cell));
+            return;
+          }
+          case "deleteAllRulers": {
+            if (useDieViewerStore.getState().activeTool !== "measure") return;
+            const rulers = annotationsRef.current?.rulers ?? [];
+            if (rulers.length === 0) return;
+            e.preventDefault();
+            const actions: AnnotationAction[] = rulers.map((ruler) => ({ kind: "removeRuler", ruler }));
+            void dispatcherRef.current.dispatch(actions.length === 1 ? actions[0] : { kind: "batch", actions });
+            setSelectedRulerIds(new Set());
+            rulerDraftLive.set(null);
+            rulerPendingLive.set(null);
             return;
           }
           case "viaUp":
@@ -1556,6 +1582,28 @@ function DieViewer({ dieId }: { dieId: string }) {
     [dispatcher]
   );
 
+  const deleteSelectedRulers = useCallback(() => {
+    const selected = selectedRulerIds;
+    const rulers = annotationsRef.current?.rulers ?? [];
+    const actions: AnnotationAction[] = rulers
+      .filter((ruler) => selected.has(ruler.id))
+      .map((ruler) => ({ kind: "removeRuler", ruler }));
+    if (actions.length === 0) return;
+    void dispatcher.dispatch(actions.length === 1 ? actions[0] : { kind: "batch", actions });
+    setSelectedRulerIds(new Set());
+  }, [dispatcher, selectedRulerIds]);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.key !== "Delete" && e.key !== "Backspace") || isTypingTarget(e.target)) return;
+      if (useDieViewerStore.getState().activeTool !== "measure" || selectedRulerIds.size === 0) return;
+      e.preventDefault();
+      deleteSelectedRulers();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [deleteSelectedRulers, selectedRulerIds.size]);
+
   // Kind-agnostic Delete/Backspace handling for the current selection.
   useSelectionDelete({ dispatcher, annotations });
   // Global ⌘Z/⌘⇧Z — routes to a tool's undo override (e.g. wire draft) when
@@ -1681,6 +1729,22 @@ function DieViewer({ dieId }: { dieId: string }) {
       if (spacePanRef.current) return "pan";
       const tool = useDieViewerStore.getState().activeTool;
 
+      if (tool === "measure") {
+        const vp = viewportLive.get();
+        const tolerance = vp ? 10 / vp.zoom : 10;
+        const hit = (annotationsRef.current?.rulers ?? []).find((ruler) =>
+          distancePointToSegment(e.worldPoint, { x: ruler.x1, y: ruler.y1 }, { x: ruler.x2, y: ruler.y2 }) <= tolerance
+        );
+        if (hit) {
+          const next = e.modifiers.shift ? new Set(selectedRulerIds) : new Set<string>();
+          if (next.has(hit.id)) next.delete(hit.id);
+          else next.add(hit.id);
+          setSelectedRulerIds(next);
+          rulerDraftLive.set({ x1: hit.x1, y1: hit.y1, x2: hit.x2, y2: hit.y2 });
+          rulerPendingLive.set(null);
+          return "pan";
+        }
+      }
       // Add-cell: rubber-band a rectangle. The rect lives in `cellRectLive`
       // (no page re-render while dragging) and stays as an *editable draft*
       // until the user presses Enter to commit (or Escape to discard) — see
@@ -1897,22 +1961,20 @@ function DieViewer({ dieId }: { dieId: string }) {
               };
               rulerDraftLive.set(committed);
               rulerPendingLive.set(null);
-              // If scale is set, also persist ruler.
-              const umPerPx = annotations?.umPerPx ?? 0;
-              if (umPerPx > 0 && lenPx > 5) {
-                void dispatcher.dispatch({
-                  kind: "upsertRuler",
-                  ruler: {
-                    id: uuid(),
-                    x1: origin.x,
-                    y1: origin.y,
-                    x2: snapped.x,
-                    y2: snapped.y,
-                    lengthPx: lenPx,
-                    lengthUm: lenPx * umPerPx
-                  },
-                  prevRuler: null
-                });
+              // Persist every ruler, even before scale is configured. The
+              // overlay derives physical units from the current global scale.
+              if (lenPx > 5) {
+                const ruler = {
+                  id: uuid(),
+                  x1: origin.x,
+                  y1: origin.y,
+                  x2: snapped.x,
+                  y2: snapped.y,
+                  lengthPx: lenPx,
+                  lengthUm: lenPx * (annotations?.umPerPx ?? 0)
+                };
+                void dispatcher.dispatch({ kind: "upsertRuler", ruler, prevRuler: null });
+                setSelectedRulerIds(new Set([ruler.id]));
               }
             } else {
               // Click without drag: keep previous draft.
@@ -2453,6 +2515,14 @@ function DieViewer({ dieId }: { dieId: string }) {
       let hitAnchor: DrawAnchor | null = null;
       let hitLabel = "from this point";
       let hitCellId: string | undefined;
+      let hitRulerId: string | undefined;
+      const rulerHit = (annotationsRef.current?.rulers ?? []).find((ruler) =>
+        distancePointToSegment(world, { x: ruler.x1, y: ruler.y1 }, { x: ruler.x2, y: ruler.y2 }) <= HIT_TOLERANCE_PX / vp.zoom
+      );
+      if (rulerHit) {
+        hitRulerId = rulerHit.id;
+        setSelectedRulerIds(new Set([rulerHit.id]));
+      }
       const tol = HIT_TOLERANCE_PX / vp.zoom;
       const hit = annotationLayer?.hitTest(world, tol) ?? null;
       if (hit) {
@@ -2519,7 +2589,8 @@ function DieViewer({ dieId }: { dieId: string }) {
         hitAnchor,
         hitLabel,
         multiPointCount: picks.length,
-        hitCellId
+        hitCellId,
+        hitRulerId
       });
     },
     [annotationLayer, mlViasLayer, wire, extractAnchorPointsFromSelection]
@@ -2941,10 +3012,15 @@ function DieViewer({ dieId }: { dieId: string }) {
             />
           )}
           <RulerOverlay
+            rulers={annotations?.rulers ?? []}
             draftStore={rulerDraftLive}
             pendingStore={rulerPendingLive}
             viewportStore={viewportLive}
+            selectedIds={selectedRulerIds}
             umPerPx={annotations?.umPerPx ?? 0}
+            showPx={rulerDisplay.showPx}
+            showUm={rulerDisplay.showUm}
+            showNm={rulerDisplay.showNm}
           />
           <MarqueeOverlay store={marqueeLive} />
           <WireDraftOverlay
@@ -3333,6 +3409,24 @@ function DieViewer({ dieId }: { dieId: string }) {
             const cell = ann.cells?.find((c) => c.id === contextMenu.hitCellId);
             if (!cell) return;
             void dispatcher.dispatch(buildMakeUniqueAction(ann, cell));
+          }}
+          onDeleteRuler={() => {
+            const ruler = annotationsRef.current?.rulers?.find((r) => r.id === contextMenu.hitRulerId);
+            if (!ruler) return;
+            void dispatcher.dispatch({ kind: "removeRuler", ruler });
+            setSelectedRulerIds(new Set());
+          }}
+          onSetScaleFromRuler={async () => {
+            const ruler = annotationsRef.current?.rulers?.find((r) => r.id === contextMenu.hitRulerId);
+            if (!ruler || ruler.lengthPx <= 0) return;
+            const input = await dialog.prompt(
+              `Ruler: ${Math.round(ruler.lengthPx).toLocaleString()} px\\nEnter known size in µm:`,
+              annotationsRef.current?.umPerPx ? String(ruler.lengthPx * annotationsRef.current.umPerPx) : ""
+            );
+            if (input === null) return;
+            const um = parseFloat(input);
+            if (!Number.isFinite(um) || um <= 0) return;
+            void dispatcher.dispatch({ kind: "setUmPerPx", umPerPx: um / ruler.lengthPx, prevUmPerPx: annotationsRef.current?.umPerPx ?? null });
           }}
           onPasteCell={() => {
             const ann = annotationsRef.current;

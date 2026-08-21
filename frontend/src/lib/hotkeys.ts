@@ -152,7 +152,8 @@ export type DieViewerModAction =
   | "pasteCell"
   | "makeUnique"
   | "viaUp"
-  | "viaDown";
+  | "viaDown"
+  | "deleteAllRulers";
 
 export const DIE_VIEWER_MOD_HOTKEYS: Record<string, {
   ctrl: boolean; shift: boolean; action: DieViewerModAction
@@ -167,6 +168,8 @@ export const DIE_VIEWER_MOD_HOTKEYS: Record<string, {
   "E": { ctrl: false, shift: false, action: "viaUp" },
   "q": { ctrl: false, shift: false, action: "viaDown" },
   "Q": { ctrl: false, shift: false, action: "viaDown" },
+  "k": { ctrl: false, shift: true, action: "deleteAllRulers" },
+  "K": { ctrl: false, shift: true, action: "deleteAllRulers" },
 };
 
 // ── Overlay hotkeys (shared across Die viewer / Merge / RE Cell) ─

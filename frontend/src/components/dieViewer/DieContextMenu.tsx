@@ -23,6 +23,8 @@ export interface DieContextMenuState {
   multiPointCount: number;
   /** If the right-click landed on a cell instance, its id. */
   hitCellId?: string;
+  /** If the right-click landed on a ruler, its id. */
+  hitRulerId?: string;
 }
 
 interface Props {
@@ -33,6 +35,8 @@ interface Props {
   onCopyCell?: () => void;
   onPasteCell?: () => void;
   onMakeUnique?: () => void;
+  onDeleteRuler?: () => void;
+  onSetScaleFromRuler?: () => void;
 }
 
 /** Right-click menu on the die-viewer canvas. Items today: start a single
@@ -45,7 +49,9 @@ export function DieContextMenu({
   onStartMultiWire,
   onCopyCell,
   onPasteCell,
-  onMakeUnique
+  onMakeUnique,
+  onDeleteRuler,
+  onSetScaleFromRuler
 }: Props) {
   const ref = useRef<HTMLDivElement | null>(null);
 
@@ -104,6 +110,17 @@ export function DieContextMenu({
           ? `Start multi-wire from ${menu.multiPointCount} points`
           : "Start multi-wire from selection"}
       </button>
+      {menu.hitRulerId && (
+        <>
+          <div className="menu-sep" />
+          <button className="menu-item" onClick={() => { onSetScaleFromRuler?.(); onClose(); }}>
+            Set scale from ruler
+          </button>
+          <button className="menu-item" onClick={() => { onDeleteRuler?.(); onClose(); }}>
+            Delete ruler <span style={{ marginLeft: "auto", color: "var(--ink3)" }}>Del</span>
+          </button>
+        </>
+      )}
       {menu.hitCellId && onCopyCell && (
         <>
           <div className="menu-sep" />

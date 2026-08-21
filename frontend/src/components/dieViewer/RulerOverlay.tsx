@@ -1,8 +1,8 @@
 import { useEffect, useRef } from "react";
 import type { LiveValue } from "../../lib/liveValue";
 import type { Viewport } from "../../renderer/types";
+import type { RulerMeasurement } from "shared";
 
-/** In-progress or committed ruler measurement. */
 export interface RulerDraft {
   x1: number;
   y1: number;
@@ -10,144 +10,139 @@ export interface RulerDraft {
   y2: number;
 }
 
-/**
- * Transient overlay for measure tool — draws ruler lines with dimension
- * labels on an absolutely-positioned canvas above the tiled canvas.
- */
-export function RulerOverlay({
-  draftStore,
-  pendingStore,
-  viewportStore,
-  /** µm per pixel (0 = scale not set → show px only). */
-  umPerPx = 0
-}: {
+interface RulerOverlayProps {
+  rulers: RulerMeasurement[];
   draftStore: LiveValue<RulerDraft | null>;
   pendingStore: LiveValue<RulerDraft | null>;
   viewportStore: LiveValue<Viewport | null>;
+  selectedIds?: ReadonlySet<string>;
   umPerPx?: number;
-}) {
+  showPx?: boolean;
+  showUm?: boolean;
+  showNm?: boolean;
+}
+
+function formatMeasurement(
+  lengthPx: number,
+  umPerPx: number,
+  showPx: boolean,
+  showUm: boolean,
+  showNm: boolean,
+): string {
+  const parts: string[] = [];
+  if (showPx) parts.push(`${Math.round(lengthPx).toLocaleString()} px`);
+  if (umPerPx > 0 && (showUm || showNm)) {
+    const um = lengthPx * umPerPx;
+    if (showNm || um < 1) parts.push(`${(um * 1000).toFixed(0)} nm`);
+    else parts.push(`${um.toFixed(1)} µm`);
+  }
+  return parts.length > 0 ? parts.join("  ") : "—";
+}
+
+function drawRuler(
+  ctx: CanvasRenderingContext2D,
+  ruler: RulerDraft,
+  vp: Viewport,
+  label: string,
+  selected: boolean,
+) {
+  const worldToScreen = (wx: number, wy: number) => ({
+    x: (wx - vp.originX) * vp.zoom,
+    y: (wy - vp.originY) * vp.zoom,
+  });
+  const p1 = worldToScreen(ruler.x1, ruler.y1);
+  const p2 = worldToScreen(ruler.x2, ruler.y2);
+  const midX = (p1.x + p2.x) / 2;
+  const midY = (p1.y + p2.y) / 2;
+
+  ctx.save();
+  ctx.strokeStyle = selected ? "#ffffff" : "#ffd966";
+  ctx.fillStyle = selected ? "#ffffff" : "#ffd966";
+  ctx.lineWidth = selected ? 3 : 2;
+  ctx.setLineDash(selected ? [] : [5, 4]);
+  ctx.beginPath();
+  ctx.moveTo(p1.x, p1.y);
+  ctx.lineTo(p2.x, p2.y);
+  ctx.stroke();
+  ctx.setLineDash([]);
+  for (const p of [p1, p2]) {
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, selected ? 5 : 4, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  ctx.font = "11px var(--mono, monospace)";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "bottom";
+  const textWidth = ctx.measureText(label).width;
+  ctx.fillStyle = selected ? "rgba(55,55,55,0.92)" : "rgba(0,0,0,0.75)";
+  ctx.fillRect(midX - textWidth / 2 - 6, midY - 18, textWidth + 12, 20);
+  ctx.fillStyle = selected ? "#ffffff" : "#ffd966";
+  ctx.fillText(label, midX, midY - 1);
+  ctx.restore();
+}
+
+/** Canvas overlay for all saved rulers plus the current drag preview. */
+export function RulerOverlay({
+  rulers,
+  draftStore,
+  pendingStore,
+  viewportStore,
+  selectedIds = new Set<string>(),
+  umPerPx = 0,
+  showPx = true,
+  showUm = true,
+  showNm = false,
+}: RulerOverlayProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
-
     const draw = () => {
       const parent = canvas.parentElement;
-      if (!parent) return;
+      const vp = viewportStore.get();
+      if (!parent || !vp) return;
       const w = parent.clientWidth;
       const h = parent.clientHeight;
       if (canvas.width !== w || canvas.height !== h) {
         canvas.width = w;
         canvas.height = h;
-        canvas.style.width = w + "px";
-        canvas.style.height = h + "px";
+        canvas.style.width = `${w}px`;
+        canvas.style.height = `${h}px`;
       }
-
       const ctx = canvas.getContext("2d");
       if (!ctx) return;
-
-      const draft = pendingStore.get() ?? draftStore.get();
-      const vp = viewportStore.get();
-      if (!draft || !vp) {
-        ctx.clearRect(0, 0, w, h);
-        return;
-      }
-
       ctx.clearRect(0, 0, w, h);
-
-      // Transform screen coords from world coords.
-      const worldToScreen = (wx: number, wy: number) => ({
-        x: (wx - vp.originX) * vp.zoom,
-        y: (wy - vp.originY) * vp.zoom
-      });
-
-      const p1 = worldToScreen(draft.x1, draft.y1);
-      const p2 = worldToScreen(draft.x2, draft.y2);
-
-      // Compute pixel length.
-      const dx = draft.x2 - draft.x1;
-      const dy = draft.y2 - draft.y1;
-      const lengthPx = Math.sqrt(dx * dx + dy * dy);
-
-      // Draw line.
-      ctx.save();
-      ctx.strokeStyle = "#ffd966";
-      ctx.lineWidth = 2;
-      ctx.setLineDash([5, 4]);
-      ctx.beginPath();
-      ctx.moveTo(p1.x, p1.y);
-      ctx.lineTo(p2.x, p2.y);
-      ctx.stroke();
-      ctx.setLineDash([]);
-
-      // Draw endpoint circles.
-      ctx.fillStyle = "#ffd966";
-      ctx.beginPath();
-      ctx.arc(p1.x, p1.y, 4, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.beginPath();
-      ctx.arc(p2.x, p2.y, 4, 0, Math.PI * 2);
-      ctx.fill();
-
-      // Draw label.
-      const midX = (p1.x + p2.x) / 2;
-      const midY = (p1.y + p2.y) / 2;
-      const labelPx = `${Math.round(lengthPx).toLocaleString()} px`;
-      const labelUm =
-        umPerPx > 0
-          ? `  (${(lengthPx * umPerPx).toFixed(1)} µm)`
-          : "";
-
-      ctx.font = "11px var(--mono, monospace)";
-      ctx.textAlign = "center";
-      ctx.textBaseline = "bottom";
-      const label = labelPx + labelUm;
-      const textWidth = ctx.measureText(label).width;
-
-      // Background rect.
-      const bgX = midX - textWidth / 2 - 6;
-      const bgY = midY - 18;
-      ctx.fillStyle = "rgba(0,0,0,0.75)";
-      ctx.fillRect(bgX, bgY, textWidth + 12, 20);
-
-      // Label text.
-      ctx.fillStyle = "#ffd966";
-      ctx.textBaseline = "bottom";
-      ctx.fillText(label, midX, midY - 1);
-
-      // Distance annotation along the line (offset slightly).
-      ctx.textBaseline = "top";
-      ctx.fillText(
-        label,
-        midX,
-        midY + 4
-      );
-
-      ctx.restore();
+      for (const ruler of rulers) {
+        drawRuler(
+          ctx,
+          ruler,
+          vp,
+          formatMeasurement(ruler.lengthPx, umPerPx, showPx, showUm, showNm),
+          selectedIds.has(ruler.id),
+        );
+      }
+      const pending = pendingStore.get();
+      const draft = pending ?? draftStore.get();
+      if (draft) {
+        const dx = draft.x2 - draft.x1;
+        const dy = draft.y2 - draft.y1;
+        drawRuler(
+          ctx,
+          draft,
+          vp,
+          formatMeasurement(Math.sqrt(dx * dx + dy * dy), umPerPx, showPx, showUm, showNm),
+          false,
+        );
+      }
     };
+    const unsubs = [draftStore.subscribe(draw), pendingStore.subscribe(draw), viewportStore.subscribe(draw)];
+    draw();
+    return () => unsubs.forEach((unsubscribe) => unsubscribe());
+  }, [draftStore, pendingStore, viewportStore, rulers, selectedIds, umPerPx, showPx, showUm, showNm]);
 
-    // Subscribe to changes.
-    const unsub1 = draftStore.subscribe(draw);
-    const unsub2 = pendingStore.subscribe(draw);
-    const unsub3 = viewportStore.subscribe(draw);
-
-    return () => {
-      unsub1();
-      unsub2();
-      unsub3();
-    };
-  }, [draftStore, pendingStore, viewportStore, umPerPx]);
-
-  return (
-    <canvas
-      ref={canvasRef}
-      style={{
-        position: "absolute",
-        inset: 0,
-        pointerEvents: "none",
-        zIndex: 20
-      }}
-    />
-  );
+  return <canvas ref={canvasRef} style={{ position: "absolute", inset: 0, pointerEvents: "none", zIndex: 20 }} />;
 }
+
+export { formatMeasurement };

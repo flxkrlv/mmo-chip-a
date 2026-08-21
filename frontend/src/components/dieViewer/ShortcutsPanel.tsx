@@ -29,6 +29,8 @@ const SHORTCUT_GROUPS: ShortcutGroup[] = [
       { key: "B", label: "Multi-Wire / Bus" },
       { key: "O", label: "Via (repeat: cycle type)" },
       { key: "K", label: "Measure / Ruler" },
+      { key: "Shift+K", label: "Delete all rulers" },
+      { key: "Delete", label: "Delete selected ruler(s)" },
       { key: "R", label: "Add Cell" },
       { key: "P", label: "I/O Point" },
       { key: "H", label: "Floorplan" },
