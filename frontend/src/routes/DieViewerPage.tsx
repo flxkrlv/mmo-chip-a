@@ -259,11 +259,9 @@ function DieViewer({ dieId }: { dieId: string }) {
   const rulerDraftLive = useMemo(() => createLiveValue<RulerDraft | null>(null), []);
   const rulerPendingLive = useMemo(() => createLiveValue<RulerDraft | null>(null), []);
   const [selectedRulerIds, setSelectedRulerIds] = useState<ReadonlySet<string>>(new Set());
-  const rulerDisplay = useDieViewerStore((s) => ({
-    showPx: s.showRulerPx,
-    showUm: s.showRulerUm,
-    showNm: s.showRulerNm,
-  }));
+  const showRulerPx = useDieViewerStore((s) => s.showRulerPx);
+  const showRulerUm = useDieViewerStore((s) => s.showRulerUm);
+  const showRulerNm = useDieViewerStore((s) => s.showRulerNm);
   useEffect(() => {
     const existing = new Set((annotations?.rulers ?? []).map((r) => r.id));
     setSelectedRulerIds((current) => {
@@ -3018,9 +3016,9 @@ function DieViewer({ dieId }: { dieId: string }) {
             viewportStore={viewportLive}
             selectedIds={selectedRulerIds}
             umPerPx={annotations?.umPerPx ?? 0}
-            showPx={rulerDisplay.showPx}
-            showUm={rulerDisplay.showUm}
-            showNm={rulerDisplay.showNm}
+            showPx={showRulerPx}
+            showUm={showRulerUm}
+            showNm={showRulerNm}
           />
           <MarqueeOverlay store={marqueeLive} />
           <WireDraftOverlay
