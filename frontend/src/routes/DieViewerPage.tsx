@@ -1744,6 +1744,9 @@ function DieViewer({ dieId }: { dieId: string }) {
           rulerPendingLive.set(null);
           return "pan";
         }
+        setSelectedRulerIds(new Set());
+        rulerDraftLive.set(null);
+        rulerPendingLive.set(null);
       }
       // Add-cell: rubber-band a rectangle. The rect lives in `cellRectLive`
       // (no page re-render while dragging) and stays as an *editable draft*
