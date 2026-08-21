@@ -405,7 +405,6 @@ function DieViewer({ dieId }: { dieId: string }) {
             return;
           }
           case "deleteAllRulers": {
-            if (useDieViewerStore.getState().activeTool !== "measure") return;
             const rulers = annotationsRef.current?.rulers ?? [];
             if (rulers.length === 0) return;
             e.preventDefault();
