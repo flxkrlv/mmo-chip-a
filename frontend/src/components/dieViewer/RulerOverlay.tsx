@@ -122,8 +122,8 @@ export function RulerOverlay({
       const ctx = canvas.getContext("2d");
       if (!ctx) return;
       ctx.clearRect(0, 0, w, h);
-      if (vp.zoom < 0.2) return;
       for (const ruler of rulers) {
+        if (vp.zoom < 0.2 && !selectedIds.has(ruler.id)) continue;
         drawRuler(
           ctx,
           ruler,
