@@ -57,8 +57,8 @@ function drawRuler(
   const screenLength = Math.hypot(p2.x - p1.x, p2.y - p1.y) || 1;
   const nx = -(p2.y - p1.y) / screenLength;
   const ny = (p2.x - p1.x) / screenLength;
-  const fontSize = Math.min(18, 11 + Math.max(0, Math.log2(Math.max(vp.zoom, 1))));
-  const labelOffset = fontSize + 8;
+  const fontSize = Math.min(24, 11 + 1.5 * Math.max(0, Math.log2(Math.max(vp.zoom, 1))));
+  const labelOffset = fontSize + 5;
   const labelX = midX + nx * labelOffset;
   const labelY = midY + ny * labelOffset;
 
