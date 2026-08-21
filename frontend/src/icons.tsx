@@ -296,11 +296,11 @@ export const Ic = {
     </>
   ),
   ruler: Icon(
-    <>
-      <path d="M3 2v12M13 2v12" />
-      <path d="M5 5h6M5 8h6M5 11h6" />
-    </>,
-    { sw: 1.8 }
+    <g transform="rotate(-45 8 8)">
+      <rect x="3" y="5" width="10" height="6" rx="1.2" />
+      <path d="M5 5v2M7 5v1.3M9 5v2M11 5v1.3" />
+    </g>,
+    { sw: 1.6 }
   ),
   rulerOrtho: Icon(
     <>
