@@ -21,7 +21,7 @@ import { Router } from "express";
 import multer from "multer";
 import { ZipArchive } from "archiver";
 import type { Archiver } from "archiver";
-import AdmZip from "adm-zip";
+import { MAX_PROJECT_ARCHIVE_BYTES, ZipStreamError, ZipStreamReader, type ZipEntry } from "./zipStream.js";
 import {
   preGenerateCoarseLevels,
   type OverlayImageManifest
@@ -234,208 +234,232 @@ async function queueExport(
 // Import
 // ═════════════════════════════════════════════════════════════════════
 
+const MAX_TEXT_ENTRY_BYTES = 16 * 1024 * 1024;
+const MAX_PROJECT_ENTRY_COUNT = 100_000;
+
+function singleEntry(entries: ZipEntry[], name: string): ZipEntry | null {
+  const matches = entries.filter((entry) => !entry.isDirectory && entry.entryName === name);
+  if (matches.length > 1) throw new ProjectIOError(400, `Duplicate ZIP entry: ${name}`);
+  return matches[0] ?? null;
+}
+
+async function readStagedText(file: string): Promise<string | null> {
+  try {
+    const stat = await fs.stat(file);
+    if (stat.size > MAX_TEXT_ENTRY_BYTES) throw new ProjectIOError(400, "Project settings entry is too large");
+    return await fs.readFile(file, "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw error;
+  }
+}
+
 async function handleImport(
   dataRoot: string,
   zipPath: string,
   renameTo?: string
 ): Promise<{ dieId: string; preferences: string | null; deviceRegistry: string | null; analogNames: string | null }> {
-  const zip = new AdmZip(zipPath);
-  const entries = zip.getEntries();
+  const archive = await ZipStreamReader.open(zipPath);
+  const stagingRoot = path.join(dataRoot, "tmp", `project-import-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+  const stagedDieDir = path.join(stagingRoot, "die");
+  const stagedOverlayDir = path.join(stagingRoot, "overlay-images");
+  const stagedExtrasDir = path.join(stagingRoot, "extras");
+  let targetDieId = "";
+  let dieDir = "";
+  let overlayDir = "";
+  let dieMoved = false;
+  let overlayMoved = false;
 
-  function readEntry(name: string): string | null {
-    const e = zip.getEntry(name);
-    if (!e) return null;
-    return e.getData().toString("utf8");
-  }
-
-  const metaRaw = readEntry("metadata.json");
-  if (!metaRaw) throw new ProjectIOError(400, "ZIP must contain metadata.json");
-  const meta = readJsonSafe<DieRecord>(metaRaw, null as unknown as DieRecord);
-  if (!meta || !meta.id) throw new ProjectIOError(400, "Invalid metadata.json");
-
-  let targetDieId = meta.id;
-  let targetName = meta.name;
-
-  if (renameTo) {
-    targetDieId = deriveId(renameTo);
-    targetName = renameTo;
-  }
-
-  const dieDir = path.join(dataRoot, "dies", targetDieId);
-  if (await fileExists(dieDir)) {
-    throw new ProjectIOError(
-      409,
-      JSON.stringify({
-        error: "die_already_exists",
-        dieId: targetDieId,
-        name: targetName,
-        originalDieId: meta.id
-      })
-    );
-  }
-
-  // Check name conflict — if another die has the same human-readable name, auto-suffix
-  const allDies = await listDieRecords(dataRoot);
-  const namesInUse = new Set(allDies.filter((d) => d.id !== targetDieId).map((d) => d.name));
-  if (namesInUse.has(targetName)) {
-    let suffix = 2;
-    let candidate = `${targetName} (${suffix})`;
-    while (namesInUse.has(candidate)) {
-      suffix += 1;
-      candidate = `${targetName} (${suffix})`;
+  try {
+    if (archive.entries.length > MAX_PROJECT_ENTRY_COUNT) {
+      throw new ProjectIOError(400, "ZIP contains too many entries");
     }
-    targetName = candidate;
-  }
 
-  await ensureDir(path.join(dieDir, "original"));
-  await ensureDir(path.join(dieDir, "tiles"));
+    const metadataEntry = singleEntry(archive.entries, "metadata.json");
+    if (!metadataEntry) throw new ProjectIOError(400, "ZIP must contain metadata.json");
+    const metaRaw = await archive.readEntryText(metadataEntry, MAX_TEXT_ENTRY_BYTES);
+    const meta = readJsonSafe<DieRecord>(metaRaw, null as unknown as DieRecord);
+    if (!meta || !meta.id) throw new ProjectIOError(400, "Invalid metadata.json");
 
-  const annRaw = readEntry("annotations.json");
-  if (annRaw) await fs.writeFile(path.join(dieDir, "annotations.json"), annRaw, "utf8");
+    targetDieId = meta.id;
+    let targetName = meta.name;
+    if (renameTo) {
+      targetDieId = deriveId(renameTo);
+      targetName = renameTo;
+    }
 
-  const scRaw = readEntry("spice_config.json");
-  if (scRaw) await fs.writeFile(path.join(dieDir, "spice_config.json"), scRaw, "utf8");
+    dieDir = path.join(dataRoot, "dies", targetDieId);
+    overlayDir = path.join(dataRoot, "overlay-images", targetDieId);
+    if (await fileExists(dieDir)) {
+      throw new ProjectIOError(
+        409,
+        JSON.stringify({
+          error: "die_already_exists",
+          dieId: targetDieId,
+          name: targetName,
+          originalDieId: meta.id
+        })
+      );
+    }
+    if (await fileExists(overlayDir)) {
+      throw new ProjectIOError(409, `Project resources already exist for ${targetName}`);
+    }
 
-  const exportRoot = path.join(dieDir, "export");
-  for (const e of entries) {
-    if (!e.entryName.startsWith("export/") || e.isDirectory) continue;
-    const rel = archiveRelativePath(e.entryName, "export/");
-    if (!rel) continue;
-    const target = archiveTarget(exportRoot, rel);
-    await ensureDir(path.dirname(target));
-    await fs.writeFile(target, e.getData());
-  }
-
-  // Restore original image(s) — track the restored filename to fix originalPath
-  let restoredOriginalFile: string | null = null;
-  for (const e of entries) {
-    if (!e.entryName.startsWith("original/") || e.isDirectory) continue;
-    const rel = archiveRelativePath(e.entryName, "original/");
-    if (!rel) continue;
-    const target = archiveTarget(path.join(dieDir, "original"), rel);
-    await ensureDir(path.dirname(target));
-    await fs.writeFile(target, e.getData());
-    if (!restoredOriginalFile) restoredOriginalFile = target;
-  }
-
-  // Resolve originalPath — use restored file, or scan original/ dir
-  let resolvedOriginalPath = restoredOriginalFile;
-  if (!resolvedOriginalPath) {
-    // Try the old meta.originalPath from the ZIP
-    if (meta.originalPath) {
-      if (await fileExists(meta.originalPath)) {
-        resolvedOriginalPath = meta.originalPath;
-      } else {
-        // Scan the original/ directory for any file
-        const origDir = path.join(dieDir, "original");
-        try {
-          const files = await fs.readdir(origDir);
-          for (const f of files) {
-            const fp = path.join(origDir, f);
-            const st = await fs.stat(fp).catch(() => null);
-            if (st && st.isFile()) {
-              resolvedOriginalPath = fp;
-              break;
-            }
-          }
-        } catch {
-          // directory doesn't exist or can't be read
-        }
+    const allDies = await listDieRecords(dataRoot);
+    const namesInUse = new Set(allDies.filter((d) => d.id !== targetDieId).map((d) => d.name));
+    if (namesInUse.has(targetName)) {
+      let suffix = 2;
+      let candidate = `${targetName} (${suffix})`;
+      while (namesInUse.has(candidate)) {
+        suffix += 1;
+        candidate = `${targetName} (${suffix})`;
       }
+      targetName = candidate;
     }
-  }
 
-  // Log if we still couldn't find the original image
-  if (!resolvedOriginalPath) {
-    console.warn(`[import:${targetDieId}] ⚠️ no original image found — base image won't load. Re-import with full export or add the image manually.`);
-  } else if (!(await fileExists(resolvedOriginalPath))) {
-    console.warn(`[import:${targetDieId}] ⚠️ originalPath resolved but file missing: ${resolvedOriginalPath}`);
-  }
+    await ensureDir(path.join(stagedDieDir, "original"));
+    await ensureDir(path.join(stagedDieDir, "tiles"));
+    await ensureDir(stagedExtrasDir);
 
-  // Update die record with correct originalPath
-  const updatedMeta: DieRecord = {
-    ...meta,
-    id: targetDieId,
-    name: targetName,
-    originalPath: resolvedOriginalPath ?? meta.originalPath,
-    updatedAt: new Date().toISOString()
-  };
-  await writeDieRecord(dataRoot, updatedMeta);
+    const seenSingleEntries = new Set<string>(["metadata.json"]);
+    const importedOverlays = new Map<string, { manifest?: string; original?: { name: string; path: string } }>();
+    let restoredOriginalRelative: string | null = null;
 
-  const overlayDir = path.join(dataRoot, "overlay-images", targetDieId);
-  await ensureDir(overlayDir);
-  const importedOverlays = new Map<
-    string,
-    { manifest?: Buffer; original?: { name: string; data: Buffer } }
-  >();
-  for (const e of entries) {
-    if (!e.entryName.startsWith("overlay-images/") || e.isDirectory) continue;
-    const rel = archiveRelativePath(e.entryName, "overlay-images/");
-    if (!rel) continue;
-    const parts = rel.split("/");
-    if (parts.length !== 2 || !SAFE_OVERLAY_SOURCE_ID.test(parts[0])) {
-      throw new ProjectIOError(400, `Invalid overlay archive entry: ${e.entryName}`);
+    for (const entry of archive.entries) {
+      if (entry.isDirectory || entry.entryName === "metadata.json") continue;
+
+      if (
+        entry.entryName === "annotations.json" ||
+        entry.entryName === "spice_config.json" ||
+        entry.entryName === "preferences.json" ||
+        entry.entryName === "device-registry.json" ||
+        entry.entryName === "analog-names.json"
+      ) {
+        if (seenSingleEntries.has(entry.entryName)) {
+          throw new ProjectIOError(400, `Duplicate ZIP entry: ${entry.entryName}`);
+        }
+        seenSingleEntries.add(entry.entryName);
+        const target =
+          entry.entryName === "annotations.json" || entry.entryName === "spice_config.json"
+            ? path.join(stagedDieDir, entry.entryName)
+            : path.join(stagedExtrasDir, entry.entryName);
+        await archive.extractEntry(entry, target);
+        continue;
+      }
+
+      if (entry.entryName.startsWith("export/")) {
+        const relative = archiveRelativePath(entry.entryName, "export/");
+        if (relative) await archive.extractEntry(entry, archiveTarget(path.join(stagedDieDir, "export"), relative));
+        continue;
+      }
+
+      if (entry.entryName.startsWith("original/")) {
+        const relative = archiveRelativePath(entry.entryName, "original/");
+        if (!relative) continue;
+        await archive.extractEntry(entry, archiveTarget(path.join(stagedDieDir, "original"), relative));
+        restoredOriginalRelative ??= relative;
+        continue;
+      }
+
+      if (entry.entryName.startsWith("overlay-images/")) {
+        const relative = archiveRelativePath(entry.entryName, "overlay-images/");
+        if (!relative) continue;
+        const parts = relative.split("/");
+        if (parts.length !== 2 || !SAFE_OVERLAY_SOURCE_ID.test(parts[0])) {
+          throw new ProjectIOError(400, `Invalid overlay archive entry: ${entry.entryName}`);
+        }
+        const [sourceId, fileName] = parts;
+        const item = importedOverlays.get(sourceId) ?? {};
+        const sourceDir = archiveTarget(stagedOverlayDir, sourceId);
+        if (fileName === "manifest.json") {
+          if (item.manifest) throw new ProjectIOError(400, `Duplicate overlay manifest: ${sourceId}`);
+          item.manifest = path.join(sourceDir, "manifest.json");
+          await archive.extractEntry(entry, item.manifest);
+        } else if (OVERLAY_ORIGINAL_NAME.test(fileName)) {
+          if (item.original) throw new ProjectIOError(400, `Duplicate overlay original: ${sourceId}`);
+          const originalPath = path.join(sourceDir, fileName);
+          item.original = { name: fileName, path: originalPath };
+          await archive.extractEntry(entry, originalPath);
+        } else {
+          throw new ProjectIOError(400, `Unsupported overlay archive entry: ${entry.entryName}`);
+        }
+        importedOverlays.set(sourceId, item);
+      }
+      // Unknown top-level files are intentionally ignored to preserve compatibility
+      // with project bundles created by newer versions of the application.
     }
-    const [sourceId, fileName] = parts;
-    const item = importedOverlays.get(sourceId) ?? {};
-    if (fileName === "manifest.json") {
-      if (item.manifest) throw new ProjectIOError(400, `Duplicate overlay manifest: ${sourceId}`);
-      item.manifest = e.getData();
-    } else if (OVERLAY_ORIGINAL_NAME.test(fileName)) {
-      if (item.original) throw new ProjectIOError(400, `Duplicate overlay original: ${sourceId}`);
-      item.original = { name: fileName, data: e.getData() };
-    } else {
-      throw new ProjectIOError(400, `Unsupported overlay archive entry: ${e.entryName}`);
+
+    let resolvedOriginalPath: string | null = restoredOriginalRelative
+      ? archiveTarget(path.join(dieDir, "original"), restoredOriginalRelative)
+      : null;
+    if (!resolvedOriginalPath && meta.originalPath && (await fileExists(meta.originalPath))) {
+      resolvedOriginalPath = meta.originalPath;
     }
-    importedOverlays.set(sourceId, item);
-  }
-  for (const [sourceId, item] of importedOverlays) {
-    if (!item.manifest || !item.original) {
-      throw new ProjectIOError(400, `Overlay ${sourceId} must contain manifest.json and original image`);
-    }
-    const manifest = readJsonSafe<OverlayImageManifest>(
-      item.manifest.toString("utf8"),
-      null as unknown as OverlayImageManifest
-    );
-    if (!manifest || manifest.id !== sourceId) {
-      throw new ProjectIOError(400, `Invalid overlay manifest: ${sourceId}`);
-    }
-    const sourceDir = archiveTarget(overlayDir, sourceId);
-    await ensureDir(sourceDir);
-    const originalPath = path.join(sourceDir, item.original.name);
-    await fs.writeFile(originalPath, item.original.data);
-    const reboundManifest: OverlayImageManifest = {
-      ...manifest,
-      id: sourceId,
-      originalPath,
-      originalFilename: manifest.originalFilename || item.original.name,
-      size: item.original.data.length,
-      ready: true,
+
+    const updatedMeta: DieRecord = {
+      ...meta,
+      id: targetDieId,
+      name: targetName,
+      originalPath: resolvedOriginalPath ?? meta.originalPath,
       updatedAt: new Date().toISOString()
     };
-    await fs.writeFile(
-      path.join(sourceDir, "manifest.json"),
-      JSON.stringify(reboundManifest, null, 2),
-      "utf8"
-    );
-    const timer = setTimeout(() => {
-      void preGenerateCoarseLevels({
-        dataRoot,
-        dieId: targetDieId,
-        manifest: reboundManifest
-      }).catch((error) => {
-        console.warn("Failed to pre-generate imported overlay preview tiles", error);
-      });
-    }, 750);
-    timer.unref?.();
-  }
+    await fs.writeFile(path.join(stagedDieDir, "metadata.json"), `${JSON.stringify(updatedMeta, null, 2)}\n`, "utf8");
 
-  return {
-    dieId: targetDieId,
-    preferences: readEntry("preferences.json"),
-    deviceRegistry: readEntry("device-registry.json"),
-    analogNames: readEntry("analog-names.json"),
-  };
+    const reboundManifests: OverlayImageManifest[] = [];
+    for (const [sourceId, item] of importedOverlays) {
+      if (!item.manifest || !item.original) {
+        throw new ProjectIOError(400, `Overlay ${sourceId} must contain manifest.json and original image`);
+      }
+      const manifestRaw = await readStagedText(item.manifest);
+      const manifest = readJsonSafe<OverlayImageManifest>(manifestRaw ?? "", null as unknown as OverlayImageManifest);
+      if (!manifest || manifest.id !== sourceId) {
+        throw new ProjectIOError(400, `Invalid overlay manifest: ${sourceId}`);
+      }
+      const originalStat = await fs.stat(item.original.path);
+      const reboundManifest: OverlayImageManifest = {
+        ...manifest,
+        id: sourceId,
+        originalPath: path.join(overlayDir, sourceId, item.original.name),
+        originalFilename: manifest.originalFilename || item.original.name,
+        size: originalStat.size,
+        ready: true,
+        updatedAt: new Date().toISOString()
+      };
+      await fs.writeFile(item.manifest, JSON.stringify(reboundManifest, null, 2), "utf8");
+      reboundManifests.push(reboundManifest);
+    }
+
+    const preferences = await readStagedText(path.join(stagedExtrasDir, "preferences.json"));
+    const deviceRegistry = await readStagedText(path.join(stagedExtrasDir, "device-registry.json"));
+    const analogNames = await readStagedText(path.join(stagedExtrasDir, "analog-names.json"));
+
+    await fs.rename(stagedDieDir, dieDir);
+    dieMoved = true;
+    if (importedOverlays.size > 0) {
+      await fs.rename(stagedOverlayDir, overlayDir);
+      overlayMoved = true;
+    }
+    await writeDieRecord(dataRoot, updatedMeta);
+
+    for (const manifest of reboundManifests) {
+      const timer = setTimeout(() => {
+        void preGenerateCoarseLevels({ dataRoot, dieId: targetDieId, manifest }).catch((error) => {
+          console.warn("Failed to pre-generate imported overlay preview tiles", error);
+        });
+      }, 750);
+      timer.unref?.();
+    }
+
+    return { dieId: targetDieId, preferences, deviceRegistry, analogNames };
+  } catch (error) {
+    if (dieMoved && dieDir) await fs.rm(dieDir, { recursive: true, force: true }).catch(() => {});
+    if (overlayMoved && overlayDir) await fs.rm(overlayDir, { recursive: true, force: true }).catch(() => {});
+    if (error instanceof ZipStreamError) throw new ProjectIOError(400, error.message);
+    throw error;
+  } finally {
+    await archive.close().catch(() => {});
+    await fs.rm(stagingRoot, { recursive: true, force: true }).catch(() => {});
+  }
 }
 
 // ═════════════════════════════════════════════════════════════════════
@@ -446,7 +470,9 @@ export function createProjectIORouter(config: { dataRoot: string }) {
   const router = Router();
   const upload = multer({
     dest: path.join(config.dataRoot, "tmp"),
-    limits: { fileSize: 1024 * 1024 * 1024 }
+    // Store multipart data on disk. The extractor processes the ZIP sequentially,
+    // so full exports with multi-gigabyte images do not have to fit in memory.
+    limits: { fileSize: MAX_PROJECT_ARCHIVE_BYTES }
   });
 
   // ─── Export ─────────────────────────────────────────────────────

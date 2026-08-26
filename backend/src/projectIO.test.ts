@@ -167,3 +167,46 @@ test("project import rejects derived overlay tile entries", async () => {
     )
   );
 });
+
+test("project import extracts a compressed original without buffering the archive", async () => {
+  const dataRoot = await createRoot();
+  const zip = new AdmZip();
+  zip.addFile(
+    "metadata.json",
+    Buffer.from(
+      JSON.stringify({
+        id: "streamed-project",
+        name: "Streamed project",
+        originalFilename: "die.png",
+        originalPath: "",
+        width: 32,
+        height: 32,
+        tileSize: 256,
+        tileFormat: "png",
+        maxZoomLevel: 0,
+        levels: [],
+        createdAt: "2026-08-15T00:00:00.000Z",
+        updatedAt: "2026-08-15T00:00:00.000Z"
+      })
+    )
+  );
+  zip.addFile("annotations.json", Buffer.from('{"layers":[]}'));
+  const original = Buffer.alloc(2 * 1024 * 1024, 0x5a);
+  zip.addFile("original/die.png", original);
+
+  const response = await request(projectApp(dataRoot))
+    .post("/api/dies/import-project")
+    .attach("file", zip.toBuffer(), {
+      filename: "compressed-project.zip",
+      contentType: "application/zip"
+    });
+
+  assert.equal(response.status, 200);
+  assert.equal(response.body.dieId, "streamed-project");
+  const restored = await fs.readFile(path.join(dataRoot, "dies", "streamed-project", "original", "die.png"));
+  assert.deepEqual(restored, original);
+  const metadata = JSON.parse(
+    await fs.readFile(path.join(dataRoot, "dies", "streamed-project", "metadata.json"), "utf8")
+  ) as DieRecord;
+  assert.equal(metadata.originalPath, path.join(dataRoot, "dies", "streamed-project", "original", "die.png"));
+});

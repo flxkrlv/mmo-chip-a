@@ -5,7 +5,8 @@ import {
   type UseQueryOptions
 } from "@tanstack/react-query";
 import type { DieMetadata, DieSummary, ImportJob } from "shared";
-import { apiDelete, apiGet, apiPost, apiPut, apiUpload, authHeaders } from "./client";
+import { ApiError, apiDelete, apiGet, apiPost, apiPut, apiUpload, authHeaders } from "./client";
+import { useProjectTransfer } from "../state/projectTransfer";
 import { importJobKeys } from "./importJobs";
 import { usePreferences } from "../state/preferences";
 
@@ -121,23 +122,53 @@ export async function exportProject(
     includePreferences ? localStorage.getItem("mmo-chip-preferences") : null;
   const deviceRegistry = localStorage.getItem("mmo-chip-device-registry");
   const analogNames = localStorage.getItem("mmo-chip-analog-names");
+  const transfer = useProjectTransfer.getState();
+  transfer.start("export", "Подготовка ZIP-архива…");
 
-  const response = await fetch(`/api/dies/${dieId}/export-project`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", ...authHeaders() },
-    body: JSON.stringify({ mode, preferences, deviceRegistry, analogNames }),
-    signal,
+  return new Promise<ExportProjectResult>((resolve, reject) => {
+    const request = new XMLHttpRequest();
+    request.open("POST", `/api/dies/${dieId}/export-project`);
+    request.responseType = "blob";
+    request.setRequestHeader("Content-Type", "application/json");
+    for (const [name, value] of Object.entries(authHeaders())) request.setRequestHeader(name, value);
+
+    const abort = () => request.abort();
+    signal?.addEventListener("abort", abort, { once: true });
+    request.onprogress = (event) => {
+      transfer.update({
+        phase: "Скачивание ZIP-архива…",
+        loaded: event.loaded,
+        total: event.lengthComputable ? event.total : null
+      });
+    };
+    request.onerror = () => {
+      const error = new Error("Export failed: network error");
+      transfer.fail(error.message);
+      reject(error);
+    };
+    request.onabort = () => {
+      const error = new DOMException("Export cancelled", "AbortError");
+      transfer.fail("Экспорт отменён");
+      reject(error);
+    };
+    request.onload = () => {
+      signal?.removeEventListener("abort", abort);
+      if (request.status < 200 || request.status >= 300) {
+        // responseType is "blob" for a successful ZIP download, so responseText is
+        // unavailable here. Preserve the HTTP status without attempting to read it.
+        const error = new ApiError(request.status, request.statusText || `HTTP ${request.status}`, null);
+        transfer.fail(error.message);
+        reject(error);
+        return;
+      }
+      transfer.complete("ZIP-архив готов");
+      resolve({
+        blob: request.response,
+        filename: request.getResponseHeader("X-Filename") || `mmochip-${dieId}.zip`
+      });
+    };
+    request.send(JSON.stringify({ mode, preferences, deviceRegistry, analogNames }));
   });
-
-  if (!response.ok) {
-    const err = await response.json().catch(() => ({ error: response.statusText }));
-    throw new Error(err.error || "Export failed");
-  }
-
-  const blob = await response.blob();
-  const filename = response.headers.get("X-Filename") || `mmochip-${dieId}.zip`;
-
-  return { blob, filename };
 }
 
 export interface ImportProjectResult {
@@ -164,7 +195,70 @@ export async function importProject(
   let url = "/api/dies/import-project";
   if (renameTo) url += `?name=${encodeURIComponent(renameTo)}`;
 
-  return apiUpload<ImportProjectResult>(url, form);
+  const transfer = useProjectTransfer.getState();
+  transfer.start("import", "Загрузка ZIP-архива…", file.size);
+
+  return new Promise<ImportProjectResult>((resolve, reject) => {
+    const request = new XMLHttpRequest();
+    request.open("POST", url);
+    for (const [name, value] of Object.entries(authHeaders())) request.setRequestHeader(name, value);
+
+    request.upload.onprogress = (event) => {
+      transfer.update({
+        phase: "Загрузка ZIP-архива…",
+        loaded: event.loaded,
+        total: event.lengthComputable ? event.total : file.size
+      });
+    };
+    request.upload.onload = () => {
+      // The server now validates and extracts the archive sequentially. Its duration depends on
+      // disk speed and image count, so keep the lower-bar indicator indeterminate instead of
+      // displaying a misleading completed percentage while this work is still in progress.
+      transfer.update({ phase: "Проверка и распаковка архива на сервере…", loaded: 0, total: null });
+    };
+    request.onerror = () => {
+      const error = new Error("Import failed: network error");
+      transfer.fail(error.message);
+      reject(error);
+    };
+    request.onabort = () => {
+      const error = new DOMException("Import cancelled", "AbortError");
+      transfer.fail("Импорт отменён");
+      reject(error);
+    };
+    request.onload = () => {
+      if (request.status < 200 || request.status >= 300) {
+        const error = responseError(request.status, request.statusText, request.responseText);
+        transfer.fail(error.message);
+        reject(error);
+        return;
+      }
+      try {
+        const result = JSON.parse(request.responseText) as ImportProjectResult;
+        transfer.complete("Импорт завершён");
+        resolve(result);
+      } catch {
+        const error = new Error("Import failed: invalid server response");
+        transfer.fail(error.message);
+        reject(error);
+      }
+    };
+    request.send(form);
+  });
+}
+
+function responseError(status: number, statusText: string, responseText: string): ApiError {
+  let body: unknown = null;
+  try {
+    body = responseText ? JSON.parse(responseText) : null;
+  } catch {
+    body = responseText;
+  }
+  const message =
+    body && typeof body === "object" && "error" in body && typeof body.error === "string"
+      ? body.error
+      : statusText || `HTTP ${status}`;
+  return new ApiError(status, message, body);
 }
 
 export function useExportProject() {

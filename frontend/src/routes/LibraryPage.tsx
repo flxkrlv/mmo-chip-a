@@ -9,6 +9,7 @@ import { Ic } from "../icons";
 import { usePageStatus } from "../lib/useUserStatus";
 import { useToast } from "../components/Toast";
 import { useDialog } from "../components/Dialog";
+import { useProjectTransfer, type ProjectTransfer } from "../state/projectTransfer";
 
 export function LibraryPage() {
   const { items, isLoading, error, refetch } = useLibraryItems();
@@ -21,6 +22,7 @@ export function LibraryPage() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const projectFileInputRef = useRef<HTMLInputElement>(null);
   const [filter, setFilter] = useState("");
+  const transfer = useProjectTransfer((state) => state.transfer);
 
   const filtered = useMemo(() => filterItems(items, filter), [items, filter]);
 
@@ -173,7 +175,7 @@ export function LibraryPage() {
         )}
       </div>
 
-      <StatusBar items={buildStatusItems(totals, importMutation.error?.message)} />
+      <StatusBar items={buildStatusItems(totals, importMutation.error?.message, transfer)} />
     </AppShell>
   );
 }
@@ -200,14 +202,52 @@ function filterItems(items: LibraryItem[], filter: string): LibraryItem[] {
 
 function buildStatusItems(
   totals: { total: number; importing: number; tiling: number },
-  uploadError?: string
-): string[] {
-  const items: string[] = [`${totals.total} chips`];
+  uploadError?: string,
+  transfer?: ProjectTransfer | null
+): React.ReactNode[] {
+  const items: React.ReactNode[] = [`${totals.total} chips`];
   if (totals.importing) items.push(`${totals.importing} importing`);
   if (totals.tiling) items.push(`${totals.tiling} tiling`);
   if (!totals.importing && !totals.tiling) items.push("idle");
+  if (transfer) items.push(<ProjectTransferStatus key="project-transfer" transfer={transfer} />);
   if (uploadError) items.push(`upload failed: ${uploadError}`);
   return items;
+}
+
+function ProjectTransferStatus({ transfer }: { transfer: ProjectTransfer }) {
+  const knownTotal = transfer.total !== null && transfer.total > 0;
+  const percent = knownTotal
+    ? Math.min(100, Math.round((transfer.loaded / transfer.total!) * 100))
+    : null;
+  const tone = transfer.error ? "#c75c5c" : transfer.active ? "var(--accent)" : "var(--ink3)";
+  const label = transfer.error
+    ? `ошибка: ${transfer.error}`
+    : `${transfer.kind === "import" ? "импорт" : "экспорт"}: ${transfer.phase}${percent === null ? "" : ` ${percent}%`}`;
+
+  return (
+    <span style={{ display: "inline-flex", alignItems: "center", gap: 6, minWidth: 190 }}>
+      <span style={{ maxWidth: 260, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+        {label}
+      </span>
+      {transfer.active && (
+        <span
+          aria-label={label}
+          style={{ width: 96, height: 4, background: "var(--l2)", borderRadius: 99, overflow: "hidden" }}
+        >
+          <span
+            style={{
+              display: "block",
+              height: "100%",
+              width: percent === null ? "35%" : `${Math.max(3, percent)}%`,
+              background: tone,
+              borderRadius: 99,
+              transition: "width 160ms linear"
+            }}
+          />
+        </span>
+      )}
+    </span>
+  );
 }
 
 function EmptyState({ children }: { children: React.ReactNode }) {
