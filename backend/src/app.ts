@@ -98,7 +98,7 @@ export function createApp(config: {
     broadcaster: config.broadcaster
   }));
   app.use(createMetalStackRouter({ dataRoot: config.dataRoot }));
-  app.use(createProjectIORouter({ dataRoot: config.dataRoot }));
+  app.use(createProjectIORouter({ dataRoot: config.dataRoot, tileScheduler }));
   app.use(createDebugRouter({ dataRoot: config.dataRoot }));
 
   // Resume/create the complete overlay disk cache for every known project.

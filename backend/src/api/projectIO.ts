@@ -27,6 +27,7 @@ import {
   type OverlayImageManifest
 } from "./overlayImages.js";
 import { listDieRecords, readDieRecord, writeDieRecord } from "../store.js";
+import type { createTileScheduler } from "../tileScheduler.js";
 import type { DieRecord } from "../types.js";
 
 // ═════════════════════════════════════════════════════════════════════
@@ -256,6 +257,7 @@ async function readStagedText(file: string): Promise<string | null> {
 
 async function handleImport(
   dataRoot: string,
+  tileScheduler: ReturnType<typeof createTileScheduler>,
   zipPath: string,
   renameTo?: string
 ): Promise<{ dieId: string; preferences: string | null; deviceRegistry: string | null; analogNames: string | null }> {
@@ -440,6 +442,10 @@ async function handleImport(
       overlayMoved = true;
     }
     await writeDieRecord(dataRoot, updatedMeta);
+    // A project ZIP creates the same base-image record as an ordinary import.
+    // Enqueue its complete base pyramid only after both data directories and metadata
+    // have been atomically moved into their final locations.
+    tileScheduler.enqueueBackground(updatedMeta);
 
     for (const manifest of reboundManifests) {
       const timer = setTimeout(() => {
@@ -466,7 +472,10 @@ async function handleImport(
 // Express router
 // ═════════════════════════════════════════════════════════════════════
 
-export function createProjectIORouter(config: { dataRoot: string }) {
+export function createProjectIORouter(config: {
+  dataRoot: string;
+  tileScheduler: ReturnType<typeof createTileScheduler>;
+}) {
   const router = Router();
   const upload = multer({
     dest: path.join(config.dataRoot, "tmp"),
@@ -574,7 +583,12 @@ export function createProjectIORouter(config: { dataRoot: string }) {
             ? request.query.name.trim() || undefined
             : undefined;
 
-        const result = await handleImport(config.dataRoot, request.file.path, renameTo);
+        const result = await handleImport(
+          config.dataRoot,
+          config.tileScheduler,
+          request.file.path,
+          renameTo
+        );
         await fs.rm(request.file.path, { force: true });
 
         response.json({

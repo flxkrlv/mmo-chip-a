@@ -7,6 +7,7 @@ import AdmZip from "adm-zip";
 import express from "express";
 import request from "supertest";
 import { createProjectIORouter } from "./api/projectIO.js";
+import { createTileScheduler } from "./tileScheduler.js";
 import { ensureDataStore, writeDieRecord } from "./store.js";
 import type { DieRecord } from "./types.js";
 
@@ -26,7 +27,12 @@ async function createRoot(): Promise<string> {
 function projectApp(dataRoot: string) {
   const app = express();
   app.use(express.json());
-  app.use(createProjectIORouter({ dataRoot }));
+  app.use(
+    createProjectIORouter({
+      dataRoot,
+      tileScheduler: createTileScheduler({ dataRoot, concurrency: 2 })
+    })
+  );
   app.use(
     (
       error: Error & { status?: number },
