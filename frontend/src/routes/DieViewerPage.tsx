@@ -188,6 +188,9 @@ function DieViewer({ dieId }: { dieId: string }) {
     total: number;
     loaded: number;
     pending: number;
+    queued: number;
+    loading: number;
+    tilesPerSecond: number;
     preview: boolean;
     lastRenderMs: number;
   } | null>(null);
@@ -932,6 +935,9 @@ function DieViewer({ dieId }: { dieId: string }) {
         total: stats.reduce((sum, stat) => sum + stat.total, 0),
         loaded: stats.reduce((sum, stat) => sum + stat.loaded, 0),
         pending: stats.reduce((sum, stat) => sum + stat.pending, 0),
+        queued: stats.reduce((sum, stat) => sum + stat.queued, 0),
+        loading: stats.reduce((sum, stat) => sum + stat.loading, 0),
+        tilesPerSecond: stats.reduce((sum, stat) => sum + stat.tilesPerSecond, 0),
         preview: stats.some((stat) => stat.preview),
         lastRenderMs: Math.max(...stats.map((stat) => stat.lastRenderMs ?? 0))
       };
@@ -940,6 +946,9 @@ function DieViewer({ dieId }: { dieId: string }) {
         previous.total === next.total &&
         previous.loaded === next.loaded &&
         previous.pending === next.pending &&
+        previous.queued === next.queued &&
+        previous.loading === next.loading &&
+        Math.round(previous.tilesPerSecond * 10) === Math.round(next.tilesPerSecond * 10) &&
         previous.preview === next.preview &&
         Math.round(previous.lastRenderMs) === Math.round(next.lastRenderMs)
           ? previous
@@ -954,14 +963,14 @@ function DieViewer({ dieId }: { dieId: string }) {
   const liveRenderStatusText = useMemo(() => {
     if (!liveRenderStatus) return null;
     const duration = `${Math.round(liveRenderStatus.lastRenderMs)} ms`;
+    const speed = `${liveRenderStatus.tilesPerSecond.toFixed(1)} tile/s`;
     if (liveRenderStatus.preview && liveRenderStatus.pending > 0) {
-      const noun = liveRenderStatus.pending === 1 ? "tile" : "tiles";
-      return `render preview / ${liveRenderStatus.pending} sharp ${noun} loading`;
+      return `render preview / ${liveRenderStatus.loaded}/${liveRenderStatus.total} / ${liveRenderStatus.queued} queued / ${liveRenderStatus.loading} sharp / ${speed}`;
     }
     if (liveRenderStatus.pending > 0) {
-      return `render ${liveRenderStatus.loaded}/${liveRenderStatus.total} / ${liveRenderStatus.pending} loading / ${duration}`;
+      return `render ${liveRenderStatus.loaded}/${liveRenderStatus.total} / ${liveRenderStatus.queued} queued / ${liveRenderStatus.loading} sharp / ${speed} / ${duration}`;
     }
-    return `render ${liveRenderStatus.total} tiles / ${duration}`;
+    return `render ${liveRenderStatus.total} tiles / ${speed} / ${duration}`;
   }, [liveRenderStatus]);
   const allLayers = useMemo<Layer[]>(() => {
     // Paint order: die image → overlay layers → ML via overlay → user annotations.

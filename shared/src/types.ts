@@ -10,9 +10,56 @@ export interface DieLevelMetadata {
 }
 
 export interface DieTileProgress {
-  totalTiles: number;
+  /** Tiles whose canonical files are now available, including cached files found on disk. */
   completedTiles: number;
+  totalTiles: number;
   percentage: number;
+  /** Tiles rendered in this backend session; used for ETA without cache-scan distortion. */
+  generatedTiles: number;
+  /** True when background prebuild is paused; viewport tile requests still remain available. */
+  isPaused: boolean;
+  /** Rolling speed of actual tile renders measured by the backend, or null while warming up. */
+  tilesPerSecond: number | null;
+  /** Estimated seconds until the complete pyramid is available, or null while measuring. */
+  etaSeconds: number | null;
+}
+
+export interface OverlayTileSourceProgress {
+  id: string;
+  name: string;
+  completedTiles: number;
+  totalTiles: number;
+  percentage: number;
+  /** Present in the on-demand Info endpoint; omitted from frequent Library polling. */
+  originalBytes?: number;
+  tileBytes?: number;
+  /** queued = waiting for the shared background worker; generating = active. */
+  status: "queued" | "generating" | "completed" | "paused";
+}
+
+export interface OverlayTileProgress {
+  completedTiles: number;
+  totalTiles: number;
+  percentage: number;
+  isPaused: boolean;
+  /** Per-image state; returned in the Info endpoint and, while active, in Library. */
+  sources: OverlayTileSourceProgress[];
+}
+
+export interface ProjectStorageUsage {
+  totalBytes: number;
+  dieBytes: number;
+  baseTileBytes: number;
+  overlayOriginalBytes: number;
+  overlayTileBytes: number;
+  otherProjectBytes: number;
+}
+
+export interface DieTileInfo {
+  dieId: string;
+  baseTileProgress: DieTileProgress | null;
+  overlayTileProgress: OverlayTileProgress;
+  storage: ProjectStorageUsage;
 }
 
 export interface DieSummary {
@@ -26,6 +73,7 @@ export interface DieSummary {
   createdAt: string;
   updatedAt: string;
   tileProgress?: DieTileProgress;
+  overlayTileProgress?: OverlayTileProgress;
 }
 
 export interface DieMetadata extends DieSummary {

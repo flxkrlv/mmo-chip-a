@@ -3,9 +3,9 @@ import path from "node:path";
 import { ensureTileForRecord } from "./dieImport/importer.js";
 import type { DieRecord } from "./types.js";
 
-// When false, the pyramid is never preemptively built — tiles are generated
-// only when a browser actually requests them via the API.
-const BACKGROUND_TILE_GENERATION_ENABLED = false;
+// Build the full tile pyramid after import so every area is fast on its first
+// visit. Interactive viewport requests retain dedicated worker capacity.
+const BACKGROUND_TILE_GENERATION_ENABLED = true;
 
 type TilePriority = "high" | "low";
 
@@ -26,9 +26,18 @@ interface TileTask {
 
 interface DieProgressState {
   totalTiles: number;
+  /** Files confirmed available during this backend session, including cache hits. */
   completedTiles: number;
+  /** Files actually rendered during this session; excludes the fast cache scan. */
+  generatedTiles: number;
   lastLoggedStep: number;
   backgroundQueued: boolean;
+  isPaused: boolean;
+  /** First real Sharp render timestamp; cache scan time never enters ETA. */
+  generationStartedAt: number | null;
+  /** Average actual render throughput since generationStartedAt. */
+  tilesPerSecond: number | null;
+  rateSamples: number;
 }
 
 export function createTileScheduler(config: {
@@ -41,6 +50,9 @@ export function createTileScheduler(config: {
   const progressByDie = new Map<string, DieProgressState>();
   const deletedDies = new Set<string>();
   let activeWorkers = 0;
+  // A full prebuild should be fast, but it must leave capacity for the UI and
+  // avoid saturating CPU/disk while working through thousands of native tiles.
+  const maxBackgroundWorkers = Math.max(1, Math.min(2, Math.max(1, config.concurrency - 1)));
 
   function ensureProgressState(record: DieRecord) {
     let progress = progressByDie.get(record.id);
@@ -48,8 +60,13 @@ export function createTileScheduler(config: {
       progress = {
         totalTiles: record.levels.reduce((sum, level) => sum + level.columns * level.rows, 0),
         completedTiles: 0,
+        generatedTiles: 0,
         lastLoggedStep: -1,
-        backgroundQueued: false
+        backgroundQueued: false,
+        isPaused: false,
+        generationStartedAt: null,
+        tilesPerSecond: null,
+        rateSamples: 0
       };
       progressByDie.set(record.id, progress);
     }
@@ -106,6 +123,21 @@ export function createTileScheduler(config: {
     }
 
     pumpQueue();
+  }
+
+  function pauseBackground(dieId: string) {
+    const progress = progressByDie.get(dieId);
+    if (!progress) return null;
+    progress.isPaused = true;
+    return getProgress(dieId);
+  }
+
+  function resumeBackground(record: DieRecord) {
+    const progress = ensureProgressState(record);
+    progress.isPaused = false;
+    enqueueBackground(record);
+    pumpQueue();
+    return getProgress(record.id);
   }
 
   function getOrCreateTask(
@@ -167,6 +199,12 @@ export function createTileScheduler(config: {
       if (!task) {
         return;
       }
+      if (task.priority === "low" && activeBackgroundWorkerCount() >= maxBackgroundWorkers) {
+        // Leave the low-priority task queued. A later interactive request will
+        // still be admitted immediately through the reserved worker capacity.
+        lowPriorityQueue.unshift(task.key);
+        return;
+      }
 
       task.started = true;
       activeWorkers += 1;
@@ -176,6 +214,14 @@ export function createTileScheduler(config: {
         pumpQueue();
       });
     }
+  }
+
+  function activeBackgroundWorkerCount(): number {
+    let count = 0;
+    for (const task of activeTasks.values()) {
+      if (task.started && task.priority === "low") count += 1;
+    }
+    return count;
   }
 
   function takeNextTask() {
@@ -188,10 +234,17 @@ export function createTileScheduler(config: {
       return task;
     }
 
-    while (lowPriorityQueue.length > 0) {
+    // Scan each currently queued low-priority task at most once. Paused work is
+    // preserved in-place, while runnable work from later projects can proceed.
+    const lowQueueLength = lowPriorityQueue.length;
+    for (let index = 0; index < lowQueueLength; index += 1) {
       const key = lowPriorityQueue.shift()!;
       const task = activeTasks.get(key);
       if (!task || task.started || task.priority !== "low") {
+        continue;
+      }
+      if (ensureProgressState(task.record).isPaused) {
+        lowPriorityQueue.push(key);
         continue;
       }
       return task;
@@ -202,6 +255,8 @@ export function createTileScheduler(config: {
 
   async function runTask(task: TileTask) {
     try {
+      const expectedTilePath = buildTilePath(config.dataRoot, task.record.id, task.z, task.x, task.y);
+      const wasCached = await isTilePresent(expectedTilePath);
       const tilePath = await ensureTileForRecord({
         dataRoot: config.dataRoot,
         record: task.record,
@@ -218,6 +273,18 @@ export function createTileScheduler(config: {
 
       const progress = ensureProgressState(task.record);
       progress.completedTiles += 1;
+      if (!wasCached) {
+        const generatedAt = Date.now();
+        if (progress.generationStartedAt === null) {
+          progress.generationStartedAt = generatedAt;
+        }
+        progress.generatedTiles += 1;
+        progress.rateSamples += 1;
+        const elapsedSeconds = (generatedAt - progress.generationStartedAt) / 1_000;
+        if (elapsedSeconds > 0) {
+          progress.tilesPerSecond = progress.generatedTiles / elapsedSeconds;
+        }
+      }
       logLazyCompletion(task, progress);
       logBackgroundProgress(task.record.id, progress);
 
@@ -235,7 +302,7 @@ export function createTileScheduler(config: {
     }
 
     console.log(
-      `[tiles:${task.record.id}] lazy tile ${task.z}/${task.x}/${task.y} ready (${progress.completedTiles}/${progress.totalTiles})`
+      `[tiles:${task.record.id}] requested tile ${task.z}/${task.x}/${task.y} ready (${progress.completedTiles}/${progress.totalTiles})`
     );
   }
 
@@ -288,19 +355,54 @@ export function createTileScheduler(config: {
     if (!state) return null;
     const percentage =
       state.totalTiles === 0 ? 100 : (state.completedTiles / state.totalTiles) * 100;
+    const remainingTiles = Math.max(0, state.totalTiles - state.completedTiles);
+    const generationElapsedSeconds =
+      state.generationStartedAt === null ? 0 : (Date.now() - state.generationStartedAt) / 1_000;
+    const currentRate =
+      generationElapsedSeconds > 0 && state.generatedTiles > 0
+        ? state.generatedTiles / generationElapsedSeconds
+        : null;
+    // Require a broad real-world sample window. This blocks a short burst of
+    // easy/coarse tiles from claiming the whole remaining pyramid is a minute away.
+    const hasStableRate =
+      state.rateSamples >= 20 &&
+      generationElapsedSeconds >= 20 &&
+      currentRate !== null &&
+      currentRate > 0;
     return {
       totalTiles: state.totalTiles,
       completedTiles: state.completedTiles,
-      percentage
+      percentage,
+      generatedTiles: state.generatedTiles,
+      isPaused: state.isPaused,
+      tilesPerSecond: hasStableRate ? currentRate : null,
+      etaSeconds:
+        remainingTiles === 0
+          ? 0
+          : !state.isPaused && hasStableRate
+          ? remainingTiles / currentRate!
+          : null
     };
   }
 
   return {
     enqueueBackground,
+    pauseBackground,
+    resumeBackground,
     requestTile,
     removeDie,
     getProgress
   };
+}
+
+async function isTilePresent(tilePath: string) {
+  try {
+    await fs.access(tilePath);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+    throw error;
+  }
 }
 
 function buildTilePath(dataRoot: string, dieId: string, z: number, x: number, y: number) {

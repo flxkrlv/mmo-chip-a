@@ -15,6 +15,7 @@ import path from "node:path";
 import { Router } from "express";
 import multer from "multer";
 import sharp from "sharp";
+import type { OverlayTileProgress, OverlayTileSourceProgress } from "shared";
 import { buildLevels } from "../dieImport/importer.js";
 
 const DEFAULT_TILE_SIZE = 512;
@@ -88,10 +89,10 @@ function toListItem(manifest: OverlayImageManifest): OverlayImageListItem {
   return item;
 }
 
-async function listManifests(
+async function listFullManifests(
   dataRoot: string,
   dieId: string
-): Promise<OverlayImageListItem[]> {
+): Promise<OverlayImageManifest[]> {
   const dir = dieOverlayDir(dataRoot, dieId);
   try {
     const entries = await fs.readdir(dir, { withFileTypes: true });
@@ -102,12 +103,18 @@ async function listManifests(
     );
     return manifests
       .filter((item): item is OverlayImageManifest => item !== null)
-      .map(toListItem)
       .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
     throw error;
   }
+}
+
+async function listManifests(
+  dataRoot: string,
+  dieId: string
+): Promise<OverlayImageListItem[]> {
+  return (await listFullManifests(dataRoot, dieId)).map(toListItem);
 }
 
 async function listLegacyFiles(dataRoot: string, dieId: string): Promise<OverlayImageListItem[]> {
@@ -158,11 +165,22 @@ async function writeManifest(manifest: OverlayImageManifest): Promise<void> {
   }
 }
 
+// A compact interactive pool gets the currently visible viewport onto the
+// screen sooner. A cold JPEG crop is not random-access: libvips must decode the
+// large source image before it can extract a native-resolution 512px tile.
 const MAX_CONCURRENT_TILE_GENERATIONS = Math.max(
   2,
   Math.min(8, Number(process.env.TILE_GENERATION_CONCURRENCY ?? 0) ||
-    Math.max(2, os.availableParallelism?.() ?? 4))
+    Math.min(4, Math.max(2, os.availableParallelism?.() ?? 4)))
 );
+// One 31,774 × 15,355 RGB image expands to roughly 1.36 GiB during decode.
+// Never run several such decodes together on a 16 GiB workstation; normal
+// smaller overlays can still use the shared pool in parallel.
+const HUGE_OVERLAY_PIXELS = 100_000_000;
+const MAX_CONCURRENT_HUGE_OVERLAY_GENERATIONS = 2;
+// Reserve one huge-decode slot for a freshly visible tile. Full-pyramid work
+// consumes at most the other slot, so it cannot make a viewport wait behind it.
+const MAX_CONCURRENT_HUGE_OVERLAY_BACKGROUND_GENERATIONS = 1;
 
 interface TileGenerationResult {
   tilePath: string;
@@ -174,41 +192,79 @@ interface TileGenerationResult {
 interface QueuedTileGeneration {
   priority: number;
   sequence: number;
+  isHuge: boolean;
+  background: boolean;
+  canRun: () => boolean;
   run: () => void;
+}
+
+interface OverlayPrebuildState {
+  status: "queued" | "generating" | "completed";
+  completedTiles: number;
+  totalTiles: number;
+  stagingRoot: string | null;
+  diskScanned: boolean;
 }
 
 const pendingTileGenerations = new Map<string, Promise<TileGenerationResult>>();
 const tileGenerationQueue: QueuedTileGeneration[] = [];
 let activeTileGenerations = 0;
+let activeHugeOverlayGenerations = 0;
+let activeHugeOverlayBackgroundGenerations = 0;
 let tileGenerationSequence = 0;
+const pendingPyramidPrebuilds = new Map<string, Promise<void>>();
+const overlayPrebuildStates = new Map<string, OverlayPrebuildState>();
+const pausedOverlayDieIds = new Set<string>();
 
 function drainTileGenerationQueue(): void {
   while (
     activeTileGenerations < MAX_CONCURRENT_TILE_GENERATIONS &&
     tileGenerationQueue.length > 0
   ) {
-    const next = tileGenerationQueue.shift();
+    const nextIndex = tileGenerationQueue.findIndex((candidate) => {
+      if (!candidate.canRun()) return false;
+      if (!candidate.isHuge) return true;
+      if (activeHugeOverlayGenerations >= MAX_CONCURRENT_HUGE_OVERLAY_GENERATIONS) return false;
+      return !candidate.background ||
+        activeHugeOverlayBackgroundGenerations < MAX_CONCURRENT_HUGE_OVERLAY_BACKGROUND_GENERATIONS;
+    });
+    if (nextIndex < 0) return;
+    const [next] = tileGenerationQueue.splice(nextIndex, 1);
     if (!next) return;
     activeTileGenerations += 1;
+    if (next.isHuge) {
+      activeHugeOverlayGenerations += 1;
+      if (next.background) activeHugeOverlayBackgroundGenerations += 1;
+    }
     next.run();
   }
 }
 
 function scheduleTileGeneration<T>(
   priority: number,
-  work: () => Promise<T>
+  isHuge: boolean,
+  background: boolean,
+  work: () => Promise<T>,
+  canRun: () => boolean = () => true
 ): Promise<{ value: T; queueMs: number }> {
   const enqueuedAt = Date.now();
   return new Promise((resolve, reject) => {
     tileGenerationQueue.push({
       priority,
       sequence: tileGenerationSequence++,
+      isHuge,
+      background,
+      canRun,
       run: () => {
         const startedAt = Date.now();
         void work()
           .then((value) => resolve({ value, queueMs: startedAt - enqueuedAt }), reject)
           .finally(() => {
             activeTileGenerations -= 1;
+            if (isHuge) {
+              activeHugeOverlayGenerations -= 1;
+              if (background) activeHugeOverlayBackgroundGenerations -= 1;
+            }
             drainTileGenerationQueue();
           });
       }
@@ -245,11 +301,16 @@ async function ensureTile(params: {
   const existing = pendingTileGenerations.get(key);
   if (existing) return existing;
 
-  const task = scheduleTileGeneration(params.priority, async () => {
-    const generationStartedAt = Date.now();
-    const tilePath = await ensureTileImpl(params);
-    return { tilePath, generationMs: Date.now() - generationStartedAt };
-  })
+  const task = scheduleTileGeneration(
+    params.priority,
+    params.manifest.width * params.manifest.height >= HUGE_OVERLAY_PIXELS,
+    params.priority < 0,
+    async () => {
+      const generationStartedAt = Date.now();
+      const tilePath = await ensureTileImpl(params);
+      return { tilePath, generationMs: Date.now() - generationStartedAt };
+    }
+  )
     .then(({ value, queueMs }) => ({
       tilePath: value.tilePath,
       cache: "generated" as const,
@@ -370,6 +431,232 @@ export async function preGenerateCoarseLevels(params: {
   );
 }
 
+/**
+ * Generate every level of one overlay pyramid in a single libvips pipeline.
+ * This decodes the huge original once, unlike the former per-tile fallback
+ * which reopened it for each native-resolution 512px crop.  Output is staged
+ * beside the source, then only missing tiles are moved into the live cache.
+ */
+export function preGenerateFullPyramid(params: {
+  manifest: OverlayImageManifest;
+  dataRoot: string;
+  dieId: string;
+}): Promise<void> {
+  const key = overlayPrebuildKey(params.dieId, params.manifest.id);
+  const running = pendingPyramidPrebuilds.get(key);
+  if (running) return running;
+
+  const totalTiles = totalTilesForManifest(params.manifest);
+  const state = overlayPrebuildStates.get(key) ?? {
+    status: "queued" as const,
+    completedTiles: 0,
+    totalTiles,
+    stagingRoot: null,
+    diskScanned: false
+  };
+  state.totalTiles = totalTiles;
+  state.status = state.completedTiles >= totalTiles ? "completed" : "queued";
+  overlayPrebuildStates.set(key, state);
+
+  const isHuge = params.manifest.width * params.manifest.height >= HUGE_OVERLAY_PIXELS;
+  const task = scheduleTileGeneration(
+    -1_000_000_000,
+    isHuge,
+    true,
+    async () => {
+      const root = sourceDir(params.dataRoot, params.dieId, params.manifest.id);
+      const targetTiles = path.join(root, "tiles");
+      const existingTiles = await countTileFiles(targetTiles, params.manifest.tileFormat);
+      state.completedTiles = Math.min(totalTiles, existingTiles);
+      state.diskScanned = true;
+      if (state.completedTiles >= totalTiles) {
+        state.status = "completed";
+        return;
+      }
+
+      const stagingRoot = path.join(root, `tiles-prebuild-${crypto.randomUUID()}`);
+      const outputBase = path.join(stagingRoot, "pyramid.dz");
+      const generatedTiles = path.join(stagingRoot, "pyramid_files");
+      const label = `${params.dieId}/${params.manifest.id}`;
+      state.status = "generating";
+      state.stagingRoot = stagingRoot;
+      try {
+        await fs.mkdir(stagingRoot, { recursive: true });
+        console.log(`[overlay-prebuild:${label}] started full pyramid`);
+        const image = sharp(params.manifest.originalPath, {
+          limitInputPixels: false,
+          sequentialRead: true
+        });
+        if (params.manifest.tileFormat === "png") {
+          image.png({ compressionLevel: 6 });
+        } else {
+          image.jpeg({ quality: 85, chromaSubsampling: "4:2:0" });
+        }
+        await image
+          .tile({ size: params.manifest.tileSize, layout: "dz", depth: "onetile" })
+          .toFile(outputBase);
+        state.completedTiles = totalTiles;
+        await mergePrebuiltTiles(generatedTiles, targetTiles, params.manifest.tileFormat);
+        state.status = "completed";
+        console.log(`[overlay-prebuild:${label}] completed full pyramid`);
+      } finally {
+        state.stagingRoot = null;
+        await fs.rm(stagingRoot, { recursive: true, force: true }).catch(() => {});
+      }
+    },
+    () => !pausedOverlayDieIds.has(params.dieId)
+  )
+    .then(() => undefined)
+    .finally(() => pendingPyramidPrebuilds.delete(key));
+  pendingPyramidPrebuilds.set(key, task);
+  return task;
+}
+
+/** Queue full overlay prebuild for every source of one project. */
+export async function enqueueOverlayPrebuilds(dataRoot: string, dieId: string): Promise<void> {
+  const manifests = await listFullManifests(dataRoot, dieId);
+  for (const manifest of manifests) {
+    void preGenerateFullPyramid({ dataRoot, dieId, manifest }).catch((error) => {
+      console.warn(`[overlay-prebuild:${dieId}/${manifest.id}] failed`, error);
+    });
+  }
+}
+
+export function pauseOverlayPrebuilds(dieId: string): void {
+  pausedOverlayDieIds.add(dieId);
+}
+
+export async function resumeOverlayPrebuilds(dataRoot: string, dieId: string): Promise<void> {
+  pausedOverlayDieIds.delete(dieId);
+  await enqueueOverlayPrebuilds(dataRoot, dieId);
+  drainTileGenerationQueue();
+}
+
+export async function getOverlayTileProgress(
+  dataRoot: string,
+  dieId: string
+): Promise<OverlayTileProgress> {
+  const manifests = await listFullManifests(dataRoot, dieId);
+  const isPaused = pausedOverlayDieIds.has(dieId);
+  const sources: OverlayTileSourceProgress[] = await Promise.all(manifests.map(async (manifest) => {
+    const key = overlayPrebuildKey(dieId, manifest.id);
+    const totalTiles = totalTilesForManifest(manifest);
+    let state = overlayPrebuildStates.get(key);
+    if (!state) {
+      state = {
+        status: "queued",
+        completedTiles: 0,
+        totalTiles,
+        stagingRoot: null,
+        diskScanned: false
+      };
+      overlayPrebuildStates.set(key, state);
+    }
+    if (!state.diskScanned) {
+      state.completedTiles = Math.min(
+        totalTiles,
+        await countTileFiles(path.join(sourceDir(dataRoot, dieId, manifest.id), "tiles"), manifest.tileFormat)
+      );
+      state.diskScanned = true;
+      if (state.completedTiles >= totalTiles) state.status = "completed";
+    }
+    let completedTiles = state.completedTiles;
+    if (state.stagingRoot) {
+      const stagedTiles = await countTileFiles(
+        path.join(state.stagingRoot, "pyramid_files"),
+        manifest.tileFormat === "jpg" ? "jpeg" : "png"
+      );
+      completedTiles = Math.max(completedTiles, Math.min(totalTiles, stagedTiles));
+    }
+    const status = completedTiles >= totalTiles
+      ? "completed"
+      : isPaused
+      ? "paused"
+      : state.status;
+    return {
+      id: manifest.id,
+      name: manifest.name,
+      completedTiles,
+      totalTiles,
+      percentage: totalTiles === 0 ? 100 : (completedTiles / totalTiles) * 100,
+      status
+    };
+  }));
+  const completedTiles = sources.reduce((sum, source) => sum + source.completedTiles, 0);
+  const totalTiles = sources.reduce((sum, source) => sum + source.totalTiles, 0);
+  return {
+    completedTiles,
+    totalTiles,
+    percentage: totalTiles === 0 ? 100 : (completedTiles / totalTiles) * 100,
+    isPaused,
+    sources
+  };
+}
+
+function overlayPrebuildKey(dieId: string, sourceId: string): string {
+  return `${dieId}/${sourceId}`;
+}
+
+function totalTilesForManifest(manifest: OverlayImageManifest): number {
+  return manifest.levels.reduce((sum, level) => sum + level.columns * level.rows, 0);
+}
+
+async function countTileFiles(root: string, extension: string): Promise<number> {
+  let entries: import("node:fs").Dirent[];
+  try {
+    entries = await fs.readdir(root, { withFileTypes: true });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return 0;
+    throw error;
+  }
+  let count = 0;
+  const expected = `.${extension.toLowerCase()}`;
+  for (const entry of entries) {
+    const entryPath = path.join(root, entry.name);
+    if (entry.isDirectory()) count += await countTileFiles(entryPath, extension);
+    else if (entry.isFile() && entry.name.toLowerCase().endsWith(expected)) count += 1;
+  }
+  return count;
+}
+
+async function mergePrebuiltTiles(
+  generatedRoot: string,
+  targetRoot: string,
+  tileFormat: TileFormat
+): Promise<void> {
+  const files = await collectFiles(generatedRoot);
+  for (const sourcePath of files) {
+    let relative = path.relative(generatedRoot, sourcePath);
+    // Skip libvips metadata. Live cache contains only files addressable by the
+    // existing /tiles/:z/:x/:y URL contract.
+    if (!/^[0-9]+[\\/][0-9]+_[0-9]+\.(?:jpeg|png)$/i.test(relative)) continue;
+    // libvips names JPEG tiles .jpeg, while the existing MMO cache contract
+    // uses .jpg. Keep every current URL and manifest compatible.
+    if (tileFormat === "jpg" && relative.toLowerCase().endsWith(".jpeg")) {
+      relative = `${relative.slice(0, -4)}jpg`;
+    }
+    const targetPath = path.join(targetRoot, relative);
+    await fs.mkdir(path.dirname(targetPath), { recursive: true });
+    try {
+      await fs.access(targetPath);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      await fs.rename(sourcePath, targetPath);
+    }
+  }
+}
+
+async function collectFiles(root: string): Promise<string[]> {
+  const entries = await fs.readdir(root, { withFileTypes: true });
+  const files: string[] = [];
+  for (const entry of entries) {
+    const entryPath = path.join(root, entry.name);
+    if (entry.isDirectory()) files.push(...await collectFiles(entryPath));
+    else if (entry.isFile()) files.push(entryPath);
+  }
+  return files;
+}
+
 export function createOverlayImagesRouter(config: { dataRoot: string }) {
   const router = Router();
   const upload = multer({ dest: path.join(config.dataRoot, "tmp") });
@@ -380,6 +667,24 @@ export function createOverlayImagesRouter(config: { dataRoot: string }) {
       const personal = await listManifests(config.dataRoot, dieId);
       const legacy = await listLegacyFiles(config.dataRoot, dieId);
       response.json({ images: [...legacy, ...personal] });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // Rebuild/resume the complete disk cache for imported projects created before
+  // full overlay prebuild was enabled. Requests return immediately; the shared
+  // background pool performs sources one at a time for huge originals.
+  router.post("/api/dies/:dieId/overlay-images/prebuild", async (request, response, next) => {
+    try {
+      const dieId = String(request.params.dieId);
+      const manifests = await listFullManifests(config.dataRoot, dieId);
+      for (const manifest of manifests) {
+        void preGenerateFullPyramid({ dataRoot: config.dataRoot, dieId, manifest }).catch((error) => {
+          console.warn(`[overlay-prebuild:${dieId}/${manifest.id}] failed`, error);
+        });
+      }
+      response.status(202).json({ ok: true, sources: manifests.length });
     } catch (error) {
       next(error);
     }
@@ -436,12 +741,12 @@ export function createOverlayImagesRouter(config: { dataRoot: string }) {
         // the UI time to issue its first interactive requests, which must always
         // obtain the worker slots ahead of background coarse generation.
         setTimeout(() => {
-          void preGenerateCoarseLevels({
+          void preGenerateFullPyramid({
             manifest,
             dataRoot: config.dataRoot,
             dieId
           }).catch((error) => {
-            console.warn("Failed to pre-generate overlay preview tiles", error);
+            console.warn("Failed to pre-generate overlay tile pyramid", error);
           });
         }, 750);
         response.status(201).json({ image: toListItem(manifest) });

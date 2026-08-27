@@ -15,7 +15,9 @@ import { createAuthRouter } from "./api/auth.js";
 import { createMetalStackRouter } from "./api/metalStack.js";
 import { createProjectIORouter } from "./api/projectIO.js";
 import { createTilesRouter } from "./api/tiles.js";
+import { enqueueOverlayPrebuilds } from "./api/overlayImages.js";
 import { listDieRecords } from "./store.js";
+
 import { createTileScheduler } from "./tileScheduler.js";
 import type { AnnotationBroadcaster } from "./ws.js";
 import { requireAuth, isAuthEnabled } from "./auth/middleware.js";
@@ -38,16 +40,6 @@ export function createApp(config: {
     ...config,
     tileScheduler
   });
-
-  void listDieRecords(config.dataRoot)
-    .then((records) => {
-      for (const record of records) {
-        tileScheduler.enqueueBackground(record);
-      }
-    })
-    .catch((error) => {
-      console.error("Failed to resume background tile generation", error);
-    });
 
   app.use(cors() as unknown as express.RequestHandler);
   app.use(express.json({ limit: "50mb" }));
@@ -108,6 +100,19 @@ export function createApp(config: {
   app.use(createMetalStackRouter({ dataRoot: config.dataRoot }));
   app.use(createProjectIORouter({ dataRoot: config.dataRoot }));
   app.use(createDebugRouter({ dataRoot: config.dataRoot }));
+
+  // Resume/create the complete overlay disk cache for every known project.
+  // The shared overlay scheduler serialises huge originals and keeps a slot for
+  // viewport requests, so startup never launches N full-size decodes at once.
+  setImmediate(() => {
+    void listDieRecords(config.dataRoot)
+      .then(async (records) => {
+        for (const record of records) {
+          await enqueueOverlayPrebuilds(config.dataRoot, record.id);
+        }
+      })
+      .catch((error) => console.warn("Failed to enqueue overlay tile prebuilds", error));
+  });
 
   app.use(
     (

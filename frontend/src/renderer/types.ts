@@ -13,6 +13,15 @@ export interface Viewport {
 }
 
 /** Per-tile context passed to a `Layer.draw` call. */
+export interface RenderFrame {
+  /** Monotonically increasing renderer frame identifier. */
+  id: number;
+  /** Full visible world-space rectangle for this frame. */
+  world: Rect;
+  /** Viewport used to construct the frame. */
+  viewport: Viewport;
+}
+
 export interface TileBounds {
   /** Tile pixel size in CSS pixels (zoom-independent). */
   size: number;
@@ -38,6 +47,8 @@ export interface TileBounds {
  */
 export interface Layer {
   id: string;
+  /** Called once before the renderer draws any visible offscreen tile for a frame. */
+  beginFrame?(frame: RenderFrame): void;
   draw(ctx: CanvasRenderingContext2D, bounds: TileBounds): void;
   subscribe?(invalidate: (worldRect?: Rect) => void): () => void;
 }

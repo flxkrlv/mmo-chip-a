@@ -4,7 +4,7 @@ import {
   useQueryClient,
   type UseQueryOptions
 } from "@tanstack/react-query";
-import type { DieMetadata, DieSummary, ImportJob } from "shared";
+import type { DieMetadata, DieSummary, DieTileInfo, DieTileProgress, ImportJob, OverlayTileProgress } from "shared";
 import { ApiError, apiDelete, apiGet, apiPost, apiPut, apiUpload, authHeaders } from "./client";
 import { useProjectTransfer } from "../state/projectTransfer";
 import { importJobKeys } from "./importJobs";
@@ -13,7 +13,8 @@ import { usePreferences } from "../state/preferences";
 export const dieKeys = {
   all: ["dies"] as const,
   list: () => [...dieKeys.all, "list"] as const,
-  detail: (id: string) => [...dieKeys.all, "detail", id] as const
+  detail: (id: string) => [...dieKeys.all, "detail", id] as const,
+  tileInfo: (id: string) => [...dieKeys.all, "tile-info", id] as const
 };
 
 export function listDies(signal?: AbortSignal): Promise<DieSummary[]> {
@@ -22,6 +23,10 @@ export function listDies(signal?: AbortSignal): Promise<DieSummary[]> {
 
 export function getDie(dieId: string, signal?: AbortSignal): Promise<DieMetadata> {
   return apiGet<DieMetadata>(`/api/dies/${dieId}`, signal);
+}
+
+export function getDieTileInfo(dieId: string, signal?: AbortSignal): Promise<DieTileInfo> {
+  return apiGet<DieTileInfo>(`/api/dies/${dieId}/tile-info`, signal);
 }
 
 type DieQueryOptions = Omit<
@@ -38,6 +43,15 @@ export function useDie(dieId: string | undefined, options?: DieQueryOptions) {
   });
 }
 
+export function useDieTileInfo(dieId: string | undefined, enabled: boolean) {
+  return useQuery({
+    queryKey: dieKeys.tileInfo(dieId ?? ""),
+    queryFn: ({ signal }) => getDieTileInfo(dieId!, signal),
+    enabled: Boolean(dieId) && enabled,
+    staleTime: 5_000
+  });
+}
+
 export function importDie(file: File): Promise<ImportJob> {
   const form = new FormData();
   form.append("file", file);
@@ -46,6 +60,20 @@ export function importDie(file: File): Promise<ImportJob> {
 
 export function deleteDie(dieId: string): Promise<{ ok: true }> {
   return apiDelete<{ ok: true }>(`/api/dies/${dieId}`);
+}
+
+export interface TilePrebuildActionResult {
+  ok: true;
+  tileProgress: DieTileProgress | null;
+  overlayTileProgress?: OverlayTileProgress;
+}
+
+export function pauseTilePrebuild(dieId: string): Promise<TilePrebuildActionResult> {
+  return apiPost<TilePrebuildActionResult>(`/api/dies/${dieId}/tiles/pause`, {});
+}
+
+export function resumeTilePrebuild(dieId: string): Promise<TilePrebuildActionResult> {
+  return apiPost<TilePrebuildActionResult>(`/api/dies/${dieId}/tiles/resume`, {});
 }
 
 type DiesQueryOptions = Omit<
@@ -72,7 +100,19 @@ export function useImportDie() {
   });
 }
 
+export function useTilePrebuildControl() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ dieId, action }: { dieId: string; action: "pause" | "resume" }) =>
+      action === "pause" ? pauseTilePrebuild(dieId) : resumeTilePrebuild(dieId),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: dieKeys.list() });
+    }
+  });
+}
+
 export function useDeleteDie() {
+
   const qc = useQueryClient();
   return useMutation({
     mutationFn: deleteDie,

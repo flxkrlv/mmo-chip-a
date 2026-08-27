@@ -58,6 +58,7 @@ test("imports an image and exposes list/detail/tile endpoints", async () => {
   const completedJob = await waitForCompletedJob(app, importResponse.body.id);
   assert.equal(completedJob.status, "completed");
   assert.ok(completedJob.dieId);
+  await waitForTilePrebuild(app, completedJob.dieId);
 
   const listResponse = await request(app).get("/api/dies");
   assert.equal(listResponse.status, 200);
@@ -163,7 +164,22 @@ async function createHarness() {
   return { app: server, dataRoot };
 }
 
+async function waitForTilePrebuild(app: import("node:http").Server, dieId: string) {
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    const response = await request(app).get(`/api/dies/${dieId}`);
+    const progress = response.body.tileProgress;
+    if (progress && progress.completedTiles === progress.totalTiles) {
+      return progress;
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+
+  throw new Error(`Timed out waiting for tile prebuild for ${dieId}`);
+}
+
 async function waitForCompletedJob(
+
   app: import("node:http").Server,
   jobId: string
 ) {

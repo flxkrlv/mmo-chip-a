@@ -23,7 +23,7 @@ import { ZipArchive } from "archiver";
 import type { Archiver } from "archiver";
 import { MAX_PROJECT_ARCHIVE_BYTES, ZipStreamError, ZipStreamReader, type ZipEntry } from "./zipStream.js";
 import {
-  preGenerateCoarseLevels,
+  preGenerateFullPyramid,
   type OverlayImageManifest
 } from "./overlayImages.js";
 import { listDieRecords, readDieRecord, writeDieRecord } from "../store.js";
@@ -443,8 +443,8 @@ async function handleImport(
 
     for (const manifest of reboundManifests) {
       const timer = setTimeout(() => {
-        void preGenerateCoarseLevels({ dataRoot, dieId: targetDieId, manifest }).catch((error) => {
-          console.warn("Failed to pre-generate imported overlay preview tiles", error);
+        void preGenerateFullPyramid({ dataRoot, dieId: targetDieId, manifest }).catch((error) => {
+          console.warn("Failed to pre-generate imported overlay tile pyramid", error);
         });
       }, 750);
       timer.unref?.();

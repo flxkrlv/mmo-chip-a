@@ -1,5 +1,5 @@
 import type { Rect } from "../lib/geometry";
-import type { Layer, Viewport } from "./types";
+import type { Layer, RenderFrame, Viewport } from "./types";
 
 const DEFAULT_TILE_SIZE = 256;
 const MAX_CACHED_TILES = 256;
@@ -56,6 +56,7 @@ export class TiledRenderer {
   private tiles = new Map<TileKey, CachedTile>();
   private dirty = new Set<TileKey>();
   private useCounter = 0;
+  private frameCounter = 0;
   private rafId: number | null = null;
   private destroyed = false;
 
@@ -178,6 +179,27 @@ export class TiledRenderer {
     const maxI = Math.floor((vp.originX + visW / vp.zoom) / tw);
     const minJ = Math.floor(vp.originY / tw);
     const maxJ = Math.floor((vp.originY + visH / vp.zoom) / tw);
+    const frame: RenderFrame = {
+      id: ++this.frameCounter,
+      world: {
+        x: vp.originX,
+        y: vp.originY,
+        width: visW / vp.zoom,
+        height: visH / vp.zoom
+      },
+      viewport: vp
+    };
+
+    // Give layers the complete current viewport before any individual canvas
+    // tile is painted. Image layers use this to prioritise and cancel stale
+    // asynchronous work at viewport granularity instead of per canvas tile.
+    for (const layer of this.layers) {
+      try {
+        layer.beginFrame?.(frame);
+      } catch (error) {
+        console.error(`[renderer] layer "${layer.id}" beginFrame failed`, error);
+      }
+    }
 
     // Render any missing or dirty tiles in the visible window.
     for (let i = minI; i <= maxI; i++) {
