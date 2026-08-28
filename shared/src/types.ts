@@ -1303,3 +1303,162 @@ export interface AnalogDetectionJob {
   startedAt: string | null;
   finishedAt: string | null;
 }
+
+
+// ── Read-only circuit assistant ────────────────────────────────────
+
+/** User-supplied, non-authoritative context for one analysis request. */
+export interface AssistantAnalysisBrief {
+  /** Part number, die name, or family supplied by the user. */
+  chipName?: string;
+  /** For example: "high-voltage gate driver". */
+  chipDescription?: string;
+  /** For example: "BiCDMOS 0.35 µm". This is context, never proof. */
+  technology?: string;
+  /** Functional block or floorplan region being investigated. */
+  focus?: string;
+  /** Free-text engineering question, for example a request to find hysteresis. */
+  prompt?: string;
+  /** Optional user-known net names; they narrow ranking but do not rename nets. */
+  knownNetNames?: string[];
+  /** Language for structured card comments. Defaults to Russian. */
+  language?: "ru" | "en";
+}
+
+export type AssistantAnalysisScope = "selected" | "die";
+export type AssistantAnalysisMode = "functional_blocks" | "netlist_problems";
+export type AssistantFindingKind =
+  | "diode_connected_device"
+  | "current_mirror"
+  | "bjt_current_mirror"
+  | "bjt_current_source"
+  | "widlar_current_source"
+  | "differential_pair"
+  | "bjt_differential_pair"
+  | "ldo_error_amplifier_feedback"
+  | "resistor_divider"
+  | "protection_clamp"
+  | "llm_hypothesis"
+  | "positive_feedback_loop"
+  | "bandgap_precursor"
+  | "netlist_problem";
+export type AssistantFindingStatus =
+  | "verified_topology"
+  | "candidate"
+  | "needs_verification";
+export type AssistantConfidenceLevel = "high" | "medium" | "low";
+
+/** All IDs refer to the current extraction snapshot and are preview-only. */
+export interface AssistantEvidenceItem {
+  code: string;
+  text: string;
+  deviceUuids: string[];
+  netIds: number[];
+}
+
+export interface AssistantFinding {
+  id: string;
+  kind: AssistantFindingKind;
+  label: string;
+  status: AssistantFindingStatus;
+  confidence: number;
+  confidenceLevel: AssistantConfidenceLevel;
+  /** Stable IDs from the die-wide extracted device records where available. */
+  deviceUuids: string[];
+  /** Presentation/Netlist names paired with deviceUuids by position. */
+  instanceNames: string[];
+  netIds: number[];
+  evidence: AssistantEvidenceItem[];
+  limitations: string[];
+  suggestedChecks: string[];
+  /** Provenance makes heuristic rule seeds distinguishable from LLM-created hypotheses. */
+  origin: "rule" | "llm";
+  /** Optional explanation generated from the current read-only circuit snapshot. */
+  assistantComment?: string;
+}
+
+export interface AssistantCircuitDeviceInput {
+  /** Canonical browser-side identity from the device registry. */
+  uuid: string;
+  instanceName: string;
+  kind: DeviceKind;
+  modelName?: string;
+  terminals: DeviceTerminal[];
+  geometry: DeviceGeometry;
+  bbox?: AnnotationRect;
+  cellId?: string;
+}
+
+/** A serialisable, read-only projection of the currently extracted circuit. */
+export interface AssistantCircuitSnapshot {
+  devices: AssistantCircuitDeviceInput[];
+  /** Numeric IDs are the same IDs referenced by device terminals. */
+  namedNets: Array<{ id: number; name: string }>;
+  warnings?: string[];
+}
+
+export interface AssistantLlmConfig {
+  provider?: "openrouter" | "opencode-go" | "openai" | "custom";
+  apiKey?: string;
+  baseUrl?: string;
+  model?: string;
+}
+
+export interface AssistantAnalysisRequest {
+  /** Rejects stale user actions when the annotation snapshot has changed. */
+  expectedRev?: number;
+  scope?: AssistantAnalysisScope;
+  /** Functional-block discovery or open-ended netlist anomaly review. */
+  mode?: AssistantAnalysisMode;
+  /** Extracted device UUIDs selected by the user. Never changes annotations. */
+  selectedDeviceUuids?: string[];
+  /** Numeric net IDs from the current die-wide extraction. */
+  selectedNetIds?: number[];
+  /** Projection supplied from the current extraction so UUIDs/bboxes match UI exactly. */
+  circuit: AssistantCircuitSnapshot;
+  brief?: AssistantAnalysisBrief;
+  /** Optional and disabled by default; LLM receives full normalised circuit data and produces read-only hypotheses. */
+  requestLlmExplanation?: boolean;
+  /** Frontend-provided LLM credentials; backend env vars are used as fallback. */
+  llmConfig?: AssistantLlmConfig;
+}
+
+export interface AssistantLlmState {
+  requested: boolean;
+  used: boolean;
+  /** Free Russian-language analysis from the model; shown even if no candidate can be safely mapped to a subgraph. */
+  narrative?: string;
+  /** Number of structured LLM hypotheses shown as cards; no local validation gate is applied. */
+  hypothesesShown?: number;
+  /** End-to-end upstream request time measured on the backend. */
+  durationMs?: number;
+  unavailableReason?: string;
+}
+
+export interface AssistantAnalysisResult {
+  schemaVersion: 1;
+  readOnly: true;
+  dieId: string;
+  annotationsRev: number;
+  scope: AssistantAnalysisScope;
+  mode: AssistantAnalysisMode;
+  brief: AssistantAnalysisBrief;
+  devicesAnalyzed: number;
+  netlistPreview: string[];
+  findings: AssistantFinding[];
+  /** Read-only diagnostics describing snapshot coverage and unmatched search criteria. */
+  diagnostics: string[];
+  llm: AssistantLlmState;
+  summary: string;
+}
+
+export interface AssistantAnalysisResponse {
+  ok: true;
+  data: AssistantAnalysisResult;
+}
+
+export interface AssistantAnalysisErrorResponse {
+  ok: false;
+  error: string;
+  detail?: string;
+}

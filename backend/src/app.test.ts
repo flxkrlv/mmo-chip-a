@@ -145,6 +145,30 @@ test("deletes a die and its stored data", async () => {
   await assert.rejects(fs.access(dieDir));
 });
 
+test("analyses a supplied circuit snapshot without changing annotations", async () => {
+  const { app } = await createHarness();
+  const imageBuffer = await sharp({ create: { width: 32, height: 32, channels: 3, background: { r: 1, g: 2, b: 3 } } }).png().toBuffer();
+  const imported = await request(app).post("/api/dies/import").attach("file", imageBuffer, { filename: "assistant.png", contentType: "image/png" });
+  const job = await waitForCompletedJob(app, imported.body.id);
+  const before = await request(app).get(`/api/dies/${job.dieId}/annotations`);
+  const circuit = {
+    devices: [
+      { uuid: "mref", instanceName: "MREF", kind: "mos", modelName: "pmos", geometry: { W_um: 10, L_um: 1, fingers: 1, multiplier: 1, totalW_um: 10, mosType: "pmos" }, terminals: [{ name: "D", netId: 1 }, { name: "G", netId: 1 }, { name: "S", netId: 2 }, { name: "B", netId: 2 }] },
+      { uuid: "mout", instanceName: "MOUT", kind: "mos", modelName: "pmos", geometry: { W_um: 10, L_um: 1, fingers: 1, multiplier: 1, totalW_um: 10, mosType: "pmos" }, terminals: [{ name: "D", netId: 3 }, { name: "G", netId: 1 }, { name: "S", netId: 2 }, { name: "B", netId: 2 }] },
+    ],
+    namedNets: [{ id: 1, name: "NREF" }, { id: 2, name: "VDD" }, { id: 3, name: "OUT" }],
+  };
+  const analysed = await request(app)
+    .post(`/api/dies/${job.dieId}/assistant/analyze`)
+    .send({ expectedRev: before.body.rev, scope: "die", circuit, brief: { prompt: "Find current mirrors" } });
+  assert.equal(analysed.status, 200);
+  assert.equal(analysed.body.ok, true);
+  assert.equal(analysed.body.data.readOnly, true);
+  assert.ok(analysed.body.data.findings.some((finding: { kind: string }) => finding.kind === "current_mirror"));
+  const after = await request(app).get(`/api/dies/${job.dieId}/annotations`);
+  assert.equal(after.body.rev, before.body.rev);
+});
+
 async function createHarness() {
   const dataRoot = await fs.mkdtemp(path.join(os.tmpdir(), "chiptool-test-"));
   tempRoots.push(dataRoot);
