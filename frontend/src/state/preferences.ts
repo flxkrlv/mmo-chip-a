@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import { persist, subscribeWithSelector } from "zustand/middleware";
-import type { AnnotationClass, LayerType } from "shared";
+import type { AnnotationClass, AssistantLlmConfig, LayerType } from "shared";
 import {
   CELL_COLOR,
   NET_COLOR,
@@ -166,6 +166,9 @@ interface PreferencesState {
   /** Per-die overlay layer display settings (visibility, opacity, offset).
    *  Keyed by dieId → serverFilename. */
   overlayLayerSettings: Record<string, Record<string, OverlayLayerPersistedSettings>>;
+  /** LLM provider configuration for the AI assistant.
+   *  Stored in localStorage; sent to the backend on each analysis request. */
+  llmProvider: AssistantLlmConfig;
 }
 
 interface PreferencesActions {
@@ -242,6 +245,7 @@ interface PreferencesActions {
   setReTerminalLabelsVisible: (visible: boolean) => void;
   setReAnalogLabelScale: (scale: 0 | 1 | 2) => void;
   saveOverlayLayerSettings: (dieId: string, settings: Record<string, OverlayLayerPersistedSettings>) => void;
+  setLlmProvider: (config: AssistantLlmConfig) => void;
 }
 
 const DEFAULT_EXPANDED_SECTIONS: AnnotationKind[] = ["net", "via", "roi"];
@@ -300,6 +304,7 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
         reTerminalLabelsVisible: true,
         reAnalogLabelScale: 1,
         overlayLayerSettings: {},
+        llmProvider: {},
 
         setNetWidth: (width) => set({ netWidth: width }),
         setNetColor: (color) => set({ netColor: color }),
@@ -471,6 +476,7 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
           set((state) => ({
             overlayLayerSettings: { ...state.overlayLayerSettings, [dieId]: settings }
           })),
+        setLlmProvider: (config) => set({ llmProvider: config }),
       }),
       {
         name: "mmo-chip-preferences",
@@ -524,7 +530,8 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
           reDeviceLabelsVisible: state.reDeviceLabelsVisible,
           reTerminalLabelsVisible: state.reTerminalLabelsVisible,
           reAnalogLabelScale: state.reAnalogLabelScale,
-          overlayLayerSettings: state.overlayLayerSettings
+          overlayLayerSettings: state.overlayLayerSettings,
+          llmProvider: state.llmProvider
         })
       }
     )

@@ -74,6 +74,7 @@ const SHORTCUT_GROUPS: ShortcutGroup[] = [
       { key: "Ctrl+F", label: "Search nets / cells" },
       { key: "Ctrl+Shift+S", label: "Screenshot (PNG)" },
       { key: "+ / −", label: "Zoom in / out" },
+      { key: "Ctrl+,", label: "Project settings" },
       { key: "Ctrl+/", label: "This help panel" },
     ],
   },
