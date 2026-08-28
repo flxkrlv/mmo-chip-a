@@ -1220,24 +1220,29 @@ function DieViewer({ dieId }: { dieId: string }) {
     [cellTerminals]
   );
 
-  // ── Overlay toggles ─────────────────────────────────────────
-  const [deviceOverlayOn, setDeviceOverlayOn] = useState(true);
-  const [showTermNetIds, setShowTermNetIds] = useState(false);
-  const [floorplanOverlayOn, setFloorplanOverlayOn] = useState(true);
-  const [showFloorplanIO, setShowFloorplanIO] = useState(false);
+  // ── Overlay toggles (persisted in preferences) ──────────────
+  const deviceOverlayOn = usePreferences((s) => s.deviceOverlayOn);
+  const setDeviceOverlayOn = usePreferences((s) => s.setDeviceOverlayOn);
+  const showTermNetIds = usePreferences((s) => s.showTermNetIds);
+  const setShowTermNetIds = usePreferences((s) => s.setShowTermNetIds);
+  const floorplanOverlayOn = usePreferences((s) => s.floorplanOverlayOn);
+  const setFloorplanOverlayOn = usePreferences((s) => s.setFloorplanOverlayOn);
+  const showFloorplanIO = usePreferences((s) => s.showFloorplanIO);
+  const setShowFloorplanIO = usePreferences((s) => s.setShowFloorplanIO);
   const cellsLocked = usePreferences((s) => s.cellsLocked);
   const setCellsLocked = usePreferences((s) => s.setCellsLocked);
   const viaLabelsVisible = usePreferences((s) => s.viaLabelsVisible);
   const setViaLabelsVisible = usePreferences((s) => s.setViaLabelsVisible);
   const llmProvider = usePreferences((s) => s.llmProvider);
   const setLlmProvider = usePreferences((s) => s.setLlmProvider);
+  const showCellRelations = usePreferences((s) => s.showCellRelations);
+  const setShowCellRelations = usePreferences((s) => s.setShowCellRelations);
   const [selectedDevice, setSelectedDevice] = useState<AnalogDevice | null>(null);
   /** Preview-only finding currently focused from the AI Analysis tab. */
   const [assistantFinding, setAssistantFinding] = useState<AssistantFinding | null>(null);
   /** Increments even when the same card is re-selected, forcing a canvas redraw. */
   const [assistantFindingNonce, setAssistantFindingNonce] = useState(0);
   const [showProblems, setShowProblems] = useState(false);
-  const [showCellRelations, setShowCellRelations] = useState(false);
 
   useEffect(() => {
     loadClipper();

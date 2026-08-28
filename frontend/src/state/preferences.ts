@@ -144,6 +144,16 @@ interface PreferencesState {
   /** Show via type label (VIA12, VIA23, …) above each via annotation on the
    *  die viewer canvas. */
   viaLabelsVisible: boolean;
+  /** Die viewer: show the analog devices overlay (extracted instances + highlights). */
+  deviceOverlayOn: boolean;
+  /** Die viewer: render net IDs next to terminals/wires instead of just net colors. */
+  showTermNetIds: boolean;
+  /** Die viewer: render the floorplan regions overlay. */
+  floorplanOverlayOn: boolean;
+  /** Die viewer: render floorplan region I/O markers. */
+  showFloorplanIO: boolean;
+  /** Die viewer: render the cell relations overlay (shared-net links between cells). */
+  showCellRelations: boolean;
   /** Wire node (junction dot) radius multiplier relative to net width.
    *  0 = hide nodes entirely. Default = NET_NODE_RADIUS_MULT. */
   netNodeSize: number;
@@ -184,6 +194,16 @@ interface PreferencesActions {
   setViaPlaceMode: (mode: "cursor" | "wire-end") => void;
   /** Toggle via type labels on the die viewer canvas. */
   setViaLabelsVisible: (visible: boolean) => void;
+  /** Toggle analog devices overlay on the die viewer canvas. */
+  setDeviceOverlayOn: (visible: boolean) => void;
+  /** Toggle net ID overlay on the die viewer canvas. */
+  setShowTermNetIds: (visible: boolean) => void;
+  /** Toggle floorplan overlay on the die viewer canvas. */
+  setFloorplanOverlayOn: (visible: boolean) => void;
+  /** Toggle floorplan I/O markers on the die viewer canvas. */
+  setShowFloorplanIO: (visible: boolean) => void;
+  /** Toggle cell relations overlay on the die viewer canvas. */
+  setShowCellRelations: (visible: boolean) => void;
   /** Override colour for a specific via layer (VIA12, VIA23, …). */
   setViaLayerColor: (viaId: string, color: string) => void;
   /** Set wire node radius multiplier (0 = hide nodes). */
@@ -297,6 +317,11 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
         viaPlaceMode: "wire-end",
         viaLayerColors: {},
         viaLabelsVisible: true,
+        deviceOverlayOn: true,
+        showTermNetIds: false,
+        floorplanOverlayOn: true,
+        showFloorplanIO: false,
+        showCellRelations: false,
         netNodeSize: NET_NODE_RADIUS_MULT,
         netNodeVisible: true,
         resistorOpacity: 1,
@@ -315,6 +340,11 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
         setAutoViaEnabled: (enabled) => set({ autoViaEnabled: enabled }),
         setViaPlaceMode: (mode) => set({ viaPlaceMode: mode }),
         setViaLabelsVisible: (visible) => set({ viaLabelsVisible: visible }),
+        setDeviceOverlayOn: (visible) => set({ deviceOverlayOn: visible }),
+        setShowTermNetIds: (visible) => set({ showTermNetIds: visible }),
+        setFloorplanOverlayOn: (visible) => set({ floorplanOverlayOn: visible }),
+        setShowFloorplanIO: (visible) => set({ showFloorplanIO: visible }),
+        setShowCellRelations: (visible) => set({ showCellRelations: visible }),
         setViaLayerColor: (viaId, color) =>
           set((state) => ({
             viaLayerColors: { ...state.viaLayerColors, [viaId]: color }
@@ -523,6 +553,11 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
           autoViaEnabled: state.autoViaEnabled,
           viaPlaceMode: state.viaPlaceMode,
           viaLabelsVisible: state.viaLabelsVisible,
+          deviceOverlayOn: state.deviceOverlayOn,
+          showTermNetIds: state.showTermNetIds,
+          floorplanOverlayOn: state.floorplanOverlayOn,
+          showFloorplanIO: state.showFloorplanIO,
+          showCellRelations: state.showCellRelations,
           viaLayerColors: state.viaLayerColors,
           netNodeSize: state.netNodeSize,
           netNodeVisible: state.netNodeVisible,
