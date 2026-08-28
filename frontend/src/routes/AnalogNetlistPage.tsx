@@ -71,6 +71,15 @@ export function AnalogNetlistPage() {
 
 function AnalogNetlist({ dieId }: { dieId: string }) {
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const assistantInstances = useMemo(
+    () => (searchParams.get("assistantInstances") ?? "").split(",").map((name) => name.trim()).filter(Boolean),
+    [searchParams],
+  );
+  const requestedAssistantView = searchParams.get("assistantView");
+  const assistantView = requestedAssistantView === "graph" || requestedAssistantView === "schematic" || requestedAssistantView === "code"
+    ? requestedAssistantView
+    : null;
   const die = useDie(dieId).data;
   const annotationsQ = useAnnotations(dieId);
   useAnnotationsWebSocket(dieId);
@@ -174,12 +183,30 @@ function AnalogNetlist({ dieId }: { dieId: string }) {
   const netlist = useAnalogNetlist(annotations, moduleName, dialect, spiceConfig, hierarchical, analogOverrides);
 
   // ── UI state ────────────────────────────────────────────────────
-  const [rightView, setRightView] = useState<"code" | "graph" | "schematic" | "lvs">("code");
+  const [rightView, setRightView] = useState<"code" | "graph" | "schematic" | "lvs">(assistantView ?? "code");
   const [selectedRegion, setSelectedRegion] = useState<string | null>(null);
   const viewerRef = useRef<CodeViewerHandle | null>(null);
   const [selectedLine, setSelectedLine] = useState<number | null>(null);
   const [selectedInstance, setSelectedInstance] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  const assistantFragment = useMemo(
+    () => assistantInstances.length > 0 && netlist.data?.source
+      ? extractAssistantFragment(netlist.data.source, assistantInstances)
+      : null,
+    [netlist.data?.source, assistantInstances],
+  );
+
+  useEffect(() => {
+    if (assistantView) setRightView(assistantView);
+    if (assistantInstances.length > 0) setSelectedInstance(assistantInstances[0]);
+  }, [assistantView, assistantInstances]);
+
+  const clearAssistantFragment = useCallback(() => {
+    const next = new URLSearchParams(searchParams);
+    next.delete("assistantView");
+    next.delete("assistantInstances");
+    setSearchParams(next);
+  }, [searchParams, setSearchParams]);
 
   // Reset the "Copied!" flash.
   useEffect(() => {
@@ -355,6 +382,11 @@ function AnalogNetlist({ dieId }: { dieId: string }) {
       <SubBar
         right={
           <>
+            {assistantInstances.length > 0 && (
+              <button type="button" className="chip" onClick={clearAssistantFragment} title="Return to the full netlist and clear the temporary assistant fragment">
+                AI fragment · {assistantInstances.length} device{assistantInstances.length === 1 ? "" : "s"} · clear
+              </button>
+            )}
             {warnCount > 0 && (
               <span
                 className="chip warn"
@@ -634,6 +666,7 @@ function AnalogNetlist({ dieId }: { dieId: string }) {
               floorplanRegions={annotations.floorplanRegions}
               selectedRegion={selectedRegion}
               onSelectRegion={setSelectedRegion}
+              selectedDeviceNames={assistantInstances}
             />
           ) : rightView === "graph" && annotations && netlist.data ? (
             <NetGraphView
@@ -641,6 +674,7 @@ function AnalogNetlist({ dieId }: { dieId: string }) {
               vddNet={vddNet}
               gndNet={gndNet}
               highlightDevice={selectedInstance}
+              highlightDevices={assistantInstances}
               onCanvasTap={() => setSelectedInstance(null)}
               onDeviceClick={(name, cellId) => {
                 navigate(`/die/${encodeURIComponent(dieId)}?focusCell=${encodeURIComponent(cellId)}&focusDevice=${encodeURIComponent(name)}`);
@@ -649,7 +683,7 @@ function AnalogNetlist({ dieId }: { dieId: string }) {
           ) : netlist.data ? (
             <CodeViewer
               ref={viewerRef}
-              source={netlist.data.source}
+              source={assistantFragment ?? netlist.data.source}
               markers={[]}
               selectedLine={selectedLine ?? undefined}
               onSelectLine={setSelectedLine}
@@ -983,4 +1017,33 @@ function sanitizeModuleName(name: string): string {
   const s = name.replace(/[^A-Za-z0-9_]/g, "_").replace(/_+/g, "_").replace(/^_+|_+$/g, "");
   if (!s) return "die";
   return /^[0-9]/.test(s) ? `_${s}` : s;
+}
+
+
+/**
+ * Preview-only source projection for an assistant finding. It retains header
+ * directives and every flat instance line whose first token matches the
+ * finding's extracted instance name; the persisted generated netlist is never
+ * altered. The matching is intentionally exact to avoid accidental substring
+ * matches such as M1 selecting M10.
+ */
+function extractAssistantFragment(source: string, instanceNames: string[]): string {
+  const wanted = new Set(instanceNames);
+  const lines = source.split(/\r?\n/);
+  const header = lines.filter((line) => {
+    const trimmed = line.trim().toLowerCase();
+    return trimmed.startsWith("//") || trimmed.startsWith("*") || trimmed.startsWith(".title") || trimmed.startsWith("simulator");
+  });
+  const matched = lines.filter((line) => {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("*") || trimmed.startsWith("//") || trimmed.startsWith(".")) return false;
+    return wanted.has(trimmed.split(/\s+/)[0]);
+  });
+  const missing = instanceNames.filter((name) => !matched.some((line) => line.trim().split(/\s+/)[0] === name));
+  const note = [
+    "* ── AI analysis: read-only subcircuit fragment ─────────────────",
+    `* Selected instances: ${instanceNames.join(", ")}`,
+    ...(missing.length > 0 ? [`* Not found in this generated dialect: ${missing.join(", ")}`] : []),
+  ];
+  return [...header.slice(0, 5), ...note, ...matched, "* ── end AI fragment ─────────────────────────────────────────"].join("\n");
 }

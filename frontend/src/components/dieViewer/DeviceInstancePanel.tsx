@@ -93,7 +93,11 @@ export function DeviceInstancePanel({
   onSelectDevice,
   onDoubleClickDevice,
 }: Props) {
-  const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
+  const [collapsed, setCollapsed] = useState<Set<string>>(() => {
+    const all = new Set<string>();
+    for (const kind of Object.keys(KIND_TITLES)) all.add(kind);
+    return all;
+  });
   const toggle = useCallback((kind: string) => {
     setCollapsed((prev) => {
       const next = new Set(prev);

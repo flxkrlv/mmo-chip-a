@@ -4,7 +4,7 @@ import type { AnnotationAction } from "../api/actions";
 
 /** Which right-panel tab is showing. The ML tab also drives a render mode:
  *  traces/vias size from `mlConfig` instead of display preferences. */
-export type InspectorTab = "inspector" | "ml" | "cv";
+export type InspectorTab = "inspector" | "ml" | "cv" | "ai";
 
 /** Mockup defaults for the ML config until a real per-die value is seeded
  *  from the annotations blob. Source-pixel units. */

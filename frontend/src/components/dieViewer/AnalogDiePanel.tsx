@@ -1,16 +1,12 @@
 /**
- * AnalogDiePanel.tsx — Analog device summary + SheetR config.
+ * AnalogDiePanel.tsx — Analog device summary.
  *
- * Stripped down: no die-level layers, no "Scan all cells" (replaced by
- * Netlist tab), no CDL preview (duplicated). Keeps SheetR config and
- * a quick device count readout.
+ * Quick device count readout. SheetR config moved to SettingsPanel (Ctrl+,).
  */
 
-import { useMemo, useState } from "react";
+import { useMemo } from "react";
 import type { AnalogDevice, DieAnnotations } from "shared";
 import { collectDieWideAnalogDevices } from "../../api/dieWideAnalog";
-import { SheetRConfigPanel } from "../config/SheetRConfigPanel";
-import { usePreferences } from "../../state/preferences";
 
 interface Props {
   annotations?: DieAnnotations | null | undefined;
@@ -18,12 +14,6 @@ interface Props {
 }
 
 export function AnalogDiePanel({ annotations, devices: devicesProp }: Props) {
-  const [sheetROpen, setSheetROpen] = useState(false);
-
-  // Reactive sheetR from preferences (NOT getState — subscribes properly)
-  const sheetR = usePreferences((s) => (s as any).sheetR ?? {});
-
-  // Compute device stats from prop (preferred) or fallback to sync extraction.
   const stats = useMemo(() => {
     if (devicesProp) {
       const byKind: Record<string, number> = {};
@@ -53,31 +43,21 @@ export function AnalogDiePanel({ annotations, devices: devicesProp }: Props) {
     );
   }
 
-  const umPerPx = annotations.umPerPx ?? 1.0;
+  const KIND_LABELS: Record<string, string> = {
+    mos: "MOS", bjt_npn: "NPN", bjt_pnp: "PNP", jfet_n: "N-JFET", jfet_p: "P-JFET",
+    resistor: "R", capacitor: "C", diode: "D",
+  };
 
   return (
-    <div style={{ padding: "8px 12px", fontSize: 11 }}>
-      {/* um/px read-only */}
-      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
-        <span style={{ fontSize: 10, color: "var(--ink3)" }}>Scale</span>
-        <span className="m" style={{ fontSize: 10 }}>{umPerPx.toFixed(4)} µm/px</span>
+    <div style={{ padding: "8px 12px", fontSize: 11, color: "var(--ink2)" }}>
+      <span style={{ fontSize: 10, color: "var(--ink3)" }}>ANALOG DEVICES · {stats.total}</span>
+      <div style={{ marginTop: 4, display: "flex", flexWrap: "wrap", gap: "2px 8px" }}>
+        {Object.entries(stats.byKind).map(([kind, count]) => (
+          <span key={kind} style={{ fontSize: 10 }}>
+            {KIND_LABELS[kind] ?? kind}: {count}
+          </span>
+        ))}
       </div>
-
-      {/* SheetR config — reactive */}
-      <div
-        style={{
-          fontSize: 10, fontWeight: 600, color: "var(--ink3)",
-          cursor: "pointer", display: "flex", alignItems: "center", gap: 4,
-        }}
-        onClick={() => setSheetROpen((v) => !v)}
-      >
-        {sheetROpen ? "▼" : "▶"} SHEET RESISTANCE
-      </div>
-      {sheetROpen && (
-        <div style={{ marginTop: 4 }}>
-          <SheetRConfigPanel compact />
-        </div>
-      )}
     </div>
   );
 }

@@ -341,11 +341,13 @@ interface Props {
   gndNet?: string;
   /** Instance name to highlight on the graph (yellow border). */
   highlightDevice?: string | null;
+  /** A finding-scoped group of devices to highlight together. */
+  highlightDevices?: string[];
   /** Called when user taps empty area of the canvas (e.g. to clear selection). */
   onCanvasTap?: () => void;
 }
 
-export function NetGraphView({ annotations, onDeviceClick, vddNet, gndNet, highlightDevice, onCanvasTap }: Props) {
+export function NetGraphView({ annotations, onDeviceClick, vddNet, gndNet, highlightDevice, highlightDevices = [], onCanvasTap }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const cyRef = useRef<Core | null>(null);
   const navigate = useNavigate();
@@ -506,31 +508,29 @@ export function NetGraphView({ annotations, onDeviceClick, vddNet, gndNet, highl
     cy.nodes().removeClass("inst-dim inst-highlight");
     cy.edges().removeClass("inst-dim-edge");
 
-    if (!highlightDevice) return;
+    const highlighted = new Set([...(highlightDevices ?? []), ...(highlightDevice ? [highlightDevice] : [])]);
+    if (highlighted.size === 0) return;
 
-    const node = cy.getElementById(highlightDevice);
-    if (!node || node.length === 0) return;
-
-    // Dim all other nodes
+    // Dim all other nodes while preserving rails and I/O anchors for context.
     for (const n of cy.nodes()) {
       const id = n.data("id");
       if (id === "VDD" || id === "GND") continue;
       if (n.data("nt") === "io") continue;
-      if (id === highlightDevice) {
+      if (highlighted.has(id)) {
         n.addClass("inst-highlight");
       } else {
         n.addClass("inst-dim");
       }
     }
 
-    // Dim edges that don't involve the highlighted node
+    // Keep the internal subgraph and links to rails/I/O visible.
     for (const e of cy.edges()) {
       const src = e.data("source");
       const tgt = e.data("target");
-      if (src === highlightDevice || tgt === highlightDevice) continue;
+      if (highlighted.has(src) || highlighted.has(tgt)) continue;
       e.addClass("inst-dim-edge");
     }
-  }, [highlightDevice]);
+  }, [highlightDevice, highlightDevices]);
 
   // ── Toolbar change handlers ────────────────────────────────
   const onToggleRails = useCallback(() => {

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { useQueryClient } from "@tanstack/react-query";
-import type { AnalogDevice, AnnotationNet } from "shared";
+import type { AnalogDevice, AnnotationNet, AssistantFinding } from "shared";
 import { annotationKeys, useAnnotations } from "../api/annotations";
 import { useAnnotationsWebSocket } from "../api/annotationsWebSocket";
 import { netChangesToAction, useActionDispatcher } from "../api/actions";
@@ -39,6 +39,7 @@ import {
 } from "../renderer/annotations/dieAnnotations";
 import { OutlineTree } from "../components/dieViewer/OutlineTree";
 import { ShortcutsPanel } from "../components/dieViewer/ShortcutsPanel";
+import { SettingsPanel } from "../components/dieViewer/SettingsPanel";
 import {
   CenteredStatus,
   CursorReadout,
@@ -54,9 +55,10 @@ import {
   type DieContextMenuState
 } from "../components/dieViewer/DieContextMenu";
 import { InspectorPanel } from "../components/dieViewer/InspectorPanel";
-import { AnalogDiePanel } from "../components/dieViewer/AnalogDiePanel";
+
 import { ProblemNavigatorPanel, collectProblems } from "../components/dieViewer/ProblemNavigatorPanel";
 import { AnalogDeviceHighlights } from "../components/dieViewer/AnalogDeviceHighlights";
+import { SubcircuitHighlightsOverlay } from "../components/dieViewer/SubcircuitHighlightsOverlay";
 import { DeviceInspector } from "../components/dieViewer/DeviceInspector";
 import { DeviceInstancePanel } from "../components/dieViewer/DeviceInstancePanel";
 import { useDieExtraction } from "../hooks/useDieExtraction";
@@ -197,10 +199,16 @@ function DieViewer({ dieId }: { dieId: string }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const outlineSearchRef = useRef<(() => void) | null>(null);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   useEffect(() => {
     const handler = () => setShortcutsOpen((v) => !v);
     window.addEventListener("toggle-shortcuts", handler);
     return () => window.removeEventListener("toggle-shortcuts", handler);
+  }, []);
+  useEffect(() => {
+    const handler = () => setSettingsOpen((v) => !v);
+    window.addEventListener("toggle-settings", handler);
+    return () => window.removeEventListener("toggle-settings", handler);
   }, []);
 
   const activeTool = useDieViewerStore((s) => s.activeTool);
@@ -292,6 +300,7 @@ function DieViewer({ dieId }: { dieId: string }) {
 
   // Sync floorplan regions from annotations
   const setFloorplanRegions = useFloorplanStore((s) => s.setRegions);
+  const floorplanRegions = useFloorplanStore((s) => s.regions);
   useEffect(() => {
     if (annotations?.floorplanRegions) {
       setFloorplanRegions(annotations.floorplanRegions);
@@ -352,6 +361,13 @@ function DieViewer({ dieId }: { dieId: string }) {
       if (((e.metaKey || e.ctrlKey) && e.key === "/") || (e.key === "?" && !e.ctrlKey && !e.metaKey && !e.altKey)) {
         e.preventDefault();
         setShortcutsOpen((v) => !v);
+        return;
+      }
+
+      // Ctrl+, → project settings
+      if ((e.metaKey || e.ctrlKey) && e.key === ",") {
+        e.preventDefault();
+        setSettingsOpen((v) => !v);
         return;
       }
 
@@ -814,7 +830,12 @@ function DieViewer({ dieId }: { dieId: string }) {
     const invalidate = () => canvasHandle.current?.invalidate();
     const unsubTab = usePreferences.subscribe(
       (s) => s.inspectorTab,
-      invalidate
+      (tab, prevTab) => {
+        invalidate();
+        if (prevTab === "ai" && tab !== "ai") {
+          setAssistantFinding(null);
+        }
+      }
     );
     let prevMl = useDieViewerStore.getState().mlConfig;
     const unsubMl = useDieViewerStore.subscribe((s) => {
@@ -1208,7 +1229,13 @@ function DieViewer({ dieId }: { dieId: string }) {
   const setCellsLocked = usePreferences((s) => s.setCellsLocked);
   const viaLabelsVisible = usePreferences((s) => s.viaLabelsVisible);
   const setViaLabelsVisible = usePreferences((s) => s.setViaLabelsVisible);
+  const llmProvider = usePreferences((s) => s.llmProvider);
+  const setLlmProvider = usePreferences((s) => s.setLlmProvider);
   const [selectedDevice, setSelectedDevice] = useState<AnalogDevice | null>(null);
+  /** Preview-only finding currently focused from the AI Analysis tab. */
+  const [assistantFinding, setAssistantFinding] = useState<AssistantFinding | null>(null);
+  /** Increments even when the same card is re-selected, forcing a canvas redraw. */
+  const [assistantFindingNonce, setAssistantFindingNonce] = useState(0);
   const [showProblems, setShowProblems] = useState(false);
   const [showCellRelations, setShowCellRelations] = useState(false);
 
@@ -2476,11 +2503,6 @@ function DieViewer({ dieId }: { dieId: string }) {
         });
         return;
       }
-      // Single-click on an analog device → show inspector
-      const dev = hitTestAnalogDevice({ x, y }, analogDevicesRef.current);
-      if (dev) {
-        setSelectedDevice(dev);
-      }
     },
     [
       dispatcher,
@@ -2860,6 +2882,23 @@ function DieViewer({ dieId }: { dieId: string }) {
     if (dev) setSelectedDevice(dev as any);
   }, [focusSearchParams, annotationLayer, annotations, focusOnIds]);
 
+  const activateAssistantFinding = useCallback((finding: AssistantFinding | null) => {
+    setAssistantFinding(finding);
+    setAssistantFindingNonce((current) => current + 1);
+  }, []);
+
+  const openAssistantNetlist = useCallback(
+    (finding: AssistantFinding, view: "code" | "graph" | "schematic") => {
+      const params = new URLSearchParams({
+        die: dieId,
+        assistantView: view,
+        assistantInstances: finding.instanceNames.join(","),
+      });
+      navigate(`/analog-netlist?${params.toString()}`);
+    },
+    [dieId, navigate],
+  );
+
   const minZoom = die ? (1 / Math.max(die.width, die.height)) * 50 : 0.01;
 
   // Screenshot: composite main canvas + analog overlay at 4K resolution.
@@ -3109,6 +3148,15 @@ function DieViewer({ dieId }: { dieId: string }) {
               }}
             />
           )}
+          {assistantFinding && (
+            <SubcircuitHighlightsOverlay
+              key={`${assistantFinding.id}:${assistantFindingNonce}`}
+              devices={analogDevices}
+              findings={[assistantFinding]}
+              activeFindingId={assistantFinding.id}
+              viewportStore={viewportLive}
+            />
+          )}
           <CommentOverlay
             annotations={annotations}
             viewportStore={viewportLive}
@@ -3128,191 +3176,23 @@ function DieViewer({ dieId }: { dieId: string }) {
           )}
         </section>
         <aside style={panelStyle}>
+          <div style={{ flex: "1 1 0", minHeight: 0, overflow: "auto" }}>
           <InspectorPanel
             annotations={annotations}
             dispatcher={dispatcher}
             dieId={dieId}
             mlViasLayer={mlViasLayer}
             cellTypeCounts={cellTypeCounts}
+            devices={analogDevices}
+            netNames={netNames}
+            warnings={analogWarnings}
+            floorplanRegions={floorplanRegions}
+            onActivateAssistantFinding={activateAssistantFinding}
+            onOpenAssistantNetlist={openAssistantNetlist}
           />
-          <div style={{ borderTop: "2px solid var(--l2)" }}>
-            <div style={{ padding: "6px 10px 4px" }}>
-              <div
-                style={{
-                  fontSize: 11, color: "var(--ink3)", letterSpacing: 1,
-                  display: "flex", alignItems: "center", gap: 8,
-                  marginBottom: 5,
-                }}
-              >
-                <span className="u">ANALOG DEVICES</span>
-                <label
-                  style={{
-                    marginLeft: "auto", fontSize: 9, minWidth: 55,
-                    display: "flex", alignItems: "center", gap: 4,
-                    cursor: "pointer", color: "var(--ink2)",
-                  }}
-                >
-                  <input
-                    type="checkbox"
-                    checked={deviceOverlayOn}
-                    onChange={(e) => setDeviceOverlayOn(e.target.checked)}
-                    style={{ margin: 0 }}
-                  />
-                  overlay
-                </label>
-              </div>
-              <div
-                style={{
-                  fontSize: 11, color: "var(--ink3)", letterSpacing: 1,
-                  display: "flex", alignItems: "center", gap: 8,
-                  marginBottom: 6,
-                }}
-              >
-                <span className="u">CELLS</span>
-                <label
-                  style={{
-                    marginLeft: "auto", fontSize: 9, minWidth: 55,
-                    display: "flex", alignItems: "center", gap: 4,
-                    cursor: "pointer", color: "var(--ink2)",
-                  }}
-                >
-                  <input
-                    type="checkbox"
-                    checked={cellsLocked}
-                    onChange={(e) => setCellsLocked(e.target.checked)}
-                    style={{ margin: 0 }}
-                  />
-                  locked
-                </label>
-              </div>
-              <div
-                style={{
-                  fontSize: 11, color: "var(--ink3)", letterSpacing: 1,
-                  display: "flex", alignItems: "center", gap: 8,
-                  marginBottom: 6,
-                }}
-              >
-                <span className="u">NET ID</span>
-                <label
-                  style={{
-                    marginLeft: "auto", fontSize: 9, minWidth: 55,
-                    display: "flex", alignItems: "center", gap: 4,
-                    cursor: "pointer", color: "var(--ink2)",
-                  }}
-                >
-                  <input
-                    type="checkbox"
-                    checked={showTermNetIds}
-                    onChange={(e) => setShowTermNetIds(e.target.checked)}
-                    style={{ margin: 0 }}
-                  />
-                  overlay
-                </label>
-              </div>
-              <div
-                style={{
-                  fontSize: 11, color: "var(--ink3)", letterSpacing: 1,
-                  display: "flex", alignItems: "center", gap: 8,
-                  marginBottom: 6,
-                }}
-              >
-                <span className="u">CELL REL</span>
-                <label
-                  style={{
-                    marginLeft: "auto", fontSize: 9, minWidth: 55,
-                    display: "flex", alignItems: "center", gap: 4,
-                    cursor: "pointer", color: "var(--ink2)",
-                  }}
-                >
-                  <input
-                    type="checkbox"
-                    checked={showCellRelations}
-                    onChange={(e) => setShowCellRelations(e.target.checked)}
-                    style={{ margin: 0 }}
-                  />
-                  overlay
-                </label>
-              </div>
-              <div
-                style={{
-                  fontSize: 11, color: "var(--ink3)", letterSpacing: 1,
-                  display: "flex", alignItems: "center", gap: 8,
-                  marginBottom: 6,
-                }}
-              >
-                <span className="u">VIA LABEL</span>
-                <label
-                  style={{
-                    marginLeft: "auto", fontSize: 9, minWidth: 55,
-                    display: "flex", alignItems: "center", gap: 4,
-                    cursor: "pointer", color: "var(--ink2)",
-                  }}
-                >
-                  <input
-                    type="checkbox"
-                    checked={viaLabelsVisible}
-                    onChange={(e) => setViaLabelsVisible(e.target.checked)}
-                    style={{ margin: 0 }}
-                  />
-                  overlay
-                </label>
-              </div>
-              <div
-                style={{
-                  fontSize: 11, color: "var(--ink3)", letterSpacing: 1,
-                  display: "flex", alignItems: "center", gap: 8,
-                  marginBottom: 6,
-                }}
-              >
-                <span className="u">FLOORPLAN</span>
-                <label
-                  style={{
-                    marginLeft: "auto", fontSize: 9, minWidth: 55,
-                    display: "flex", alignItems: "center", gap: 4,
-                    cursor: "pointer", color: "var(--ink2)",
-                  }}
-                >
-                  <input
-                    type="checkbox"
-                    checked={floorplanOverlayOn}
-                    onChange={(e) => setFloorplanOverlayOn(e.target.checked)}
-                    style={{ margin: 0 }}
-                  />
-                  overlay
-                </label>
-              </div>
-              <div
-                style={{
-                  fontSize: 11, color: "var(--ink3)", letterSpacing: 1,
-                  display: "flex", alignItems: "center", gap: 8,
-                  marginBottom: 6,
-                }}
-              >
-                <span className="u">FP IO</span>
-                <label
-                  style={{
-                    marginLeft: "auto", fontSize: 9, minWidth: 55,
-                    display: "flex", alignItems: "center", gap: 4,
-                    cursor: "pointer", color: "var(--ink2)",
-                  }}
-                >
-                  <input
-                    type="checkbox"
-                    checked={showFloorplanIO}
-                    onChange={(e) => setShowFloorplanIO(e.target.checked)}
-                    style={{ margin: 0 }}
-                  />
-                  overlay
-                </label>
-              </div>
-            </div>
-            <div
-              style={{
-                maxHeight: 360, overflow: "auto",
-                borderTop: "1px solid var(--l2)",
-                paddingTop: 2,
-              }}
-            >
+          </div>
+          <div style={{ flexShrink: 0, display: "flex", flexDirection: "column", borderTop: "1px solid var(--l2)" }}>
+            <div style={{ maxHeight: "33vh", overflow: "auto" }}>
               <DeviceInstancePanel
                 devices={analogDevices}
                 selectedDevice={selectedDevice}
@@ -3330,14 +3210,8 @@ function DieViewer({ dieId }: { dieId: string }) {
                 }}
               />
             </div>
-            {selectedDevice ? (
-              <DeviceInspector
-                device={selectedDevice}
-                onClose={() => setSelectedDevice(null)}
-                cellTypeCounts={cellTypeCounts}
-                cellTypeByCellId={cellTypeByCellId}
-              />
-            ) : showProblems ? (
+            {showProblems ? (
+              <div style={{ maxHeight: 360, overflow: "auto", borderTop: "1px solid var(--l2)" }}>
               <ProblemNavigatorPanel
                 annotations={annotations ?? (undefined as any)}
                 devices={analogDevices}
@@ -3355,12 +3229,29 @@ function DieViewer({ dieId }: { dieId: string }) {
                   useDieViewerStore.getState().select(new Set([`net:${uuid}`]), "replace");
                 }}
               />
-            ) : (
-              <AnalogDiePanel annotations={annotations ?? (undefined as any)} devices={analogDevices} />
-            )}
+              </div>
+            ) : null}
           </div>
         </aside>
       </main>
+      {selectedDevice && (
+        <div
+          className="dark"
+          style={{
+            position: "fixed", right: 330, bottom: 40,
+            width: 300, maxHeight: "50vh", zIndex: 100, overflow: "auto",
+            background: "var(--card)", border: "1px solid var(--l2)",
+            borderRadius: 6, boxShadow: "0 4px 16px rgba(0,0,0,0.4)",
+          }}
+        >
+          <DeviceInspector
+            device={selectedDevice}
+            onClose={() => setSelectedDevice(null)}
+            cellTypeCounts={cellTypeCounts}
+            cellTypeByCellId={cellTypeByCellId}
+          />
+        </div>
+      )}
       <StatusBar
         items={[
           die?.name,
@@ -3468,6 +3359,26 @@ function DieViewer({ dieId }: { dieId: string }) {
         />
       )}
       <ShortcutsPanel open={shortcutsOpen} onClose={() => setShortcutsOpen(false)} />
+      <SettingsPanel
+        open={settingsOpen}
+        onClose={() => setSettingsOpen(false)}
+        deviceOverlayOn={deviceOverlayOn}
+        setDeviceOverlayOn={setDeviceOverlayOn}
+        cellsLocked={cellsLocked}
+        setCellsLocked={setCellsLocked}
+        showTermNetIds={showTermNetIds}
+        setShowTermNetIds={setShowTermNetIds}
+        showCellRelations={showCellRelations}
+        setShowCellRelations={setShowCellRelations}
+        viaLabelsVisible={viaLabelsVisible}
+        setViaLabelsVisible={setViaLabelsVisible}
+        floorplanOverlayOn={floorplanOverlayOn}
+        setFloorplanOverlayOn={setFloorplanOverlayOn}
+        showFloorplanIO={showFloorplanIO}
+        setShowFloorplanIO={setShowFloorplanIO}
+        llmProvider={llmProvider}
+        setLlmProvider={setLlmProvider}
+      />
     </AppShell>
   );
 }

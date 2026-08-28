@@ -36,6 +36,8 @@ interface Props {
   selectedRegion?: string | null;
   /** Called when user clicks a region button */
   onSelectRegion?: (regionId: string | null) => void;
+  /** Optional read-only assistant finding: render this device subset as a schematic fragment. */
+  selectedDeviceNames?: string[];
 }
 
 // ── Component ───────────────────────────────────────────────────
@@ -48,6 +50,7 @@ export function SchematicViewPanel({
   floorplanRegions,
   selectedRegion: selectedRegionProp,
   onSelectRegion,
+  selectedDeviceNames = [],
 }: Props) {
   const [renderMode, setRenderMode] = useState<"analog" | "functional">("analog");
   const [layoutStrategy, setLayoutStrategy] = useState<LayoutStrategy>("BRANDES_KOEPF");
@@ -114,7 +117,7 @@ export function SchematicViewPanel({
       { vdd: config.vdd ?? "VDD", gnd: config.gnd ?? "GND", hierarchical, ioNetIds, showNetLabels: false },
     );
 
-    return { flatJson: flat, floorplanDevices, namedNets, ioNetIds };
+    return { flatJson: flat, floorplanDevices, namedNets, ioNetIds, devices: named as import("shared").AnalogDevice[] };
   }, [annotations, moduleName, spiceConfig, hierarchical, floorplanRegions, getRenameVersion()]);
 
   // ══ Functional block diagram ═════════════════════════════════
@@ -218,6 +221,17 @@ export function SchematicViewPanel({
   // ── Current data ──────────────────────────────────────────────
 
   const currentN2sJson = useMemo(() => {
+    if (selectedDeviceNames.length > 0) {
+      const selected = n2sData.devices.filter((device) => selectedDeviceNames.includes(device.instanceName ?? device.id));
+      if (selected.length > 0) {
+        return formatDevicesAsNetlist2Svg(
+          selected,
+          n2sData.namedNets,
+          `${moduleName}.assistant_fragment`,
+          { vdd: spiceConfig?.vdd ?? "VDD", gnd: spiceConfig?.gnd ?? "GND", hierarchical: false, ioNetIds: n2sData.ioNetIds, showNetLabels: true },
+        );
+      }
+    }
     if (hierarchical && activeRegion && n2sData.floorplanDevices) {
       const regionDevices = n2sData.floorplanDevices.get(activeRegion);
       if (regionDevices) {
@@ -231,7 +245,7 @@ export function SchematicViewPanel({
       return null;
     }
     return n2sData.flatJson;
-  }, [hierarchical, activeRegion, n2sData, moduleName, spiceConfig]);
+  }, [hierarchical, activeRegion, n2sData, moduleName, spiceConfig, selectedDeviceNames]);
 
   return (
     <div
