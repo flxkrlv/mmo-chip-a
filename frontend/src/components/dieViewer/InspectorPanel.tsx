@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, type ReactNode } from "react";
 import { useDialog } from "../Dialog";
 import { useQueryClient } from "@tanstack/react-query";
-import type { DieAnnotations, MLInferenceJob, WireLayer } from "shared";
+import type { AnalogDevice, AssistantFinding, DieAnnotations, FloorplanRegion, MLInferenceJob, WireLayer } from "shared";
 import type { ActionDispatcher } from "../../api/actions";
 import { uuid } from "../../lib/uuid";
 import {
@@ -26,6 +26,7 @@ import { useOverlayLayers } from "../../state/overlayLayers";
 import { WireLayerSelect } from "./WireLayerSelect";
 import { AnnotationClassSelect } from "./AnnotationClassSelect";
 import { CVPanel } from "./CVPanel";
+import { AssistantPanel } from "./AssistantPanel";
 
 /** A single labelled property row (`.prop` matches the hifi spec). */
 function Prop({
@@ -393,6 +394,12 @@ export function InspectorPanel({
   dieId,
   mlViasLayer,
   cellTypeCounts,
+  devices = [],
+  netNames = new Map<number, string>(),
+  warnings = [],
+  floorplanRegions = [],
+  onActivateAssistantFinding,
+  onOpenAssistantNetlist,
 }: {
   annotations: DieAnnotations | undefined;
   dispatcher: ActionDispatcher;
@@ -403,6 +410,13 @@ export function InspectorPanel({
   mlViasLayer: MLViasLayer | null;
   /** cellTypeId → instance count for relationship display. */
   cellTypeCounts?: Map<string, number>;
+  /** Current browser extraction projection; submitted read-only for analysis. */
+  devices?: AnalogDevice[];
+  netNames?: Map<number, string>;
+  warnings?: string[];
+  floorplanRegions?: FloorplanRegion[];
+  onActivateAssistantFinding?: (finding: AssistantFinding | null) => void;
+  onOpenAssistantNetlist?: (finding: AssistantFinding, view: "code" | "graph" | "schematic") => void;
 }) {
   const tab = usePreferences((s) => s.inspectorTab);
   const setTab = usePreferences((s) => s.setInspectorTab);
@@ -414,7 +428,7 @@ export function InspectorPanel({
         className="ph"
         style={{ padding: 0, gap: 0, height: 30 }}
       >
-        {(["inspector", "ml", "cv"] as const).map((k) => (
+        {(["inspector", "ml", "cv", "ai"] as const).map((k) => (
           <button
             key={k}
             type="button"
@@ -422,13 +436,24 @@ export function InspectorPanel({
             style={{ background: "transparent", cursor: "pointer" }}
             onClick={() => setTab(k)}
           >
-            {k === "inspector" ? "Inspector" : k === "ml" ? "ML" : "CV"}
+            {k === "inspector" ? "Inspector" : k === "ml" ? "ML" : k === "cv" ? "CV" : "AI"}
           </button>
         ))}
       </div>
 
       <div style={{ flex: "1 1 auto", overflow: "auto", minHeight: 0 }}>
-        {tab === "ml" ? (
+        {tab === "ai" ? (
+          <AssistantPanel
+            dieId={dieId}
+            annotations={annotations}
+            devices={devices}
+            netNames={netNames}
+            warnings={warnings}
+            floorplanRegions={floorplanRegions}
+            onActivateFinding={onActivateAssistantFinding ?? (() => {})}
+            onOpenNetlist={onOpenAssistantNetlist ?? (() => {})}
+          />
+        ) : tab === "ml" ? (
           <MLPanel dieId={dieId} annotations={annotations} dispatcher={dispatcher} mlViasLayer={mlViasLayer} />
         ) : tab === "cv" ? (
           <CVPanel dieId={dieId} annotations={annotations} dispatcher={dispatcher} />
