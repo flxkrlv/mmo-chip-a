@@ -55,9 +55,10 @@ export async function apiPut<T>(path: string, body: unknown): Promise<T> {
   return parseResponse<T>(response);
 }
 
-export async function apiPost<T>(path: string, body: unknown): Promise<T> {
+export async function apiPost<T>(path: string, body: unknown, signal?: AbortSignal): Promise<T> {
   const response = await fetch(path, {
     method: "POST",
+    signal,
     headers: { "Content-Type": "application/json", ...authHeaders() },
     body: JSON.stringify(body)
   });

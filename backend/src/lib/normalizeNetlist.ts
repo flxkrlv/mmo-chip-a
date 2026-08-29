@@ -139,7 +139,7 @@ export function normalizeForVyges(input: string, moduleName?: string, globalNets
 
     // Collect .GLOBAL net names; vyges-lvs uses them to anchor power/ground
     if (/^\.?global\s+/i.test(trimmed)) {
-      const nets = trimmed.replace(/^global\s+/i, "").trim().split(/\s+/);
+      const nets = trimmed.replace(/^\.?global\s+/i, "").trim().split(/\s+/);
       globalsFromInput.push(...nets.filter(Boolean));
       continue;
     }

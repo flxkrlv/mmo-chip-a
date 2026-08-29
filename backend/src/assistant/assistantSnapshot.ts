@@ -52,11 +52,13 @@ function diagnosticsFor(devices: Device[], request: AssistantAnalysisRequest): s
 }
 
 /**
- * Prepares the user-selected snapshot for LLM analysis. It intentionally does
- * not match current mirrors, differential pairs, bandgaps, or any other circuit
- * function. Those are reasoning tasks delegated to the configured model.
+ * Normalises and scopes the user-selected extraction snapshot for LLM analysis.
+ * It performs no circuit reasoning — no current mirrors, differential pairs,
+ * bandgaps, or any other function are identified here. Those are delegated to
+ * the configured model. This function only validates, scopes and serialises a
+ * read-only `AssistantAnalysisResult` shell that the LLM step fills in.
  */
-export function analyseSubcircuits(
+export function prepareAssistantSnapshot(
   dieId: string,
   annotationsRev: number,
   request: AssistantAnalysisRequest,

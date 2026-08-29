@@ -6,9 +6,18 @@ import type {
   AssistantAnalysisResponse,
   AssistantAnalysisResult,
   AssistantAnalysisScope,
+  AssistantChatMessage,
+  AssistantDiscussFinding,
+  AssistantDiscussRequest,
+  AssistantDiscussResponse,
+  AssistantFindingPatch,
   AssistantLlmConfig,
+  AssistantLvsCheckRequest,
+  AssistantLvsCheckResponse,
+  AssistantLvsLibrarySummary,
+  AssistantToolFlags,
 } from "shared";
-import { apiPost } from "./client";
+import { apiGet, apiPost, authHeaders, ApiError } from "./client";
 
 /**
  * Converts the current browser extraction to a serialisable read-only snapshot.
@@ -72,4 +81,174 @@ export async function analyseAssistantCircuit(
     request,
   );
   return response.data;
+}
+
+/**
+ * Sends one user turn of a per-finding discussion to the backend. The backend
+ * forwards the FULL extracted netlist to the model (so it can reason about
+ * components outside the finding's immediate fragment) while using the finding
+ * to set the conversational focus. Never writes annotations.
+ */
+export async function discussFinding(
+  dieId: string,
+  input: {
+    expectedRev?: number;
+    finding: AssistantDiscussFinding;
+    messages: AssistantChatMessage[];
+    devices: AnalogDevice[];
+    netNames: Map<number, string>;
+    warnings?: string[];
+    brief?: AssistantAnalysisBrief;
+    mode?: AssistantAnalysisMode;
+    llmConfig?: AssistantLlmConfig;
+    toolFlags?: AssistantToolFlags;
+  },
+  signal?: AbortSignal,
+): Promise<{ reply: string; cardUpdate: AssistantFindingPatch | null; lvsResults: Array<AssistantLvsCheckResponse["data"]> }> {
+  const request: AssistantDiscussRequest = {
+    expectedRev: input.expectedRev,
+    finding: input.finding,
+    messages: input.messages,
+    circuit: buildAssistantCircuitSnapshot(input.devices, input.netNames, input.warnings),
+    brief: input.brief,
+    mode: input.mode,
+    toolFlags: input.toolFlags,
+    llmConfig: input.llmConfig,
+  };
+  const response = await apiPost<AssistantDiscussResponse>(
+    `/api/dies/${encodeURIComponent(dieId)}/assistant/discuss`,
+    request,
+    signal,
+  );
+  return { reply: response.reply, cardUpdate: response.cardUpdate ?? null, lvsResults: response.lvsResults ?? [] };
+}
+
+/** Lists available reference LVS libraries (e.g. analog-circuits-sky130). */
+export async function listAssistantLvsLibraries(
+  dieId: string,
+  signal?: AbortSignal,
+): Promise<AssistantLvsLibrarySummary[]> {
+  const response = await apiGet<{ ok: boolean; data: AssistantLvsLibrarySummary[] }>(
+    `/api/dies/${encodeURIComponent(dieId)}/assistant/lvs-libraries`,
+    signal,
+  );
+  return response.data ?? [];
+}
+
+/** Add a user-supplied SPICE subcircuit as a reference cell in the given library. */
+export async function addLvsCell(
+  dieId: string,
+  libId: string,
+  cellId: string,
+  spice: string,
+): Promise<{ libId: string; cellCount: number }> {
+  const response = await apiPost<{ ok: boolean; data: { libId: string; cellCount: number } }>(
+    `/api/dies/${encodeURIComponent(dieId)}/assistant/lvs-library/${encodeURIComponent(libId)}/cell`,
+    { cellId, spice },
+  );
+  return response.data;
+}
+
+/**
+ * Streaming LVS reference-library check for the selected devices. See
+ * {@link checkAssistantLvsStream}.
+ */
+export interface LvsCheckProgress {
+  checked: number;
+  total: number;
+}
+
+/**
+ * Streaming LVS check. The backend emits Server-Sent Events (`progress` frames
+ * with live counts, then a final `result` frame), so a large group check
+ * (thousands of reference cells) stays responsive and never hits the request
+ * timeout. Resolves with the final result data.
+ */
+export async function checkAssistantLvsStream(
+  dieId: string,
+  input: {
+    devices: AnalogDevice[];
+    netNames: Map<number, string>;
+    warnings?: string[];
+    deviceUuids: string[];
+    libraryId?: string;
+    topologies?: string[];
+    tolerance?: number;
+    budget?: number;
+  },
+  handlers: { onProgress?: (p: LvsCheckProgress) => void; signal?: AbortSignal } = {},
+): Promise<AssistantLvsCheckResponse["data"]> {
+  const request: AssistantLvsCheckRequest = {
+    circuit: buildAssistantCircuitSnapshot(input.devices, input.netNames, input.warnings),
+    deviceUuids: input.deviceUuids,
+    libraryId: input.libraryId,
+    topologies: input.topologies,
+    tolerance: input.tolerance,
+    budget: input.budget,
+  };
+  const path = `/api/dies/${encodeURIComponent(dieId)}/assistant/lvs-check`;
+  const response = await fetch(path, {
+    method: "POST",
+    signal: handlers.signal,
+    headers: { "Content-Type": "application/json", ...authHeaders() },
+    body: JSON.stringify(request),
+  });
+
+  if (!response.ok || !response.body) {
+    const text = await response.text();
+    let body: unknown = null;
+    try {
+      body = text ? JSON.parse(text) : null;
+    } catch {
+      /* ignore */
+    }
+    const message =
+      (body && typeof body === "object" && "error" in body && typeof (body as { error: unknown }).error === "string"
+        ? (body as { error: string }).error
+        : null) || response.statusText || `HTTP ${response.status}`;
+    throw new ApiError(response.status, message, body);
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let finalData: AssistantLvsCheckResponse["data"] | null = null;
+
+  const parseBlock = (block: string): { event: string; data: unknown } => {
+    let event = "message";
+    const dataLines: string[] = [];
+    for (const line of block.split("\n")) {
+      if (line.startsWith("event:")) event = line.slice(6).trim();
+      else if (line.startsWith("data:")) dataLines.push(line.slice(5).trim());
+    }
+    let data: unknown = null;
+    const joined = dataLines.join("\n");
+    try {
+      data = joined ? JSON.parse(joined) : null;
+    } catch {
+      data = joined;
+    }
+    return { event, data };
+  };
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    let idx: number;
+    while ((idx = buffer.indexOf("\n\n")) !== -1) {
+      const block = buffer.slice(0, idx);
+      buffer = buffer.slice(idx + 2);
+      const { event, data } = parseBlock(block);
+      if (event === "progress" && data) handlers.onProgress?.(data as LvsCheckProgress);
+      else if (event === "result" && data) finalData = (data as AssistantLvsCheckResponse).data;
+      else if (event === "error") {
+        const err = data as { error?: string } | null;
+        throw new ApiError(400, err?.error ?? "LVS check failed", data);
+      }
+    }
+  }
+
+  if (!finalData) throw new ApiError(500, "LVS stream ended without a result", null);
+  return finalData;
 }

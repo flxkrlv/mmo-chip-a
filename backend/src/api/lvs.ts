@@ -72,7 +72,7 @@ class LvsTimeoutError extends Error {
 
 function runCli(cli: string, args: string[], timeout: number): Promise<{ stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
-    const proc = spawn(cli, args, { timeout, stdio: ["ignore", "pipe", "pipe"], shell: process.platform === "win32" });
+    const proc = spawn(cli, args, { timeout, stdio: ["ignore", "pipe", "pipe"] });
     const timer = setTimeout(() => {
       proc.kill("SIGTERM");
       reject(new LvsTimeoutError());
@@ -94,7 +94,7 @@ function runCli(cli: string, args: string[], timeout: number): Promise<{ stdout:
 
 // ── Engine runners ───────────────────────────────────────────
 
-async function runVygesLvs(
+export async function runVygesLvs(
   layoutNetlist: string,
   schematicNetlist: string,
   dialect?: string,

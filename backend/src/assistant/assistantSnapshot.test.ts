@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { AssistantAnalysisRequest, AssistantCircuitDeviceInput } from "shared";
-import { analyseSubcircuits } from "./subcircuitAnalysis.js";
+import { prepareAssistantSnapshot } from "./assistantSnapshot.js";
 import { analyseFullGraphWithLlm } from "./llmGraphAnalysis.js";
 
 function mos(uuid: string, instanceName: string, d: number, g: number, s: number, b: number): AssistantCircuitDeviceInput {
@@ -43,7 +43,7 @@ function request(): AssistantAnalysisRequest {
 }
 
 test("LLM-only preparation produces no hard-coded functional findings", () => {
-  const result = analyseSubcircuits("die-a", 7, request());
+  const result = prepareAssistantSnapshot("die-a", 7, request());
   assert.equal(result.readOnly, true);
   assert.equal(result.annotationsRev, 7);
   assert.equal(result.devicesAnalyzed, 4);
@@ -67,7 +67,7 @@ test("LLM-first analysis keeps every parsed hypothesis", async () => {
   try {
     const input = request();
     input.mode = "netlist_problems";
-    const result = await analyseFullGraphWithLlm(analyseSubcircuits("die-a", 7, input), input.circuit);
+    const result = await analyseFullGraphWithLlm(prepareAssistantSnapshot("die-a", 7, input), input.circuit);
     assert.equal(result.llm.used, true);
     assert.match(result.llm.narrative ?? "", /Наблюдение/);
     assert.equal(result.llm.hypothesesShown, 2);
@@ -89,5 +89,5 @@ test("LLM-first analysis keeps every parsed hypothesis", async () => {
 test("LLM-only preparation rejects oversized snapshots before an external call", () => {
   const input = request();
   input.circuit.devices = Array.from({ length: 10_001 }, (_, index) => mos(`m${index}`, `M${index}`, 10, 11, 1, 1));
-  assert.throws(() => analyseSubcircuits("die-big", 1, input), /exceeds/);
+  assert.throws(() => prepareAssistantSnapshot("die-big", 1, input), /exceeds/);
 });

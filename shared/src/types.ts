@@ -1375,6 +1375,8 @@ export interface AssistantFinding {
   origin: "rule" | "llm";
   /** Optional explanation generated from the current read-only circuit snapshot. */
   assistantComment?: string;
+  /** Set when the user corrected the card (e.g. after a discussion). */
+  userCorrected?: boolean;
 }
 
 export interface AssistantCircuitDeviceInput {
@@ -1461,4 +1463,145 @@ export interface AssistantAnalysisErrorResponse {
   ok: false;
   error: string;
   detail?: string;
+}
+
+/** One turn of a per-finding discussion thread. */
+export interface AssistantChatMessage {
+  role: "user" | "assistant";
+  content: string;
+}
+
+/** The finding context the backend needs to scope the discussion subgraph. */
+export interface AssistantDiscussFinding {
+  id: string;
+  label: string;
+  assistantComment?: string;
+  deviceUuids: string[];
+  netIds: number[];
+}
+
+export interface AssistantDiscussRequest {
+  /** Rejects stale user actions when the annotation snapshot has changed. */
+  expectedRev?: number;
+  /** Finding being discussed; its deviceUuids/netIds scope the subgraph. */
+  finding: AssistantDiscussFinding;
+  /** Existing conversation turns (oldest first). */
+  messages: AssistantChatMessage[];
+  /** Projection supplied from the current extraction so UUIDs/bboxes match UI exactly. */
+  circuit: AssistantCircuitSnapshot;
+  /** Same user context as the analysis run, so the model reasons with the same brief. */
+  brief?: AssistantAnalysisBrief;
+  /** Analysis mode of the run that produced the finding. */
+  mode?: AssistantAnalysisMode;
+  /** Which assistant LLM tools are enabled for this run (M3 surfaces). */
+  toolFlags?: AssistantToolFlags;
+  /** Frontend-provided LLM credentials; backend env vars are used as fallback. */
+  llmConfig?: AssistantLlmConfig;
+}
+
+/**
+ * A structured correction the model may propose at the end of a discussion.
+ * Only fields the model wants to change are provided; `addDeviceUuids` /
+ * `addNetIds` are merged (unioned) with the existing finding by the frontend.
+ */
+export interface AssistantFindingPatch {
+  label?: string;
+  kind?: AssistantFindingKind;
+  status?: AssistantFindingStatus;
+  confidenceLevel?: AssistantConfidenceLevel;
+  addDeviceUuids?: string[];
+  addNetIds?: number[];
+  assistantComment?: string;
+  limitations?: string[];
+  suggestedChecks?: string[];
+}
+
+export interface AssistantDiscussResponse {
+  ok: true;
+  reply: string;
+  durationMs?: number;
+  /** Present when the model decided the finding card should be corrected/extended. */
+  cardUpdate?: AssistantFindingPatch | null;
+  /** Raw LVS reference-library check results produced via mmochip_lvs_check during this turn. */
+  lvsResults?: Array<AssistantLvsCheckResponse["data"]>;
+}
+
+export interface AssistantDiscussErrorResponse {
+  ok: false;
+  error: string;
+}
+
+// ── LVS reference-library check ───────────────────────────────
+
+/** Which assistant LLM tools are enabled for a run. M3 surfaces. */
+export interface AssistantToolFlags {
+  /** Allow the model to call mmochip_lvs_check (verify a subcircuit against the reference library). */
+  lvs?: boolean;
+  /** Allow the model to call mmochip_vision (crop/inspect a device image). */
+  vision?: boolean;
+}
+
+export interface AssistantLvsCheckRequest {
+  /** Rejects stale user actions when the annotation snapshot has changed. */
+  expectedRev?: number;
+  /** Extracted circuit projection (same as analysis/discuss). */
+  circuit: AssistantCircuitSnapshot;
+  /** Device UUIDs of the candidate subcircuit. */
+  deviceUuids: string[];
+  /** Reference library id (defaults to the built-in analog-circuits-sky130). */
+  libraryId?: string;
+  /** Max per-device-type count delta allowed when prefiltering candidates. */
+  tolerance?: number;
+  /** Max number of candidate cells sent to vyges-lvs. */
+  budget?: number;
+  /** Restrict the check to these topology groups (e.g. ["bandgap"]). When set, the backend searches across all libraries. */
+  topologies?: string[];
+}
+
+export interface AssistantLvsMatch {
+  cellId: string;
+  topology?: string;
+  matched: boolean;
+  /** Structural distance (extra/missing devices) used for ranking. */
+  distance: number;
+  engine: "vyges-lvs";
+  report: string;
+  /** Devices present in the selection but absent from the reference cell (near-miss diagnostics). */
+  extraDevices?: string[];
+  /** Devices present in the reference cell but absent from the selection (near-miss diagnostics). */
+  missingDevices?: string[];
+  /** Normalized reference netlist (CDL) of the matched/near-miss cell — for display + SVG rendering. */
+  referenceNetlist?: string;
+}
+
+export interface AssistantLvsCheckResponse {
+  ok: true;
+  data: {
+    candidateSignature: Record<string, number>;
+    /** Normalized candidate netlist (CDL) — the user's selection, for display + SVG rendering. */
+    candidateNetlist?: string;
+    /** Number of reference cells actually sent to vyges-lvs (after dedup). */
+    checkedCount: number;
+    /** Total reference cells in the searched group (before dedup) — for honest "checked X of Y" UI. */
+    totalCells?: number;
+    /** Unique topology+connectivity representatives after dedup (≤ totalCells). */
+    uniqueCells?: number;
+    matches: AssistantLvsMatch[];
+    best: AssistantLvsMatch | null;
+    /** Checked reference cells per topology (before collapsing near-misses). */
+    topologyCounts?: Record<string, number>;
+  };
+}
+
+export interface AssistantLvsCheckErrorResponse {
+  ok: false;
+  error: string;
+}
+
+/** Summary returned by GET /assistant/lvs-libraries. */
+export interface AssistantLvsLibrarySummary {
+  libId: string;
+  cellCount: number;
+  /** Topology groups available in this library, with the number of cells in each. */
+  groups?: Array<{ topology: string; count: number }>;
 }

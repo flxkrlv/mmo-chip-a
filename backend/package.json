@@ -6,8 +6,9 @@
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "build": "tsc -p tsconfig.json",
-    "test": "node --import tsx --test src/app.test.ts src/projectIO.test.ts src/dieImport/importer.test.ts src/svgImport/svgWireImport.test.ts src/metal-stack.test.ts src/assistant/subcircuitAnalysis.test.ts",
-    "import-svg-wires": "tsx src/svgImport/importSvgWiresCli.ts"
+    "test": "node --import tsx --test src/app.test.ts src/projectIO.test.ts src/dieImport/importer.test.ts src/svgImport/svgWireImport.test.ts src/metal-stack.test.ts src/assistant/assistantSnapshot.test.ts src/assistant/lvsMatch.test.ts",
+    "import-svg-wires": "tsx src/svgImport/importSvgWiresCli.ts",
+    "import-analog-circuits": "tsx scripts/import-analog-circuits.ts"
   },
   "dependencies": {
     "archiver": "^8.0.0",

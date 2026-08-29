@@ -21,6 +21,10 @@ const FINDING_COLORS: Record<AssistantFinding["kind"], string> = {
   bandgap_precursor: "#44ddff",
 };
 
+// Fallback so a finding whose kind is not in the palette (e.g. an LLM-proposed
+// kind string) never resolves to `undefined` and paints a solid black box.
+const FALLBACK_COLOR = "#8aa0c0";
+
 interface Props {
   devices: AnalogDevice[];
   findings: AssistantFinding[];
@@ -64,7 +68,7 @@ export function SubcircuitHighlightsOverlay({ devices, findings, activeFindingId
       const byUuid = new Map(devices.map((device) => [String((device as any)._uuid ?? device.id), device]));
       for (const finding of findings) {
         const active = activeFindingId === finding.id;
-        const color = FINDING_COLORS[finding.kind];
+        const color = FINDING_COLORS[finding.kind] ?? FALLBACK_COLOR;
         const findingDevices = finding.deviceUuids
           .map((uuid) => byUuid.get(String(uuid)))
           .filter((device): device is AnalogDevice => Boolean(device?.bbox));
@@ -81,16 +85,20 @@ export function SubcircuitHighlightsOverlay({ devices, findings, activeFindingId
           if (sx + sw < -40 || sx > box.width + 40 || sy + sh < -40 || sy > box.height + 40) continue;
 
           ctx.save();
-          ctx.globalAlpha = active ? 1 : 0.56;
+          ctx.globalAlpha = active ? 1 : 0.6;
           ctx.strokeStyle = color;
-          ctx.fillStyle = active ? color + "2d" : color + "16";
+          // Translucent fill with an 8-digit hex alpha suffix; harmless if the
+          // color is the fallback (still a valid 7-char hex).
+          ctx.fillStyle = active ? color + "33" : color + "22";
           ctx.lineWidth = active ? 3 : 1.5;
-          ctx.setLineDash(active ? [] : [5, 4]);
+          // Corrected (user/LLM-updated) findings get a solid outline so they
+          // read as confirmed, while unconfirmed hypotheses stay dashed.
+          ctx.setLineDash(active || finding.userCorrected ? [] : [5, 4]);
           ctx.strokeRect(sx, sy, sw, sh);
           ctx.fillRect(sx, sy, sw, sh);
-          if (active || (sw * sh > 4_500 && vp.zoom >= 0.4)) {
+          if (active || finding.userCorrected || (sw * sh > 4_500 && vp.zoom >= 0.4)) {
             const deviceName = device.instanceName ?? device.id;
-            const text = `${deviceName} · ${finding.confidenceLevel}`;
+            const text = `${deviceName} · ${finding.confidenceLevel}${finding.userCorrected ? " · ✓" : ""}`;
             ctx.font = "600 11px monospace";
             const textWidth = ctx.measureText(text).width + 10;
             ctx.fillStyle = "rgba(8, 12, 24, .88)";

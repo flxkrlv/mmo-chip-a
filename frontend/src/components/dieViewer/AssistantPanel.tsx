@@ -1,6 +1,11 @@
-import { useEffect, useMemo, useState } from "react";
-import type { AnalogDevice, AssistantAnalysisBrief, AssistantAnalysisMode, AssistantFinding, DieAnnotations, FloorplanRegion } from "shared";
-import { analyseAssistantCircuit } from "../../api/assistantAnalysis";
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { createPortal } from "react-dom";
+import type { AnalogDevice, AssistantAnalysisBrief, AssistantAnalysisMode, AssistantChatMessage, AssistantConfidenceLevel, AssistantFinding, AssistantFindingKind, AssistantFindingPatch, AssistantFindingStatus, AssistantLlmConfig, AssistantLvsCheckResponse, AssistantLvsLibrarySummary, AssistantLvsMatch, DieAnnotations, FloorplanRegion } from "shared";
+import { analyseAssistantCircuit, addLvsCell, checkAssistantLvsStream, discussFinding, listAssistantLvsLibraries } from "../../api/assistantAnalysis";
+import { ApiError } from "../../api/client";
+import { LvsMatchCard } from "./LvsMatchCard";
+import { formatDevicesAsNetlist2Svg } from "../../lib/schematic/netlist2svgFormat";
+import { Netlist2SvgView } from "../netlist/Netlist2SvgView";
 import { useAssistantSession } from "../../state/assistantSession";
 import { usePreferences } from "../../state/preferences";
 
@@ -32,7 +37,23 @@ const COLOR: Record<AssistantFinding["kind"], string> = {
   bandgap_precursor: "#44ddff",
 };
 
+const FALLBACK_COLOR = "#8aa0c0";
+const colorFor = (kind: AssistantFinding["kind"]): string => COLOR[kind] ?? FALLBACK_COLOR;
+
 const emptyBrief: AssistantAnalysisBrief = {};
+
+const CONFIDENCE_VALUE: Record<AssistantConfidenceLevel, number> = { high: 0.70, medium: 0.58, low: 0.44 };
+
+// Valid enum values: an LLM-proposed cardUpdate may carry a free-form string, so
+// we only accept known values and keep the existing one otherwise.
+const VALID_KINDS = new Set<AssistantFindingKind>([
+  "diode_connected_device", "current_mirror", "bjt_current_mirror", "bjt_current_source",
+  "widlar_current_source", "differential_pair", "bjt_differential_pair", "ldo_error_amplifier_feedback",
+  "resistor_divider", "protection_clamp", "llm_hypothesis", "netlist_problem",
+  "positive_feedback_loop", "bandgap_precursor",
+]);
+const VALID_STATUSES = new Set<AssistantFindingStatus>(["verified_topology", "candidate", "needs_verification"]);
+const VALID_CONFIDENCE = new Set<AssistantConfidenceLevel>(["high", "medium", "low"]);
 
 function findingStatus(finding: AssistantFinding): string {
   return `CONF: ${finding.confidenceLevel}`;
@@ -53,6 +74,20 @@ export function AssistantPanel({ dieId, annotations, devices, netNames, warnings
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [selectedRegionId, setSelectedRegionId] = useState<string | null>(null);
+  const [openThreadId, setOpenThreadId] = useState<string | null>(null);
+  const [lvsEnabled, setLvsEnabled] = useState(true);
+  const [lvsOpen, setLvsOpen] = useState(false);
+  const [lvsResult, setLvsResult] = useState<AssistantLvsCheckResponse["data"] | null>(null);
+  const [lvsError, setLvsError] = useState<string | null>(null);
+  const [lvsChecking, setLvsChecking] = useState(false);
+  const [lvsProgress, setLvsProgress] = useState<{ checked: number; total: number } | null>(null);
+  const [schematicPopup, setSchematicPopup] = useState<{ title: string; json: unknown } | null>(null);
+  const [lvsFinding, setLvsFinding] = useState<AssistantFinding | null>(null);
+  const [libraries, setLibraries] = useState<AssistantLvsLibrarySummary[]>([]);
+  const [activeLib, setActiveLib] = useState<string>("analog-circuits-sky130");
+  const [customCellId, setCustomCellId] = useState("");
+  const [customSpice, setCustomSpice] = useState("");
+  const [addingCell, setAddingCell] = useState(false);
 
   const selectedRegion = useMemo(
     () => floorplanRegions.find((r) => r.id === selectedRegionId) ?? null,
@@ -110,6 +145,22 @@ export function AssistantPanel({ dieId, annotations, devices, netNames, warnings
     [result, activeId],
   );
 
+  // Available topology groups across all libraries, with total cell counts.
+  const allGroups = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const lib of libraries) {
+      for (const g of lib.groups ?? []) {
+        counts.set(g.topology, (counts.get(g.topology) ?? 0) + g.count);
+      }
+    }
+    return [...counts.entries()].map(([topology, count]) => ({ topology, count })).sort((a, b) => b.count - a.count);
+  }, [libraries]);
+
+  const discussFindingObj = useMemo(
+    () => result?.findings.find((finding) => finding.id === openThreadId) ?? null,
+    [result, openThreadId],
+  );
+
   const updateBrief = (key: keyof AssistantAnalysisBrief, value: string) => {
     setBriefForDie(dieId, { ...brief, [key]: value || undefined });
   };
@@ -155,6 +206,93 @@ export function AssistantPanel({ dieId, annotations, devices, netNames, warnings
     onActivateFinding(finding);
   };
 
+  const handleCheckLvs = (finding: AssistantFinding) => {
+    setLvsFinding(finding);
+    setLvsOpen(true);
+    setLvsResult(null);
+    setLvsError(null);
+    setLvsChecking(false);
+  };
+
+  // Render a schematic fragment of the finding's devices inline (pop-up), without
+  // leaving the assistant tab. Reuses the app's netlist2svg pipeline.
+  const showSchematicPopup = (finding: AssistantFinding) => {
+    const uuids = new Set(finding.deviceUuids);
+    const names = new Set(finding.instanceNames);
+    // Match against both the live device id and the snapshot uuid (device._uuid),
+    // plus the SPICE instance name, since the finding's deviceUuids may use either.
+    const fragDevices = devices.filter(
+      (d) =>
+        uuids.has(d.id) ||
+        uuids.has((d as unknown as { _uuid?: string })._uuid ?? "") ||
+        (d.instanceName != null && names.has(d.instanceName)),
+    );
+    if (fragDevices.length === 0) return;
+    const allNames = [...netNames.values()];
+    const vdd = allNames.find((n) => /^(VDD|VCC|AVDD)$/i.test(n)) ?? "VDD";
+    const gnd = allNames.find((n) => /^(GND|VSS)$/i.test(n)) ?? "GND";
+    const json = formatDevicesAsNetlist2Svg(fragDevices, netNames, `finding-${finding.id}`, { vdd, gnd, showNetLabels: true });
+    setSchematicPopup({ title: `${finding.label} · ${finding.instanceNames.join(", ")}`, json });
+  };
+
+  const runLvs = async (params: { libraryId: string; topologies: string[]; budget: number }) => {
+    if (!lvsFinding) return;
+    setLvsResult(null);
+    setLvsError(null);
+    setLvsProgress(null);
+    setLvsChecking(true);
+    try {
+      const data = await checkAssistantLvsStream(
+        dieId,
+        {
+          devices,
+          netNames,
+          warnings,
+          deviceUuids: lvsFinding.deviceUuids,
+          libraryId: params.libraryId,
+          topologies: params.topologies,
+          budget: params.budget,
+        },
+        { onProgress: (p) => setLvsProgress(p) },
+      );
+      setLvsResult(data);
+    } catch (cause) {
+      const base = formatApiError(cause);
+      setLvsError(
+        /404/.test(base)
+          ? `${base}\nThe reference library is probably not imported yet (run the import script) or the backend needs a restart.`
+          : base,
+      );
+    } finally {
+      setLvsChecking(false);
+    }
+  };
+
+  const handleAddCell = async () => {
+    const cellId = customCellId.trim();
+    const spice = customSpice.trim();
+    if (!cellId || !spice) return;
+    setAddingCell(true);
+    try {
+      await addLvsCell(dieId, activeLib, cellId, spice);
+      setCustomCellId("");
+      setCustomSpice("");
+      setLibraries(await listAssistantLvsLibraries(dieId));
+    } catch (cause) {
+      setLvsError(formatApiError(cause));
+    } finally {
+      setAddingCell(false);
+    }
+  };
+
+  useEffect(() => {
+    let alive = true;
+    listAssistantLvsLibraries(dieId)
+      .then((libs) => { if (alive) setLibraries(libs); })
+      .catch(() => { /* library listing is best-effort */ });
+    return () => { alive = false; };
+  }, [dieId]);
+
   // Restore the temporary die overlay when returning from Net Graph/Schematic
   // or after a browser refresh. The persisted result itself stays read-only.
   useEffect(() => {
@@ -162,6 +300,7 @@ export function AssistantPanel({ dieId, annotations, devices, netNames, warnings
   }, [activeFinding?.id]);
 
   return (
+    <>
     <div style={{ padding: "10px 10px 12px", fontSize: 11, display: "flex", flexDirection: "column", gap: 9 }}>
       <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
         <span className="u">AI ANALYSIS</span>
@@ -180,6 +319,25 @@ export function AssistantPanel({ dieId, annotations, devices, netNames, warnings
             <option value="en">English</option>
           </select>
         </label>
+        <label style={{ display: "flex", gap: 6, alignItems: "center", color: "var(--ink2)", fontSize: 10 }}>
+          <input type="checkbox" checked={lvsEnabled} onChange={(event) => setLvsEnabled(event.target.checked)} />
+          <span>Let the model verify hypotheses via LVS reference library (mmochip_lvs_check)</span>
+        </label>
+        <label style={{ display: "grid", gap: 3 }}>
+          <span style={{ color: "var(--ink3)", fontSize: 10 }}>LVS reference library (for "Check by LVS" and the model tool)</span>
+          <select value={activeLib} onChange={(event) => setActiveLib(event.target.value)} style={{ font: "inherit", background: "var(--l1)", color: "#fff", border: "1px solid var(--l2)", borderRadius: 4, padding: "4px 6px" }}>
+            {libraries.length === 0 && <option value={activeLib}>{activeLib} (not imported yet)</option>}
+            {libraries.map((lib) => <option key={lib.libId} value={lib.libId}>{lib.libId} · {lib.cellCount} cells</option>)}
+          </select>
+        </label>
+        <details style={{ border: "1px solid var(--l2)", borderRadius: 4, padding: "5px 7px", color: "var(--ink3)" }}>
+          <summary style={{ cursor: "pointer", color: "var(--ink2)", fontSize: 10 }}>Add custom reference SPICE cell</summary>
+          <div style={{ display: "grid", gap: 4, marginTop: 5 }}>
+            <input value={customCellId} onChange={(event) => setCustomCellId(event.target.value)} placeholder="cell id (e.g. my_ota)" style={{ font: "inherit", background: "var(--l1)", color: "#fff", border: "1px solid var(--l2)", borderRadius: 4, padding: "4px 6px" }} />
+            <textarea value={customSpice} onChange={(event) => setCustomSpice(event.target.value)} placeholder=".SUBCKT … / Spectre subckt text" rows={4} style={{ resize: "vertical", font: "inherit", minHeight: 54, background: "var(--l1)", color: "#fff", border: "1px solid var(--l2)", borderRadius: 4, padding: "5px 6px" }} />
+            <button className="btn ghost" type="button" disabled={addingCell || !customCellId.trim() || !customSpice.trim()} onClick={() => void handleAddCell()}>Add to {activeLib}</button>
+          </div>
+        </details>
         <Field label="Technology" value={brief.technology ?? ""} placeholder="No info from user" onChange={(value) => updateBrief("technology", value)} />
         <Field label="Block / region" value={brief.focus ?? ""} placeholder="No info from user" onChange={(value) => updateBrief("focus", value)} />
         <label style={{ display: "grid", gap: 3 }}>
@@ -260,8 +418,12 @@ export function AssistantPanel({ dieId, annotations, devices, netNames, warnings
               key={finding.id}
               finding={finding}
               active={finding.id === activeId}
+              discussOpen={openThreadId === finding.id}
+              onToggleDiscuss={() => setOpenThreadId(openThreadId === finding.id ? null : finding.id)}
               onActivate={() => activate(finding)}
               onOpen={(view) => { activate(finding); onOpenNetlist(finding, view); }}
+              onSchematicPopup={showSchematicPopup}
+              onCheckLvs={() => void handleCheckLvs(finding)}
             />
           ))}
           {activeFinding && <div style={{ fontSize: 10, color: "var(--ink3)" }}>Overlay is a temporary read-only preview of the active result. The active finding is restored when returning from graph/schematic or after reload.</div>}
@@ -270,7 +432,65 @@ export function AssistantPanel({ dieId, annotations, devices, netNames, warnings
           </div>
         </>
       )}
+
+      {openThreadId && discussFindingObj && createPortal(
+        <DiscussPopup
+          key={discussFindingObj.id}
+          dieId={dieId}
+          finding={discussFindingObj}
+          devices={devices}
+          netNames={netNames}
+          warnings={warnings}
+          expectedRev={annotations?.rev}
+          llmProvider={llmProvider}
+          lvsEnabled={lvsEnabled}
+          onClose={() => setOpenThreadId(null)}
+        />,
+        document.body,
+      )}
+
+      {lvsOpen && createPortal(
+        <LvsResultPopup
+          libraries={libraries}
+          activeLib={activeLib}
+          onActiveLibChange={setActiveLib}
+          groups={allGroups}
+          onRun={runLvs}
+          data={lvsResult}
+          checking={lvsChecking}
+          progress={lvsProgress}
+          error={lvsError}
+          onClose={() => { setLvsOpen(false); setLvsResult(null); setLvsError(null); }}
+        />,
+        document.body,
+      )}
+
+      {schematicPopup && createPortal(
+        <div
+          className="dark"
+          onClick={() => setSchematicPopup(null)}
+          style={{ position: "fixed", inset: 0, zIndex: 200, background: "rgba(0,0,0,0.5)", display: "flex", alignItems: "center", justifyContent: "center", padding: 24 }}
+        >
+          <div
+            onClick={(event) => event.stopPropagation()}
+            style={{ display: "grid", gridTemplateRows: "auto 1fr", width: "min(760px, 92vw)", height: "min(80vh, 820px)", background: "var(--card)", border: "1px solid var(--l2)", borderRadius: 8, boxShadow: "0 8px 32px rgba(0,0,0,0.5)", overflow: "hidden" }}
+          >
+            <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", borderBottom: "1px solid var(--l2)" }}>
+              <div style={{ minWidth: 0 }}>
+                <div style={{ color: "var(--ink3)", fontSize: 9, textTransform: "uppercase", letterSpacing: 0.4 }}>Schematic fragment</div>
+                <div style={{ fontSize: 11, fontWeight: 600, color: "var(--ink)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{schematicPopup.title}</div>
+              </div>
+              <button className="btn ghost" type="button" style={{ marginLeft: "auto", fontSize: 10, padding: "3px 8px" }} onClick={() => setSchematicPopup(null)}>Close</button>
+            </div>
+            <div style={{ position: "relative", minHeight: 0 }}>
+              <Netlist2SvgView netlistJson={schematicPopup.json} height="100%" />
+            </div>
+          </div>
+        </div>,
+        document.body,
+      )}
     </div>
+    </>
   );
 }
 
@@ -283,8 +503,8 @@ function Field({ label, value, placeholder, onChange }: { label: string; value: 
   );
 }
 
-function FindingCard({ finding, active, onActivate, onOpen }: { finding: AssistantFinding; active: boolean; onActivate: () => void; onOpen: (view: "code" | "graph" | "schematic") => void }) {
-  const color = COLOR[finding.kind];
+function FindingCard({ finding, active, discussOpen, onToggleDiscuss, onActivate, onOpen, onSchematicPopup, onCheckLvs }: { finding: AssistantFinding; active: boolean; discussOpen: boolean; onToggleDiscuss: () => void; onActivate: () => void; onOpen: (view: "code" | "graph" | "schematic") => void; onSchematicPopup: (finding: AssistantFinding) => void; onCheckLvs: () => void }) {
+  const color = colorFor(finding.kind);
   return (
     <article
       onClick={onActivate}
@@ -292,7 +512,8 @@ function FindingCard({ finding, active, onActivate, onOpen }: { finding: Assista
     >
       <div style={{ display: "flex", gap: 6, alignItems: "baseline" }}>
         <strong style={{ fontSize: 11 }}>{finding.label}</strong>
-        <span style={{ marginLeft: "auto", color, fontSize: 9, textTransform: "uppercase" }}>{findingStatus(finding)}</span>
+        {finding.userCorrected && <span style={{ color: "var(--ink3)", fontSize: 8, border: "1px solid var(--l2)", borderRadius: 3, padding: "0 3px" }}>edited</span>}
+        <span style={{ marginLeft: finding.userCorrected ? 0 : "auto", color, fontSize: 9, textTransform: "uppercase" }}>{findingStatus(finding)}</span>
       </div>
       <div style={{ fontFamily: "var(--mono)", color: "var(--ink2)", fontSize: 10 }}>{finding.instanceNames.join(" · ")}</div>
       {finding.assistantComment && <div style={{ color: "var(--ink2)", lineHeight: 1.35 }}>{finding.assistantComment}</div>}
@@ -307,7 +528,12 @@ function FindingCard({ finding, active, onActivate, onOpen }: { finding: Assista
         <button className="btn ghost" type="button" onClick={() => onOpen("graph")}>Net Graph</button>
         <button className="btn ghost" type="button" onClick={() => onOpen("code")}>Netlist</button>
       </div>
-      <button className="btn ghost" type="button" onClick={(event) => { event.stopPropagation(); onOpen("schematic"); }}>Show schematic fragment</button>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 4 }} onClick={(event) => event.stopPropagation()}>
+        <button className="btn ghost" type="button" onClick={(event) => { event.stopPropagation(); onSchematicPopup(finding); }}>Schematic (Pop-up)</button>
+        <button className="btn ghost" type="button" onClick={(event) => { event.stopPropagation(); onOpen("schematic"); }}>Schematic (Link)</button>
+      </div>
+      <button className="btn ghost" type="button" onClick={(event) => { event.stopPropagation(); onCheckLvs(); }}>Check by LVS</button>
+      <button className="btn ghost" type="button" onClick={(event) => { event.stopPropagation(); onToggleDiscuss(); }}>{discussOpen ? "Hide discussion" : "Discuss"}</button>
     </article>
   );
 }
@@ -322,4 +548,443 @@ function pointInPolygon(x: number, y: number, polygon: { x: number; y: number }[
     }
   }
   return inside;
+}
+
+/**
+ * Per-finding discussion thread. Each turn is sent to the backend, which scopes
+ * the model to the finding's subgraph. The conversation history is stored in the
+ * assistant session so it survives panel collapse / tab switches.
+ */
+/**
+ * Per-finding discussion, shown as a floating popup (same placement as the
+ * DeviceInspector). The conversation history is stored in the assistant session,
+ * so it survives panel collapse / tab switches and is never lost on re-render.
+ * The popup is mounted while a discussion is open; it only remounts when the
+ * user switches to a different finding (keyed by finding id at the call site).
+ */
+function DiscussPopup({
+  dieId,
+  finding,
+  devices,
+  netNames,
+  warnings,
+  expectedRev,
+  llmProvider,
+  lvsEnabled,
+  onClose,
+}: {
+  dieId: string;
+  finding: AssistantFinding;
+  devices: AnalogDevice[];
+  netNames: Map<number, string>;
+  warnings: string[];
+  expectedRev?: number;
+  llmProvider: AssistantLlmConfig;
+  lvsEnabled: boolean;
+  onClose: () => void;
+}) {
+  const thread = useAssistantSession((state) => state.byDieId[dieId]?.findingThreads?.[finding.id] ?? EMPTY_THREAD);
+  const session = useAssistantSession((state) => state.byDieId[dieId]);
+  const appendMessage = useAssistantSession((state) => state.appendFindingMessage);
+  const resetThread = useAssistantSession((state) => state.resetFindingThread);
+  const updateFinding = useAssistantSession((state) => state.updateFinding);
+  const [cardUpdateNote, setCardUpdateNote] = useState<string | null>(null);
+  const [pendingCardUpdate, setPendingCardUpdate] = useState<AssistantFindingPatch | null>(null);
+  const [lvsResults, setLvsResults] = useState<Array<AssistantLvsCheckResponse["data"]>>([]);
+  const firstAssistantIndex = thread.findIndex((message) => message.role === "assistant");
+
+  // Apply a structured card correction proposed by the model once the user confirms it:
+  // merge new elements (union) and overwrite the chosen fields.
+  const confirmCardUpdate = (patch: AssistantFindingPatch) => {
+    const base = finding;
+    const deviceUuids = Array.from(new Set([...base.deviceUuids, ...(patch.addDeviceUuids ?? [])]));
+    const netIds = Array.from(new Set([...base.netIds, ...(patch.addNetIds ?? [])]));
+    const instanceNames = deviceUuids.map((uuid) => {
+      const dev = devices.find((device) => String((device as any)._uuid ?? device.id) === uuid);
+      return dev?.instanceName ?? base.instanceNames[base.deviceUuids.indexOf(uuid)] ?? uuid;
+    });
+    updateFinding(dieId, finding.id, {
+      label: patch.label ?? base.label,
+      kind: patch.kind && VALID_KINDS.has(patch.kind) ? patch.kind : base.kind,
+      status: patch.status && VALID_STATUSES.has(patch.status) ? patch.status : base.status,
+      confidenceLevel: patch.confidenceLevel && VALID_CONFIDENCE.has(patch.confidenceLevel) ? patch.confidenceLevel : base.confidenceLevel,
+      confidence: patch.confidenceLevel && VALID_CONFIDENCE.has(patch.confidenceLevel) ? CONFIDENCE_VALUE[patch.confidenceLevel] : base.confidence,
+      deviceUuids,
+      instanceNames,
+      netIds,
+      assistantComment: patch.assistantComment ?? base.assistantComment,
+      limitations: patch.limitations ?? base.limitations,
+      suggestedChecks: patch.suggestedChecks ?? base.suggestedChecks,
+    });
+    const added = [...(patch.addDeviceUuids ?? []), ...(patch.addNetIds ?? []).map((id) => `net ${id}`)];
+    setCardUpdateNote(added.length ? `Карточка обновлена моделью: добавлены ${added.join(", ")}.` : "Карточка обновлена моделью по итогам обсуждения.");
+  };
+  const [input, setInput] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [elapsed, setElapsed] = useState(0);
+  const controllerRef = useRef<AbortController | null>(null);
+  const endRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    endRef.current?.scrollIntoView({ block: "end" });
+  }, [thread.length, busy]);
+
+  useEffect(() => {
+    if (!busy) return;
+    const startedAt = Date.now();
+    setElapsed(0);
+    const timer = setInterval(() => setElapsed(Math.floor((Date.now() - startedAt) / 1000)), 1000);
+    return () => clearInterval(timer);
+  }, [busy]);
+
+  const cancel = () => {
+    controllerRef.current?.abort();
+  };
+
+  const send = async () => {
+    const text = input.trim();
+    if (!text || busy) return;
+    setBusy(true);
+    setError(null);
+    const userTurn: AssistantChatMessage = { role: "user", content: text };
+    const history: AssistantChatMessage[] = [...thread, userTurn];
+    appendMessage(dieId, finding.id, userTurn);
+    setInput("");
+    const controller = new AbortController();
+    controllerRef.current = controller;
+    const hardTimeout = setTimeout(() => controller.abort(), 150_000);
+    try {
+       const { reply, cardUpdate, lvsResults } = await discussFinding(dieId, {
+        expectedRev,
+        finding: {
+          id: finding.id,
+          label: finding.label,
+          assistantComment: finding.assistantComment,
+          deviceUuids: finding.deviceUuids,
+          netIds: finding.netIds,
+        },
+        messages: history,
+        devices,
+        netNames,
+        warnings,
+        brief: session?.brief,
+        mode: session?.mode,
+        llmConfig: llmProvider,
+        toolFlags: lvsEnabled ? { lvs: true } : undefined,
+      }, controller.signal);
+       appendMessage(dieId, finding.id, { role: "assistant", content: reply });
+       if (cardUpdate) setPendingCardUpdate(cardUpdate);
+       if (lvsResults.length) setLvsResults((prev) => [...prev, ...lvsResults]);
+    } catch (cause) {
+      console.debug("[assistant/discuss] request failed", cause);
+      setError(formatApiError(cause));
+    } finally {
+      clearTimeout(hardTimeout);
+      controllerRef.current = null;
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div
+      className="dark"
+      onClick={(event) => event.stopPropagation()}
+      style={{
+        position: "fixed", right: 330, bottom: 40,
+        width: "fit-content", minWidth: 320,
+        maxWidth: "min(560px, calc(100vw - 360px))", maxHeight: "50vh", zIndex: 100,
+        overflowY: "auto", overflowX: "hidden", background: "var(--card)", border: "1px solid var(--l2)",
+        borderRadius: 6, boxShadow: "0 4px 16px rgba(0,0,0,0.4)",
+        display: "grid", gap: 6, padding: 8, cursor: "default",
+      }}
+    >
+      <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+        <div style={{ minWidth: 0 }}>
+          <div style={{ color: "var(--ink3)", fontSize: 9, textTransform: "uppercase", letterSpacing: 0.4 }}>Discussion</div>
+          <div style={{ fontSize: 11, fontWeight: 600, overflowWrap: "anywhere", wordBreak: "break-word" }}>{finding.label}</div>
+        </div>
+        <button className="btn ghost" type="button" style={{ marginLeft: "auto", fontSize: 9, padding: "2px 6px" }} onClick={onClose}>Close</button>
+      </div>
+      <details open style={{ border: `1px solid ${colorFor(finding.kind)}`, borderRadius: 5, padding: "6px 8px", background: colorFor(finding.kind) + "10" }}>
+        <summary style={{ cursor: "pointer", color: "var(--ink2)", fontSize: 10 }}>Карточка · {finding.label}</summary>
+        <div style={{ display: "grid", gap: 4, marginTop: 5, minWidth: 0 }}>
+          <div style={{ display: "flex", gap: 6, fontSize: 9, flexWrap: "wrap" }}>
+            <span style={{ color: colorFor(finding.kind) }}>{finding.kind}</span>
+            <span style={{ color: "var(--ink3)" }}>{finding.confidenceLevel} · {finding.status}</span>
+            {finding.userCorrected && <span style={{ color: "var(--ink3)", border: "1px solid var(--l2)", borderRadius: 3, padding: "0 3px" }}>edited</span>}
+          </div>
+          <div style={{ fontFamily: "var(--mono)", color: "var(--ink2)", fontSize: 9, overflowWrap: "anywhere", wordBreak: "break-word" }}>{finding.instanceNames.join(" · ")}</div>
+          {finding.assistantComment && <div style={{ color: "var(--ink2)", fontSize: 10, lineHeight: 1.35, whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{finding.assistantComment}</div>}
+          {finding.evidence.filter((item) => item.code !== "llm_hypothesis_from_model").length > 0 && (
+            <ul style={{ margin: 0, paddingLeft: 14, color: "var(--ink3)", fontSize: 9, lineHeight: 1.3 }}>
+              {finding.evidence.filter((item) => item.code !== "llm_hypothesis_from_model").map((item, index) => <li key={index}>{item.text}</li>)}
+            </ul>
+          )}
+          {finding.limitations.length > 0 && <div style={{ color: "var(--ink3)", fontSize: 9, lineHeight: 1.3, overflowWrap: "anywhere", wordBreak: "break-word" }}><b>Ограничения:</b> {finding.limitations.join("; ")}</div>}
+          {finding.suggestedChecks.length > 0 && <div style={{ color: "var(--ink3)", fontSize: 9, lineHeight: 1.3, overflowWrap: "anywhere", wordBreak: "break-word" }}><b>Проверить:</b> {finding.suggestedChecks.join("; ")}</div>}
+        </div>
+      </details>
+      <div style={{ fontSize: 9, color: "var(--ink3)", textTransform: "uppercase", letterSpacing: 0.4 }}>Обсуждение</div>
+      <div style={{ display: "grid", gap: 5, overflowY: "auto", minHeight: 60, minWidth: 0 }}>
+        {thread.length === 0 && <div style={{ color: "var(--ink3)", fontSize: 10, lineHeight: 1.4 }}>Ask a follow-up about this hypothesis — the model sees the full netlist to reason about adjacent parts.</div>}
+        {thread.map((message, index) => (
+          <div key={index} style={{ display: "flex", flexDirection: "column", alignItems: message.role === "user" ? "flex-end" : "flex-start", minWidth: 0 }}>
+            {index === firstAssistantIndex && message.role === "assistant" && (
+              <div style={{ fontSize: 8, color: "var(--ink3)", marginBottom: 2 }}>Первичный ответ</div>
+            )}
+            <div
+              style={{
+                display: "block",
+                maxWidth: "100%",
+                whiteSpace: "pre-wrap",
+                wordBreak: "break-word",
+                overflowWrap: "anywhere",
+                lineHeight: 1.4,
+                fontSize: 10,
+                padding: "5px 7px",
+                borderRadius: 6,
+                background: message.role === "user" ? "var(--accent, #2b4a6b)" : "var(--l2)",
+                color: "#fff",
+              }}
+            >
+              {message.content}
+            </div>
+          </div>
+        ))}
+        {busy && (
+          <div style={{ display: "flex", alignItems: "center", gap: 6, color: "var(--ink3)", fontSize: 10 }}>
+            <span>Model is thinking… {elapsed}s</span>
+            <button className="btn ghost" type="button" style={{ marginLeft: "auto", fontSize: 9, padding: "2px 6px" }} onClick={cancel}>Cancel</button>
+          </div>
+        )}
+        <div ref={endRef} />
+      </div>
+      {lvsResults.length > 0 && (
+        <div style={{ display: "grid", gap: 5, border: "1px solid var(--l2)", borderRadius: 5, padding: "6px 8px", background: "var(--l1)" }}>
+          <div style={{ fontSize: 9, color: "var(--ink2)", textTransform: "uppercase", letterSpacing: 0.4 }}>LVS reference check</div>
+          {lvsResults.map((res, i) => (
+            <div key={i} style={{ display: "grid", gap: 5 }}>
+              <div style={{ fontSize: 9, color: "var(--ink3)" }}>
+                {res.checkedCount} candidate(s) compared{res.totalCells ? ` (of ${res.totalCells} in group)` : ""} against the reference library.
+              </div>
+              {res.matches.length > 0 ? (
+                res.matches.map((m) => <LvsMatchCard key={m.cellId + (m.topology ?? "")} match={m} candidateNetlist={res.candidateNetlist} />)
+              ) : (
+                <div style={{ color: "var(--ink3)", fontSize: 9 }}>No reference match found{res.checkedCount > 0 ? ` — ${res.checkedCount} checked.` : "."}</div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+      {pendingCardUpdate && (
+        <div style={{ display: "grid", gap: 5, border: `1px solid ${colorFor(finding.kind)}`, borderRadius: 5, padding: "6px 8px", background: colorFor(finding.kind) + "10" }}>
+          <div style={{ fontSize: 9, color: "var(--ink2)" }}>Модель предлагает обновить карточку</div>
+          {pendingCardUpdate.assistantComment && <div style={{ color: "var(--ink2)", fontSize: 10, lineHeight: 1.35, whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{pendingCardUpdate.assistantComment}</div>}
+          {(((pendingCardUpdate.addDeviceUuids?.length) ?? 0) || ((pendingCardUpdate.addNetIds?.length) ?? 0)) > 0 && (
+            <div style={{ color: "var(--ink3)", fontSize: 9, lineHeight: 1.3, overflowWrap: "anywhere", wordBreak: "break-word" }}>Добавляемые элементы: {[...(pendingCardUpdate.addDeviceUuids ?? []), ...(pendingCardUpdate.addNetIds ?? []).map((id) => `net ${id}`)].join(", ")}</div>
+          )}
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 4 }}>
+            <button className="btn" type="button" onClick={() => pendingCardUpdate && confirmCardUpdate(pendingCardUpdate)}>Применить</button>
+            <button className="btn ghost" type="button" onClick={() => setPendingCardUpdate(null)}>Отклонить</button>
+          </div>
+        </div>
+      )}
+      {error && (
+        <div style={{ color: "var(--danger, #ed6a5e)", fontSize: 10, lineHeight: 1.35, whiteSpace: "pre-wrap", borderTop: "1px solid var(--l2)", paddingTop: 5 }}>
+          {error}
+        </div>
+      )}
+      {cardUpdateNote && (
+        <div style={{ color: "var(--ink2)", fontSize: 9, lineHeight: 1.3, whiteSpace: "pre-wrap", borderTop: "1px solid var(--l2)", paddingTop: 5 }}>
+          ✓ {cardUpdateNote}
+        </div>
+      )}
+      <textarea
+        value={input}
+        disabled={busy}
+        onChange={(event) => setInput(event.target.value)}
+        onKeyDown={(event) => {
+          if (event.key === "Enter" && !event.shiftKey) {
+            event.preventDefault();
+            void send();
+          }
+        }}
+        placeholder="Follow-up question… (Enter to send)"
+        rows={2}
+        style={{ resize: "vertical", font: "inherit", minHeight: 36, background: "var(--l1)", color: "#fff", border: "1px solid var(--l2)", borderRadius: 4, padding: "5px 6px" }}
+      />
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 4 }}>
+        <button className="btn" type="button" disabled={busy || !input.trim()} onClick={() => void send()}>Send</button>
+        <button className="btn ghost" type="button" onClick={() => resetThread(dieId, finding.id)}>Clear</button>
+      </div>
+    </div>
+  );
+}
+
+function formatApiError(cause: unknown): string {
+  if (cause instanceof DOMException && cause.name === "AbortError") {
+    return "Request timed out after 120s — the model or backend did not respond. Check the LLM provider configuration and backend logs.";
+  }
+  if (cause instanceof ApiError) {
+    let detail = "";
+    if (cause.body && typeof cause.body === "object") {
+      const body = cause.body as Record<string, unknown>;
+      if (typeof body.detail === "string") detail = `\n${body.detail}`;
+      else if (typeof body.error === "string" && body.error !== cause.message) detail = `\n${body.error}`;
+    }
+    return `HTTP ${cause.status}: ${cause.message}${detail}`;
+  }
+  return cause instanceof Error ? cause.message : "Discussion failed.";
+}
+
+const EMPTY_THREAD: AssistantChatMessage[] = [];
+
+/**
+ * Standalone LVS reference-library check (the "Check by LVS" card button).
+ * Lets the user pick a library (with its cell count), filter by topology group(s),
+ * set the comparison budget, then shows the best reference match and near-miss
+ * diagnostics (extra / missing devices).
+ */
+function LvsResultPopup({ libraries, activeLib, onActiveLibChange, groups, onRun, data, checking, progress, error, onClose }: {
+  libraries: AssistantLvsLibrarySummary[];
+  activeLib: string;
+  onActiveLibChange: (libId: string) => void;
+  groups: Array<{ topology: string; count: number }>;
+  onRun: (params: { libraryId: string; topologies: string[]; budget: number }) => void;
+  data: AssistantLvsCheckResponse["data"] | null;
+  checking: boolean;
+  progress: { checked: number; total: number } | null;
+  error: string | null;
+  onClose: () => void;
+}) {
+  const [selectedLib, setSelectedLib] = useState(activeLib);
+  const [topologies, setTopologies] = useState<string[]>([]);
+  const [budget, setBudget] = useState(50);
+
+  const toggleTopology = (t: string) =>
+    setTopologies((prev) => (prev.includes(t) ? prev.filter((x) => x !== t) : [...prev, t]));
+
+  const selectStyle: CSSProperties = {
+    font: "inherit", background: "var(--l1)", color: "#fff", border: "1px solid var(--l2)", borderRadius: 4, padding: "4px 6px",
+  };
+
+  return (
+    <div
+      className="dark"
+      onClick={(event) => event.stopPropagation()}
+      style={{
+        position: "fixed", right: 330, bottom: 40, width: 380,
+        maxWidth: "min(380px, calc(100vw - 360px))", maxHeight: "85vh", zIndex: 100,
+        overflowY: "auto", overflowX: "hidden", background: "var(--card)", border: "1px solid var(--l2)",
+        borderRadius: 6, boxShadow: "0 4px 16px rgba(0,0,0,0.4)",
+        display: "grid", gap: 8, padding: 10, cursor: "default", minWidth: 0,
+      }}
+    >
+      <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+        <div style={{ minWidth: 0 }}>
+          <div style={{ color: "var(--ink3)", fontSize: 9, textTransform: "uppercase", letterSpacing: 0.4 }}>LVS reference check</div>
+          <div style={{ fontSize: 11, fontWeight: 600 }}>Reference library comparison</div>
+        </div>
+        <button className="btn ghost" type="button" style={{ marginLeft: "auto", fontSize: 9, padding: "2px 6px" }} onClick={onClose}>Close</button>
+      </div>
+
+      <div style={{ display: "grid", gap: 6, border: "1px solid var(--l2)", borderRadius: 5, padding: "7px 8px", background: "var(--l1)" }}>
+        <label style={{ display: "grid", gap: 3 }}>
+          <span style={{ color: "var(--ink3)", fontSize: 10 }}>
+            Библиотека (всего схем: {libraries.reduce((n, l) => n + l.cellCount, 0)})
+          </span>
+          <select
+            value={selectedLib}
+            disabled={topologies.length > 0}
+            onChange={(e) => { const v = e.target.value; setSelectedLib(v); onActiveLibChange(v); }}
+            style={{ ...selectStyle, opacity: topologies.length > 0 ? 0.5 : 1 }}
+          >
+            {libraries.length === 0 && <option value={selectedLib}>{selectedLib} (not imported)</option>}
+            {libraries.map((lib) => <option key={lib.libId} value={lib.libId}>{lib.libId} · {lib.cellCount} cells</option>)}
+          </select>
+          {topologies.length > 0 && <span style={{ color: "var(--ink3)", fontSize: 9 }}>Группы выбраны → поиск по всем библиотекам</span>}
+        </label>
+
+        <div style={{ display: "grid", gap: 3 }}>
+          <span style={{ color: "var(--ink3)", fontSize: 10 }}>Топологические группы (фильтр проверки)</span>
+          <div style={{ maxHeight: 150, overflowY: "auto", border: "1px solid var(--l2)", borderRadius: 4, padding: 5, display: "grid", gap: 3, background: "var(--card)" }}>
+            {groups.length === 0 && <span style={{ color: "var(--ink3)", fontSize: 9 }}>Нет доступных групп</span>}
+            {groups.map((g) => (
+              <label key={g.topology} style={{ display: "flex", gap: 6, alignItems: "center", fontSize: 10, color: "var(--ink2)" }}>
+                <input type="checkbox" checked={topologies.includes(g.topology)} onChange={() => toggleTopology(g.topology)} />
+                <span style={{ overflowWrap: "anywhere" }}>{g.topology}</span>
+                <span style={{ marginLeft: "auto", color: "var(--ink3)" }}>{g.count}</span>
+              </label>
+            ))}
+          </div>
+        </div>
+
+        <label style={{ display: "flex", gap: 6, alignItems: "center", justifyContent: "space-between" }}>
+          <span style={{ color: "var(--ink3)", fontSize: 10 }}>Budget — кол-во проверок</span>
+          <input
+            type="number"
+            min={1}
+            max={5000}
+            value={budget}
+            onChange={(e) => setBudget(Math.min(5000, Math.max(1, Number(e.target.value) || 1)))}
+            style={{ width: 84, ...selectStyle }}
+          />
+        </label>
+
+        <button className="btn" type="button" onClick={() => onRun({ libraryId: selectedLib, topologies, budget })} disabled={checking}>
+          {checking ? "Проверка…" : "Run LVS check"}
+        </button>
+      </div>
+
+      {checking && (
+        <div style={{ display: "grid", gap: 4 }}>
+          <div style={{ color: "var(--ink3)", fontSize: 10 }}>
+            {progress ? `Сравнение: ${progress.checked} / ${progress.total}…` : "Сравнение с эталонной библиотекой…"}
+          </div>
+          {progress && progress.total > 0 && (
+            <div style={{ height: 4, background: "var(--l2)", borderRadius: 2, overflow: "hidden" }}>
+              <div
+                style={{
+                  height: "100%",
+                  width: `${Math.min(100, (progress.checked / progress.total) * 100)}%`,
+                  background: "var(--accent, #2b4a6b)",
+                  transition: "width 0.2s ease",
+                }}
+              />
+            </div>
+          )}
+        </div>
+      )}
+      {error && <div style={{ color: "var(--danger, #ed6a5e)", fontSize: 10, lineHeight: 1.35, whiteSpace: "pre-wrap" }}>{error}</div>}
+      {!checking && !error && data && (
+        <div style={{ display: "grid", gap: 6 }}>
+          <div style={{ display: "grid", gap: 3 }}>
+            <div style={{ fontSize: 9, color: "var(--ink3)" }}>
+              {data.checkedCount} из {data.totalCells ?? data.checkedCount} эталонных ячеек сравнено
+              {data.uniqueCells != null && data.totalCells != null && data.uniqueCells < data.totalCells
+                ? ` (${data.uniqueCells} уникальных топологий после дедупликации)`
+                : ""}
+              {topologies.length ? ` · группы: ${topologies.join(", ")}` : ""} · топологий: {Object.keys(data.topologyCounts ?? {}).length}
+            </div>
+            {data.topologyCounts && Object.keys(data.topologyCounts).length > 0 && (
+              <details style={{ color: "var(--ink3)", fontSize: 9 }}>
+                <summary style={{ cursor: "pointer" }}>распределение по топологиям</summary>
+                <div style={{ marginTop: 3, lineHeight: 1.5 }}>
+                  {Object.entries(data.topologyCounts).sort((a, b) => b[1] - a[1]).map(([t, c]) => `${t}: ${c}`).join(" · ")}
+                </div>
+              </details>
+            )}
+          </div>
+          {data.matches.length > 0 ? (
+            data.matches.map((m: AssistantLvsMatch) => <LvsMatchCard key={m.cellId + (m.topology ?? "")} match={m} candidateNetlist={data.candidateNetlist} />)
+          ) : (
+            <div style={{ color: "var(--ink3)", fontSize: 10, lineHeight: 1.4 }}>
+              Совпадений не найдено{data.checkedCount > 0 ? ` — проверено ${data.checkedCount} ячеек группы.` : "."}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
 }

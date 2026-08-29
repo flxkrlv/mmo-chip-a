@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
-import type { AssistantAnalysisBrief, AssistantAnalysisMode, AssistantAnalysisResult } from "shared";
+import type { AssistantAnalysisBrief, AssistantAnalysisMode, AssistantAnalysisResult, AssistantChatMessage } from "shared";
 
 export interface AssistantSession {
   brief: AssistantAnalysisBrief;
@@ -8,6 +8,8 @@ export interface AssistantSession {
   /** The last read-only API response. `netlistPreview` is intentionally omitted to bound browser storage. */
   result: AssistantAnalysisResult | null;
   activeFindingId: string | null;
+  /** Per-finding discussion threads (oldest first). Ephemeral investigation context. */
+  findingThreads: Record<string, AssistantChatMessage[]>;
   updatedAt: number | null;
 }
 
@@ -16,6 +18,7 @@ const EMPTY_SESSION: AssistantSession = {
   mode: "functional_blocks",
   result: null,
   activeFindingId: null,
+  findingThreads: {},
   updatedAt: null,
 };
 
@@ -26,6 +29,9 @@ interface AssistantSessionState {
   setResult: (dieId: string, result: AssistantAnalysisResult | null) => void;
   setActiveFindingId: (dieId: string, findingId: string | null) => void;
   clearResult: (dieId: string) => void;
+  appendFindingMessage: (dieId: string, findingId: string, message: AssistantChatMessage) => void;
+  resetFindingThread: (dieId: string, findingId: string) => void;
+  updateFinding: (dieId: string, findingId: string, patch: Partial<import("shared").AssistantFinding>) => void;
 }
 
 function sessionFor(state: AssistantSessionState, dieId: string): AssistantSession {
@@ -66,6 +72,42 @@ export const useAssistantSession = create<AssistantSessionState>()(
       clearResult: (dieId) => set((state) => ({
         byDieId: { ...state.byDieId, [dieId]: { ...sessionFor(state, dieId), result: null, activeFindingId: null, updatedAt: Date.now() } },
       })),
+      appendFindingMessage: (dieId, findingId, message) => set((state) => {
+        const session = sessionFor(state, dieId);
+        const existing = session.findingThreads[findingId] ?? [];
+        return {
+          byDieId: {
+            ...state.byDieId,
+            [dieId]: {
+              ...session,
+              findingThreads: { ...session.findingThreads, [findingId]: [...existing, message] },
+              updatedAt: Date.now(),
+            },
+          },
+        };
+      }),
+      resetFindingThread: (dieId, findingId) => set((state) => {
+        const session = sessionFor(state, dieId);
+        const threads = { ...session.findingThreads };
+        delete threads[findingId];
+        return {
+          byDieId: { ...state.byDieId, [dieId]: { ...session, findingThreads: threads, updatedAt: Date.now() } },
+        };
+      }),
+      updateFinding: (dieId, findingId, patch) => set((state) => {
+        const session = sessionFor(state, dieId);
+        const result = session.result;
+        if (!result) return {};
+        const findings = result.findings.map((finding) =>
+          finding.id === findingId ? { ...finding, ...patch, userCorrected: true } : finding,
+        );
+        return {
+          byDieId: {
+            ...state.byDieId,
+            [dieId]: { ...session, result: { ...result, findings }, updatedAt: Date.now() },
+          },
+        };
+      }),
     }),
     { name: "mmo-chip-assistant-sessions-v1" },
   ),
