@@ -28,6 +28,7 @@ export function buildAssistantCircuitSnapshot(
   devices: AnalogDevice[],
   netNames: Map<number, string>,
   warnings?: string[],
+  overlayLayers?: Array<{ id: string; name: string }>,
 ): AssistantAnalysisRequest["circuit"] {
   return {
     devices: devices.map((device) => ({
@@ -46,6 +47,7 @@ export function buildAssistantCircuitSnapshot(
     })),
     namedNets: [...netNames.entries()].map(([id, name]) => ({ id, name })),
     warnings,
+    overlayLayers,
   };
 }
 
@@ -63,6 +65,7 @@ export async function analyseAssistantCircuit(
     brief?: AssistantAnalysisBrief;
     requestLlmExplanation?: boolean;
     llmConfig?: AssistantLlmConfig;
+    overlayLayers?: Array<{ id: string; name: string }>;
   },
 ): Promise<AssistantAnalysisResult> {
   const request: AssistantAnalysisRequest = {
@@ -71,7 +74,7 @@ export async function analyseAssistantCircuit(
     mode: input.mode,
     selectedDeviceUuids: input.selectedDeviceUuids,
     selectedNetIds: input.selectedNetIds,
-    circuit: buildAssistantCircuitSnapshot(input.devices, input.netNames, input.warnings),
+    circuit: buildAssistantCircuitSnapshot(input.devices, input.netNames, input.warnings, input.overlayLayers),
     brief: input.brief,
     requestLlmExplanation: input.requestLlmExplanation,
     llmConfig: input.llmConfig,
@@ -102,6 +105,7 @@ export async function discussFinding(
     mode?: AssistantAnalysisMode;
     llmConfig?: AssistantLlmConfig;
     toolFlags?: AssistantToolFlags;
+    overlayLayers?: Array<{ id: string; name: string }>;
   },
   signal?: AbortSignal,
 ): Promise<{ reply: string; cardUpdate: AssistantFindingPatch | null; lvsResults: Array<AssistantLvsCheckResponse["data"]> }> {
@@ -109,7 +113,7 @@ export async function discussFinding(
     expectedRev: input.expectedRev,
     finding: input.finding,
     messages: input.messages,
-    circuit: buildAssistantCircuitSnapshot(input.devices, input.netNames, input.warnings),
+    circuit: buildAssistantCircuitSnapshot(input.devices, input.netNames, input.warnings, input.overlayLayers),
     brief: input.brief,
     mode: input.mode,
     toolFlags: input.toolFlags,
@@ -175,11 +179,12 @@ export async function checkAssistantLvsStream(
     topologies?: string[];
     tolerance?: number;
     budget?: number;
+    overlayLayers?: Array<{ id: string; name: string }>;
   },
   handlers: { onProgress?: (p: LvsCheckProgress) => void; signal?: AbortSignal } = {},
 ): Promise<AssistantLvsCheckResponse["data"]> {
   const request: AssistantLvsCheckRequest = {
-    circuit: buildAssistantCircuitSnapshot(input.devices, input.netNames, input.warnings),
+    circuit: buildAssistantCircuitSnapshot(input.devices, input.netNames, input.warnings, input.overlayLayers),
     deviceUuids: input.deviceUuids,
     libraryId: input.libraryId,
     topologies: input.topologies,

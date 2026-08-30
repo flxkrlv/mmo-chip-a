@@ -68,7 +68,7 @@ function manifestPath(dataRoot: string, dieId: string, id: string): string {
   return path.join(sourceDir(dataRoot, dieId, id), "manifest.json");
 }
 
-async function readManifest(
+export async function readManifest(
   dataRoot: string,
   dieId: string,
   id: string

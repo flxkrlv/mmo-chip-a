@@ -2,7 +2,7 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { Router, type Request } from "express";
 import sharp from "sharp";
-import { resolveOverlayOriginalPath } from "./overlayImages.js";
+import { resolveOverlayOriginalPath, readManifest } from "./overlayImages.js";
 import { readAnnotations, readDieRecord } from "../store.js";
 import type { createTileScheduler } from "../tileScheduler.js";
 
@@ -69,12 +69,10 @@ export function createTilesRouter(config: {
       const annotations = await readAnnotations(config.dataRoot, dieId);
 
       const cell = annotations.cells.find((c) => c.id === cellId);
-      if (!cell) { response.status(404).json({ error: "Cell not found" }); return; }
+      if (!cell) { console.warn(`[crop] cell ${cellId} not found in annotations`); response.status(404).json({ error: "Cell not found" }); return; }
       const cellType = annotations.cellTypes.find((ct) => ct.id === cell.cellTypeId);
       if (!cellType) { response.status(404).json({ error: "Cell type not found" }); return; }
 
-      // Cache key includes crop coords and selected source, so re-alignment and
-      // layer hotkeys cannot return an image generated for another source.
       const { width: cropW, height: cropH } = cellType.cropRect;
       const left = Math.max(0, Math.round(cell.x));
       const top = Math.max(0, Math.round(cell.y));
@@ -96,22 +94,45 @@ export function createTilesRouter(config: {
         return;
       } catch { /* cache miss */ }
 
-      const originalPath = await resolveCropOriginalPath({
-        request,
-        dataRoot: config.dataRoot,
-        dieId
-      });
-      if (!originalPath) {
+      // Always resolve the base image (die photo)
+      const originalDir = path.join(config.dataRoot, "dies", dieId, "original");
+      const originalFiles = await fs.readdir(originalDir);
+      const basePath = originalFiles.length > 0 ? path.join(originalDir, originalFiles[0]) : null;
+      if (!basePath) {
         response.status(404).json({ error: "Crop source image not found" });
         return;
       }
       if (width <= 0 || height <= 0) { response.status(400).json({ error: "Invalid crop region" }); return; }
 
       await fs.mkdir(cacheDir, { recursive: true });
-      await sharp(originalPath, { limitInputPixels: false })
+
+      // Extract base crop
+      const baseCrop = sharp(basePath, { limitInputPixels: false })
         .extract({ left, top, width, height })
-        .jpeg({ quality: 90 })
-        .toFile(cachePath);
+        .jpeg({ quality: 90 });
+
+      if (overlaySourceId) {
+        // Load overlay manifest and original for compositing
+        const manifest = await readManifest(config.dataRoot, dieId, overlaySourceId);
+        if (manifest && manifest.originalPath) {
+          try {
+            await fs.access(manifest.originalPath);
+            // Extract same region from overlay and composite on top of base
+            const overlayCrop = sharp(manifest.originalPath, { limitInputPixels: false })
+              .extract({ left, top, width, height });
+            await baseCrop
+              .composite([{ input: await overlayCrop.toBuffer(), blend: "over" }])
+              .toFile(cachePath);
+          } catch {
+            // Overlay not available — fall back to base-only crop
+            await baseCrop.toFile(cachePath);
+          }
+        } else {
+          await baseCrop.toFile(cachePath);
+        }
+      } else {
+        await baseCrop.toFile(cachePath);
+      }
 
       response.sendFile(cachePath);
     } catch (error) {

@@ -1,6 +1,29 @@
 import { create } from "zustand";
-import { persist } from "zustand/middleware";
+import { persist, type StorageValue } from "zustand/middleware";
 import type { AssistantAnalysisBrief, AssistantAnalysisMode, AssistantAnalysisResult, AssistantChatMessage } from "shared";
+
+/**
+ * Strip large base64 images from toolUse messages to stay within localStorage
+ * quota.  Images are ephemeral display data — the vision card shows them while
+ * the thread is open but they don't need to survive a page reload.
+ */
+function stripToolImages(state: AssistantSessionState): AssistantSessionState {
+  const stripped: AssistantSessionState = { ...state, byDieId: {} };
+  for (const [dieId, session] of Object.entries(state.byDieId)) {
+    const threads: Record<string, AssistantChatMessage[]> = {};
+    let changed = false;
+    for (const [fid, msgs] of Object.entries(session.findingThreads)) {
+      const clean = msgs.map((m) => {
+        if (!m.toolUse?.images?.length) return m;
+        changed = true;
+        return { ...m, toolUse: { ...m.toolUse, images: [] } };
+      });
+      threads[fid] = clean;
+    }
+    stripped.byDieId[dieId] = changed ? { ...session, findingThreads: threads } : session;
+  }
+  return stripped;
+}
 
 export interface AssistantSession {
   brief: AssistantAnalysisBrief;
@@ -104,11 +127,33 @@ export const useAssistantSession = create<AssistantSessionState>()(
         return {
           byDieId: {
             ...state.byDieId,
-            [dieId]: { ...session, result: { ...result, findings }, updatedAt: Date.now() },
-          },
+            [dieId]: { ...session, result: { ...result, findings }, updatedAt: Date.now() } },
         };
       }),
     }),
-    { name: "mmo-chip-assistant-sessions-v1" },
+    {
+      name: "mmo-chip-assistant-sessions-v1",
+      storage: {
+        getItem: (name) => {
+          const raw = localStorage.getItem(name);
+          if (!raw) return null;
+          return JSON.parse(raw) as StorageValue<AssistantSessionState>;
+        },
+        setItem: (name, value) => {
+          try {
+            localStorage.setItem(name, JSON.stringify(value));
+          } catch {
+            // Quota exceeded — strip tool images and retry
+            const stripped = stripToolImages(value.state);
+            try {
+              localStorage.setItem(name, JSON.stringify({ ...value, state: stripped }));
+            } catch {
+              // Still too large — give up silently
+            }
+          }
+        },
+        removeItem: (name) => localStorage.removeItem(name),
+      },
+    },
   ),
 );

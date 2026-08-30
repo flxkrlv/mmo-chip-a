@@ -1397,6 +1397,8 @@ export interface AssistantCircuitSnapshot {
   /** Numeric IDs are the same IDs referenced by device terminals. */
   namedNets: Array<{ id: number; name: string }>;
   warnings?: string[];
+  /** Available overlay layers for this die (e.g. "Si", "polysilicon", "me1"). */
+  overlayLayers?: Array<{ id: string; name: string }>;
 }
 
 export interface AssistantLlmConfig {
@@ -1469,6 +1471,21 @@ export interface AssistantAnalysisErrorResponse {
 export interface AssistantChatMessage {
   role: "user" | "assistant";
   content: string;
+  /** Present when this message represents a tool-use event (e.g. vision crop). */
+  toolUse?: AssistantToolUseEvent;
+  /** Present when this message carries LVS reference-library check results produced during this turn. */
+  lvsResults?: Array<AssistantLvsCheckResponse["data"]>;
+}
+
+/** A tool-use event displayed as a card in the discussion thread. */
+export interface AssistantToolUseEvent {
+  type: "vision";
+  deviceUuids: string[];
+  deviceNames: string[];
+  /** Base64-encoded PNG images rendered by the frontend. */
+  images: string[];
+  /** Human-readable name of the visible layer shown in the crops (e.g. "Si", "polysilicon", "me1"). */
+  layerName?: string;
 }
 
 /** The finding context the backend needs to scope the discussion subgraph. */

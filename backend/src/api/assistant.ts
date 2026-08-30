@@ -7,6 +7,7 @@ import { emitSubcircuitSpice } from "../assistant/subcircuitExtract.js";
 import { loadLibrary, listLibraries, addSpiceCell, DEFAULT_LIBRARY_ID, type LvsLibrary, type LvsLibraryCell } from "../assistant/lvsLibrary.js";
 import { matchSubcircuit } from "../assistant/lvsMatch.js";
 import { dedupeCells } from "../assistant/lvsDedup.js";
+import { pendingVisionRequests } from "../assistant/visionTool.js";
 
 /**
  * The assistant router is intentionally read-only. It validates the current
@@ -77,6 +78,7 @@ export function createAssistantRouter(config: { dataRoot: string }) {
         body.mode ?? "functional_blocks",
         config.dataRoot,
         body.toolFlags,
+        dieId,
       );
       response.json({ ok: true, reply, durationMs, cardUpdate: cardUpdate ?? null, lvsResults: lvsResults ?? [] });
     } catch (error) {
@@ -208,6 +210,29 @@ export function createAssistantRouter(config: { dataRoot: string }) {
       const reason = error instanceof Error ? error.message : "Unknown error";
       response.status(502).json({ ok: false, error: `Add cell failed: ${reason}` });
     }
+  });
+
+  // ── Vision tool: pending requests and result delivery ──
+
+  router.get("/api/dies/:dieId/assistant/pending-vision", (request, response) => {
+    const { dieId } = request.params;
+    const pending = [...pendingVisionRequests.values()]
+      .filter((r) => r.dieId === dieId)
+      .map((r) => ({ requestId: r.requestId, deviceUuids: r.deviceUuids, devices: r.devices, layerName: r.layerName }));
+    response.json({ ok: true, requests: pending });
+  });
+
+  router.post("/api/dies/:dieId/assistant/vision-result/:requestId", (request, response) => {
+    const { requestId } = request.params;
+    const body = (request.body ?? {}) as { images?: string[]; layerName?: string };
+    const req = pendingVisionRequests.get(requestId);
+    if (!req) {
+      response.status(404).json({ ok: false, error: `Vision request ${requestId} not found or already consumed.` });
+      return;
+    }
+    pendingVisionRequests.delete(requestId);
+    req.resolve(body.images ?? [], body.layerName);
+    response.json({ ok: true });
   });
 
   return router;

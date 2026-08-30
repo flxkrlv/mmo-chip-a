@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { useEffect, useMemo, useRef, useState, useCallback, type CSSProperties } from "react";
 import { createPortal } from "react-dom";
-import type { AnalogDevice, AssistantAnalysisBrief, AssistantAnalysisMode, AssistantChatMessage, AssistantConfidenceLevel, AssistantFinding, AssistantFindingKind, AssistantFindingPatch, AssistantFindingStatus, AssistantLlmConfig, AssistantLvsCheckResponse, AssistantLvsLibrarySummary, AssistantLvsMatch, DieAnnotations, FloorplanRegion } from "shared";
+import type { AnalogDevice, AssistantAnalysisBrief, AssistantAnalysisMode, AssistantChatMessage, AssistantConfidenceLevel, AssistantFinding, AssistantFindingKind, AssistantFindingPatch, AssistantFindingStatus, AssistantLlmConfig, AssistantLvsCheckResponse, AssistantLvsLibrarySummary, AssistantLvsMatch, AssistantToolUseEvent, DieAnnotations, FloorplanRegion } from "shared";
 import { analyseAssistantCircuit, addLvsCell, checkAssistantLvsStream, discussFinding, listAssistantLvsLibraries } from "../../api/assistantAnalysis";
 import { ApiError } from "../../api/client";
 import { LvsMatchCard } from "./LvsMatchCard";
@@ -8,6 +8,8 @@ import { formatDevicesAsNetlist2Svg } from "../../lib/schematic/netlist2svgForma
 import { Netlist2SvgView } from "../netlist/Netlist2SvgView";
 import { useAssistantSession } from "../../state/assistantSession";
 import { usePreferences } from "../../state/preferences";
+import { renderDeviceCrop, getTopVisibleLayerName, resolveLayerNameToSourceId } from "../../lib/vision/renderDeviceCrop";
+import { topVisibleOverlaySourceId, useOverlayLayers } from "../../state/overlayLayers";
 
 interface Props {
   dieId: string;
@@ -66,6 +68,7 @@ export function AssistantPanel({ dieId, annotations, devices, netNames, warnings
   const setModeForDie = useAssistantSession((state) => state.setMode);
   const setResultForDie = useAssistantSession((state) => state.setResult);
   const setActiveFindingIdForDie = useAssistantSession((state) => state.setActiveFindingId);
+  const appendMessage = useAssistantSession((state) => state.appendFindingMessage);
   const llmProvider = usePreferences((state) => state.llmProvider);
   const brief = session?.brief ?? emptyBrief;
   const result = session?.result ?? null;
@@ -76,6 +79,7 @@ export function AssistantPanel({ dieId, annotations, devices, netNames, warnings
   const [selectedRegionId, setSelectedRegionId] = useState<string | null>(null);
   const [openThreadId, setOpenThreadId] = useState<string | null>(null);
   const [lvsEnabled, setLvsEnabled] = useState(true);
+  const [visionEnabled, setVisionEnabled] = useState(true);
   const [lvsOpen, setLvsOpen] = useState(false);
   const [lvsResult, setLvsResult] = useState<AssistantLvsCheckResponse["data"] | null>(null);
   const [lvsError, setLvsError] = useState<string | null>(null);
@@ -88,6 +92,17 @@ export function AssistantPanel({ dieId, annotations, devices, netNames, warnings
   const [customCellId, setCustomCellId] = useState("");
   const [customSpice, setCustomSpice] = useState("");
   const [addingCell, setAddingCell] = useState(false);
+
+  const overlayLayersRaw = useOverlayLayers((s) => s.layers);
+  const overlayLayers = useMemo(
+    () => [
+      { id: "__base__", name: "base image" },
+      ...overlayLayersRaw
+        .filter((l) => !l.hidden && l.opacity > 0 && l.loaded)
+        .map((l) => ({ id: l.serverFilename ?? l.id, name: l.name })),
+    ],
+    [overlayLayersRaw],
+  );
 
   const selectedRegion = useMemo(
     () => floorplanRegions.find((r) => r.id === selectedRegionId) ?? null,
@@ -161,6 +176,88 @@ export function AssistantPanel({ dieId, annotations, devices, netNames, warnings
     [result, openThreadId],
   );
 
+  // ── Vision tool polling: render device crops when the backend has a pending request ──
+  // Track processed request IDs to avoid duplicate tool-use cards.
+  const processedVisionIds = useRef(new Set<string>());
+
+  const pollVision = useCallback(async () => {
+    try {
+      const res = await fetch(`/api/dies/${encodeURIComponent(dieId)}/assistant/pending-vision`);
+      if (!res.ok) return;
+      const data = await res.json() as { ok: boolean; requests: Array<{ requestId: string; deviceUuids: string[]; devices: Array<{ uuid: string; instanceName: string; kind: string; cellId?: string; bbox?: { x: number; y: number; width: number; height: number } }>; layerName?: string }> };
+      if (!data.ok || !data.requests?.length) return;
+
+      for (const req of data.requests) {
+        // Skip already-processed requests (e.g. from a previous poll cycle)
+        if (processedVisionIds.current.has(req.requestId)) continue;
+
+        const images: string[] = [];
+        const deviceNames: string[] = [];
+        // Prefer the model's requested layer name; fall back to visible layer.
+        let layerName: string | undefined = req.layerName ?? undefined;
+        // Resolve overlay: use requested layer name if provided, else top visible
+        // __base__ / "base image" → undefined (no overlay, raw die photo)
+        const requestedLayerSourceId = req.layerName ? resolveLayerNameToSourceId(req.layerName) : undefined;
+        const isBaseRequest = req.layerName && !requestedLayerSourceId &&
+          /^(__base__|base|base image|original)$/i.test(req.layerName);
+        if (req.layerName && !requestedLayerSourceId && !isBaseRequest) {
+          console.warn(`[vision] layerName "${req.layerName}" not resolved to any overlay. Available:`,
+            overlayLayers.map((l) => `${l.name} (id: ${l.id})`).join(", ") || "none");
+        }
+        const overlaySourceId = isBaseRequest ? undefined : (requestedLayerSourceId ?? topVisibleOverlaySourceId());
+        console.log(`[vision] request ${req.requestId}: layerName=${req.layerName ?? "(none)"}, overlaySourceId=${overlaySourceId ?? "(none)"}, devices=${req.devices.length}`);
+        const devicesWithPoints = devices as Array<AnalogDevice & { _termPoints?: Array<{ x: number; y: number; name: string }>; _cellId?: string }>;
+        for (const devInfo of req.devices) {
+          const dev = devicesWithPoints.find((d) => (d as any)._uuid === devInfo.uuid || d.id === devInfo.uuid);
+          if (!dev) { console.warn(`[vision] device not found: uuid=${devInfo.uuid} name=${devInfo.instanceName}`); continue; }
+          if (!(dev as any)._cellId) { console.warn(`[vision] device has no _cellId: ${devInfo.instanceName}`); continue; }
+          if (!dev.bbox) { console.warn(`[vision] device has no bbox: ${devInfo.instanceName}`); continue; }
+          const result = await renderDeviceCrop(dieId, dev, devicesWithPoints, overlaySourceId);
+          if (!result) { console.warn(`[vision] renderDeviceCrop returned null for ${devInfo.instanceName} cellId=${(dev as any)._cellId}`); }
+          if (result) {
+            images.push(result.image);
+            deviceNames.push(dev.instanceName ?? devInfo.instanceName);
+            if (!layerName && result.layerName) layerName = result.layerName;  // only fill if still unset
+          }
+        }
+
+        // Send rendered images + layer name back to the backend for the LLM
+        await fetch(`/api/dies/${encodeURIComponent(dieId)}/assistant/vision-result/${encodeURIComponent(req.requestId)}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ images, layerName }),
+        });
+
+        // Only now mark the request as processed — after images are sent so the backend
+        // can continue the tool loop regardless of whether the UI card was added.
+        processedVisionIds.current.add(req.requestId);
+
+        // Add a tool-use card to the currently open discussion thread (if any)
+        if (openThreadId && images.length > 0) {
+          appendMessage(dieId, openThreadId, {
+            role: "assistant",
+            content: "",
+            toolUse: {
+              type: "vision",
+              deviceUuids: req.deviceUuids,
+              deviceNames,
+              images,
+              layerName,
+            },
+          });
+        }
+      }
+    } catch {
+      // Silently ignore polling errors — the tool loop has its own timeout
+    }
+  }, [dieId, devices, openThreadId, appendMessage]);
+
+  useEffect(() => {
+    if (!visionEnabled) return;
+    const interval = setInterval(pollVision, 2000);
+    return () => clearInterval(interval);
+  }, [visionEnabled, pollVision]);
+
   const updateBrief = (key: keyof AssistantAnalysisBrief, value: string) => {
     setBriefForDie(dieId, { ...brief, [key]: value || undefined });
   };
@@ -187,6 +284,7 @@ export function AssistantPanel({ dieId, annotations, devices, netNames, warnings
         brief,
         requestLlmExplanation: true,
         llmConfig: llmProvider,
+        overlayLayers,
       });
       setResultForDie(dieId, next);
       const first = [...next.findings].sort((a, b) => b.confidence - a.confidence)[0] ?? null;
@@ -323,6 +421,10 @@ export function AssistantPanel({ dieId, annotations, devices, netNames, warnings
           <input type="checkbox" checked={lvsEnabled} onChange={(event) => setLvsEnabled(event.target.checked)} />
           <span>Let the model verify hypotheses via LVS reference library (mmochip_lvs_check)</span>
         </label>
+        <label style={{ display: "flex", gap: 6, alignItems: "center", color: "var(--ink2)", fontSize: 10 }}>
+          <input type="checkbox" checked={visionEnabled} onChange={(event) => setVisionEnabled(event.target.checked)} />
+          <span>Allow the model to visually inspect device crops (mmochip_vision)</span>
+        </label>
         <label style={{ display: "grid", gap: 3 }}>
           <span style={{ color: "var(--ink3)", fontSize: 10 }}>LVS reference library (for "Check by LVS" and the model tool)</span>
           <select value={activeLib} onChange={(event) => setActiveLib(event.target.value)} style={{ font: "inherit", background: "var(--l1)", color: "#fff", border: "1px solid var(--l2)", borderRadius: 4, padding: "4px 6px" }}>
@@ -444,6 +546,8 @@ export function AssistantPanel({ dieId, annotations, devices, netNames, warnings
           expectedRev={annotations?.rev}
           llmProvider={llmProvider}
           lvsEnabled={lvsEnabled}
+          visionEnabled={visionEnabled}
+          overlayLayers={overlayLayers}
           onClose={() => setOpenThreadId(null)}
         />,
         document.body,
@@ -538,6 +642,45 @@ function FindingCard({ finding, active, discussOpen, onToggleDiscuss, onActivate
   );
 }
 
+function ToolUseCard({ toolUse }: { toolUse: AssistantToolUseEvent }) {
+  const [expanded, setExpanded] = useState(false);
+  return (
+    <div style={{
+      border: "1px solid var(--l2)", borderRadius: 6, background: "var(--l1)",
+      padding: "6px 8px", maxWidth: "100%", minWidth: 0,
+    }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer" }} onClick={() => setExpanded(!expanded)}>
+        <span style={{ fontSize: 10, fontWeight: 600, color: "var(--ink2)" }}>Tool use: Vision</span>
+        {toolUse.layerName && (
+          <span style={{ fontSize: 9, color: "#44ddff", fontWeight: 600 }}>
+            {toolUse.layerName}
+          </span>
+        )}
+        <span style={{ fontSize: 9, color: "var(--ink3)" }}>
+          {toolUse.deviceNames.join(", ")}
+        </span>
+        <span style={{ marginLeft: "auto", fontSize: 9, color: "var(--ink3)" }}>{expanded ? "▲" : "▼"}</span>
+      </div>
+      {expanded && (
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 6 }}>
+          {toolUse.images.map((img, i) => (
+            <div key={i} style={{ border: "1px solid var(--l2)", borderRadius: 4, overflow: "hidden", background: "#1a1a18" }}>
+              <img
+                src={`data:image/png;base64,${img}`}
+                alt={toolUse.deviceNames[i] ?? "device crop"}
+                style={{ display: "block", maxWidth: 240, maxHeight: 180, objectFit: "contain" }}
+              />
+              <div style={{ fontSize: 8, color: "var(--ink3)", padding: "2px 4px", textAlign: "center" }}>
+                {toolUse.deviceNames[i]}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function pointInPolygon(x: number, y: number, polygon: { x: number; y: number }[]): boolean {
   let inside = false;
   for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
@@ -571,6 +714,8 @@ function DiscussPopup({
   expectedRev,
   llmProvider,
   lvsEnabled,
+  visionEnabled,
+  overlayLayers,
   onClose,
 }: {
   dieId: string;
@@ -581,6 +726,8 @@ function DiscussPopup({
   expectedRev?: number;
   llmProvider: AssistantLlmConfig;
   lvsEnabled: boolean;
+  visionEnabled: boolean;
+  overlayLayers: Array<{ id: string; name: string }>;
   onClose: () => void;
 }) {
   const thread = useAssistantSession((state) => state.byDieId[dieId]?.findingThreads?.[finding.id] ?? EMPTY_THREAD);
@@ -588,9 +735,7 @@ function DiscussPopup({
   const appendMessage = useAssistantSession((state) => state.appendFindingMessage);
   const resetThread = useAssistantSession((state) => state.resetFindingThread);
   const updateFinding = useAssistantSession((state) => state.updateFinding);
-  const [cardUpdateNote, setCardUpdateNote] = useState<string | null>(null);
   const [pendingCardUpdate, setPendingCardUpdate] = useState<AssistantFindingPatch | null>(null);
-  const [lvsResults, setLvsResults] = useState<Array<AssistantLvsCheckResponse["data"]>>([]);
   const firstAssistantIndex = thread.findIndex((message) => message.role === "assistant");
 
   // Apply a structured card correction proposed by the model once the user confirms it:
@@ -617,7 +762,8 @@ function DiscussPopup({
       suggestedChecks: patch.suggestedChecks ?? base.suggestedChecks,
     });
     const added = [...(patch.addDeviceUuids ?? []), ...(patch.addNetIds ?? []).map((id) => `net ${id}`)];
-    setCardUpdateNote(added.length ? `Карточка обновлена моделью: добавлены ${added.join(", ")}.` : "Карточка обновлена моделью по итогам обсуждения.");
+    appendMessage(dieId, finding.id, { role: "user", content: `Карточка обновлена моделью.${added.length ? ` Добавлены: ${added.join(", ")}.` : ""}` });
+    setPendingCardUpdate(null);
   };
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
@@ -655,7 +801,7 @@ function DiscussPopup({
     controllerRef.current = controller;
     const hardTimeout = setTimeout(() => controller.abort(), 150_000);
     try {
-       const { reply, cardUpdate, lvsResults } = await discussFinding(dieId, {
+        const { reply, cardUpdate, lvsResults } = await discussFinding(dieId, {
         expectedRev,
         finding: {
           id: finding.id,
@@ -671,11 +817,14 @@ function DiscussPopup({
         brief: session?.brief,
         mode: session?.mode,
         llmConfig: llmProvider,
-        toolFlags: lvsEnabled ? { lvs: true } : undefined,
+        toolFlags: (lvsEnabled || visionEnabled) ? { lvs: lvsEnabled, vision: visionEnabled } : undefined,
+        overlayLayers,
       }, controller.signal);
        appendMessage(dieId, finding.id, { role: "assistant", content: reply });
        if (cardUpdate) setPendingCardUpdate(cardUpdate);
-       if (lvsResults.length) setLvsResults((prev) => [...prev, ...lvsResults]);
+       // LVS results are committed to the thread history (not a separate sticky
+       // panel) so they scroll up as a message when new replies arrive.
+       if (lvsResults.length) appendMessage(dieId, finding.id, { role: "assistant", content: "", lvsResults });
     } catch (cause) {
       console.debug("[assistant/discuss] request failed", cause);
       setError(formatApiError(cause));
@@ -733,23 +882,43 @@ function DiscussPopup({
             {index === firstAssistantIndex && message.role === "assistant" && (
               <div style={{ fontSize: 8, color: "var(--ink3)", marginBottom: 2 }}>Первичный ответ</div>
             )}
-            <div
-              style={{
-                display: "block",
-                maxWidth: "100%",
-                whiteSpace: "pre-wrap",
-                wordBreak: "break-word",
-                overflowWrap: "anywhere",
-                lineHeight: 1.4,
-                fontSize: 10,
-                padding: "5px 7px",
-                borderRadius: 6,
-                background: message.role === "user" ? "var(--accent, #2b4a6b)" : "var(--l2)",
-                color: "#fff",
-              }}
-            >
-              {message.content}
-            </div>
+            {message.toolUse ? (
+              <ToolUseCard toolUse={message.toolUse} />
+            ) : message.lvsResults?.length ? (
+              <div style={{ display: "grid", gap: 5, border: "1px solid var(--l2)", borderRadius: 5, padding: "6px 8px", background: "var(--l1)" }}>
+                <div style={{ fontSize: 9, color: "var(--ink2)", textTransform: "uppercase", letterSpacing: 0.4 }}>LVS reference check</div>
+                {message.lvsResults.map((res, i) => (
+                  <div key={i} style={{ display: "grid", gap: 5 }}>
+                    <div style={{ fontSize: 9, color: "var(--ink3)" }}>
+                      {res.checkedCount} candidate(s) compared{res.totalCells ? ` (of ${res.totalCells} in group)` : ""} against the reference library.
+                    </div>
+                    {res.matches.length > 0 ? (
+                      res.matches.map((m) => <LvsMatchCard key={m.cellId + (m.topology ?? "")} match={m} candidateNetlist={res.candidateNetlist} />)
+                    ) : (
+                      <div style={{ color: "var(--ink3)", fontSize: 9 }}>No reference match found{res.checkedCount > 0 ? ` — ${res.checkedCount} checked.` : "."}</div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div
+                style={{
+                  display: "block",
+                  maxWidth: "100%",
+                  whiteSpace: "pre-wrap",
+                  wordBreak: "break-word",
+                  overflowWrap: "anywhere",
+                  lineHeight: 1.4,
+                  fontSize: 10,
+                  padding: "5px 7px",
+                  borderRadius: 6,
+                  background: message.role === "user" ? "var(--accent, #2b4a6b)" : "var(--l2)",
+                  color: "#fff",
+                }}
+              >
+                {message.content}
+              </div>
+            )}
           </div>
         ))}
         {busy && (
@@ -758,46 +927,24 @@ function DiscussPopup({
             <button className="btn ghost" type="button" style={{ marginLeft: "auto", fontSize: 9, padding: "2px 6px" }} onClick={cancel}>Cancel</button>
           </div>
         )}
+        {pendingCardUpdate && (
+          <div style={{ display: "grid", gap: 5, border: `1px solid ${colorFor(finding.kind)}`, borderRadius: 5, padding: "6px 8px", background: colorFor(finding.kind) + "10" }}>
+            <div style={{ fontSize: 9, color: "var(--ink2)" }}>Модель предлагает обновить карточку</div>
+            {pendingCardUpdate.assistantComment && <div style={{ color: "var(--ink2)", fontSize: 10, lineHeight: 1.35, whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{pendingCardUpdate.assistantComment}</div>}
+            {(((pendingCardUpdate.addDeviceUuids?.length) ?? 0) || ((pendingCardUpdate.addNetIds?.length) ?? 0)) > 0 && (
+              <div style={{ color: "var(--ink3)", fontSize: 9, lineHeight: 1.3, overflowWrap: "anywhere", wordBreak: "break-word" }}>Добавляемые элементы: {[...(pendingCardUpdate.addDeviceUuids ?? []), ...(pendingCardUpdate.addNetIds ?? []).map((id) => `net ${id}`)].join(", ")}</div>
+            )}
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 4 }}>
+              <button className="btn" type="button" onClick={() => pendingCardUpdate && confirmCardUpdate(pendingCardUpdate)}>Применить</button>
+              <button className="btn ghost" type="button" onClick={() => { appendMessage(dieId, finding.id, { role: "user", content: "Обновление карточки отклонено пользователем." }); setPendingCardUpdate(null); }}>Отклонить</button>
+            </div>
+          </div>
+        )}
         <div ref={endRef} />
       </div>
-      {lvsResults.length > 0 && (
-        <div style={{ display: "grid", gap: 5, border: "1px solid var(--l2)", borderRadius: 5, padding: "6px 8px", background: "var(--l1)" }}>
-          <div style={{ fontSize: 9, color: "var(--ink2)", textTransform: "uppercase", letterSpacing: 0.4 }}>LVS reference check</div>
-          {lvsResults.map((res, i) => (
-            <div key={i} style={{ display: "grid", gap: 5 }}>
-              <div style={{ fontSize: 9, color: "var(--ink3)" }}>
-                {res.checkedCount} candidate(s) compared{res.totalCells ? ` (of ${res.totalCells} in group)` : ""} against the reference library.
-              </div>
-              {res.matches.length > 0 ? (
-                res.matches.map((m) => <LvsMatchCard key={m.cellId + (m.topology ?? "")} match={m} candidateNetlist={res.candidateNetlist} />)
-              ) : (
-                <div style={{ color: "var(--ink3)", fontSize: 9 }}>No reference match found{res.checkedCount > 0 ? ` — ${res.checkedCount} checked.` : "."}</div>
-              )}
-            </div>
-          ))}
-        </div>
-      )}
-      {pendingCardUpdate && (
-        <div style={{ display: "grid", gap: 5, border: `1px solid ${colorFor(finding.kind)}`, borderRadius: 5, padding: "6px 8px", background: colorFor(finding.kind) + "10" }}>
-          <div style={{ fontSize: 9, color: "var(--ink2)" }}>Модель предлагает обновить карточку</div>
-          {pendingCardUpdate.assistantComment && <div style={{ color: "var(--ink2)", fontSize: 10, lineHeight: 1.35, whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{pendingCardUpdate.assistantComment}</div>}
-          {(((pendingCardUpdate.addDeviceUuids?.length) ?? 0) || ((pendingCardUpdate.addNetIds?.length) ?? 0)) > 0 && (
-            <div style={{ color: "var(--ink3)", fontSize: 9, lineHeight: 1.3, overflowWrap: "anywhere", wordBreak: "break-word" }}>Добавляемые элементы: {[...(pendingCardUpdate.addDeviceUuids ?? []), ...(pendingCardUpdate.addNetIds ?? []).map((id) => `net ${id}`)].join(", ")}</div>
-          )}
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 4 }}>
-            <button className="btn" type="button" onClick={() => pendingCardUpdate && confirmCardUpdate(pendingCardUpdate)}>Применить</button>
-            <button className="btn ghost" type="button" onClick={() => setPendingCardUpdate(null)}>Отклонить</button>
-          </div>
-        </div>
-      )}
       {error && (
         <div style={{ color: "var(--danger, #ed6a5e)", fontSize: 10, lineHeight: 1.35, whiteSpace: "pre-wrap", borderTop: "1px solid var(--l2)", paddingTop: 5 }}>
           {error}
-        </div>
-      )}
-      {cardUpdateNote && (
-        <div style={{ color: "var(--ink2)", fontSize: 9, lineHeight: 1.3, whiteSpace: "pre-wrap", borderTop: "1px solid var(--l2)", paddingTop: 5 }}>
-          ✓ {cardUpdateNote}
         </div>
       )}
       <textarea
