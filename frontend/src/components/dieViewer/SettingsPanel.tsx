@@ -8,7 +8,7 @@
  */
 
 import { useEffect, useRef } from "react";
-import type { AssistantLlmConfig } from "shared";
+import type { AssistantDataFlags, AssistantLlmConfig } from "shared";
 import { SheetRConfigPanel } from "../config/SheetRConfigPanel";
 
 type Props = {
@@ -32,6 +32,12 @@ type Props = {
   // LLM provider
   llmProvider: AssistantLlmConfig;
   setLlmProvider: (config: AssistantLlmConfig) => void;
+  // LLM data representation flags
+  assistantDataFlags: AssistantDataFlags;
+  setAssistantDataFlags: (flags: AssistantDataFlags) => void;
+  // Full-graph hypothesis count limit
+  assistantMaxHypotheses: number;
+  setAssistantMaxHypotheses: (count: number) => void;
 };
 
 const LLM_PRESETS: Record<string, { baseUrl: string; model: string }> = {
@@ -82,6 +88,8 @@ export function SettingsPanel({
   floorplanOverlayOn, setFloorplanOverlayOn,
   showFloorplanIO, setShowFloorplanIO,
   llmProvider, setLlmProvider,
+  assistantDataFlags, setAssistantDataFlags,
+  assistantMaxHypotheses, setAssistantMaxHypotheses,
 }: Props) {
   const backdropRef = useRef<HTMLDivElement>(null);
 
@@ -248,6 +256,51 @@ export function SettingsPanel({
                 onChange={(e) => setLlmProvider({ ...llmProvider, model: e.target.value || undefined })}
                 style={inputStyle}
               />
+            </div>
+          </div>
+        </div>
+
+        {/* AI Assistant — LLM Data */}
+        <div>
+          <div
+            style={{
+              fontSize: 10, fontWeight: 600, color: "var(--ink3)",
+              textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 8,
+            }}
+          >
+            AI Assistant — LLM Data
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+            <Toggle
+              label="Full project JSON"
+              checked={assistantDataFlags.projectJson !== false}
+              onChange={(v) => setAssistantDataFlags({ ...assistantDataFlags, projectJson: v })}
+            />
+            <Toggle
+              label="Text netlist"
+              checked={assistantDataFlags.textNetlist === true}
+              onChange={(v) => setAssistantDataFlags({ ...assistantDataFlags, textNetlist: v })}
+            />
+            <div style={{ fontSize: 9, color: "var(--ink3)", lineHeight: 1.4, marginTop: 4 }}>
+              Full project JSON (device geometry, bbox, all nets) works reliably on OpenRouter but is large and can hang opencode-go.
+              Text netlist is a compact Spectre-like representation that works on opencode-go. Enable both for OpenRouter to get maximum detail.
+            </div>
+            <div style={{ marginTop: 8 }}>
+              <label style={labelStyle}>Max hypotheses</label>
+              <input
+                type="number"
+                min={1}
+                max={20}
+                value={Number.isFinite(assistantMaxHypotheses) ? assistantMaxHypotheses : 5}
+                onChange={(e) => {
+                  const v = parseInt(e.target.value, 10);
+                  if (Number.isFinite(v)) setAssistantMaxHypotheses(Math.max(1, Math.min(20, v)));
+                }}
+                style={inputStyle}
+              />
+              <div style={{ fontSize: 9, color: "var(--ink3)", lineHeight: 1.4, marginTop: 4 }}>
+                Limit on the number of hypothesis cards returned by full-graph analysis (reduces output tokens and cost).
+              </div>
             </div>
           </div>
         </div>

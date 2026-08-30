@@ -7,6 +7,7 @@ import type {
   AssistantAnalysisResult,
   AssistantAnalysisScope,
   AssistantChatMessage,
+  AssistantDataFlags,
   AssistantDiscussFinding,
   AssistantDiscussRequest,
   AssistantDiscussResponse,
@@ -66,6 +67,7 @@ export async function analyseAssistantCircuit(
     requestLlmExplanation?: boolean;
     llmConfig?: AssistantLlmConfig;
     overlayLayers?: Array<{ id: string; name: string }>;
+    assistantDataFlags?: AssistantDataFlags;
   },
 ): Promise<AssistantAnalysisResult> {
   const request: AssistantAnalysisRequest = {
@@ -78,6 +80,7 @@ export async function analyseAssistantCircuit(
     brief: input.brief,
     requestLlmExplanation: input.requestLlmExplanation,
     llmConfig: input.llmConfig,
+    assistantDataFlags: input.assistantDataFlags,
   };
   const response = await apiPost<AssistantAnalysisResponse>(
     `/api/dies/${encodeURIComponent(dieId)}/assistant/analyze`,
@@ -106,6 +109,7 @@ export async function discussFinding(
     llmConfig?: AssistantLlmConfig;
     toolFlags?: AssistantToolFlags;
     overlayLayers?: Array<{ id: string; name: string }>;
+    assistantDataFlags?: AssistantDataFlags;
   },
   signal?: AbortSignal,
 ): Promise<{ reply: string; cardUpdate: AssistantFindingPatch | null; lvsResults: Array<AssistantLvsCheckResponse["data"]> }> {
@@ -118,6 +122,7 @@ export async function discussFinding(
     mode: input.mode,
     toolFlags: input.toolFlags,
     llmConfig: input.llmConfig,
+    assistantDataFlags: input.assistantDataFlags,
   };
   const response = await apiPost<AssistantDiscussResponse>(
     `/api/dies/${encodeURIComponent(dieId)}/assistant/discuss`,

@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import { persist, subscribeWithSelector } from "zustand/middleware";
-import type { AnnotationClass, AssistantLlmConfig, LayerType } from "shared";
+import type { AnnotationClass, AssistantDataFlags, AssistantLlmConfig, LayerType } from "shared";
 import {
   CELL_COLOR,
   NET_COLOR,
@@ -179,6 +179,12 @@ interface PreferencesState {
   /** LLM provider configuration for the AI assistant.
    *  Stored in localStorage; sent to the backend on each analysis request. */
   llmProvider: AssistantLlmConfig;
+  /** Which circuit representations the assistant LLM should receive.
+   *  projectJson = rich device+nets JSON (large, reliable on OpenRouter);
+   *  textNetlist = compact Spectre-like text (works on opencode-go). */
+  assistantDataFlags: AssistantDataFlags;
+  /** Max number of hypothesis cards the full-graph model may return. */
+  assistantMaxHypotheses: number;
 }
 
 interface PreferencesActions {
@@ -266,6 +272,8 @@ interface PreferencesActions {
   setReAnalogLabelScale: (scale: 0 | 1 | 2) => void;
   saveOverlayLayerSettings: (dieId: string, settings: Record<string, OverlayLayerPersistedSettings>) => void;
   setLlmProvider: (config: AssistantLlmConfig) => void;
+  setAssistantDataFlags: (flags: AssistantDataFlags) => void;
+  setAssistantMaxHypotheses: (count: number) => void;
 }
 
 const DEFAULT_EXPANDED_SECTIONS: AnnotationKind[] = ["net", "via", "roi"];
@@ -330,6 +338,8 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
         reAnalogLabelScale: 1,
         overlayLayerSettings: {},
         llmProvider: {},
+        assistantDataFlags: { projectJson: true, textNetlist: false },
+        assistantMaxHypotheses: 5,
 
         setNetWidth: (width) => set({ netWidth: width }),
         setNetColor: (color) => set({ netColor: color }),
@@ -507,6 +517,8 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
             overlayLayerSettings: { ...state.overlayLayerSettings, [dieId]: settings }
           })),
         setLlmProvider: (config) => set({ llmProvider: config }),
+        setAssistantDataFlags: (flags) => set({ assistantDataFlags: flags }),
+        setAssistantMaxHypotheses: (count) => set({ assistantMaxHypotheses: count }),
       }),
       {
         name: "mmo-chip-preferences",
@@ -566,7 +578,9 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
           reTerminalLabelsVisible: state.reTerminalLabelsVisible,
           reAnalogLabelScale: state.reAnalogLabelScale,
           overlayLayerSettings: state.overlayLayerSettings,
-          llmProvider: state.llmProvider
+          llmProvider: state.llmProvider,
+          assistantDataFlags: state.assistantDataFlags,
+          assistantMaxHypotheses: state.assistantMaxHypotheses
         })
       }
     )

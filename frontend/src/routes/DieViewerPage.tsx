@@ -1235,6 +1235,10 @@ function DieViewer({ dieId }: { dieId: string }) {
   const setViaLabelsVisible = usePreferences((s) => s.setViaLabelsVisible);
   const llmProvider = usePreferences((s) => s.llmProvider);
   const setLlmProvider = usePreferences((s) => s.setLlmProvider);
+  const assistantDataFlags = usePreferences((s) => s.assistantDataFlags);
+  const setAssistantDataFlags = usePreferences((s) => s.setAssistantDataFlags);
+  const assistantMaxHypotheses = usePreferences((s) => s.assistantMaxHypotheses);
+  const setAssistantMaxHypotheses = usePreferences((s) => s.setAssistantMaxHypotheses);
   const showCellRelations = usePreferences((s) => s.showCellRelations);
   const setShowCellRelations = usePreferences((s) => s.setShowCellRelations);
   const [selectedDevice, setSelectedDevice] = useState<AnalogDevice | null>(null);
@@ -3383,6 +3387,10 @@ function DieViewer({ dieId }: { dieId: string }) {
         setShowFloorplanIO={setShowFloorplanIO}
         llmProvider={llmProvider}
         setLlmProvider={setLlmProvider}
+        assistantDataFlags={assistantDataFlags}
+        setAssistantDataFlags={setAssistantDataFlags}
+        assistantMaxHypotheses={assistantMaxHypotheses}
+        setAssistantMaxHypotheses={setAssistantMaxHypotheses}
       />
     </AppShell>
   );

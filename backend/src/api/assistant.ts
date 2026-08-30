@@ -38,7 +38,7 @@ export function createAssistantRouter(config: { dataRoot: string }) {
       }
 
       const prepared = prepareAssistantSnapshot(dieId, annotations.rev, body);
-      const data = await analyseFullGraphWithLlm(prepared, body.circuit, body.llmConfig);
+      const data = await analyseFullGraphWithLlm(prepared, body.circuit, body.llmConfig, body.assistantDataFlags);
       response.json({ ok: true, data });
     } catch (error) {
       const reason = error instanceof Error ? error.message : "Unknown LLM error";
@@ -79,6 +79,7 @@ export function createAssistantRouter(config: { dataRoot: string }) {
         config.dataRoot,
         body.toolFlags,
         dieId,
+        body.assistantDataFlags,
       );
       response.json({ ok: true, reply, durationMs, cardUpdate: cardUpdate ?? null, lvsResults: lvsResults ?? [] });
     } catch (error) {

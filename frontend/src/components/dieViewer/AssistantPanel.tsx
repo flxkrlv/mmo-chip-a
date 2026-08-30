@@ -22,7 +22,7 @@ interface Props {
   onOpenNetlist: (finding: AssistantFinding, view: "code" | "graph" | "schematic") => void;
 }
 
-const COLOR: Record<AssistantFinding["kind"], string> = {
+const COLOR: Record<string, string> = {
   diode_connected_device: "#9aa7bd",
   current_mirror: "#ffaa44",
   bjt_current_mirror: "#f59e42",
@@ -40,20 +40,12 @@ const COLOR: Record<AssistantFinding["kind"], string> = {
 };
 
 const FALLBACK_COLOR = "#8aa0c0";
-const colorFor = (kind: AssistantFinding["kind"]): string => COLOR[kind] ?? FALLBACK_COLOR;
+const colorFor = (kind: string): string => COLOR[kind] ?? FALLBACK_COLOR;
 
 const emptyBrief: AssistantAnalysisBrief = {};
 
 const CONFIDENCE_VALUE: Record<AssistantConfidenceLevel, number> = { high: 0.70, medium: 0.58, low: 0.44 };
 
-// Valid enum values: an LLM-proposed cardUpdate may carry a free-form string, so
-// we only accept known values and keep the existing one otherwise.
-const VALID_KINDS = new Set<AssistantFindingKind>([
-  "diode_connected_device", "current_mirror", "bjt_current_mirror", "bjt_current_source",
-  "widlar_current_source", "differential_pair", "bjt_differential_pair", "ldo_error_amplifier_feedback",
-  "resistor_divider", "protection_clamp", "llm_hypothesis", "netlist_problem",
-  "positive_feedback_loop", "bandgap_precursor",
-]);
 const VALID_STATUSES = new Set<AssistantFindingStatus>(["verified_topology", "candidate", "needs_verification"]);
 const VALID_CONFIDENCE = new Set<AssistantConfidenceLevel>(["high", "medium", "low"]);
 
@@ -70,6 +62,8 @@ export function AssistantPanel({ dieId, annotations, devices, netNames, warnings
   const setActiveFindingIdForDie = useAssistantSession((state) => state.setActiveFindingId);
   const appendMessage = useAssistantSession((state) => state.appendFindingMessage);
   const llmProvider = usePreferences((state) => state.llmProvider);
+  const assistantDataFlags = usePreferences((state) => state.assistantDataFlags);
+  const assistantMaxHypotheses = usePreferences((state) => state.assistantMaxHypotheses);
   const brief = session?.brief ?? emptyBrief;
   const result = session?.result ?? null;
   const mode: AssistantAnalysisMode = session?.mode ?? result?.mode ?? "functional_blocks";
@@ -281,10 +275,11 @@ export function AssistantPanel({ dieId, annotations, devices, netNames, warnings
         warnings,
         selectedDeviceUuids: scope === "selected" ? regionUuids : [],
         selectedNetIds: scope === "selected" ? regionNetIds : [],
-        brief,
+        brief: { ...brief, maxHypotheses: assistantMaxHypotheses },
         requestLlmExplanation: true,
         llmConfig: llmProvider,
         overlayLayers,
+        assistantDataFlags,
       });
       setResultForDie(dieId, next);
       const first = [...next.findings].sort((a, b) => b.confidence - a.confidence)[0] ?? null;
@@ -503,6 +498,18 @@ export function AssistantPanel({ dieId, annotations, devices, netNames, warnings
               <div style={{ marginTop: 5, color: "var(--warn, #e6b05b)" }}>{result.llm.unavailableReason}</div>
             )}
           </div>
+          {result.llm.thinking && (
+            <details style={{ border: "1px solid var(--l2)", borderRadius: 4, padding: "5px 7px", color: "var(--ink3)", lineHeight: 1.35 }}>
+              <summary style={{ cursor: "pointer", color: "var(--ink2)" }}>LLM thinking</summary>
+              <div style={{ marginTop: 6, whiteSpace: "pre-wrap", wordBreak: "break-word", overflowWrap: "anywhere" }}>{result.llm.thinking}</div>
+            </details>
+          )}
+          {result.llm.narrative && !result.llm.thinking && (
+            <details style={{ border: "1px solid var(--l2)", borderRadius: 4, padding: "5px 7px", color: "var(--ink3)", lineHeight: 1.35 }}>
+              <summary style={{ cursor: "pointer", color: "var(--ink2)" }}>LLM narrative</summary>
+              <div style={{ marginTop: 6, whiteSpace: "pre-wrap", wordBreak: "break-word", overflowWrap: "anywhere" }}>{result.llm.narrative}</div>
+            </details>
+          )}
           {result.diagnostics.filter((note) => !note.startsWith("LLM analysis snapshot:") && !note.includes("No hard-coded functional-block")).length > 0 && (
             <details style={{ border: "1px solid var(--l2)", borderRadius: 4, padding: "5px 7px", color: "var(--ink3)", lineHeight: 1.35 }}>
               <summary style={{ cursor: "pointer", color: "var(--ink2)" }}>Extraction diagnostics</summary>
@@ -514,7 +521,9 @@ export function AssistantPanel({ dieId, annotations, devices, netNames, warnings
             </details>
           )}
           {result.findings.length === 0 ? (
-            <div style={{ color: "var(--ink3)", lineHeight: 1.4 }}>The LLM returned no hypotheses for this scope.</div>
+            <div style={{ color: "var(--ink3)", lineHeight: 1.4 }}>
+              The LLM returned no hypotheses for this scope.
+            </div>
           ) : sortedFindings.map((finding) => (
             <FindingCard
               key={finding.id}
@@ -732,6 +741,7 @@ function DiscussPopup({
 }) {
   const thread = useAssistantSession((state) => state.byDieId[dieId]?.findingThreads?.[finding.id] ?? EMPTY_THREAD);
   const session = useAssistantSession((state) => state.byDieId[dieId]);
+  const assistantDataFlags = usePreferences((state) => state.assistantDataFlags);
   const appendMessage = useAssistantSession((state) => state.appendFindingMessage);
   const resetThread = useAssistantSession((state) => state.resetFindingThread);
   const updateFinding = useAssistantSession((state) => state.updateFinding);
@@ -742,15 +752,19 @@ function DiscussPopup({
   // merge new elements (union) and overwrite the chosen fields.
   const confirmCardUpdate = (patch: AssistantFindingPatch) => {
     const base = finding;
-    const deviceUuids = Array.from(new Set([...base.deviceUuids, ...(patch.addDeviceUuids ?? [])]));
-    const netIds = Array.from(new Set([...base.netIds, ...(patch.addNetIds ?? [])]));
+    const addDevices = new Set(patch.addDeviceUuids ?? []);
+    const removeDevices = new Set(patch.removeDeviceUuids ?? []);
+    const deviceUuids = [...new Set([...base.deviceUuids, ...addDevices])].filter((uuid) => !removeDevices.has(uuid));
+    const addNets = new Set(patch.addNetIds ?? []);
+    const removeNets = new Set(patch.removeNetIds ?? []);
+    const netIds = [...new Set([...base.netIds, ...addNets])].filter((id) => !removeNets.has(id));
     const instanceNames = deviceUuids.map((uuid) => {
       const dev = devices.find((device) => String((device as any)._uuid ?? device.id) === uuid);
       return dev?.instanceName ?? base.instanceNames[base.deviceUuids.indexOf(uuid)] ?? uuid;
     });
     updateFinding(dieId, finding.id, {
       label: patch.label ?? base.label,
-      kind: patch.kind && VALID_KINDS.has(patch.kind) ? patch.kind : base.kind,
+      kind: patch.kind ?? base.kind,
       status: patch.status && VALID_STATUSES.has(patch.status) ? patch.status : base.status,
       confidenceLevel: patch.confidenceLevel && VALID_CONFIDENCE.has(patch.confidenceLevel) ? patch.confidenceLevel : base.confidenceLevel,
       confidence: patch.confidenceLevel && VALID_CONFIDENCE.has(patch.confidenceLevel) ? CONFIDENCE_VALUE[patch.confidenceLevel] : base.confidence,
@@ -762,7 +776,11 @@ function DiscussPopup({
       suggestedChecks: patch.suggestedChecks ?? base.suggestedChecks,
     });
     const added = [...(patch.addDeviceUuids ?? []), ...(patch.addNetIds ?? []).map((id) => `net ${id}`)];
-    appendMessage(dieId, finding.id, { role: "user", content: `Карточка обновлена моделью.${added.length ? ` Добавлены: ${added.join(", ")}.` : ""}` });
+    const removed = [...(patch.removeDeviceUuids ?? []), ...(patch.removeNetIds ?? []).map((id) => `net ${id}`)];
+    const note = [];
+    if (added.length) note.push(`добавлены ${added.join(", ")}`);
+    if (removed.length) note.push(`удалены ${removed.join(", ")}`);
+    appendMessage(dieId, finding.id, { role: "user", content: `Карточка обновлена моделью.${note.length ? ` ${note.join("; ")}.` : ""}` });
     setPendingCardUpdate(null);
   };
   const [input, setInput] = useState("");
@@ -809,6 +827,12 @@ function DiscussPopup({
           assistantComment: finding.assistantComment,
           deviceUuids: finding.deviceUuids,
           netIds: finding.netIds,
+          kind: finding.kind,
+          status: finding.status,
+          confidenceLevel: finding.confidenceLevel,
+          instanceNames: finding.instanceNames,
+          limitations: finding.limitations,
+          suggestedChecks: finding.suggestedChecks,
         },
         messages: history,
         devices,
@@ -819,6 +843,7 @@ function DiscussPopup({
         llmConfig: llmProvider,
         toolFlags: (lvsEnabled || visionEnabled) ? { lvs: lvsEnabled, vision: visionEnabled } : undefined,
         overlayLayers,
+        assistantDataFlags,
       }, controller.signal);
        appendMessage(dieId, finding.id, { role: "assistant", content: reply });
        if (cardUpdate) setPendingCardUpdate(cardUpdate);
@@ -933,6 +958,9 @@ function DiscussPopup({
             {pendingCardUpdate.assistantComment && <div style={{ color: "var(--ink2)", fontSize: 10, lineHeight: 1.35, whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{pendingCardUpdate.assistantComment}</div>}
             {(((pendingCardUpdate.addDeviceUuids?.length) ?? 0) || ((pendingCardUpdate.addNetIds?.length) ?? 0)) > 0 && (
               <div style={{ color: "var(--ink3)", fontSize: 9, lineHeight: 1.3, overflowWrap: "anywhere", wordBreak: "break-word" }}>Добавляемые элементы: {[...(pendingCardUpdate.addDeviceUuids ?? []), ...(pendingCardUpdate.addNetIds ?? []).map((id) => `net ${id}`)].join(", ")}</div>
+            )}
+            {(((pendingCardUpdate.removeDeviceUuids?.length) ?? 0) || ((pendingCardUpdate.removeNetIds?.length) ?? 0)) > 0 && (
+              <div style={{ color: "var(--danger, #ed6a5e)", fontSize: 9, lineHeight: 1.3, overflowWrap: "anywhere", wordBreak: "break-word" }}>Удаляемые элементы: {[...(pendingCardUpdate.removeDeviceUuids ?? []), ...(pendingCardUpdate.removeNetIds ?? []).map((id) => `net ${id}`)].join(", ")}</div>
             )}
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 4 }}>
               <button className="btn" type="button" onClick={() => pendingCardUpdate && confirmCardUpdate(pendingCardUpdate)}>Применить</button>

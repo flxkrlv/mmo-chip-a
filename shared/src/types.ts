@@ -1321,27 +1321,18 @@ export interface AssistantAnalysisBrief {
   prompt?: string;
   /** Optional user-known net names; they narrow ranking but do not rename nets. */
   knownNetNames?: string[];
-  /** Language for structured card comments. Defaults to Russian. */
+/** Language for structured card comments. Defaults to Russian. */
   language?: "ru" | "en";
+  /** Max number of hypothesis cards the full-graph model may return. Default 5. */
+  maxHypotheses?: number;
 }
 
 export type AssistantAnalysisScope = "selected" | "die";
 export type AssistantAnalysisMode = "functional_blocks" | "netlist_problems";
-export type AssistantFindingKind =
-  | "diode_connected_device"
-  | "current_mirror"
-  | "bjt_current_mirror"
-  | "bjt_current_source"
-  | "widlar_current_source"
-  | "differential_pair"
-  | "bjt_differential_pair"
-  | "ldo_error_amplifier_feedback"
-  | "resistor_divider"
-  | "protection_clamp"
-  | "llm_hypothesis"
-  | "positive_feedback_loop"
-  | "bandgap_precursor"
-  | "netlist_problem";
+/** Free-form functional-block label the model can set on a card (e.g.
+ *  "vco", "bandgap_reference", "wilson_mirror"). Known values are kept for
+ *  backward compatibility/colors, but the model may use any snake_case name. */
+export type AssistantFindingKind = string;
 export type AssistantFindingStatus =
   | "verified_topology"
   | "candidate"
@@ -1425,6 +1416,11 @@ export interface AssistantAnalysisRequest {
   requestLlmExplanation?: boolean;
   /** Frontend-provided LLM credentials; backend env vars are used as fallback. */
   llmConfig?: AssistantLlmConfig;
+  /** Which circuit representations to include in the LLM prompt.
+   *  - projectJson: rich device+nets JSON (geometry/bbox) — large, reliable on OpenRouter.
+   *  - textNetlist: compact Spectre-like text with uuid comments — small, works on opencode-go.
+   *  Default (undefined) behaves like projectJson=true; forward-compatible. */
+  assistantDataFlags?: AssistantDataFlags;
 }
 
 export interface AssistantLlmState {
@@ -1432,6 +1428,9 @@ export interface AssistantLlmState {
   used: boolean;
   /** Free Russian-language analysis from the model; shown even if no candidate can be safely mapped to a subgraph. */
   narrative?: string;
+  /** Raw chain-of-thought (reasoning_content) from reasoning models, shown
+   *  collapsed in the UI — the thinking behind the structured JSON answer. */
+  thinking?: string;
   /** Number of structured LLM hypotheses shown as cards; no local validation gate is applied. */
   hypothesesShown?: number;
   /** End-to-end upstream request time measured on the backend. */
@@ -1495,6 +1494,13 @@ export interface AssistantDiscussFinding {
   assistantComment?: string;
   deviceUuids: string[];
   netIds: number[];
+  /** Current card state, surfaced to the model so it can propose accurate updates. */
+  kind?: AssistantFindingKind;
+  status?: AssistantFindingStatus;
+  confidenceLevel?: AssistantConfidenceLevel;
+  instanceNames?: string[];
+  limitations?: string[];
+  suggestedChecks?: string[];
 }
 
 export interface AssistantDiscussRequest {
@@ -1514,12 +1520,15 @@ export interface AssistantDiscussRequest {
   toolFlags?: AssistantToolFlags;
   /** Frontend-provided LLM credentials; backend env vars are used as fallback. */
   llmConfig?: AssistantLlmConfig;
+  /** Which circuit representations to include in the prompt (projectJson / textNetlist). */
+  assistantDataFlags?: AssistantDataFlags;
 }
 
 /**
  * A structured correction the model may propose at the end of a discussion.
  * Only fields the model wants to change are provided; `addDeviceUuids` /
- * `addNetIds` are merged (unioned) with the existing finding by the frontend.
+ * `addNetIds` are merged (unioned) with the existing finding, and
+ * `removeDeviceUuids` / `removeNetIds` are subtracted from it by the frontend.
  */
 export interface AssistantFindingPatch {
   label?: string;
@@ -1527,7 +1536,9 @@ export interface AssistantFindingPatch {
   status?: AssistantFindingStatus;
   confidenceLevel?: AssistantConfidenceLevel;
   addDeviceUuids?: string[];
+  removeDeviceUuids?: string[];
   addNetIds?: number[];
+  removeNetIds?: number[];
   assistantComment?: string;
   limitations?: string[];
   suggestedChecks?: string[];
@@ -1549,6 +1560,14 @@ export interface AssistantDiscussErrorResponse {
 }
 
 // ── LVS reference-library check ───────────────────────────────
+
+/** Which circuit data representations to include in the LLM prompt. */
+export interface AssistantDataFlags {
+  /** Rich device+nets JSON (geometry/bbox/center). Default true. */
+  projectJson?: boolean;
+  /** Compact Spectre-like text netlist with uuid comments. Default false. */
+  textNetlist?: boolean;
+}
 
 /** Which assistant LLM tools are enabled for a run. M3 surfaces. */
 export interface AssistantToolFlags {
