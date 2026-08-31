@@ -5,6 +5,7 @@ import type {
   AssistantChatMessage,
   AssistantCircuitDeviceInput,
   AssistantCircuitSnapshot,
+  AssistantClarificationMode,
   AssistantDataFlags,
   AssistantDiscussFinding,
   AssistantFinding,
@@ -20,7 +21,7 @@ import type { LvsLibrary, LvsLibraryCell } from "./lvsLibrary.js";
 import { dedupeCells } from "./lvsDedup.js";
 import { matchSubcircuit } from "./lvsMatch.js";
 import { executeVisionTool } from "./visionTool.js";
-import { streamWithRetries } from "./llmStream.js";
+import { isClientAbortError, streamWithRetries } from "./llmStream.js";
 
 /**
  * Progress events emitted during an LLM analysis/discussion when streaming is
@@ -29,6 +30,7 @@ import { streamWithRetries } from "./llmStream.js";
 export type AssistantStreamEvent =
   | { type: "token"; content: string }
   | { type: "thinking"; content: string }
+  | { type: "questions"; questions: string[] }
   | { type: "tool_start"; tool: string; args?: unknown }
   | { type: "tool_result"; tool: string; ok: boolean; images?: number }
   | { type: "done"; data: unknown }
@@ -37,6 +39,20 @@ export type AssistantStreamEvent =
 const DEFAULT_LLM_TIMEOUT_MS = 300_000;
 const MIN_LLM_TIMEOUT_MS = 10_000;
 const MAX_LLM_TIMEOUT_MS = 300_000;
+// Reasoning models (deepseek-v4, glm-5.x-flash) spend a large part of their
+// output budget on chain-of-thought before producing the JSON answer. Timeout
+// is scaled per-attempt with the max_tokens budget so a bigger ladder rung gets
+// proportionally more time, but never grows without limit.
+const LLM_TIMEOUT_REF_TOKENS = 8000;
+const MAX_ATTEMPT_TIMEOUT_MS = 1_800_000;
+// Idle timeout for STREAMING requests: aborts only when the provider sends no
+// chunks for this long. While reasoning_token/content chunks keep flowing the
+// model may take however long it needs. Default 15 min of silence. Configurable
+// via ASSISTANT_LLM_STREAM_IDLE_MS so long-thinking providers are not cut when
+// they pause to prepare the JSON answer.
+const DEFAULT_LLM_STREAM_IDLE_MS = 900_000;
+const MIN_LLM_STREAM_IDLE_MS = 30_000;
+const MAX_LLM_STREAM_IDLE_MS = 3_600_000;
 const MAX_NARRATIVE_CHARS = 12_000;
 
 const ASSISTANT_STATUSES = ["verified_topology", "candidate", "needs_verification"] as const;
@@ -58,12 +74,31 @@ type ModelHypothesis = {
 type ModelPayload = {
   summary?: unknown;
   hypotheses?: unknown;
+  questions?: unknown;
 };
 
 function llmTimeoutMs(): number {
   const configured = Number(process.env.ASSISTANT_LLM_TIMEOUT_MS ?? DEFAULT_LLM_TIMEOUT_MS);
   if (!Number.isFinite(configured)) return DEFAULT_LLM_TIMEOUT_MS;
   return Math.max(MIN_LLM_TIMEOUT_MS, Math.min(MAX_LLM_TIMEOUT_MS, Math.round(configured)));
+}
+
+/** Idle timeout for streaming: silence before abort, independent of wall-clock budget. */
+function llmStreamIdleMs(): number {
+  const configured = Number(process.env.ASSISTANT_LLM_STREAM_IDLE_MS ?? DEFAULT_LLM_STREAM_IDLE_MS);
+  if (!Number.isFinite(configured)) return DEFAULT_LLM_STREAM_IDLE_MS;
+  return Math.max(MIN_LLM_STREAM_IDLE_MS, Math.min(MAX_LLM_STREAM_IDLE_MS, Math.round(configured)));
+}
+
+/**
+ * Per-attempt timeout scaled with the max_tokens budget: a larger ladder rung
+ * gets proportionally more time (LLM_TIMEOUT_REF_TOKENS is the reference budget
+ * for the base timeout). Capped by MAX_ATTEMPT_TIMEOUT_MS so a runaway model is
+ * still stopped eventually rather than burning tokens forever.
+ */
+function attemptTimeoutMs(maxTokens: number, baseMs: number): number {
+  const scaled = Math.round(baseMs * (maxTokens / LLM_TIMEOUT_REF_TOKENS));
+  return Math.max(MIN_LLM_TIMEOUT_MS, Math.min(MAX_ATTEMPT_TIMEOUT_MS, scaled));
 }
 
 function asTrimmedString(value: unknown, max = 1600): string | null {
@@ -195,22 +230,45 @@ function buildLlmContext(
 ): { content: string; includeJson: boolean; includeText: boolean } {
   const includeJson = flags?.projectJson !== false; // default true
   const includeText = flags?.textNetlist === true; // default false
+  const layersBlock = overlayLayerListData(snapshot.overlayLayers);
   if (includeJson && !includeText) {
-    return { content: JSON.stringify(buildGraphPayload(result, snapshot)), includeJson, includeText };
+    return { content: `${layersBlock}${JSON.stringify(buildGraphPayload(result, snapshot))}`, includeJson, includeText };
   }
   if (!includeJson && includeText) {
-    return { content: buildTextNetlist(snapshot), includeJson, includeText };
+    return { content: `${layersBlock}${buildTextNetlist(snapshot)}`, includeJson, includeText };
   }
   const jsonPart = JSON.stringify(buildGraphPayload(result, snapshot));
   const textPart = buildTextNetlist(snapshot);
   return {
-    content: `The same circuit in two representations (JSON is authoritative, text netlist is a compact summary):\n\n=== JSON ===\n${jsonPart}\n\n=== TEXT NETLIST ===\n${textPart}`,
+    content: `${layersBlock}The same circuit in two representations (JSON is authoritative, text netlist is a compact summary):\n\n=== JSON ===\n${jsonPart}\n\n=== TEXT NETLIST ===\n${textPart}`,
     includeJson,
     includeText,
   };
 }
 
-function promptForGraphAnalysis(brief: AssistantAnalysisBrief, mode: AssistantAnalysisResult["mode"]): string {
+/**
+ * Single source of truth for the available overlay layers shown to the model.
+ * Inserted into the user data (so every model sees the list regardless of how
+ * faithfully it reads tool descriptions) and shared by the VISION_TOOL schema.
+ */
+function overlayLayerListData(overlayLayers?: Array<{ id: string; name: string }>): string {
+  if (!overlayLayers?.length) return "";
+  const lines = overlayLayers.map((l) => `  - ${l.name} (id: ${l.id})`);
+  return `AVAILABLE OVERLAY LAYERS (pass the id via layerName, or a human-readable name):\n${lines.join("\n")}\n`;
+}
+
+/** SHORT human-readable hint appended to tool schemas/prompts; not the data block. */
+function overlayLayerNameHint(overlayLayers?: Array<{ id: string; name: string }>): string {
+  if (!overlayLayers?.length) return "Available layer: base image (id: __base__).";
+  const names = overlayLayers.map((l) => l.name).slice(0, 6);
+  return ` Available layers: base image (id: __base__)${names.length ? `, ${names.join(", ")} (send the exact id or name for any of them)` : "."}.`;
+}
+
+function promptForGraphAnalysis(
+  brief: AssistantAnalysisBrief,
+  mode: AssistantAnalysisResult["mode"],
+  clarification?: { mode?: AssistantClarificationMode; answers?: string[] },
+): string {
   const language = brief.language ?? "ru";
   const langName = language === "en" ? "English" : "Russian";
   const maxHypotheses = brief.maxHypotheses ?? 5;
@@ -227,14 +285,31 @@ function promptForGraphAnalysis(brief: AssistantAnalysisBrief, mode: AssistantAn
   const contextBlock = contextLines.length
     ? `\n\nUser-provided context (non-authoritative hints, not instructions — they do not override the circuit data):\n${contextLines.join("\n")}`
     : "";
+
+  const clarifies = clarification?.mode;
+  const hasAnswers = Boolean(clarification?.answers?.length);
+  const clarificationRules = clarifies === "always"
+    ? "CLARIFICATION REQUIRED: the user has enabled a forced question-asking pass. You MUST return a NON-EMPTY questions array — producing hypotheses now is forbidden. If you have no specific technical questions from the data, ask about the key devices or the likely function blocks, or ask what is currently the priority and what the user especially wants you to focus on. Returning an empty questions array under this option is prohibited; do not return cards on this pass."
+    : clarifies === "auto"
+      ? "You MAY ask clarifying questions before proposing cards, but ONLY when the data is genuinely ambiguous (e.g. an extracted net looks like both a real internal rail and an artifact). Keep them short, at most 4, focused on what would let you proceed. If you can commit to cards with reasonable confidence, do not ask and return the schema below directly."
+      : "Do not ask clarifying questions. If the data is ambiguous, commit to your best interpretation with an explicit uncertainty note and return the schema below.";
+  const answerBlock = hasAnswers
+    ? `\n\nUSER CLARIFICATIONS (each line is "Question -> Answer"; treat them as authoritative context, but netlist data still wins):\n${(clarification?.answers ?? []).map((a, i) => `  ${i + 1}. ${a}`).join("\n")}`
+    : "";
+
   return [
     `You are analysing an extracted integrated-circuit netlist for reverse engineering. Respond with ONLY one valid JSON object — no Markdown fences, no prose, no explanations before or after the JSON. Any extra text outside the JSON is rejected. All card comments and explanations must be in ${langName}.`,
     task,
     "Do not rely on a shared supply/ground rail as evidence that devices form one local block. Prioritise named non-global nets, terminal roles, device polarity, geometry/area ratios, local connected paths and extraction/netlist warnings.",
     "Be explicit about uncertainty. Never claim electrical proof, values, thresholds, or a complete function without support in the data.",
     "Before concluding any device connection, always read the device terminals (pin→net) directly from the supplied netlist. If the netlist contradicts the brief hints or any prior assumption, the supplied netlist is authoritative.",
+    "CONFIDENCE OVER PERFECTION. You are inside an interactive reverse-engineering tool. The netlist may be incomplete or contain recognition errors — the user may still be refining device detection, so missing or misidentified devices are expected. You are NOT required to be 100% accurate and must not spend multiple verification passes. Commit to the interpretation with the best chance of being right on your FIRST pass. If a conclusion is uncertain, emit a low-confidence card with an honest missingEvidence note — the user can refine it later with the LVS library and vision tools. Re-doing your reasoning (\"let me reconsider…\", \"I must double-check…\") wastes your entire output budget: the system only delivers the final JSON, and if you exhaust the token budget first, no answer is delivered at all. Keep reasoning brief and produce the required JSON.",
+    clarificationRules,
     `Return exactly this compact schema, with at most ${maxHypotheses} hypotheses: {"summary":"short overall summary","hypotheses":[ up to ${maxHypotheses} items of {"label":"card title","deviceInstances":["Q1"],"netNames":["NREF"],"comment":"card-specific explanation","reasoning":"evidence-based reasoning","missingEvidence":"what remains unproven","nextChecks":["check"],"confidence":"low|medium|high"} ]}. For netlist problems, label the issue type and explain why it may be a real error or an intentional design choice. Only cite instance and net names that exist in the supplied circuit. Keep the JSON compact — short field values — and always include hypotheses when a selectable item is defensible. Do not exceed ${maxHypotheses} hypotheses.`,
-  ].join("\n") + contextBlock;
+    ...(hasAnswers
+      ? ["The user has already answered your earlier clarifying questions (see USER CLARIFICATIONS). Do NOT ask questions again — return the schema with hypotheses now."]
+      : ["Alternative response when you must ask first (only when the clarification rules allow it): {\"questions\":[\"…\",\"…\"]}."]),
+  ].join("\n") + contextBlock + answerBlock;
 }
 
 /** User-provided context lines shared by analysis and discussion so the model
@@ -326,8 +401,16 @@ function buildLlmFindings(payload: ModelPayload | null, snapshot: AssistantCircu
  * reference or connectivity gates; local references are used only for optional
  * read-only navigation. This function never writes.
  */
-export async function analyseFullGraphWithLlm(result: AssistantAnalysisResult, snapshot: AssistantCircuitSnapshot, llmConfig?: AssistantLlmConfig, assistantDataFlags?: AssistantDataFlags, onEvent?: (ev: AssistantStreamEvent) => void): Promise<AssistantAnalysisResult> {
+export async function analyseFullGraphWithLlm(
+  result: AssistantAnalysisResult,
+  snapshot: AssistantCircuitSnapshot,
+  llmConfig?: AssistantLlmConfig,
+  assistantDataFlags?: AssistantDataFlags,
+  onEvent?: (ev: AssistantStreamEvent) => void,
+  clarification?: { mode?: AssistantClarificationMode; answers?: string[] },
+): Promise<AssistantAnalysisResult> {
   if (!result.llm.requested) return result;
+  const viaClarification = Boolean(clarification?.answers?.length);
   const usingOpenRouter = Boolean(process.env.OPENROUTER_API_KEY);
   const apiKey = llmConfig?.apiKey || process.env.ASSISTANT_LLM_API_KEY || process.env.OPENROUTER_API_KEY;
   const baseUrl = llmConfig?.baseUrl || process.env.ASSISTANT_LLM_BASE_URL || (usingOpenRouter ? "https://openrouter.ai/api/v1" : undefined);
@@ -357,7 +440,7 @@ export async function analyseFullGraphWithLlm(result: AssistantAnalysisResult, s
 
   async function doFetch(maxTokens: number): Promise<Response> {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), timeoutMs);
+    const timeout = setTimeout(() => controller.abort(), attemptTimeoutMs(maxTokens, timeoutMs));
     try {
       return await fetch(`${baseUrlResolved.replace(/\/$/, "")}/chat/completions`, {
         method: "POST",
@@ -372,7 +455,7 @@ export async function analyseFullGraphWithLlm(result: AssistantAnalysisResult, s
           // collapsed in the UI — it never substitutes for the structured answer.
           response_format: { type: "json_object" },
           messages: [
-            { role: "system", content: promptForGraphAnalysis(result.brief, result.mode) },
+            { role: "system", content: promptForGraphAnalysis(result.brief, result.mode, clarification) },
             { role: "user", content: buildLlmContext(result, scopedSnapshot, assistantDataFlags).content },
           ],
         }),
@@ -383,17 +466,31 @@ export async function analyseFullGraphWithLlm(result: AssistantAnalysisResult, s
   }
 
   async function fetchWithRetries(maxTokens: number): Promise<Response> {
-    let response!: Response;
+    let lastError: unknown = null;
     for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
-      response = await doFetch(maxTokens);
-      if (response.status !== 429) return response;
-      if (attempt < MAX_RETRIES) {
-        const retryAfter = response.headers.get("retry-after");
-        const waitMs = retryAfter ? Number(retryAfter) * 1000 : RETRY_BASE_MS * Math.pow(2, attempt);
-        await new Promise((r) => setTimeout(r, Math.min(waitMs, 30_000)));
+      try {
+        const response = await doFetch(maxTokens);
+        if (response.status !== 429) return response;
+        lastError = new Error(`LLM HTTP 429`);
+        if (attempt < MAX_RETRIES) {
+          const retryAfter = response.headers.get("retry-after");
+          const waitMs = retryAfter ? Number(retryAfter) * 1000 : RETRY_BASE_MS * Math.pow(2, attempt);
+          await new Promise((r) => setTimeout(r, Math.min(waitMs, 30_000)));
+        }
+      } catch (err) {
+        // Client-side abort (wall-clock timeout) — not retryable, the budget is up.
+        if (err instanceof Error && /abort|canceled/i.test(`${err.message} ${err.name}`)) throw err;
+        // Transient network/gateway failures (ECONNRESET, fetch failed, TLS…):
+        // retry a few times before giving up on this rung.
+        console.warn(`[assistant/analyze] non-stream fetch failed (attempt ${attempt + 1}/${MAX_RETRIES + 1}): ${err instanceof Error ? err.message : String(err)}`);
+        lastError = err;
+        if (attempt < MAX_RETRIES) {
+          await new Promise((r) => setTimeout(r, RETRY_BASE_MS * Math.pow(2, attempt)));
+        }
       }
     }
-    return response;
+    if (lastError) throw lastError;
+    throw new Error("LLM request failed after retries");
   }
 
   function describeEmptyBody(raw: string, body: Record<string, unknown>): string {
@@ -405,7 +502,9 @@ export async function analyseFullGraphWithLlm(result: AssistantAnalysisResult, s
     const msg = first?.message;
     if (msg) {
       if (msg.content === null) parts.push("content=null");
-      if (typeof msg.reasoning_content === "string" && msg.reasoning_content) parts.push(`reasoning_content="${msg.reasoning_content.slice(0, 80)}…"`);
+      if (typeof msg.reasoning_content === "string" && msg.reasoning_content) {
+        parts.push(`reasoning_content=${msg.reasoning_content.length} chars "${msg.reasoning_content.slice(0, 80)}…"`);
+      }
     }
     if (!parts.length) parts.push(`raw=${raw.slice(0, 160)}`);
     return ` (${parts.join("; ")})`;
@@ -432,34 +531,61 @@ export async function analyseFullGraphWithLlm(result: AssistantAnalysisResult, s
     return { content, thinking, detail: describeEmptyBody(raw, body) };
   }
 
-  async function streamAttempt(maxTokens: number): Promise<{ content: string; thinking: string; finishReason: string | null }> {
+  async function streamAttempt(maxTokens: number): Promise<{ content: string; thinking: string; finishReason: string | null; salvaged?: boolean }> {
     const attemptStart = Date.now();
     let content = "";
     let thinking = "";
-    const streamResult = await streamWithRetries({
-      baseUrl: baseUrlResolved,
-      apiKey: apiKeyResolved,
-      model: modelResolved,
-      messages: [
-        { role: "system", content: promptForGraphAnalysis(result.brief, result.mode) },
-        { role: "user", content: buildLlmContext(result, scopedSnapshot, assistantDataFlags).content },
-      ],
-      maxTokens,
-      timeoutMs,
-      extra: { response_format: { type: "json_object" } },
-      onDelta: (delta) => {
-        if (delta.content) {
-          content += delta.content;
-          onEvent?.({ type: "token", content: delta.content });
-        }
-        if (delta.reasoning) {
-          thinking += delta.reasoning;
-          onEvent?.({ type: "thinking", content: delta.reasoning });
-        }
-      },
-    });
+    let finishReason: string | null = null;
+    try {
+      const streamResult = await streamWithRetries({
+        baseUrl: baseUrlResolved,
+        apiKey: apiKeyResolved,
+        model: modelResolved,
+        messages: [
+          { role: "system", content: promptForGraphAnalysis(result.brief, result.mode, clarification) },
+          { role: "user", content: buildLlmContext(result, scopedSnapshot, assistantDataFlags).content },
+        ],
+        maxTokens,
+        // Streaming idle timeout (independent of wall-clock budget): aborts only
+        // when the provider sends no chunk for this long. A reasoning model that
+        // keeps streaming thinking/content is given however long it needs.
+        timeoutMs: llmStreamIdleMs(),
+        extra: { response_format: { type: "json_object" } },
+        onDelta: (delta) => {
+          if (delta.content) {
+            content += delta.content;
+            onEvent?.({ type: "token", content: delta.content });
+          }
+          if (delta.reasoning) {
+            thinking += delta.reasoning;
+            onEvent?.({ type: "thinking", content: delta.reasoning });
+          }
+        },
+      });
+      finishReason = streamResult.finishReason;
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      console.warn(`[assistant/analyze] stream attempt failed (${errMsg}) after ${Date.now() - attemptStart}ms (maxTokens=${maxTokens}, content=${content.length} chars, thinking=${thinking.length} chars)`);
+      // If the stream was dropped but we already received a valid JSON answer,
+      // salvage it rather than throwing the whole run away.
+      if (content && content.trim()) {
+        try {
+          const salvaged = parseModelReply(content.trim());
+          if (salvaged.payload) {
+            console.warn(`[assistant/analyze] salvaged partial content from failed stream (${content.length} chars)`);
+            return { content: content.trim(), thinking, finishReason: null, salvaged: true };
+          }
+        } catch { /* fall through */ }
+      }
+      throw err;
+    }
     console.log(`[assistant/analyze] LLM stream done in ${Date.now() - attemptStart}ms (maxTokens=${maxTokens})`);
-    return { content, thinking, finishReason: streamResult.finishReason };
+    return { content, thinking, finishReason: finishReason ?? "stop" };
+  }
+
+  /** True when an idle/abort error — the model was cut after silent thinking. */
+  function isIdleAbort(err: unknown): boolean {
+    return isClientAbortError(err);
   }
 
   try {
@@ -468,7 +594,11 @@ export async function analyseFullGraphWithLlm(result: AssistantAnalysisResult, s
     let detail = "";
     // Start with a budget large enough for a reasoning model's chain-of-thought
     // plus the structured JSON answer, so content is not truncated mid-JSON.
-    const attempts = [8000, 16000, 32000];
+    // Reasoning models (deepseek-v4/glm flash) burn output tokens on CoT first,
+    // so 8k would be consumed before reaching the answer. GLM-5.3-flash used
+    // ~16k on thinking alone, so start high enough to avoid a wasted rung;
+    // escalate 32k→64k→128k when the model needs even more room.
+    const attempts = [32000, 64000, 128000];
     let useStream = Boolean(onEvent);
     for (const maxTokens of attempts) {
       if (useStream) {
@@ -476,8 +606,22 @@ export async function analyseFullGraphWithLlm(result: AssistantAnalysisResult, s
           const r = await streamAttempt(maxTokens);
           content = r.content;
           thinking = r.thinking;
-          detail = r.finishReason ? `finish_reason=${r.finishReason}` : "empty stream";
+          if (r.salvaged) {
+            // Partial content already carries a valid JSON answer; accept it.
+            detail = "salvaged partial stream";
+          } else {
+            detail = r.finishReason ? `finish_reason=${r.finishReason}` : "empty stream";
+          }
         } catch (err) {
+          // Idle/abort = the provider went silent (model cut mid-think): escalate
+          // to the next token rung with a fresh stream instead of burning time on
+          // a non-stream request that would face the same provider pauses.
+          if (isIdleAbort(err)) {
+            console.warn(`[assistant/analyze] stream idle/timeout (${err instanceof Error ? err.message : String(err)}); escalating to next maxTokens`);
+            continue;
+          }
+          // Hard errors (HTTP, gateway connection, provider down): one non-stream
+          // fallback attempt for this rung.
           console.warn(`[assistant/analyze] streaming failed (${err instanceof Error ? err.message : String(err)}); falling back to non-streaming`);
           useStream = false;
           const r = await nonStreamAttempt(maxTokens);
@@ -501,6 +645,31 @@ export async function analyseFullGraphWithLlm(result: AssistantAnalysisResult, s
       );
     }
     const parsed = parseModelReply(content.trim());
+    // The model may ask clarifying questions instead of returning cards (the
+    // prompt allows {"questions":["…"]} unless clarification is off). When the
+    // user has NOT yet answered (first pass), surface the questions and stop;
+    // on the second pass (answers provided) any stray questions are ignored.
+    const rawQuestions = parsed.payload?.questions;
+    const questions = Array.isArray(rawQuestions)
+      ? rawQuestions.filter((q): q is string => typeof q === "string" && Boolean(q.trim())).map((q) => q.trim().slice(0, 500)).slice(0, 4)
+      : [];
+    const canClarify = clarification?.mode !== "off" && !viaClarification;
+    if (canClarify && questions.length > 0) {
+      const reasoningText = asTrimmedString(parsed.payload?.summary, MAX_NARRATIVE_CHARS)
+        ?? "LLM needs clarifications before it can produce confident hypotheses.";
+      onEvent?.({ type: "questions", questions });
+      console.log(`[assistant/analyze] model requested ${questions.length} clarifications (thinking=${thinking.length} chars)`);
+      const llm: AssistantLlmState = {
+        requested: true,
+        used: true,
+        narrative: reasoningText,
+        ...(thinking ? { thinking: thinking.slice(0, MAX_NARRATIVE_CHARS) } : {}),
+        questionSet: questions,
+        needClarification: true,
+        durationMs: Date.now() - startedAt,
+      };
+      return { ...result, findings: result.findings, diagnostics: [...result.diagnostics, `LLM analysis requested user clarifications before producing hypotheses.`], llm };
+    }
     const findings = buildLlmFindings(parsed.payload, scopedSnapshot, result.mode);
     console.log(`[assistant/analyze] content=${content.length} chars, thinking=${thinking.length} chars, parsePayload=${parsed.payload ? "ok" : "null"}, findings=${findings.length}, narrative=${parsed.narrative.length} chars`);
     if (findings.length === 0) console.warn(`[assistant/analyze] model returned no hypotheses; content head: ${content.slice(0, 300)}`);
@@ -546,10 +715,15 @@ function sanitizeCardUpdate(patch: AssistantFindingPatch | null | undefined): As
   }
   if (typeof patch.status === "string" && (ASSISTANT_STATUSES as readonly string[]).includes(patch.status)) cleaned.status = patch.status as AssistantFindingPatch["status"];
   if (typeof patch.confidenceLevel === "string" && (ASSISTANT_CONFIDENCE as readonly string[]).includes(patch.confidenceLevel)) cleaned.confidenceLevel = patch.confidenceLevel as AssistantFindingPatch["confidenceLevel"];
-  const cleanUuids = (list: unknown): string[] | undefined =>
-    Array.isArray(list) ? [...new Set(list.filter((u): u is string => typeof u === "string" && u.length > 0))] : undefined;
-  const cleanNets = (list: unknown): number[] | undefined =>
-    Array.isArray(list) ? [...new Set(list.filter((n): n is number => typeof n === "number" && Number.isFinite(n)))] : undefined;
+  const cleanUuids = (list: unknown): string[] | undefined => {
+    if (typeof list === "string" && list.trim()) return [list.trim()];
+    return Array.isArray(list) ? [...new Set(list.filter((u): u is string => typeof u === "string" && u.length > 0))] : undefined;
+  };
+  const cleanNets = (list: unknown): number[] | undefined => {
+    if (typeof list === "number" && Number.isFinite(list)) return [list];
+    if (typeof list === "string" && /^\d+$/.test(list.trim())) return [Number(list.trim())];
+    return Array.isArray(list) ? [...new Set(list.filter((n): n is number => typeof n === "number" && Number.isFinite(n)))] : undefined;
+  };
   const addDevices = cleanUuids(patch.addDeviceUuids); if (addDevices) cleaned.addDeviceUuids = addDevices;
   const removeDevices = cleanUuids(patch.removeDeviceUuids); if (removeDevices) cleaned.removeDeviceUuids = removeDevices;
   const addNets = cleanNets(patch.addNetIds); if (addNets) cleaned.addNetIds = addNets;
@@ -625,7 +799,10 @@ export async function discussFindingWithLlm(
 
   const useLvs = Boolean(toolFlags?.lvs);
   const useVision = Boolean(toolFlags?.vision);
-  const useTools = useLvs || useVision;
+  // Tools are always offered: mmochip_card_update is essential for the workflow
+  // (LVS/vision are optional and gated inside buildExtra). So the tool loop runs
+  // even when neither LVS nor vision are enabled.
+  const useTools = true;
   const useStreaming = Boolean(onEvent);
 
   let lvsGroupHint = "";
@@ -655,7 +832,7 @@ export async function discussFindingWithLlm(
   ].join("\n");
 
   const cardUpdateRules = [
-    "CARD UPDATE CONTRACT: cardUpdate must be a SINGLE JSON object with these fields. Rules:",
+    "CARD UPDATE CONTRACT: to change the finding card you MUST call the mmochip_card_update function tool with arguments { reply, cardUpdate }. This is the ONLY reliable way — the UI applies the update from the tool's arguments, never from prose. Never write 'I updated the card' in reply without issuing the tool call, and never describe a card change in prose alone. Rules:",
     "  1. kind is FREE-FORM — name the functional block what it actually is, in lowercase snake_case (e.g. \"vco\", \"bandgap_reference\", \"wilson_mirror\", \"ldo_error_amplifier\", \"current_sense\"). Do not invent a fake status; if unsure, prefer keeping the existing kind (omit the field). Example kinds you may reuse: bandgap_precursor, bjt_current_mirror, differential_pair, ldo_error_amplifier_feedback, resistor_divider, protection_clamp, positive_feedback_loop.",
     `  2. status must be one of: ${ASSISTANT_STATUSES.join(", ")}.`,
     `  3. confidenceLevel must be one of: ${ASSISTANT_CONFIDENCE.join(", ")}.`,
@@ -665,7 +842,7 @@ export async function discussFindingWithLlm(
     "  7. label should be short and descriptive. assistantComment summarizes the reasoning in the discussion language.",
     "  8. limitations and suggestedChecks are arrays of strings; recommended 2-5 items each.",
     "  9. If carrying an unsure kind/status/confidence, prefer a LESS sure value (e.g. candidate/needs_verification) over fabricating verification.",
-    "Respond with the SINGLE JSON object and nothing else: {\"reply\": \"<your question/explanation to the user>\", \"cardUpdate\": null | { \"label\": string, \"kind\": string, \"status\": \"verified_topology\"|\"candidate\"|\"needs_verification\", \"confidenceLevel\": \"high\"|\"medium\"|\"low\", \"addDeviceUuids\": string[], \"removeDeviceUuids\": string[], \"addNetIds\": number[], \"removeNetIds\": number[], \"assistantComment\": string, \"limitations\": string[], \"suggestedChecks\": string[] }}.",
+    "If function tools are unavailable from your provider, fall back to returning exactly this JSON object in your reply text: {\"reply\": \"<your question/explanation to the user>\", \"cardUpdate\": null | { \"label\": string, \"kind\": string, \"status\": \"verified_topology\"|\"candidate\"|\"needs_verification\", \"confidenceLevel\": \"high\"|\"medium\"|\"low\", \"addDeviceUuids\": string[], \"removeDeviceUuids\": string[], \"addNetIds\": number[], \"removeNetIds\": number[], \"assistantComment\": string, \"limitations\": string[], \"suggestedChecks\": string[] }} — otherwise ALWAYS use the tool call. When using the tool, the visible reply text is the arguments.reply value; keep content short.",
   ].join("\n");
 
   const systemPrompt = [
@@ -678,14 +855,14 @@ export async function discussFindingWithLlm(
     `Write in ${brief.language === "en" ? "English" : "Russian"}.`,
     ...briefContextLines(brief),
     currentCardText,
-    "When you reach a conclusion that would CHANGE the card (newly identified elements, a revised explanation, or a changed confidence/status), set cardUpdate to the proposed NEW card and write the reply as a clear question asking the user to confirm applying it (the user clicks Apply/Reject in the UI).",
+    "When you reach a conclusion that would CHANGE the card (newly identified elements, a revised explanation, or a changed confidence/status), use the mmochip_card_update tool to propose the NEW card and write the reply as a clear question asking the user to confirm applying it (the user clicks Apply/Reject in the UI).",
     cardUpdateRules,
-    "Use cardUpdate only when you actually want to change the card; otherwise set it to null. Do not wrap the JSON in markdown code fences. The reply field always contains your natural-language message shown to the user.",
+    "Use the tool (or cardUpdate) only when you actually want to change the card; otherwise pass cardUpdate: null. The reply field always contains your natural-language message shown to the user.",
     useLvs
       ? `You have access to the mmochip_lvs_check tool. CALL it (do not merely describe calling it) whenever the user asks to verify a subcircuit, confirm a topology, or check whether the selected devices match a known building block — and also proactively when you have proposed what functional block a set of devices forms and can now verify it. Pass the finding's device UUIDs (from the netlist's "uuid" fields) as deviceUuids. You may also pass topologies (array of group names from the list below) to narrow the search to relevant groups, budget (default 50) to control how many cells are checked, and tolerance (default 3) to adjust structural strictness. After the tool returns results, summarise the match: which reference topology it matched (or the closest near-miss with its extra/missing devices) and what that implies. Never state "I will run the check" without actually issuing the tool call.${lvsGroupHint}`
       : "LVS verification is currently disabled for this session; reason about topology from the netlist only and tell the user they can enable 'LVS reference library' in settings to let you verify against known cells.",
     useVision
-      ? `You have access to the mmochip_vision tool. CALL it to visually inspect device crops from the die image when you need to confirm a transistor type, check terminal placement, or compare similar devices. Pass the device UUIDs (from the netlist's "uuid" fields) as deviceUuids. The tool returns a cell crop image with the device name and terminal labels (C/B/E or D/G/S) drawn on it, plus a per-cell netlist. Use this proactively when your hypothesis depends on visual verification — for example if you suspect a PNP should be NPN, call mmochip_vision on both devices to compare. Never state "I will look at the image" without actually issuing the tool call.${snapshot.overlayLayers?.length ? ` You may also pass layerName to request a specific layer. Available layers: base image (id: __base__), ${snapshot.overlayLayers.map((l) => `${l.name} (id: ${l.id})`).join(", ")}.` : " Pass layerName='__base__' for the raw die photo."}`
+      ? `You have access to the mmochip_vision tool. CALL it to visually inspect device crops from the die image when you need to confirm a transistor type, check terminal placement, or compare similar devices. Pass the device UUIDs (from the netlist's "uuid" fields) as deviceUuids. The tool returns a cell crop image with the device name and terminal labels (C/B/E or D/G/S) drawn on it, plus a per-cell netlist. Use this proactively when your hypothesis depends on visual verification — for example if you suspect a PNP should be NPN, call mmochip_vision on both devices to compare. Never state "I will look at the image" without actually issuing the tool call.${overlayLayerNameHint(snapshot.overlayLayers)} The layerName parameter selects which die image is shown. Layer naming convention: metal layers usually contain "me"/"metal" plus a metallization number (me1, metal1, metal 2…); semiconductor/diffusion layers are often named diffusion, si, polysi, poly; developed diffusion regions may be named hf, sirtl and similar. The die has a base image (the single raw photograph, id __base__) and overlay images for the remaining layers. You may ask the user which image a name corresponds to if a layer name is not self-explanatory. Request a metal layer to check whether device terminals really are connected, or a diffusion layer to compare whether two transistors look structurally similar by their diffusion regions.`
       : "Visual device inspection is currently disabled; reason about device types from the netlist geometry and model names only.",
   ].join("\n");
 
@@ -711,13 +888,13 @@ export async function discussFindingWithLlm(
 
   async function doFetch(extra: Record<string, unknown> = {}): Promise<Response> {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), timeoutMs);
+    const timeout = setTimeout(() => controller.abort(), attemptTimeoutMs(32000, timeoutMs));
     try {
       return await fetch(`${baseUrlResolved.replace(/\/$/, "")}/chat/completions`, {
         method: "POST",
         signal: controller.signal,
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKeyResolved}` },
-        body: JSON.stringify({ model: modelResolved, max_tokens: 8000, messages: chatMessages, ...extra }),
+        body: JSON.stringify({ model: modelResolved, max_tokens: 32000, messages: chatMessages, ...extra }),
       });
     } finally {
       clearTimeout(timeout);
@@ -763,15 +940,20 @@ export async function discussFindingWithLlm(
   } as const;
 
   // ── LLM tool: inspect device crops visually ──
-  const overlayLayerList = snapshot.overlayLayers?.length
-    ? ` Available layers (pass the name or id): base image (id: __base__), ${snapshot.overlayLayers.map((l) => `${l.name} (id: ${l.id})`).join(", ")}.`
-    : " Available layer: base image (id: __base__).";
+  const overlayLayerNames = snapshot.overlayLayers?.length
+    ? snapshot.overlayLayers.map((l) => l.name)
+    : [];
+  const overlayLayerIds = snapshot.overlayLayers?.length
+    ? snapshot.overlayLayers.map((l) => l.id)
+    : [];
+  const layerExample = overlayLayerNames.slice(0, 3).join("', '");
+  const layerEnum = [...new Set(["__base__", ...overlayLayerIds, ...overlayLayerNames])].slice(0, 30);
   const VISION_TOOL = {
     type: "function",
     function: {
       name: "mmochip_vision",
       description:
-        `Request a visual crop of one or more devices from the die image. Returns the cell crop with the device name and terminal labels (C/B/E or D/G/S) drawn on it, plus a per-cell netlist for context. Use this when you need to visually inspect a device's physical layout — for example to confirm a transistor type, check terminal placement, or compare similar devices.${overlayLayerList} By default, the crop shows the topmost visible overlay layer (what the user currently sees). Use the optional layerName parameter to request a specific layer instead. Pass "__base__" or "base image" for the raw die photo without overlays.`,
+        `Request a visual crop of one or more devices from the die image. Returns the cell crop with the device name and terminal labels (C/B/E or D/G/S) drawn on it, plus a per-cell netlist for context. Use this when you need to visually inspect a device's physical layout — for example to confirm a transistor type, check terminal placement, or compare similar devices.${overlayLayerNameHint(snapshot.overlayLayers)} By default, the crop shows the topmost visible overlay layer (what the user currently sees). Use the optional layerName parameter to request a specific layer instead. Layer naming convention: metal layers usually contain "me"/"metal" plus a metallization number (e.g. me1, metal1, metal 2); semiconductor/diffusion layers are often named diffusion, si, polysi, poly; developed diffusion regions may be named hf, sirtl and similar. The die has one base image (the raw die photograph, id "__base__") and overlay images for every other layer. If a layer name is ambiguous, ask the user which image it corresponds to. Request a metal layer when you need to verify whether device terminals are actually connected, or a diffusion/poly layer when comparing whether two transistors are structurally similar by their diffusion regions. Pass "__base__" or "base image" for the raw die photo without overlays.`,
       parameters: {
         type: "object",
         properties: {
@@ -782,10 +964,48 @@ export async function discussFindingWithLlm(
           },
           layerName: {
             type: "string",
-            description: "Layer to show — pass '__base__' for raw die photo, or a layer name/id (e.g. 'Si', 'sirtl', 'lm2937_stud'). If omitted, uses the topmost visible layer.",
+            description: `Layer to show. Pass '__base__' or 'base image' for the raw die photo, or one of the available layer ids/names${layerExample ? ` (e.g. '${layerExample}')` : ""}. If omitted, uses the topmost visible layer.`,
+            ...(layerEnum.length ? { enum: layerEnum } : {}),
           },
         },
         required: ["deviceUuids"],
+      },
+    },
+  } as const;
+
+  // ── LLM tool: propose updating the finding card (reliable, structured) ──
+  const CARD_UPDATE_TOOL = {
+    type: "function",
+    function: {
+      name: "mmochip_card_update",
+      description:
+        "Propose a structured update to the finding card (label, kind, status, confidence, devices/nets to add or remove, explanation). Call this tool whenever you conclude the card should change — the UI will show the proposed update so the user can confirm. Pass the natural-language reply to show the user in the reply field, and the card changes in cardUpdate. cardUpdate must be a single object; omit fields that should not change; addDeviceUuids/addNetIds are additive, removeDeviceUuids/removeNetIds are subtractive.",
+      parameters: {
+        type: "object",
+        properties: {
+          reply: {
+            type: "string",
+            description: "Natural-language message shown to the user (the discussion reply). Ask the user to confirm the proposed card update.",
+          },
+          cardUpdate: {
+            type: "object",
+            description: "The new card fields. Only include fields to change. Omit unchanged fields.",
+            properties: {
+              label: { type: "string", description: "Short descriptive card title." },
+              kind: { type: "string", description: "Free-form functional block name, lowercase snake_case (e.g. bandgap_reference, wilson_mirror)." },
+              status: { type: "string", enum: [...ASSISTANT_STATUSES], description: `One of: ${ASSISTANT_STATUSES.join(", ")}.` },
+              confidenceLevel: { type: "string", enum: [...ASSISTANT_CONFIDENCE], description: `One of: ${ASSISTANT_CONFIDENCE.join(", ")}.` },
+              addDeviceUuids: { type: "array", items: { type: "string" }, description: "Device UUIDs to ADD to the card (not already on it)." },
+              removeDeviceUuids: { type: "array", items: { type: "string" }, description: "Device UUIDs to REMOVE from the card." },
+              addNetIds: { type: "array", items: { type: "number" }, description: "Net IDs to ADD to the card." },
+              removeNetIds: { type: "array", items: { type: "number" }, description: "Net IDs to REMOVE from the card." },
+              assistantComment: { type: "string", description: "Reasoning summary in the discussion language." },
+              limitations: { type: "array", items: { type: "string" }, description: "Known limitations; 2-5 items recommended." },
+              suggestedChecks: { type: "array", items: { type: "string" }, description: "Next verification steps; 2-5 items recommended." },
+            },
+          },
+        },
+        required: ["reply", "cardUpdate"],
       },
     },
   } as const;
@@ -874,7 +1094,7 @@ export async function discussFindingWithLlm(
 
   const buildExtra = (withTools: boolean): Record<string, unknown> => {
     if (!withTools) return {};
-    const tools: unknown[] = [];
+    const tools: unknown[] = [CARD_UPDATE_TOOL];
     if (useLvs) tools.push(LVS_TOOL);
     if (useVision) tools.push(VISION_TOOL);
     return { tools, tool_choice: "auto" };
@@ -891,8 +1111,10 @@ export async function discussFindingWithLlm(
         apiKey: apiKeyResolved,
         model: modelResolved,
         messages: chatMessages as unknown[],
-        maxTokens: 8000,
-        timeoutMs,
+        maxTokens: 32000,
+        // Streaming idle timeout (independent of wall-clock): keep giving a
+        // reasoning model all the time it needs while tokens keep flowing.
+        timeoutMs: llmStreamIdleMs(),
         extra: buildExtra(withTools),
         onDelta: (delta) => {
           if (delta.content) onEvent?.({ type: "token", content: delta.content });
@@ -925,17 +1147,33 @@ export async function discussFindingWithLlm(
     };
   }
 
-  // Tool loop: if the model requested mmochip_lvs_check or mmochip_vision, run
-  // it and feed the result back, then ask for the final natural-language reply.
-  // Bounded by MAX_TOOL_ITERS. If the model never uses tools, this collapses
-  // to one call.
+  // Tool loop: if the model requested mmochip_lvs_check, mmochip_vision or
+  // mmochip_card_update, run it and feed the result back, then ask for the final
+  // natural-language reply. mmochip_card_update is TERMINAL: its arguments carry
+  // the final {reply, cardUpdate}, so we grab it and stop without another call.
+  // Bounded by MAX_TOOL_ITERS. If the model never uses tools, this collapses to
+  // one call.
   let lastContent = "";
   let toolIterations = 0;
   const lvsResults: Array<AssistantLvsCheckResponse["data"]> = [];
+  let terminalCardUpdate: AssistantFindingPatch | null = null;
   while (toolIterations <= MAX_TOOL_ITERS) {
-    const { content, toolCalls } = await callLlm(useTools && toolCallCount === 0);
+    const { content, toolCalls } = await callLlm(useTools);
     const lvsCall = toolCalls.find((tc) => tc.name === "mmochip_lvs_check");
     const visionCall = toolCalls.find((tc) => tc.name === "mmochip_vision");
+    const cardUpdateCall = toolCalls.find((tc) => tc.name === "mmochip_card_update");
+
+    // Terminal: card_update brings the final reply + cardUpdate. Use its args.
+    if (cardUpdateCall) {
+      try {
+        const args = JSON.parse(cardUpdateCall.arguments || "{}") as { reply?: unknown; cardUpdate?: AssistantFindingPatch | null };
+        lastContent = typeof args.reply === "string" && args.reply.trim() ? args.reply.trim() : content;
+        terminalCardUpdate = sanitizeCardUpdate(args.cardUpdate);
+      } catch {
+        lastContent = content;
+      }
+      break;
+    }
 
     if ((!lvsCall && !visionCall) || toolIterations >= MAX_TOOL_ITERS) {
       lastContent = content;
@@ -1007,16 +1245,36 @@ export async function discussFindingWithLlm(
   const content = lastContent.trim();
   if (!content) throw new Error("LLM returned empty content");
   let reply = content;
-  let cardUpdate: AssistantFindingPatch | null = null;
-  if (content.startsWith("{")) {
-    try {
-      const parsed = JSON.parse(content) as { reply?: unknown; cardUpdate?: AssistantFindingPatch | null };
-      if (typeof parsed.reply === "string") reply = parsed.reply.trim();
+  // Prefer a cardUpdate delivered via the mmochip_card_update tool call (reliable,
+  // structured). Otherwise try to lift {reply, cardUpdate} out of the reply text —
+  // tolerant of prose prefixes and ```json fences, not just a bare leading `{`.
+  let cardUpdate: AssistantFindingPatch | null = terminalCardUpdate;
+  if (!cardUpdate) {
+    const parsed = extractReplyCardUpdate(content);
+    if (parsed) {
+      if (typeof parsed.reply === "string" && parsed.reply.trim()) reply = parsed.reply.trim();
       if (parsed.cardUpdate && typeof parsed.cardUpdate === "object") cardUpdate = sanitizeCardUpdate(parsed.cardUpdate);
-    } catch {
-      // Not JSON; treat the whole content as the natural-language reply.
     }
   }
   console.log(`[assistant/discuss] done in ${Date.now() - startedAt}ms${cardUpdate ? " (cardUpdate)" : ""}${toolCallCount ? ` (lvs tool calls: ${toolCallCount})` : ""}`);
   return { reply, durationMs: Date.now() - startedAt, cardUpdate, lvsResults: lvsResults.length ? lvsResults : undefined };
+}
+
+/**
+ * Lift a {reply, cardUpdate} object out of a model answer, tolerating prose
+ * prefixes and ```json fences (mirrors parseModelReply's robustness for the
+ * discussion JSON shape). Returns null when no object can be parsed.
+ */
+function extractReplyCardUpdate(text: string): { reply?: unknown; cardUpdate?: unknown } | null {
+  const raw = text.trim();
+  const fence = /```json\s*([\s\S]*?)\s*```/i.exec(raw);
+  const braces = raw.includes("{") ? raw.slice(raw.indexOf("{"), raw.lastIndexOf("}") + 1) : undefined;
+  const candidates = [fence?.[1], raw.startsWith("{") ? raw : undefined, braces && braces !== raw ? braces : undefined].filter((c): c is string => Boolean(c));
+  for (const candidate of candidates) {
+    try {
+      const obj = JSON.parse(candidate) as { reply?: unknown; cardUpdate?: unknown };
+      if (obj && typeof obj === "object") return obj;
+    } catch { /* try the next candidate */ }
+  }
+  return null;
 }

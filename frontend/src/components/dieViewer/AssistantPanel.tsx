@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, useCallback, type CSSProperties } from "react";
 import { createPortal } from "react-dom";
-import type { AnalogDevice, AssistantAnalysisBrief, AssistantAnalysisMode, AssistantChatMessage, AssistantConfidenceLevel, AssistantFinding, AssistantFindingKind, AssistantFindingPatch, AssistantFindingStatus, AssistantLlmConfig, AssistantLvsCheckResponse, AssistantLvsLibrarySummary, AssistantLvsMatch, AssistantToolUseEvent, DieAnnotations, FloorplanRegion } from "shared";
+import type { AnalogDevice, AssistantAnalysisBrief, AssistantAnalysisMode, AssistantChatMessage, AssistantClarificationMode, AssistantConfidenceLevel, AssistantFinding, AssistantFindingKind, AssistantFindingPatch, AssistantFindingStatus, AssistantLlmConfig, AssistantLvsCheckResponse, AssistantLvsLibrarySummary, AssistantLvsMatch, AssistantToolUseEvent, DieAnnotations, FloorplanRegion } from "shared";
 import { addLvsCell, analyseAssistantCircuitStream, checkAssistantLvsStream, discussFindingStream, listAssistantLvsLibraries } from "../../api/assistantAnalysis";
 import { ApiError } from "../../api/client";
 import { LvsMatchCard } from "./LvsMatchCard";
@@ -64,6 +64,8 @@ export function AssistantPanel({ dieId, annotations, devices, netNames, warnings
   const llmProvider = usePreferences((state) => state.llmProvider);
   const assistantDataFlags = usePreferences((state) => state.assistantDataFlags);
   const assistantMaxHypotheses = usePreferences((state) => state.assistantMaxHypotheses);
+  const assistantClarificationMode = usePreferences((state) => state.assistantClarificationMode);
+  const setAssistantClarificationMode = usePreferences((state) => state.setAssistantClarificationMode);
   const brief = session?.brief ?? emptyBrief;
   const result = session?.result ?? null;
   const mode: AssistantAnalysisMode = session?.mode ?? result?.mode ?? "functional_blocks";
@@ -72,6 +74,11 @@ export function AssistantPanel({ dieId, annotations, devices, netNames, warnings
   const [error, setError] = useState<string | null>(null);
   const [streamThinking, setStreamThinking] = useState<string | null>(null);
   const [streamTokens, setStreamTokens] = useState(0);
+  const lastRunScope = useRef<"selected" | "die">("die");
+  const [streamActivityAt, setStreamActivityAt] = useState<number>(0);
+  const [nowTick, setNowTick] = useState(0);
+  const [pendingQuestions, setPendingQuestions] = useState<string[] | null>(null);
+  const [clarificationAnswersText, setClarificationAnswersText] = useState("");
   const [selectedRegionId, setSelectedRegionId] = useState<string | null>(null);
   const [openThreadId, setOpenThreadId] = useState<string | null>(null);
   const [lvsEnabled, setLvsEnabled] = useState(true);
@@ -189,8 +196,6 @@ export function AssistantPanel({ dieId, annotations, devices, netNames, warnings
 
         const images: string[] = [];
         const deviceNames: string[] = [];
-        // Prefer the model's requested layer name; fall back to visible layer.
-        let layerName: string | undefined = req.layerName ?? undefined;
         // Resolve overlay: use requested layer name if provided, else top visible
         // __base__ / "base image" → undefined (no overlay, raw die photo)
         const requestedLayerSourceId = req.layerName ? resolveLayerNameToSourceId(req.layerName) : undefined;
@@ -201,7 +206,14 @@ export function AssistantPanel({ dieId, annotations, devices, netNames, warnings
             overlayLayers.map((l) => `${l.name} (id: ${l.id})`).join(", ") || "none");
         }
         const overlaySourceId = isBaseRequest ? undefined : (requestedLayerSourceId ?? topVisibleOverlaySourceId());
-        console.log(`[vision] request ${req.requestId}: layerName=${req.layerName ?? "(none)"}, overlaySourceId=${overlaySourceId ?? "(none)"}, devices=${req.devices.length}`);
+        // The layer we will actually composite into the crop — reported back so the
+        // backend can tell the model when its requested layer was unavailable.
+        const resolvedLayerName = isBaseRequest
+          ? "__base__"
+          : requestedLayerSourceId
+            ? (overlayLayersRaw.find((l) => (l.serverFilename ?? l.id) === requestedLayerSourceId)?.name ?? requestedLayerSourceId)
+            : getTopVisibleLayerName();
+        console.log(`[vision] request ${req.requestId}: layerName=${req.layerName ?? "(none)"}, overlaySourceId=${overlaySourceId ?? "(none)"}, resolvedLayer=${resolvedLayerName}, devices=${req.devices.length}`);
         const devicesWithPoints = devices as Array<AnalogDevice & { _termPoints?: Array<{ x: number; y: number; name: string }>; _cellId?: string }>;
         for (const devInfo of req.devices) {
           const dev = devicesWithPoints.find((d) => (d as any)._uuid === devInfo.uuid || d.id === devInfo.uuid);
@@ -213,15 +225,14 @@ export function AssistantPanel({ dieId, annotations, devices, netNames, warnings
           if (result) {
             images.push(result.image);
             deviceNames.push(dev.instanceName ?? devInfo.instanceName);
-            if (!layerName && result.layerName) layerName = result.layerName;  // only fill if still unset
           }
         }
 
-        // Send rendered images + layer name back to the backend for the LLM
+        // Send rendered images + the layer actually shown back to the backend for the LLM
         await fetch(`/api/dies/${encodeURIComponent(dieId)}/assistant/vision-result/${encodeURIComponent(req.requestId)}`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ images, layerName }),
+          body: JSON.stringify({ images, layerName: resolvedLayerName }),
         });
 
         // Only now mark the request as processed — after images are sent so the backend
@@ -238,7 +249,7 @@ export function AssistantPanel({ dieId, annotations, devices, netNames, warnings
               deviceUuids: req.deviceUuids,
               deviceNames,
               images,
-              layerName,
+              layerName: resolvedLayerName,
             },
           });
         }
@@ -254,20 +265,30 @@ export function AssistantPanel({ dieId, annotations, devices, netNames, warnings
     return () => clearInterval(interval);
   }, [visionEnabled, pollVision]);
 
+  // Refresh the "last activity Xs ago" indicator while an analysis streams.
+  useEffect(() => {
+    if (!loading) return;
+    const interval = setInterval(() => setNowTick((t) => t + 1), 1000);
+    return () => clearInterval(interval);
+  }, [loading]);
+
   const updateBrief = (key: keyof AssistantAnalysisBrief, value: string) => {
     setBriefForDie(dieId, { ...brief, [key]: value || undefined });
   };
 
-  const run = async (scope: "selected" | "die", nextMode: AssistantAnalysisMode = mode) => {
+  const run = async (scope: "selected" | "die", nextMode: AssistantAnalysisMode = mode, clarificationAnswers?: string[]) => {
     if (!annotations || !canAnalyse) return;
     if (scope === "selected" && regionDevices.length === 0) {
       setError("Select a floorplan region first, then use Analyze selected.");
       return;
     }
+    lastRunScope.current = scope;
     setLoading(true);
     setError(null);
     setStreamThinking(null);
     setStreamTokens(0);
+    setStreamActivityAt(Date.now());
+    setNowTick(0);
     setModeForDie(dieId, nextMode);
     try {
       const next = await analyseAssistantCircuitStream(dieId, {
@@ -284,12 +305,37 @@ export function AssistantPanel({ dieId, annotations, devices, netNames, warnings
         llmConfig: llmProvider,
         overlayLayers,
         assistantDataFlags,
+        clarificationMode: assistantClarificationMode,
+        clarificationAnswers,
       }, {
         onEvent: (ev) => {
-          if (ev.type === "thinking") setStreamThinking((prev) => (prev ?? "") + (ev.content ?? ""));
-          else if (ev.type === "token") setStreamTokens((prev) => prev + 1);
+          if (ev.type === "thinking") {
+            setStreamThinking((prev) => (prev ?? "") + (ev.content ?? ""));
+            setStreamActivityAt(Date.now());
+          } else if (ev.type === "token") {
+            setStreamTokens((prev) => prev + 1);
+            setStreamActivityAt(Date.now());
+          } else if (ev.type === "questions") {
+            setPendingQuestions(ev.questions ?? []);
+            setClarificationAnswersText("");
+            setStreamActivityAt(Date.now());
+          } else if (ev.type === "heartbeat") {
+            // Keep liveness indicators fresh even when a reasoning model is
+            // silent for tens of seconds between token bursts.
+            setStreamActivityAt(Date.now());
+          }
         },
       });
+      // The model asked for input — the questions were streamed as an event and
+      // shown above; do NOT surface an empty result or clear pendingQuestions
+      // (run() is called again by the user after answering).
+      if (next.llm.needClarification && next.llm.questionSet?.length) {
+        setPendingQuestions(next.llm.questionSet);
+        setClarificationAnswersText("");
+        setResultForDie(dieId, next);
+        return;
+      }
+      setPendingQuestions(null);
       setResultForDie(dieId, next);
       const first = [...next.findings].sort((a, b) => b.confidence - a.confidence)[0] ?? null;
       onActivateFinding(first);
@@ -430,6 +476,18 @@ export function AssistantPanel({ dieId, annotations, devices, netNames, warnings
           <span>Allow the model to visually inspect device crops (mmochip_vision)</span>
         </label>
         <label style={{ display: "grid", gap: 3 }}>
+          <span style={{ color: "var(--ink3)", fontSize: 10 }}>Clarifying questions before analysis</span>
+          <select
+            value={assistantClarificationMode}
+            onChange={(event) => setAssistantClarificationMode(event.target.value as AssistantClarificationMode)}
+            style={{ font: "inherit", background: "var(--l1)", color: "#fff", border: "1px solid var(--l2)", borderRadius: 4, padding: "4px 6px" }}
+          >
+            <option value="off">Off — model answers directly</option>
+            <option value="auto">Auto — model may ask when unsure</option>
+            <option value="always">Always — model must ask first</option>
+          </select>
+        </label>
+        <label style={{ display: "grid", gap: 3 }}>
           <span style={{ color: "var(--ink3)", fontSize: 10 }}>LVS reference library (for "Check by LVS" and the model tool)</span>
           <select value={activeLib} onChange={(event) => setActiveLib(event.target.value)} style={{ font: "inherit", background: "var(--l1)", color: "#fff", border: "1px solid var(--l2)", borderRadius: 4, padding: "4px 6px" }}>
             {libraries.length === 0 && <option value={activeLib}>{activeLib} (not imported yet)</option>}
@@ -494,13 +552,67 @@ export function AssistantPanel({ dieId, annotations, devices, netNames, warnings
       {error && <div style={{ color: "var(--danger, #ed6a5e)", lineHeight: 1.35 }}>{error}</div>}
       {loading && (
         <div style={{ color: "var(--ink3)", fontSize: 10, lineHeight: 1.35, border: "1px solid var(--l2)", borderRadius: 4, padding: "5px 7px" }}>
-          <div>LLM is responding… {streamTokens} token{streamTokens === 1 ? "" : "s"}</div>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 6 }}>
+            <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
+              {(() => {
+                const idleSecs = streamActivityAt ? Math.max(0, Math.round((Date.now() - streamActivityAt) / 1000)) : 0;
+                return (
+                  <>
+                    <span
+                      key={nowTick}
+                      style={{
+                        display: "inline-block", width: 7, height: 7, borderRadius: "50%",
+                        background: idleSecs > 60 ? "var(--danger, #ed6a5e)" : "var(--warn, #e6b05b)",
+                        boxShadow: idleSecs <= 60 ? "0 0 0 0 rgba(230,176,91,.5)" : "none",
+                        animation: idleSecs <= 60 ? "mmpulse 1.6s infinite" : undefined,
+                      }}
+                    />
+                    LLM is responding… {streamTokens} token{streamTokens === 1 ? "" : "s"}
+                  </>
+                );
+              })()}
+            </span>
+            <span>{streamActivityAt ? `${Math.max(0, Math.round((Date.now() - streamActivityAt) / 1000))}s ago` : "…"}</span>
+          </div>
           {streamThinking && (
             <details open style={{ marginTop: 4 }}>
               <summary style={{ cursor: "pointer", color: "var(--ink2)" }}>LLM thinking (live)</summary>
               <div style={{ marginTop: 4, maxHeight: 140, overflowY: "auto", whiteSpace: "pre-wrap", wordBreak: "break-word", overflowWrap: "anywhere", fontFamily: "var(--mono)", fontSize: 9 }}>{streamThinking}</div>
             </details>
           )}
+        </div>
+      )}
+
+      {pendingQuestions && pendingQuestions.length > 0 && !loading && (
+        <div style={{ border: "1px solid var(--warn, #e6b05b)", borderRadius: 4, padding: "7px 9px", color: "var(--ink2)", lineHeight: 1.4, fontSize: 10 }}>
+          <div style={{ color: "var(--ink2)", marginBottom: 5 }}>The model needs a few clarifications before proposing cards. Please answer (by number):</div>
+          {pendingQuestions.map((q, i) => (
+            <div key={i} style={{ margin: "2px 0" }}>{i + 1}. {q}</div>
+          ))}
+          <textarea
+            value={clarificationAnswersText}
+            onChange={(event) => setClarificationAnswersText(event.target.value)}
+            placeholder={"1. …\n2. …\nor briefly describe the answers."}
+            rows={4}
+            style={{ resize: "vertical", font: "inherit", minHeight: 64, width: "100%", boxSizing: "border-box", background: "var(--l1)", color: "#fff", border: "1px solid var(--l2)", borderRadius: 4, padding: "5px 6px", marginTop: 5 }}
+          />
+          <div style={{ display: "flex", gap: 6, marginTop: 6 }}>
+            <button
+              className="btn"
+              type="button"
+              onClick={() => {
+                const answers = clarificationAnswersText.trim()
+                  ? clarificationAnswersText.split(/[\n;]/).map((a) => a.trim()).filter(Boolean).map((a) => a.replace(/^(\d+)[.:)]\s*/, ""))
+                  : [];
+                void run(lastRunScope.current, mode, answers);
+              }}
+            >
+              {clarificationAnswersText.trim() ? "Send answers & continue" : "Send (blank) & continue"}
+            </button>
+            <button className="btn ghost" type="button" onClick={() => void run(lastRunScope.current, mode, [])}>
+              Continue without answering
+            </button>
+          </div>
         </div>
       )}
 
@@ -850,9 +962,16 @@ function DiscussPopup({
     setInput("");
     const controller = new AbortController();
     controllerRef.current = controller;
-    // Safety net only — with streaming the connection stays alive while tokens
-    // flow, so a long reasoning model no longer trips the client timeout.
-    const hardTimeout = setTimeout(() => controller.abort(), 300_000);
+    // Idle safety-net only — with streaming the connection stays alive while
+    // tokens flow, so the client aborts only when the stream is silent for the
+    // full window (a long reasoning model that keeps streaming is never cut).
+    // The backend applies the same idle semantics (base ASSISTANT_LLM_TIMEOUT_MS).
+    let hardTimeout: ReturnType<typeof setTimeout> | null = null;
+    const armHardTimeout = () => {
+      if (hardTimeout) clearTimeout(hardTimeout);
+      hardTimeout = setTimeout(() => controller.abort(), 1_800_000);
+    };
+    armHardTimeout();
     try {
         const { reply, cardUpdate, lvsResults } = await discussFindingStream(dieId, {
         expectedRev,
@@ -882,6 +1001,8 @@ function DiscussPopup({
       }, {
         signal: controller.signal,
         onEvent: (ev) => {
+          // Any activity re-arms the idle safety net.
+          armHardTimeout();
           if (ev.type === "token") {
             streamingReplyRef.current += ev.content ?? "";
             setStreamingReply(displayableReply(streamingReplyRef.current));
@@ -893,7 +1014,9 @@ function DiscussPopup({
             // clear any preamble so the bubble shows the actual reply.
             streamingReplyRef.current = "";
             setStreamingReply("");
-            setStreamingTool(ev.tool === "mmochip_vision" ? "🔍 mmochip_vision — inspecting device crops…" : "🔬 mmochip_lvs_check — verifying against reference library…");
+            if (ev.tool === "mmochip_vision") setStreamingTool("🔍 mmochip_vision — inspecting device crops…");
+            else if (ev.tool === "mmochip_lvs_check") setStreamingTool("🔬 mmochip_lvs_check — verifying against reference library…");
+            else if (ev.tool === "mmochip_card_update") setStreamingTool("📋 mmochip_card_update — preparing card update…");
           } else if (ev.type === "tool_result") {
             setStreamingTool(null);
           }
@@ -916,7 +1039,8 @@ function DiscussPopup({
         setError(formatApiError(cause));
       }
     } finally {
-      clearTimeout(hardTimeout);
+      if (hardTimeout) clearTimeout(hardTimeout);
+      hardTimeout = null;
       controllerRef.current = null;
       setStreamingReply(null);
       setStreamingTool(null);

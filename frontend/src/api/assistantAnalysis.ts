@@ -12,6 +12,7 @@ import type {
   AssistantDiscussRequest,
   AssistantDiscussResponse,
   AssistantFindingPatch,
+  AssistantClarificationMode,
   AssistantLlmConfig,
   AssistantLvsCheckRequest,
   AssistantLvsCheckResponse,
@@ -66,6 +67,8 @@ function buildAnalyseRequest(
     requestLlmExplanation: input.requestLlmExplanation,
     llmConfig: input.llmConfig,
     assistantDataFlags: input.assistantDataFlags,
+    clarificationMode: input.clarificationMode,
+    clarificationAnswers: input.clarificationAnswers,
   };
 }
 
@@ -85,6 +88,8 @@ export async function analyseAssistantCircuit(
     llmConfig?: AssistantLlmConfig;
     overlayLayers?: Array<{ id: string; name: string }>;
     assistantDataFlags?: AssistantDataFlags;
+    clarificationMode?: AssistantClarificationMode;
+    clarificationAnswers?: string[];
   },
 ): Promise<AssistantAnalysisResult> {
   const response = await apiPost<AssistantAnalysisResponse>(
@@ -145,8 +150,9 @@ function buildDiscussRequest(
 // ── Streaming (SSE) client for analyse/discuss ──
 
 export interface AssistantStreamEvent {
-  type: "token" | "thinking" | "tool_start" | "tool_result" | "done" | "error";
+  type: "token" | "thinking" | "questions" | "tool_start" | "tool_result" | "done" | "error" | "heartbeat";
   content?: string;
+  questions?: string[];
   tool?: string;
   args?: unknown;
   ok?: boolean;

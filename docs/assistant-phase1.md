@@ -38,7 +38,35 @@ The model is allowed to return ordinary Russian Markdown prose. A prose-only ans
 
 Both the full-netlist analysis and the per-finding discussion stream their responses to the browser over Server-Sent Events: reasoning (`reasoning_content`) appears live in the UI while the model thinks, and the discussion reply text is rendered incrementally. This keeps long reasoning models (e.g. deepseek v4 flash, which can spend ~15k output tokens on chain-of-thought) responsive instead of blocking until the whole response is complete. If a provider does not support `stream: true`, the backend transparently falls back to a plain request.
 
-The server-side request timeout defaults to **300 seconds** per upstream call. It can be changed without source edits through `ASSISTANT_LLM_TIMEOUT_MS`, constrained to 10–300 seconds. The UI reports the measured backend request duration. A local timeout message includes the configured duration so it can be distinguished from an HTTP/provider error.
+Timeouts are **idle-based for streaming**: a stream request is aborted only when the provider stops sending chunks for longer than `ASSISTANT_LLM_STREAM_IDLE_MS` (default **15 minutes**). While the model keeps streaming tokens (content or `reasoning_content`), the timer resets, so a long reasoning model (e.g. deepseek v4 flash, glm-5.3-flash, which can spend ~14k–16k output tokens on chain-of-thought) is never cut off mid-answer. If a stream is dropped without reaching the JSON answer, the analysis escalates to the next max-tokens rung (32k→64k→128k) with a fresh stream; a **partially received JSON answer is salvaged** instead of discarded. Transient network/gateway failures ("terminated", fetch failed, ECONNRESET) are retried with backoff (client-side aborts — silence timeouts and wall-clock caps — are not retried). The plain-JSON fallback path (used only when a provider ignores `stream: true`) keeps a wall-clock timeout scaled with the max-tokens rung, capped at 30 minutes per attempt. Discussion uses 32k tokens. The browser applies the same idle rule to its safety-net abort. A local timeout message includes the configured duration so it can be distinguished from an HTTP/provider error.
+
+## Clarifying questions (analysis)
+
+A reasoning model deep in chain-of-thought can burn its whole token budget on
+re-verifying ambiguous data (e.g. an extracted net that looks like both an
+internal rail and a recognition artifact) without ever producing the JSON
+answer. The analysis prompt now allows the model to return
+`{"questions":["…","…"]}` (at most 4) instead of hypotheses when it is genuinely
+stuck, controlled by a global preference:
+
+- **Off** — the model must answer directly (default behaviour).
+- **Auto** — the model may ask a short clarification round only when truly
+  unsure; otherwise it produces cards straight away.
+- **Always** — one mandatory question round before the card-producing pass.
+
+The UI shows the questions (numbered) with a single textarea; the user answers
+by number or selects "Continue without answering". The second analysis call
+supplies `clarificationAnswers`, which are appended to the prompt as
+authoritative-but-not-overriding context; the prompt explicitly forbids asking
+again, and any stray `questions` on the second pass are ignored (no loop).
+
+## Per-finding discussion tools
+
+The per-finding discussion offers the model structured tools (delivered as OpenAI function calls). Tools are always offered: `mmochip_card_update` is always available so the model can reliably propose card changes; `mmochip_lvs_check` and `mmochip_vision` are enabled by the UI checkboxes.
+
+- **`mmochip_card_update`** — the reliable way to change a finding card. Its arguments carry the final `{ reply, cardUpdate }`, so the UI never has to parse prose: when the model says it is updating the card it MUST include this tool call (or a well-formed `cardUpdate` field in the JSON reply). The backend treats it as terminal — no further LLM call is needed.
+- **`mmochip_lvs_check`** — verifies a candidate subcircuit against the reference netlist library (`topologies`, `budget`, `tolerance` parameters).
+- **`mmochip_vision`** — renders device crops from the die image. The available overlay layers are listed BOTH in the user data (`AVAILABLE OVERLAY LAYERS`) and in the tool schema, with the layer-naming convention explained (metal layers `me1`/`metal 1`…, diffusion/poly layers `diffusion`/`si`/`poly`, developed diffusion `hf`/`sirtl`…). If the model requests a layer that is not resolvable, the frontend falls back to the topmost visible layer and the tool result tells the model explicitly which layer was actually shown.
 
 ## Server configuration
 
@@ -57,6 +85,7 @@ ASSISTANT_LLM_API_KEY
 ASSISTANT_LLM_BASE_URL
 ASSISTANT_LLM_MODEL
 ASSISTANT_LLM_TIMEOUT_MS
+ASSISTANT_LLM_STREAM_IDLE_MS
 ```
 
 ## Validation completed

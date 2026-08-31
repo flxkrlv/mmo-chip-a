@@ -642,6 +642,19 @@ input[type="range"] {
   }
 }
 
+/* Live-stream activity pulse (assistant LLM). */
+@keyframes mmpulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(230, 176, 91, 0.5);
+  }
+  70% {
+    box-shadow: 0 0 0 6px rgba(230, 176, 91, 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(230, 176, 91, 0);
+  }
+}
+
 /* Dark overrides (canvas-adjacent surfaces) */
 .dark .btn {
   background: #221f19;

@@ -127,10 +127,30 @@ export async function executeVisionTool(
 
   const deviceLabels = resolved.map((d) => `${d.instanceName} (${d.kind})`).join(", ");
   const layerInfo = layerName ? ` Visible layer: ${layerName}.` : "";
+  // If the model asked for a specific layer but a different one was actually
+  // shown (fallback to top-visible/base), say so explicitly so the model can
+  // adapt (request another layer, or ask the user which image it wants).
+  let layerNote = "";
+  if (args.layerName && layerName && !isSameLayer(args.layerName, layerName)) {
+    layerNote = `\nNote: you requested layer "${args.layerName}", but it is not available (or not resolvable) for this die; the crop was rendered using "${layerName}" instead. If you need "${args.layerName}", ask the user which image that name maps to, or retry with an exact id from the AVAILABLE OVERLAY LAYERS list in the system data.`;
+  } else if (args.layerName && !layerName) {
+    layerNote = `\nNote: you requested layer "${args.layerName}" but no layer information was returned; the crop was likely rendered from the topmost visible layer.`;
+  }
   const text = [
-    `Device crop(s) for ${deviceLabels} — rendered with device name and terminal labels (C/B/E or D/G/S).${layerInfo}`,
+    `Device crop(s) for ${deviceLabels} — rendered with device name and terminal labels (C/B/E or D/G/S).${layerInfo}${layerNote}`,
     netlistParts.join("\n\n"),
   ].filter(Boolean).join("\n\n");
 
   return { text, images, layerName };
+}
+
+/** Compare requested vs actually-shown layer names, tolerating alias spellings. */
+function isSameLayer(requested: string, shown: string): boolean {
+  const norm = (s: string) => s.trim().toLowerCase().replace(/[\s_-]+/g, "");
+  const r = norm(requested);
+  const s = norm(shown);
+  if (r === s) return true;
+  const baseAliases = new Set(["__base__", "base", "baseimage", "original", "raw"]);
+  if (baseAliases.has(r) && baseAliases.has(s)) return true;
+  return false;
 }

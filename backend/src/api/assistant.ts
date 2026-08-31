@@ -38,7 +38,10 @@ export function createAssistantRouter(config: { dataRoot: string }) {
       }
 
       const prepared = prepareAssistantSnapshot(dieId, annotations.rev, body);
-      const data = await analyseFullGraphWithLlm(prepared, body.circuit, body.llmConfig, body.assistantDataFlags);
+      const data = await analyseFullGraphWithLlm(prepared, body.circuit, body.llmConfig, body.assistantDataFlags, undefined, {
+        mode: body.clarificationMode,
+        answers: body.clarificationAnswers,
+      });
       response.json({ ok: true, data });
     } catch (error) {
       const reason = error instanceof Error ? error.message : "Unknown LLM error";
@@ -80,11 +83,23 @@ export function createAssistantRouter(config: { dataRoot: string }) {
       const sendEvent = (event: string, payload: unknown) => {
         try { response.write(`event: ${event}\ndata: ${JSON.stringify(payload)}\n\n`); } catch { /* client gone */ }
       };
+      // Keep the SSE connection visibly alive while the LLM streams slowly:
+      // reasoning models can pause for tens of seconds between token bursts.
+      const heartbeat = setInterval(() => sendEvent("heartbeat", {}), 10_000);
 
-      const data = await analyseFullGraphWithLlm(prepared, body.circuit, body.llmConfig, body.assistantDataFlags, (ev) => {
-        if (ev.type === "token") sendEvent("token", { content: ev.content });
-        else if (ev.type === "thinking") sendEvent("thinking", { content: ev.content });
-      });
+      const data = await analyseFullGraphWithLlm(
+        prepared,
+        body.circuit,
+        body.llmConfig,
+        body.assistantDataFlags,
+        (ev) => {
+          if (ev.type === "token") sendEvent("token", { content: ev.content });
+          else if (ev.type === "thinking") sendEvent("thinking", { content: ev.content });
+          else if (ev.type === "questions") sendEvent("questions", { questions: ev.questions });
+        },
+        { mode: body.clarificationMode, answers: body.clarificationAnswers },
+      );
+      clearInterval(heartbeat);
       sendEvent("done", { ok: true, data });
       response.end();
     } catch (error) {
@@ -168,6 +183,9 @@ export function createAssistantRouter(config: { dataRoot: string }) {
       const sendEvent = (event: string, payload: unknown) => {
         try { response.write(`event: ${event}\ndata: ${JSON.stringify(payload)}\n\n`); } catch { /* client gone */ }
       };
+      // Keep the SSE connection visibly alive while the LLM streams slowly:
+      // reasoning models can pause for tens of seconds between token bursts.
+      const heartbeat = setInterval(() => sendEvent("heartbeat", {}), 10_000);
 
       const { reply, durationMs, cardUpdate, lvsResults } = await discussFindingWithLlm(
         body.finding,
@@ -187,6 +205,7 @@ export function createAssistantRouter(config: { dataRoot: string }) {
           else if (ev.type === "tool_result") sendEvent("tool_result", { tool: ev.tool, ok: ev.ok, images: ev.images });
         },
       );
+      clearInterval(heartbeat);
       sendEvent("done", { ok: true, reply, durationMs, cardUpdate: cardUpdate ?? null, lvsResults: lvsResults ?? [] });
       response.end();
     } catch (error) {

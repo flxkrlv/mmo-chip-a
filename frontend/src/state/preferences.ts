@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import { persist, subscribeWithSelector } from "zustand/middleware";
-import type { AnnotationClass, AssistantDataFlags, AssistantLlmConfig, LayerType } from "shared";
+import type { AnnotationClass, AssistantClarificationMode, AssistantDataFlags, AssistantLlmConfig, LayerType } from "shared";
 import {
   CELL_COLOR,
   NET_COLOR,
@@ -185,6 +185,9 @@ interface PreferencesState {
   assistantDataFlags: AssistantDataFlags;
   /** Max number of hypothesis cards the full-graph model may return. */
   assistantMaxHypotheses: number;
+  /** May the assistant LLM ask the user clarifying questions before hypotheses?
+   *  off | auto | always — global default for all dies. */
+  assistantClarificationMode: AssistantClarificationMode;
 }
 
 interface PreferencesActions {
@@ -274,6 +277,7 @@ interface PreferencesActions {
   setLlmProvider: (config: AssistantLlmConfig) => void;
   setAssistantDataFlags: (flags: AssistantDataFlags) => void;
   setAssistantMaxHypotheses: (count: number) => void;
+  setAssistantClarificationMode: (mode: AssistantClarificationMode) => void;
 }
 
 const DEFAULT_EXPANDED_SECTIONS: AnnotationKind[] = ["net", "via", "roi"];
@@ -340,6 +344,7 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
         llmProvider: {},
         assistantDataFlags: { projectJson: true, textNetlist: false },
         assistantMaxHypotheses: 5,
+        assistantClarificationMode: "auto",
 
         setNetWidth: (width) => set({ netWidth: width }),
         setNetColor: (color) => set({ netColor: color }),
@@ -519,6 +524,7 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
         setLlmProvider: (config) => set({ llmProvider: config }),
         setAssistantDataFlags: (flags) => set({ assistantDataFlags: flags }),
         setAssistantMaxHypotheses: (count) => set({ assistantMaxHypotheses: count }),
+        setAssistantClarificationMode: (mode) => set({ assistantClarificationMode: mode }),
       }),
       {
         name: "mmo-chip-preferences",
@@ -580,7 +586,8 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
           overlayLayerSettings: state.overlayLayerSettings,
           llmProvider: state.llmProvider,
           assistantDataFlags: state.assistantDataFlags,
-          assistantMaxHypotheses: state.assistantMaxHypotheses
+          assistantMaxHypotheses: state.assistantMaxHypotheses,
+          assistantClarificationMode: state.assistantClarificationMode
         })
       }
     )

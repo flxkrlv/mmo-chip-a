@@ -1421,6 +1421,12 @@ export interface AssistantAnalysisRequest {
    *  - textNetlist: compact Spectre-like text with uuid comments — small, works on opencode-go.
    *  Default (undefined) behaves like projectJson=true; forward-compatible. */
   assistantDataFlags?: AssistantDataFlags;
+  /** Controls whether the model may ask the user clarifying questions before
+   *  producing the final hypotheses (off | auto | always). */
+  clarificationMode?: AssistantClarificationMode;
+  /** User replies to the model's {@link AssistantLlmState.questionSet}, supplied
+   *  on the SECOND analyze call after the user answered the questions. */
+  clarificationAnswers?: string[];
 }
 
 export interface AssistantLlmState {
@@ -1436,6 +1442,12 @@ export interface AssistantLlmState {
   /** End-to-end upstream request time measured on the backend. */
   durationMs?: number;
   unavailableReason?: string;
+  /** When the model decided it needs user input before answering: the questions
+   *  it wants answered (each a short string). Present only on the FIRST call. */
+  questionSet?: string[];
+  /** True when this result is "give me answers" — the UI must collect the user's
+   *  replies and re-run analysis with {@link AssistantAnalysisRequest.clarificationAnswers}. */
+  needClarification?: boolean;
 }
 
 export interface AssistantAnalysisResult {
@@ -1568,6 +1580,12 @@ export interface AssistantDataFlags {
   /** Compact Spectre-like text netlist with uuid comments. Default false. */
   textNetlist?: boolean;
 }
+
+/** May the model ask the user clarifying questions before analysis hypotheses?
+ *  - off: never; model must produce cards (or a prose narrative) straight away.
+ *  - auto: model decides — asks only when genuinely stuck on ambiguous data.
+ *  - always: force one clarification round before the card-producing pass. */
+export type AssistantClarificationMode = "off" | "auto" | "always";
 
 /** Which assistant LLM tools are enabled for a run. M3 surfaces. */
 export interface AssistantToolFlags {
