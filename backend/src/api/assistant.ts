@@ -51,6 +51,58 @@ export function createAssistantRouter(config: { dataRoot: string }) {
     }
   });
 
+  router.post("/api/dies/:dieId/assistant/analyze/stream", async (request, response) => {
+    const { dieId } = request.params;
+    try {
+      await readDieRecord(config.dataRoot, dieId);
+      const annotations = await readAnnotations(config.dataRoot, dieId);
+      const body = (request.body ?? {}) as AssistantAnalysisRequest;
+      if (!body.circuit || !Array.isArray(body.circuit.devices) || !Array.isArray(body.circuit.namedNets)) {
+        response.status(400).json({ ok: false, error: "A serialised circuit snapshot with devices and namedNets is required." });
+        return;
+      }
+      if (body.expectedRev != null && body.expectedRev !== annotations.rev) {
+        response.status(409).json({
+          ok: false,
+          error: "The annotations changed before analysis could start.",
+          detail: `Expected revision ${body.expectedRev}, current revision ${annotations.rev}. Refresh the extracted circuit and retry.`,
+        });
+        return;
+      }
+
+      const prepared = prepareAssistantSnapshot(dieId, annotations.rev, body);
+
+      response.setHeader("Content-Type", "text/event-stream");
+      response.setHeader("Cache-Control", "no-cache");
+      response.setHeader("Connection", "keep-alive");
+      response.setHeader("X-Accel-Buffering", "no");
+      response.flushHeaders?.();
+      const sendEvent = (event: string, payload: unknown) => {
+        try { response.write(`event: ${event}\ndata: ${JSON.stringify(payload)}\n\n`); } catch { /* client gone */ }
+      };
+
+      const data = await analyseFullGraphWithLlm(prepared, body.circuit, body.llmConfig, body.assistantDataFlags, (ev) => {
+        if (ev.type === "token") sendEvent("token", { content: ev.content });
+        else if (ev.type === "thinking") sendEvent("thinking", { content: ev.content });
+      });
+      sendEvent("done", { ok: true, data });
+      response.end();
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : "Unknown LLM error";
+      console.error(`[assistant/analyze/stream] failed for ${request.params.dieId}: ${reason}`);
+      if (response.headersSent) {
+        try {
+          response.write(`event: error\ndata: ${JSON.stringify({ ok: false, error: `Assistant analysis failed: ${reason}` })}\n\n`);
+          response.end();
+        } catch { /* ignore */ }
+      } else if (/required|exceeds/.test(reason)) {
+        response.status(400).json({ ok: false, error: reason });
+      } else {
+        response.status(502).json({ ok: false, error: `Assistant analysis failed: ${reason}` });
+      }
+    }
+  });
+
   router.post("/api/dies/:dieId/assistant/discuss", async (request, response, next) => {
     try {
       const { dieId } = request.params;
@@ -86,6 +138,68 @@ export function createAssistantRouter(config: { dataRoot: string }) {
       const reason = error instanceof Error ? error.message : "Unknown LLM error";
       console.error(`[assistant/discuss] failed for ${request.params.dieId}: ${reason}`);
       response.status(502).json({ ok: false, error: `Assistant discussion failed: ${reason}` });
+    }
+  });
+
+  router.post("/api/dies/:dieId/assistant/discuss/stream", async (request, response) => {
+    const { dieId } = request.params;
+    try {
+      await readDieRecord(config.dataRoot, dieId);
+      const annotations = await readAnnotations(config.dataRoot, dieId);
+      const body = (request.body ?? {}) as AssistantDiscussRequest;
+      if (!body.finding || !Array.isArray(body.finding.deviceUuids) || !body.circuit || !Array.isArray(body.circuit.devices)) {
+        response.status(400).json({ ok: false, error: "A finding and a serialised circuit snapshot are required." });
+        return;
+      }
+      if (body.expectedRev != null && body.expectedRev !== annotations.rev) {
+        response.status(409).json({
+          ok: false,
+          error: "The annotations changed before discussion could start.",
+          detail: `Expected revision ${body.expectedRev}, current revision ${annotations.rev}. Refresh the extracted circuit and retry.`,
+        });
+        return;
+      }
+
+      response.setHeader("Content-Type", "text/event-stream");
+      response.setHeader("Cache-Control", "no-cache");
+      response.setHeader("Connection", "keep-alive");
+      response.setHeader("X-Accel-Buffering", "no");
+      response.flushHeaders?.();
+      const sendEvent = (event: string, payload: unknown) => {
+        try { response.write(`event: ${event}\ndata: ${JSON.stringify(payload)}\n\n`); } catch { /* client gone */ }
+      };
+
+      const { reply, durationMs, cardUpdate, lvsResults } = await discussFindingWithLlm(
+        body.finding,
+        Array.isArray(body.messages) ? body.messages : [],
+        body.circuit,
+        body.llmConfig,
+        body.brief ?? {},
+        body.mode ?? "functional_blocks",
+        config.dataRoot,
+        body.toolFlags,
+        dieId,
+        body.assistantDataFlags,
+        (ev) => {
+          if (ev.type === "token") sendEvent("token", { content: ev.content });
+          else if (ev.type === "thinking") sendEvent("thinking", { content: ev.content });
+          else if (ev.type === "tool_start") sendEvent("tool_start", { tool: ev.tool, args: ev.args });
+          else if (ev.type === "tool_result") sendEvent("tool_result", { tool: ev.tool, ok: ev.ok, images: ev.images });
+        },
+      );
+      sendEvent("done", { ok: true, reply, durationMs, cardUpdate: cardUpdate ?? null, lvsResults: lvsResults ?? [] });
+      response.end();
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : "Unknown LLM error";
+      console.error(`[assistant/discuss/stream] failed for ${request.params.dieId}: ${reason}`);
+      if (response.headersSent) {
+        try {
+          response.write(`event: error\ndata: ${JSON.stringify({ ok: false, error: `Assistant discussion failed: ${reason}` })}\n\n`);
+          response.end();
+        } catch { /* ignore */ }
+      } else {
+        response.status(502).json({ ok: false, error: `Assistant discussion failed: ${reason}` });
+      }
     }
   });
 

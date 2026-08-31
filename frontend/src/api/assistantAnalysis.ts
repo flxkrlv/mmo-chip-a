@@ -52,6 +52,23 @@ export function buildAssistantCircuitSnapshot(
   };
 }
 
+function buildAnalyseRequest(
+  input: Parameters<typeof analyseAssistantCircuit>[1],
+): AssistantAnalysisRequest {
+  return {
+    expectedRev: input.expectedRev,
+    scope: input.scope,
+    mode: input.mode,
+    selectedDeviceUuids: input.selectedDeviceUuids,
+    selectedNetIds: input.selectedNetIds,
+    circuit: buildAssistantCircuitSnapshot(input.devices, input.netNames, input.warnings, input.overlayLayers),
+    brief: input.brief,
+    requestLlmExplanation: input.requestLlmExplanation,
+    llmConfig: input.llmConfig,
+    assistantDataFlags: input.assistantDataFlags,
+  };
+}
+
 export async function analyseAssistantCircuit(
   dieId: string,
   input: {
@@ -70,21 +87,9 @@ export async function analyseAssistantCircuit(
     assistantDataFlags?: AssistantDataFlags;
   },
 ): Promise<AssistantAnalysisResult> {
-  const request: AssistantAnalysisRequest = {
-    expectedRev: input.expectedRev,
-    scope: input.scope,
-    mode: input.mode,
-    selectedDeviceUuids: input.selectedDeviceUuids,
-    selectedNetIds: input.selectedNetIds,
-    circuit: buildAssistantCircuitSnapshot(input.devices, input.netNames, input.warnings, input.overlayLayers),
-    brief: input.brief,
-    requestLlmExplanation: input.requestLlmExplanation,
-    llmConfig: input.llmConfig,
-    assistantDataFlags: input.assistantDataFlags,
-  };
   const response = await apiPost<AssistantAnalysisResponse>(
     `/api/dies/${encodeURIComponent(dieId)}/assistant/analyze`,
-    request,
+    buildAnalyseRequest(input),
   );
   return response.data;
 }
@@ -113,7 +118,18 @@ export async function discussFinding(
   },
   signal?: AbortSignal,
 ): Promise<{ reply: string; cardUpdate: AssistantFindingPatch | null; lvsResults: Array<AssistantLvsCheckResponse["data"]> }> {
-  const request: AssistantDiscussRequest = {
+  const response = await apiPost<AssistantDiscussResponse>(
+    `/api/dies/${encodeURIComponent(dieId)}/assistant/discuss`,
+    buildDiscussRequest(input),
+    signal,
+  );
+  return { reply: response.reply, cardUpdate: response.cardUpdate ?? null, lvsResults: response.lvsResults ?? [] };
+}
+
+function buildDiscussRequest(
+  input: Parameters<typeof discussFinding>[1],
+): AssistantDiscussRequest {
+  return {
     expectedRev: input.expectedRev,
     finding: input.finding,
     messages: input.messages,
@@ -124,12 +140,149 @@ export async function discussFinding(
     llmConfig: input.llmConfig,
     assistantDataFlags: input.assistantDataFlags,
   };
-  const response = await apiPost<AssistantDiscussResponse>(
-    `/api/dies/${encodeURIComponent(dieId)}/assistant/discuss`,
-    request,
-    signal,
+}
+
+// ── Streaming (SSE) client for analyse/discuss ──
+
+export interface AssistantStreamEvent {
+  type: "token" | "thinking" | "tool_start" | "tool_result" | "done" | "error";
+  content?: string;
+  tool?: string;
+  args?: unknown;
+  ok?: boolean;
+  images?: number;
+  reply?: string;
+  cardUpdate?: AssistantFindingPatch | null;
+  lvsResults?: Array<AssistantLvsCheckResponse["data"]>;
+  data?: unknown;
+  error?: string;
+}
+
+export interface AssistantStreamHandlers {
+  onEvent: (ev: AssistantStreamEvent) => void;
+  signal?: AbortSignal;
+}
+
+function parseSseBlock(block: string): { event: string; data: unknown } {
+  let event = "message";
+  const dataLines: string[] = [];
+  for (const line of block.split("\n")) {
+    if (line.startsWith("event:")) event = line.slice(6).trim();
+    else if (line.startsWith("data:")) dataLines.push(line.slice(5).trim());
+  }
+  let data: unknown = null;
+  const joined = dataLines.join("\n");
+  try {
+    data = joined ? JSON.parse(joined) : null;
+  } catch {
+    data = joined;
+  }
+  return { event, data };
+}
+
+/** Reads a backend Server-Sent Events stream, dispatching each event via onEvent. */
+export async function streamAssistantRequest(
+  path: string,
+  body: unknown,
+  handlers: AssistantStreamHandlers,
+): Promise<void> {
+  const response = await fetch(path, {
+    method: "POST",
+    signal: handlers.signal,
+    headers: { "Content-Type": "application/json", ...authHeaders() },
+    body: JSON.stringify(body),
+  });
+  if (!response.ok) {
+    const text = await response.text();
+    let errBody: unknown = null;
+    try {
+      errBody = text ? JSON.parse(text) : null;
+    } catch {
+      /* ignore */
+    }
+    const message =
+      (errBody && typeof errBody === "object" && "error" in errBody && typeof (errBody as { error: unknown }).error === "string"
+        ? (errBody as { error: string }).error
+        : null) || response.statusText || `HTTP ${response.status}`;
+    throw new ApiError(response.status, message, errBody);
+  }
+  if (!response.body) throw new ApiError(500, "Empty streaming response", null);
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    let idx: number;
+    while ((idx = buffer.indexOf("\n\n")) !== -1) {
+      const block = buffer.slice(0, idx);
+      buffer = buffer.slice(idx + 2);
+      const { event, data } = parseSseBlock(block);
+      if (event && data && typeof data === "object") {
+        handlers.onEvent({ type: event as AssistantStreamEvent["type"], ...(data as Record<string, unknown>) } as AssistantStreamEvent);
+      }
+    }
+  }
+}
+
+/**
+ * Streaming full-graph analysis. Resolves with the full result once the backend
+ * emits `done`; progress tokens/thinking arrive via onEvent while it runs.
+ */
+export async function analyseAssistantCircuitStream(
+  dieId: string,
+  input: Parameters<typeof analyseAssistantCircuit>[1],
+  handlers: AssistantStreamHandlers,
+): Promise<AssistantAnalysisResult> {
+  let final: AssistantAnalysisResult | null = null;
+  let streamError: string | null = null;
+  await streamAssistantRequest(
+    `/api/dies/${encodeURIComponent(dieId)}/assistant/analyze/stream`,
+    buildAnalyseRequest(input),
+    {
+      signal: handlers.signal,
+      onEvent: (ev) => {
+        handlers.onEvent(ev);
+        if (ev.type === "done" && ev.data) final = ev.data as AssistantAnalysisResult;
+        if (ev.type === "error" && typeof ev.error === "string") streamError = ev.error;
+      },
+    },
   );
-  return { reply: response.reply, cardUpdate: response.cardUpdate ?? null, lvsResults: response.lvsResults ?? [] };
+  if (streamError) throw new ApiError(502, streamError, null);
+  if (!final) throw new ApiError(500, "Analysis stream ended without a result", null);
+  return final;
+}
+
+/**
+ * Streaming discussion. Reply tokens arrive via onEvent as they are generated;
+ * resolves with the final reply + optional cardUpdate + LVS results.
+ */
+export async function discussFindingStream(
+  dieId: string,
+  input: Parameters<typeof discussFinding>[1],
+  handlers: AssistantStreamHandlers,
+): Promise<{ reply: string; cardUpdate: AssistantFindingPatch | null; lvsResults: Array<AssistantLvsCheckResponse["data"]> }> {
+  let final: { reply: string; cardUpdate: AssistantFindingPatch | null; lvsResults: Array<AssistantLvsCheckResponse["data"]> } | null = null;
+  let streamError: string | null = null;
+  await streamAssistantRequest(
+    `/api/dies/${encodeURIComponent(dieId)}/assistant/discuss/stream`,
+    buildDiscussRequest(input),
+    {
+      signal: handlers.signal,
+      onEvent: (ev) => {
+        handlers.onEvent(ev);
+        if (ev.type === "done" && typeof ev.reply === "string") {
+          final = { reply: ev.reply, cardUpdate: ev.cardUpdate ?? null, lvsResults: ev.lvsResults ?? [] };
+        }
+        if (ev.type === "error" && typeof ev.error === "string") streamError = ev.error;
+      },
+    },
+  );
+  if (streamError) throw new ApiError(502, streamError, null);
+  if (!final) throw new ApiError(500, "Discussion stream ended without a result", null);
+  return final;
 }
 
 /** Lists available reference LVS libraries (e.g. analog-circuits-sky130). */

@@ -20,6 +20,19 @@ import type { LvsLibrary, LvsLibraryCell } from "./lvsLibrary.js";
 import { dedupeCells } from "./lvsDedup.js";
 import { matchSubcircuit } from "./lvsMatch.js";
 import { executeVisionTool } from "./visionTool.js";
+import { streamWithRetries } from "./llmStream.js";
+
+/**
+ * Progress events emitted during an LLM analysis/discussion when streaming is
+ * enabled. The API layer forwards these to the browser over Server-Sent Events.
+ */
+export type AssistantStreamEvent =
+  | { type: "token"; content: string }
+  | { type: "thinking"; content: string }
+  | { type: "tool_start"; tool: string; args?: unknown }
+  | { type: "tool_result"; tool: string; ok: boolean; images?: number }
+  | { type: "done"; data: unknown }
+  | { type: "error"; message: string };
 
 const DEFAULT_LLM_TIMEOUT_MS = 300_000;
 const MIN_LLM_TIMEOUT_MS = 10_000;
@@ -313,7 +326,7 @@ function buildLlmFindings(payload: ModelPayload | null, snapshot: AssistantCircu
  * reference or connectivity gates; local references are used only for optional
  * read-only navigation. This function never writes.
  */
-export async function analyseFullGraphWithLlm(result: AssistantAnalysisResult, snapshot: AssistantCircuitSnapshot, llmConfig?: AssistantLlmConfig, assistantDataFlags?: AssistantDataFlags): Promise<AssistantAnalysisResult> {
+export async function analyseFullGraphWithLlm(result: AssistantAnalysisResult, snapshot: AssistantCircuitSnapshot, llmConfig?: AssistantLlmConfig, assistantDataFlags?: AssistantDataFlags, onEvent?: (ev: AssistantStreamEvent) => void): Promise<AssistantAnalysisResult> {
   if (!result.llm.requested) return result;
   const usingOpenRouter = Boolean(process.env.OPENROUTER_API_KEY);
   const apiKey = llmConfig?.apiKey || process.env.ASSISTANT_LLM_API_KEY || process.env.OPENROUTER_API_KEY;
@@ -398,6 +411,57 @@ export async function analyseFullGraphWithLlm(result: AssistantAnalysisResult, s
     return ` (${parts.join("; ")})`;
   }
 
+  async function nonStreamAttempt(maxTokens: number): Promise<{ content: string; thinking: string; detail: string }> {
+    const attemptStart = Date.now();
+    const response = await fetchWithRetries(maxTokens);
+    console.log(`[assistant/analyze] LLM HTTP ${response.status} in ${Date.now() - attemptStart}ms (maxTokens=${maxTokens})`);
+    if (!response.ok) {
+      const errRaw = (await response.text().catch(() => "")).slice(0, 200);
+      throw new Error(`LLM HTTP ${response.status}` + (errRaw ? `: ${errRaw}` : ""));
+    }
+    const raw = await response.text();
+    let body: Record<string, unknown>;
+    try {
+      body = JSON.parse(raw) as Record<string, unknown>;
+    } catch {
+      throw new Error(`LLM returned non-JSON body: ${raw.slice(0, 200)}`);
+    }
+    const message = ((body.choices as Array<{ message?: { content?: unknown; reasoning_content?: unknown } }> | undefined)?.[0]?.message) ?? {};
+    const content = (typeof message.content === "string" ? message.content : "") ?? "";
+    const thinking = (typeof message.reasoning_content === "string" ? message.reasoning_content : "") ?? "";
+    return { content, thinking, detail: describeEmptyBody(raw, body) };
+  }
+
+  async function streamAttempt(maxTokens: number): Promise<{ content: string; thinking: string; finishReason: string | null }> {
+    const attemptStart = Date.now();
+    let content = "";
+    let thinking = "";
+    const streamResult = await streamWithRetries({
+      baseUrl: baseUrlResolved,
+      apiKey: apiKeyResolved,
+      model: modelResolved,
+      messages: [
+        { role: "system", content: promptForGraphAnalysis(result.brief, result.mode) },
+        { role: "user", content: buildLlmContext(result, scopedSnapshot, assistantDataFlags).content },
+      ],
+      maxTokens,
+      timeoutMs,
+      extra: { response_format: { type: "json_object" } },
+      onDelta: (delta) => {
+        if (delta.content) {
+          content += delta.content;
+          onEvent?.({ type: "token", content: delta.content });
+        }
+        if (delta.reasoning) {
+          thinking += delta.reasoning;
+          onEvent?.({ type: "thinking", content: delta.reasoning });
+        }
+      },
+    });
+    console.log(`[assistant/analyze] LLM stream done in ${Date.now() - attemptStart}ms (maxTokens=${maxTokens})`);
+    return { content, thinking, finishReason: streamResult.finishReason };
+  }
+
   try {
     let content = "";
     let thinking = "";
@@ -405,26 +469,29 @@ export async function analyseFullGraphWithLlm(result: AssistantAnalysisResult, s
     // Start with a budget large enough for a reasoning model's chain-of-thought
     // plus the structured JSON answer, so content is not truncated mid-JSON.
     const attempts = [8000, 16000, 32000];
+    let useStream = Boolean(onEvent);
     for (const maxTokens of attempts) {
-      const attemptStart = Date.now();
-      const response = await fetchWithRetries(maxTokens);
-      console.log(`[assistant/analyze] LLM HTTP ${response.status} in ${Date.now() - attemptStart}ms (maxTokens=${maxTokens})`);
-      if (!response.ok) {
-        const errRaw = (await response.text().catch(() => "")).slice(0, 200);
-        throw new Error(`LLM HTTP ${response.status}` + (errRaw ? `: ${errRaw}` : ""));
+      if (useStream) {
+        try {
+          const r = await streamAttempt(maxTokens);
+          content = r.content;
+          thinking = r.thinking;
+          detail = r.finishReason ? `finish_reason=${r.finishReason}` : "empty stream";
+        } catch (err) {
+          console.warn(`[assistant/analyze] streaming failed (${err instanceof Error ? err.message : String(err)}); falling back to non-streaming`);
+          useStream = false;
+          const r = await nonStreamAttempt(maxTokens);
+          content = r.content;
+          thinking = r.thinking;
+          detail = r.detail;
+        }
+      } else {
+        const r = await nonStreamAttempt(maxTokens);
+        content = r.content;
+        thinking = r.thinking;
+        detail = r.detail;
       }
-      const raw = await response.text();
-      let body: Record<string, unknown>;
-      try {
-        body = JSON.parse(raw) as Record<string, unknown>;
-      } catch {
-        throw new Error(`LLM returned non-JSON body: ${raw.slice(0, 200)}`);
-      }
-      const message = ((body.choices as Array<{ message?: { content?: unknown; reasoning_content?: unknown } }> | undefined)?.[0]?.message) ?? {};
-      content = (typeof message.content === "string" ? message.content : "") ?? "";
-      thinking = (typeof message.reasoning_content === "string" ? message.reasoning_content : "") ?? "";
       if (content && content.trim()) { content = content.trim(); break; }
-      detail = describeEmptyBody(raw, body);
       console.warn(`[assistant/analyze] empty content (maxTokens=${maxTokens})${detail}`);
     }
     if (!content || !content.trim()) {
@@ -511,6 +578,7 @@ export async function discussFindingWithLlm(
   toolFlags?: AssistantToolFlags,
   dieId?: string,
   assistantDataFlags?: AssistantDataFlags,
+  onEvent?: (ev: AssistantStreamEvent) => void,
 ): Promise<{ reply: string; durationMs: number; cardUpdate: AssistantFindingPatch | null; lvsResults?: Array<AssistantLvsCheckResponse["data"]> }> {
   const usingOpenRouter = Boolean(process.env.OPENROUTER_API_KEY);
   const apiKey = llmConfig?.apiKey || process.env.ASSISTANT_LLM_API_KEY || process.env.OPENROUTER_API_KEY;
@@ -558,6 +626,7 @@ export async function discussFindingWithLlm(
   const useLvs = Boolean(toolFlags?.lvs);
   const useVision = Boolean(toolFlags?.vision);
   const useTools = useLvs || useVision;
+  const useStreaming = Boolean(onEvent);
 
   let lvsGroupHint = "";
   if (useLvs && dataRoot) {
@@ -801,7 +870,6 @@ export async function discussFindingWithLlm(
   }
 
   const MAX_TOOL_ITERS = 4;
-  let response!: Response;
   let toolCallCount = 0;
 
   const buildExtra = (withTools: boolean): Record<string, unknown> => {
@@ -812,18 +880,50 @@ export async function discussFindingWithLlm(
     return { tools, tool_choice: "auto" };
   };
 
-  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
-    const callStart = Date.now();
-    response = await doFetch(buildExtra(useTools && toolCallCount === 0));
-    console.log(`[assistant/discuss] LLM HTTP ${response.status} in ${Date.now() - callStart}ms (attempt ${attempt + 1})`);
-    if (response.status !== 429) break;
-    if (attempt < MAX_RETRIES) {
-      const retryAfter = response.headers.get("retry-after");
-      const waitMs = retryAfter ? Number(retryAfter) * 1000 : RETRY_BASE_MS * Math.pow(2, attempt);
-      await new Promise((resolve) => setTimeout(resolve, Math.min(waitMs, 30_000)));
+  // Make one LLM call and return the accumulated content + tool calls. Streaming
+  // forwards content deltas to the caller as they arrive; the non-streaming path
+  // keeps the original fetch + 429-retry behaviour.
+  async function callLlm(withTools: boolean): Promise<{ content: string; toolCalls: Array<{ id: string; name: string; arguments: string }> }> {
+    if (useStreaming) {
+      const callStart = Date.now();
+      const result = await streamWithRetries({
+        baseUrl: baseUrlResolved,
+        apiKey: apiKeyResolved,
+        model: modelResolved,
+        messages: chatMessages as unknown[],
+        maxTokens: 8000,
+        timeoutMs,
+        extra: buildExtra(withTools),
+        onDelta: (delta) => {
+          if (delta.content) onEvent?.({ type: "token", content: delta.content });
+          if (delta.reasoning) onEvent?.({ type: "thinking", content: delta.reasoning });
+        },
+      });
+      console.log(`[assistant/discuss] LLM stream done in ${Date.now() - callStart}ms (tool iter ${toolIterations + 1})`);
+      return { content: result.content, toolCalls: result.toolCalls };
     }
+    let response!: Response;
+    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+      const callStart = Date.now();
+      response = await doFetch(buildExtra(withTools));
+      console.log(`[assistant/discuss] LLM HTTP ${response.status} in ${Date.now() - callStart}ms (tool iter ${toolIterations + 1}, attempt ${attempt + 1})`);
+      if (response.status !== 429) break;
+      if (attempt < MAX_RETRIES) {
+        const retryAfter = response.headers.get("retry-after");
+        const waitMs = retryAfter ? Number(retryAfter) * 1000 : RETRY_BASE_MS * Math.pow(2, attempt);
+        await new Promise((resolve) => setTimeout(resolve, Math.min(waitMs, 30_000)));
+      }
+    }
+    if (!response.ok) throw new Error(`LLM HTTP ${response.status}`);
+    const body = await response.json() as {
+      choices?: Array<{ message?: { content?: string | null; tool_calls?: Array<{ id: string; function: { name: string; arguments?: string } }> } }>;
+    };
+    const message = body.choices?.[0]?.message;
+    return {
+      content: message?.content ?? "",
+      toolCalls: (message?.tool_calls ?? []).map((tc) => ({ id: tc.id, name: tc.function.name, arguments: tc.function.arguments ?? "{}" })),
+    };
   }
-  if (!response.ok) throw new Error(`LLM HTTP ${response.status}`);
 
   // Tool loop: if the model requested mmochip_lvs_check or mmochip_vision, run
   // it and feed the result back, then ask for the final natural-language reply.
@@ -833,17 +933,12 @@ export async function discussFindingWithLlm(
   let toolIterations = 0;
   const lvsResults: Array<AssistantLvsCheckResponse["data"]> = [];
   while (toolIterations <= MAX_TOOL_ITERS) {
-    const body = await response.json() as {
-      choices?: Array<{ message?: { content?: string | null; tool_calls?: Array<{ id: string; function: { name: string; arguments?: string } }> } }>;
-    };
-    const choice = body.choices?.[0];
-    const message = choice?.message;
-    const toolCalls = message?.tool_calls ?? [];
-    const lvsCall = toolCalls.find((tc) => tc.function.name === "mmochip_lvs_check");
-    const visionCall = toolCalls.find((tc) => tc.function.name === "mmochip_vision");
+    const { content, toolCalls } = await callLlm(useTools && toolCallCount === 0);
+    const lvsCall = toolCalls.find((tc) => tc.name === "mmochip_lvs_check");
+    const visionCall = toolCalls.find((tc) => tc.name === "mmochip_vision");
 
     if ((!lvsCall && !visionCall) || toolIterations >= MAX_TOOL_ITERS) {
-      lastContent = message?.content ?? "";
+      lastContent = content;
       break;
     }
 
@@ -851,27 +946,31 @@ export async function discussFindingWithLlm(
     if (toolCalls.length > 0) {
       chatMessages.push({
         role: "assistant",
-        content: message?.content ?? null,
+        content: content || null,
         tool_calls: toolCalls.map((tc) => ({
           id: tc.id, type: "function" as const,
-          function: { name: tc.function.name, arguments: tc.function.arguments ?? "{}" },
+          function: { name: tc.name, arguments: tc.arguments },
         })),
       });
     }
 
     // Execute LVS tool
     if (lvsCall && useLvs) {
-      const args = JSON.parse(lvsCall.function.arguments || "{}") as { deviceUuids?: string[]; libraryId?: string; topologies?: string[]; budget?: number; tolerance?: number };
+      const args = JSON.parse(lvsCall.arguments || "{}") as { deviceUuids?: string[]; libraryId?: string; topologies?: string[]; budget?: number; tolerance?: number };
+      onEvent?.({ type: "tool_start", tool: "mmochip_lvs_check", args });
       const { text: toolResult, result: lvsResult } = await executeLvsTool(args);
       if (lvsResult) lvsResults.push(lvsResult);
       chatMessages.push({ role: "tool", tool_call_id: lvsCall.id, content: toolResult });
+      onEvent?.({ type: "tool_result", tool: "mmochip_lvs_check", ok: true });
     }
 
     // Execute vision tool — returns images as base64
     if (visionCall && useVision) {
-      const args = JSON.parse(visionCall.function.arguments || "{}") as { deviceUuids?: string[]; layerName?: string };
+      const args = JSON.parse(visionCall.arguments || "{}") as { deviceUuids?: string[]; layerName?: string };
+      onEvent?.({ type: "tool_start", tool: "mmochip_vision", args });
       if (!dieId) {
         chatMessages.push({ role: "tool", tool_call_id: visionCall.id, content: JSON.stringify({ error: "dieId is required for vision tool" }) });
+        onEvent?.({ type: "tool_result", tool: "mmochip_vision", ok: false });
       } else {
         try {
           const { text: toolResult, images, layerName } = await executeVisionTool(args, snapshot, dieId);
@@ -891,29 +990,18 @@ export async function discussFindingWithLlm(
             // No images returned — tell the LLM so it doesn't fabricate errors
             chatMessages.push({ role: "user", content: [{ type: "text", text: "The vision tool returned no images. This usually means the frontend did not render device crops (check that the Vision checkbox is enabled in the UI, or that the crop endpoint is working). Analyze the device purely from the netlist data provided above." }] as unknown as string });
           }
+          onEvent?.({ type: "tool_result", tool: "mmochip_vision", ok: true, images: images.length });
         } catch (err) {
           const errMsg = err instanceof Error ? err.message : String(err);
           console.error(`[assistant/discuss] vision tool failed: ${errMsg}`);
           chatMessages.push({ role: "tool", tool_call_id: visionCall.id, content: JSON.stringify({ error: errMsg }) });
+          onEvent?.({ type: "tool_result", tool: "mmochip_vision", ok: false });
         }
       }
     }
 
     toolCallCount += 1;
     toolIterations += 1;
-
-    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
-      const callStart = Date.now();
-      response = await doFetch(buildExtra(false));
-      console.log(`[assistant/discuss] LLM HTTP ${response.status} in ${Date.now() - callStart}ms (tool iter ${toolIterations}, attempt ${attempt + 1})`);
-      if (response.status !== 429) break;
-      if (attempt < MAX_RETRIES) {
-        const retryAfter = response.headers.get("retry-after");
-        const waitMs = retryAfter ? Number(retryAfter) * 1000 : RETRY_BASE_MS * Math.pow(2, attempt);
-        await new Promise((resolve) => setTimeout(resolve, Math.min(waitMs, 30_000)));
-      }
-    }
-    if (!response.ok) throw new Error(`LLM HTTP ${response.status}`);
   }
 
   const content = lastContent.trim();

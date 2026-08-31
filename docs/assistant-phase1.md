@@ -36,7 +36,9 @@ A model hypothesis is rejected when it names a missing device, consists of only 
 
 The model is allowed to return ordinary Russian Markdown prose. A prose-only answer is successful and appears in the UI; it no longer fails with a JSON parse error. A ` ```json ` code block is parsed only to create interactive fragment cards.
 
-The server-side request timeout defaults to **120 seconds** for full-netlist analysis. It can be changed without source edits through `ASSISTANT_LLM_TIMEOUT_MS`, constrained to 10–300 seconds. The UI reports the measured backend request duration. A local timeout message includes the configured duration so it can be distinguished from an HTTP/provider error.
+Both the full-netlist analysis and the per-finding discussion stream their responses to the browser over Server-Sent Events: reasoning (`reasoning_content`) appears live in the UI while the model thinks, and the discussion reply text is rendered incrementally. This keeps long reasoning models (e.g. deepseek v4 flash, which can spend ~15k output tokens on chain-of-thought) responsive instead of blocking until the whole response is complete. If a provider does not support `stream: true`, the backend transparently falls back to a plain request.
+
+The server-side request timeout defaults to **300 seconds** per upstream call. It can be changed without source edits through `ASSISTANT_LLM_TIMEOUT_MS`, constrained to 10–300 seconds. The UI reports the measured backend request duration. A local timeout message includes the configured duration so it can be distinguished from an HTTP/provider error.
 
 ## Server configuration
 

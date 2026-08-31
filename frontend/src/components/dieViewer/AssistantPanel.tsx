@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, useCallback, type CSSProperties } from "react";
 import { createPortal } from "react-dom";
 import type { AnalogDevice, AssistantAnalysisBrief, AssistantAnalysisMode, AssistantChatMessage, AssistantConfidenceLevel, AssistantFinding, AssistantFindingKind, AssistantFindingPatch, AssistantFindingStatus, AssistantLlmConfig, AssistantLvsCheckResponse, AssistantLvsLibrarySummary, AssistantLvsMatch, AssistantToolUseEvent, DieAnnotations, FloorplanRegion } from "shared";
-import { analyseAssistantCircuit, addLvsCell, checkAssistantLvsStream, discussFinding, listAssistantLvsLibraries } from "../../api/assistantAnalysis";
+import { addLvsCell, analyseAssistantCircuitStream, checkAssistantLvsStream, discussFindingStream, listAssistantLvsLibraries } from "../../api/assistantAnalysis";
 import { ApiError } from "../../api/client";
 import { LvsMatchCard } from "./LvsMatchCard";
 import { formatDevicesAsNetlist2Svg } from "../../lib/schematic/netlist2svgFormat";
@@ -70,6 +70,8 @@ export function AssistantPanel({ dieId, annotations, devices, netNames, warnings
   const activeId = session?.activeFindingId ?? null;
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [streamThinking, setStreamThinking] = useState<string | null>(null);
+  const [streamTokens, setStreamTokens] = useState(0);
   const [selectedRegionId, setSelectedRegionId] = useState<string | null>(null);
   const [openThreadId, setOpenThreadId] = useState<string | null>(null);
   const [lvsEnabled, setLvsEnabled] = useState(true);
@@ -264,9 +266,11 @@ export function AssistantPanel({ dieId, annotations, devices, netNames, warnings
     }
     setLoading(true);
     setError(null);
+    setStreamThinking(null);
+    setStreamTokens(0);
     setModeForDie(dieId, nextMode);
     try {
-      const next = await analyseAssistantCircuit(dieId, {
+      const next = await analyseAssistantCircuitStream(dieId, {
         expectedRev: annotations.rev,
         scope,
         mode: nextMode,
@@ -280,6 +284,11 @@ export function AssistantPanel({ dieId, annotations, devices, netNames, warnings
         llmConfig: llmProvider,
         overlayLayers,
         assistantDataFlags,
+      }, {
+        onEvent: (ev) => {
+          if (ev.type === "thinking") setStreamThinking((prev) => (prev ?? "") + (ev.content ?? ""));
+          else if (ev.type === "token") setStreamTokens((prev) => prev + 1);
+        },
       });
       setResultForDie(dieId, next);
       const first = [...next.findings].sort((a, b) => b.confidence - a.confidence)[0] ?? null;
@@ -483,6 +492,17 @@ export function AssistantPanel({ dieId, annotations, devices, netNames, warnings
       {selectedRegion && <div style={{ color: "var(--ink3)", fontFamily: "var(--mono)", fontSize: 10 }}>Region: {selectedRegion.name} · {regionDevices.length} device{regionDevices.length === 1 ? "" : "s"}</div>}
       {!devices.length && <div style={{ color: "var(--warn, #e6b05b)" }}>No extracted analog devices are available yet.</div>}
       {error && <div style={{ color: "var(--danger, #ed6a5e)", lineHeight: 1.35 }}>{error}</div>}
+      {loading && (
+        <div style={{ color: "var(--ink3)", fontSize: 10, lineHeight: 1.35, border: "1px solid var(--l2)", borderRadius: 4, padding: "5px 7px" }}>
+          <div>LLM is responding… {streamTokens} token{streamTokens === 1 ? "" : "s"}</div>
+          {streamThinking && (
+            <details open style={{ marginTop: 4 }}>
+              <summary style={{ cursor: "pointer", color: "var(--ink2)" }}>LLM thinking (live)</summary>
+              <div style={{ marginTop: 4, maxHeight: 140, overflowY: "auto", whiteSpace: "pre-wrap", wordBreak: "break-word", overflowWrap: "anywhere", fontFamily: "var(--mono)", fontSize: 9 }}>{streamThinking}</div>
+            </details>
+          )}
+        </div>
+      )}
 
       {result && (
         <>
@@ -787,12 +807,18 @@ function DiscussPopup({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [elapsed, setElapsed] = useState(0);
+  const [streamingReply, setStreamingReply] = useState<string | null>(null);
+  const [streamingTool, setStreamingTool] = useState<string | null>(null);
+  const [streamingThinking, setStreamingThinking] = useState<string | null>(null);
   const controllerRef = useRef<AbortController | null>(null);
+  const cancelledRef = useRef(false);
+  const streamingReplyRef = useRef("");
+  const streamingThinkingRef = useRef("");
   const endRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ block: "end" });
-  }, [thread.length, busy]);
+  }, [thread.length, busy, streamingReply, streamingThinking]);
 
   useEffect(() => {
     if (!busy) return;
@@ -803,6 +829,7 @@ function DiscussPopup({
   }, [busy]);
 
   const cancel = () => {
+    cancelledRef.current = true;
     controllerRef.current?.abort();
   };
 
@@ -811,15 +838,23 @@ function DiscussPopup({
     if (!text || busy) return;
     setBusy(true);
     setError(null);
+    setStreamingReply(null);
+    setStreamingTool(null);
+    setStreamingThinking(null);
+    streamingReplyRef.current = "";
+    streamingThinkingRef.current = "";
+    cancelledRef.current = false;
     const userTurn: AssistantChatMessage = { role: "user", content: text };
     const history: AssistantChatMessage[] = [...thread, userTurn];
     appendMessage(dieId, finding.id, userTurn);
     setInput("");
     const controller = new AbortController();
     controllerRef.current = controller;
-    const hardTimeout = setTimeout(() => controller.abort(), 150_000);
+    // Safety net only — with streaming the connection stays alive while tokens
+    // flow, so a long reasoning model no longer trips the client timeout.
+    const hardTimeout = setTimeout(() => controller.abort(), 300_000);
     try {
-        const { reply, cardUpdate, lvsResults } = await discussFinding(dieId, {
+        const { reply, cardUpdate, lvsResults } = await discussFindingStream(dieId, {
         expectedRev,
         finding: {
           id: finding.id,
@@ -844,18 +879,48 @@ function DiscussPopup({
         toolFlags: (lvsEnabled || visionEnabled) ? { lvs: lvsEnabled, vision: visionEnabled } : undefined,
         overlayLayers,
         assistantDataFlags,
-      }, controller.signal);
+      }, {
+        signal: controller.signal,
+        onEvent: (ev) => {
+          if (ev.type === "token") {
+            streamingReplyRef.current += ev.content ?? "";
+            setStreamingReply(displayableReply(streamingReplyRef.current));
+          } else if (ev.type === "thinking") {
+            streamingThinkingRef.current += ev.content ?? "";
+            setStreamingThinking(streamingThinkingRef.current);
+          } else if (ev.type === "tool_start") {
+            // A tool call means the model is pausing to inspect something;
+            // clear any preamble so the bubble shows the actual reply.
+            streamingReplyRef.current = "";
+            setStreamingReply("");
+            setStreamingTool(ev.tool === "mmochip_vision" ? "🔍 mmochip_vision — inspecting device crops…" : "🔬 mmochip_lvs_check — verifying against reference library…");
+          } else if (ev.type === "tool_result") {
+            setStreamingTool(null);
+          }
+        },
+      });
+       setStreamingReply(null);
+       setStreamingTool(null);
        appendMessage(dieId, finding.id, { role: "assistant", content: reply });
        if (cardUpdate) setPendingCardUpdate(cardUpdate);
        // LVS results are committed to the thread history (not a separate sticky
        // panel) so they scroll up as a message when new replies arrive.
        if (lvsResults.length) appendMessage(dieId, finding.id, { role: "assistant", content: "", lvsResults });
     } catch (cause) {
-      console.debug("[assistant/discuss] request failed", cause);
-      setError(formatApiError(cause));
+      // Keep whatever partial reply already streamed so the user isn't left empty-handed.
+      if (streamingReplyRef.current) {
+        appendMessage(dieId, finding.id, { role: "assistant", content: displayableReply(streamingReplyRef.current) });
+      }
+      if (!cancelledRef.current) {
+        console.debug("[assistant/discuss] request failed", cause);
+        setError(formatApiError(cause));
+      }
     } finally {
       clearTimeout(hardTimeout);
       controllerRef.current = null;
+      setStreamingReply(null);
+      setStreamingTool(null);
+      setStreamingThinking(null);
       setBusy(false);
     }
   };
@@ -946,6 +1011,41 @@ function DiscussPopup({
             )}
           </div>
         ))}
+        {busy && streamingThinking && (
+          <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-start", minWidth: 0 }}>
+            <details open style={{ width: "100%", border: "1px solid var(--l2)", borderRadius: 4, padding: "4px 6px", background: "var(--l1)" }}>
+              <summary style={{ cursor: "pointer", color: "var(--ink2)", fontSize: 9, textTransform: "uppercase", letterSpacing: 0.4 }}>LLM thinking (live)</summary>
+              <div style={{ marginTop: 4, maxHeight: 120, overflowY: "auto", whiteSpace: "pre-wrap", wordBreak: "break-word", overflowWrap: "anywhere", fontFamily: "var(--mono)", fontSize: 9, color: "var(--ink3)" }}>{streamingThinking}</div>
+            </details>
+          </div>
+        )}
+        {busy && (streamingReply || streamingTool) && (
+          <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-start", minWidth: 0 }}>
+            {streamingTool && (
+              <div style={{ fontSize: 9, color: "var(--ink3)", border: "1px dashed var(--l2)", borderRadius: 4, padding: "3px 6px", marginBottom: 2 }}>{streamingTool}</div>
+            )}
+            {streamingReply && (
+              <div
+                style={{
+                  display: "block",
+                  maxWidth: "100%",
+                  whiteSpace: "pre-wrap",
+                  wordBreak: "break-word",
+                  overflowWrap: "anywhere",
+                  lineHeight: 1.4,
+                  fontSize: 10,
+                  padding: "5px 7px",
+                  borderRadius: 6,
+                  background: "var(--l2)",
+                  color: "#fff",
+                }}
+              >
+                {streamingReply}
+                <span style={{ opacity: 0.55 }}>▋</span>
+              </div>
+            )}
+          </div>
+        )}
         {busy && (
           <div style={{ display: "flex", alignItems: "center", gap: 6, color: "var(--ink3)", fontSize: 10 }}>
             <span>Model is thinking… {elapsed}s</span>
@@ -997,9 +1097,24 @@ function DiscussPopup({
   );
 }
 
+/**
+ * The discuss model replies as a single JSON object {"reply": "...", "cardUpdate": ...}.
+ * While that JSON streams in, extract the reply field so the chat bubble shows
+ * clean text instead of raw JSON. Falls back to the raw text for prose replies.
+ */
+function displayableReply(partial: string): string {
+  const m = /"reply"\s*:\s*"((?:[^"\\]|\\.)*)"/.exec(partial);
+  if (m) {
+    return m[1].replace(/\\n/g, "\n").replace(/\\"/g, '"').replace(/\\\\/g, "\\");
+  }
+  const trimmed = partial.trim();
+  if (trimmed.startsWith("{")) return "";
+  return trimmed;
+}
+
 function formatApiError(cause: unknown): string {
   if (cause instanceof DOMException && cause.name === "AbortError") {
-    return "Request timed out after 120s — the model or backend did not respond. Check the LLM provider configuration and backend logs.";
+    return "Request timed out after 300s — the model or backend did not respond. Check the LLM provider configuration and backend logs.";
   }
   if (cause instanceof ApiError) {
     let detail = "";
