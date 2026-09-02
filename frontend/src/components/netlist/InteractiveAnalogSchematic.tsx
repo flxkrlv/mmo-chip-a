@@ -182,6 +182,42 @@ export function InteractiveAnalogSchematic({
     return { ...elkResult.positions, ...storedPositions };
   }, [elkResult, storedPositions]);
 
+  // ── Render nodes (defined early — drag/marquee handlers need them) ──
+  const nodes: RenderNode[] = useMemo(() => {
+    if (!elkResult) return [];
+    const out: RenderNode[] = [];
+    for (const d of devices) {
+      const key = deviceKey(d);
+      if (elkResult.positions[key] == null) continue;
+      out.push({
+        key,
+        kind: "device",
+        template: templateForDevice(table, d),
+        size: elkResult.sizes[key] ?? { w: 30, h: 40 },
+        device: d,
+      });
+    }
+    for (const p of powers) {
+      const key = deviceKey(p);
+      if (elkResult.positions[key] == null) continue;
+      const powerKind: "vcc" | "gnd" = key === (opts.gnd ?? "GND") ? "gnd" : "vcc";
+      out.push({
+        key,
+        kind: "power",
+        template: table.byKey.get(powerKind),
+        size: elkResult.sizes[key] ?? { w: 20, h: 30 },
+        device: p,
+        powerKind,
+      });
+    }
+    for (const io of ioNets) {
+      const key = `io:${io.netId}`;
+      if (elkResult.positions[key] == null) continue;
+      out.push({ key, kind: "io", size: elkResult.sizes[key] ?? { w: 30, h: 20 }, label: io.name });
+    }
+    return out;
+  }, [elkResult, devices, powers, ioNets, table, opts.gnd]);
+
   /** Nets touched by the given node keys. */
   const netsTouched = useCallback(
     (keys: Iterable<string>): number[] => {
@@ -395,53 +431,94 @@ export function InteractiveAnalogSchematic({
     };
   }, [elkResult]);
 
-  // ── Device drag ──────────────────────────────────────────────
-  const [selectedKey, setSelectedKey] = useState<string | null>(null);
+  // ── Selection + device drag ─────────────────────────────────────
+  // Multi-selection: shift+click toggles a member, drawing marquee adds
+  // everyone inside, Ctrl+A selects all devices (never power/io nodes).
+  const [selection, setSelection] = useState<string[]>([]);
   const [hoverNet, setHoverNet] = useState<number | null>(null);
   const [hoverDevice, setHoverDevice] = useState<string | null>(null);
+  /** World-space marquee rect while dragging empty area with Shift. */
+  const [marquee, setMarquee] = useState<{ x0: number; y0: number; x1: number; y1: number } | null>(null);
+
+  /** All selectable render keys (devices only — power/io aren't draggable). */
+  const deviceKeys = useMemo(() => devices.map((d) => deviceKey(d)), [devices]);
+  const selectionSet = useMemo(() => new Set(selection), [selection]);
+  /** Marquee start point (world space) while Shift-dragging empty area. */
+  const marqueeRef = useRef<{ x0: number; y0: number; x1: number; y1: number } | null>(null);
+
   const dragRef = useRef<{
-    deviceKey: string;
+    /** Devices being dragged (all non-locked members of the selection). */
+    keys: string[];
+    /** Their positions at pointerdown (group base for delta moves). */
+    base: Record<string, Point>;
     sx: number; sy: number;
     grabDX: number; grabDY: number;
     moved: boolean;
     netIds: number[];
     raf: number;
-    pending: { x: number; y: number } | null;
+    pending: Point | null;
   } | null>(null);
 
   const onDevicePointerDown = useCallback(
     (e: ReactPointerEvent<SVGGElement>, node: RenderNode) => {
       if (e.button !== 0) return;
       e.stopPropagation();
-      const lockedNow = locked[node.key];
-      if (lockedNow) {
-        setSelectedKey(node.key);
-        return; // locked devices don't move
+      const key = node.key;
+      const lockedNow = locked[key];
+
+      // Shift+click: toggle membership, no drag.
+      if (e.shiftKey) {
+        setSelection((cur) => {
+          const set = new Set(cur);
+          if (set.has(key)) set.delete(key); else set.add(key);
+          return [...set];
+        });
+        return;
       }
+      // Plain click on a NOT-yet-selected device → narrow to it.
+      if (!selectionSet.has(key)) {
+        setSelection([key]);
+      }
+      if (lockedNow) return; // locked devices don't move
+
       svgRef.current?.setPointerCapture(e.pointerId);
       const p = worldFromEvent(e, view, svgRef.current);
+      // Group: every selected, non-locked device shares the drag delta.
+      const group = selectionSet.has(key)
+        ? selection.filter((k) => !locked[k] && positions[k] != null)
+        : [key];
+      const base: Record<string, Point> = {};
+      for (const k of group) base[k] = { ...(positions[k] ?? { x: 0, y: 0 }) };
+      const grabKey = group[0] ?? key;
       dragRef.current = {
-        deviceKey: node.key,
+        keys: group,
+        base,
         sx: e.clientX,
         sy: e.clientY,
-        grabDX: p.x - (positions[node.key]?.x ?? 0),
-        grabDY: p.y - (positions[node.key]?.y ?? 0),
+        grabDX: p.x - (positions[grabKey]?.x ?? 0),
+        grabDY: p.y - (positions[grabKey]?.y ?? 0),
         moved: false,
-        netIds: netsTouched([node.key]),
+        netIds: netsTouched(group),
         raf: 0,
         pending: null,
       };
       store.getState().dragBegin(scopeKey);
     },
-    [locked, positions, view, netsTouched, scopeKey, store],
+    [locked, positions, view, selection, selectionSet, netsTouched, scopeKey, store],
   );
 
   const applyDragPosition = useCallback(
-    (key: string, pos: Point) => {
-      store.getState().dragMove(key, pos);
-      const current = useInteractiveSchematic.getState();
-      const posNow = effectivePositions(current, scopeKey);
-      setWires((prev) => rerouteNets(prev, dragRef.current?.netIds ?? [], posNow, key));
+    (delta: Point) => {
+      const d = dragRef.current;
+      if (!d) return;
+      const st = useInteractiveSchematic.getState();
+      for (const key of d.keys) {
+        const b = d.base[key];
+        if (!b) continue;
+        st.dragMove(key, { x: b.x + delta.x, y: b.y + delta.y });
+      }
+      const posNow = effectivePositions(st, scopeKey);
+      setWires((prev) => rerouteNets(prev, d.netIds, posNow));
     },
     [store, scopeKey, rerouteNets],
   );
@@ -454,7 +531,14 @@ export function InteractiveAnalogSchematic({
         setView((v) => ({ ...v, tx: pan.tx + (e.clientX - pan.sx), ty: pan.ty + (e.clientY - pan.sy) }));
         return;
       }
-      // Device drag (rAF-coalesced)
+      // Marquee select (Shift + empty-area drag)
+      if (marqueeRef.current) {
+        const p = worldFromEvent(e, view, svgRef.current);
+        const m = marqueeRef.current;
+        setMarquee({ x0: m.x0, y0: m.y0, x1: p.x, y1: p.y });
+        return;
+      }
+      // Device group drag (rAF-coalesced)
       const d = dragRef.current;
       if (!d) return;
       if (Math.abs(e.clientX - d.sx) + Math.abs(e.clientY - d.sy) > 3) d.moved = true;
@@ -465,7 +549,7 @@ export function InteractiveAnalogSchematic({
         const dd = dragRef.current;
         if (!dd || !dd.pending) return;
         dd.raf = 0;
-        applyDragPosition(dd.deviceKey, dd.pending);
+        applyDragPosition(dd.pending);
         dd.pending = null;
       });
     },
@@ -479,71 +563,118 @@ export function InteractiveAnalogSchematic({
         panRef.current = null;
         return;
       }
+      // Marquee select finish
+      if (marqueeRef.current) {
+        marqueeRef.current = null;
+        const m = marquee;
+        setMarquee(null);
+        if (m) {
+          const x0 = Math.min(m.x0, m.x1), x1 = Math.max(m.x0, m.x1);
+          const y0 = Math.min(m.y0, m.y1), y1 = Math.max(m.y0, m.y1);
+          const hits = nodes.filter((n) => {
+            if (n.kind !== "device") return false;
+            const p = positions[n.key];
+            if (!p) return false;
+            const os = orientedSize(n.size, orientations[n.key]);
+            return p.x < x1 && p.x + os.w > x0 && p.y < y1 && p.y + os.h > y0;
+          }).map((n) => n.key);
+          setSelection(hits);
+        }
+        return;
+      }
       const d = dragRef.current;
       if (!d) return;
       if (d.raf) cancelAnimationFrame(d.raf);
       dragRef.current = null;
       svgRef.current?.releasePointerCapture(e.pointerId);
       store.getState().dragEnd();
-      if (!d.moved) setSelectedKey((cur) => (cur === d.deviceKey ? null : d.deviceKey));
+      // A plain click (no drag) on a device keeps/narrows the selection.
+      if (!d.moved) {
+        setSelection((cur) => {
+          const set = new Set(cur);
+          for (const k of d.keys) {
+            if (set.has(k)) { set.delete(k); }
+            else set.add(k);
+          }
+          return [...set];
+        });
+      }
     },
-    [store],
+    [marquee, nodes, positions, orientations, store],
   );
 
   const onBackgroundPointerDown = useCallback(
     (e: ReactPointerEvent<SVGSVGElement>) => {
       if (e.button !== 0 && e.button !== 1) return;
       svgRef.current?.setPointerCapture(e.pointerId);
+      if (e.shiftKey) {
+        // Marquee select in world space (start point recorded).
+        const p = worldFromEvent(e, view, svgRef.current);
+        marqueeRef.current = { x0: p.x, y0: p.y, x1: p.x, y1: p.y };
+        setMarquee({ x0: p.x, y0: p.y, x1: p.x, y1: p.y });
+        return;
+      }
       panRef.current = { sx: e.clientX, sy: e.clientY, tx: view.tx, ty: view.ty };
-      setSelectedKey(null);
+      setSelection([]);
     },
     [view.tx, view.ty],
   );
 
-  // ── Toolbar actions ──────────────────────────────────────────
+  // ── Toolbar actions (work on the whole selection) ────────────
   const onRelayout = useCallback(() => runLayout(false), [runLayout]);
   const onAutoArrange = useCallback(() => runLayout(true), [runLayout]);
+
+  /** Lock all selected (or unlock all when every one of them is locked). */
   const onToggleLock = useCallback(() => {
-    if (!selectedKey) return;
-    store.getState().setLocked(scopeKey, selectedKey, !locked[selectedKey]);
-  }, [selectedKey, locked, scopeKey, store]);
+    if (selection.length === 0) return;
+    const allLocked = selection.every((k) => locked[k]);
+    const st = store.getState();
+    for (const k of selection) st.setLocked(scopeKey, k, !allLocked);
+  }, [selection, locked, scopeKey, store]);
 
   /** Rotate the selection clockwise by 90°. */
   const onRotate = useCallback(() => {
-    if (!selectedKey) return;
-    const cur = orientations[selectedKey] ?? { rot: 0, flip: "none" };
-    const next: DeviceOrientationLike = {
-      rot: (((cur.rot + 90) % 360) as 0 | 90 | 180 | 270),
-      flip: cur.flip,
-    };
-    store.getState().setOrientation(scopeKey, selectedKey, next);
-    // Re-route nets of this device under the new anchor positions.
+    if (selection.length === 0) return;
     const st = store.getState();
+    for (const key of selection) {
+      const cur = orientations[key] ?? { rot: 0, flip: "none" };
+      st.setOrientation(scopeKey, key, {
+        rot: (((cur.rot + 90) % 360) as 0 | 90 | 180 | 270),
+        flip: cur.flip,
+      });
+    }
     const posNow = effectivePositions(st, scopeKey);
-    setWires((prev) => rerouteNets(prev, netsTouched([selectedKey]), posNow));
-  }, [selectedKey, orientations, scopeKey, store, netsTouched, rerouteNets]);
+    setWires((prev) => rerouteNets(prev, netsTouched(selection), posNow));
+  }, [selection, orientations, scopeKey, store, netsTouched, rerouteNets]);
 
-  /** Flip the selection horizontally (mirror along the vertical axis). */
+  /** Flip the selection horizontally. */
   const onFlipH = useCallback(() => {
-    if (!selectedKey) return;
-    const cur = orientations[selectedKey] ?? { rot: 0, flip: "none" };
-    const next: DeviceOrientationLike = { rot: cur.rot, flip: cur.flip === "h" ? "none" : "h" };
-    store.getState().setOrientation(scopeKey, selectedKey, next);
+    if (selection.length === 0) return;
     const st = store.getState();
+    for (const key of selection) {
+      const cur = orientations[key] ?? { rot: 0, flip: "none" };
+      st.setOrientation(scopeKey, key, { rot: cur.rot, flip: cur.flip === "h" ? "none" : "h" });
+    }
     const posNow = effectivePositions(st, scopeKey);
-    setWires((prev) => rerouteNets(prev, netsTouched([selectedKey]), posNow));
-  }, [selectedKey, orientations, scopeKey, store, netsTouched, rerouteNets]);
+    setWires((prev) => rerouteNets(prev, netsTouched(selection), posNow));
+  }, [selection, orientations, scopeKey, store, netsTouched, rerouteNets]);
 
-  /** Flip the selection vertically (mirror along the horizontal axis). */
+  /** Flip the selection vertically. */
   const onFlipV = useCallback(() => {
-    if (!selectedKey) return;
-    const cur = orientations[selectedKey] ?? { rot: 0, flip: "none" };
-    const next: DeviceOrientationLike = { rot: cur.rot, flip: cur.flip === "v" ? "none" : "v" };
-    store.getState().setOrientation(scopeKey, selectedKey, next);
+    if (selection.length === 0) return;
     const st = store.getState();
+    for (const key of selection) {
+      const cur = orientations[key] ?? { rot: 0, flip: "none" };
+      st.setOrientation(scopeKey, key, { rot: cur.rot, flip: cur.flip === "v" ? "none" : "v" });
+    }
     const posNow = effectivePositions(st, scopeKey);
-    setWires((prev) => rerouteNets(prev, netsTouched([selectedKey]), posNow));
-  }, [selectedKey, orientations, scopeKey, store, netsTouched, rerouteNets]);
+    setWires((prev) => rerouteNets(prev, netsTouched(selection), posNow));
+  }, [selection, orientations, scopeKey, store, netsTouched, rerouteNets]);
+
+  /** Select all devices on the canvas. */
+  const onSelectAll = useCallback(() => {
+    setSelection(deviceKeys);
+  }, [deviceKeys]);
 
   const onReset = useCallback(() => {
     store.getState().resetScope(scopeKey);
@@ -568,6 +699,9 @@ export function InteractiveAnalogSchematic({
       } else if (e.key.toLowerCase() === "y" && e.shiftKey) {
         e.preventDefault();
         onRedo();
+      } else if (e.key.toLowerCase() === "a") {
+        e.preventDefault();
+        setSelection(deviceKeys);
       }
     };
     // Listen on the canvas so edits elsewhere (inputs, dialogs) don't
@@ -575,43 +709,7 @@ export function InteractiveAnalogSchematic({
     const host = hostRef.current;
     host?.addEventListener("keydown", onKey);
     return () => host?.removeEventListener("keydown", onKey);
-  }, [onUndo, onRedo]);
-
-  // ── Render nodes ─────────────────────────────────────────────
-  const nodes: RenderNode[] = useMemo(() => {
-    if (!elkResult) return [];
-    const out: RenderNode[] = [];
-    for (const d of devices) {
-      const key = deviceKey(d);
-      if (elkResult.positions[key] == null) continue;
-      out.push({
-        key,
-        kind: "device",
-        template: templateForDevice(table, d),
-        size: elkResult.sizes[key] ?? { w: 30, h: 40 },
-        device: d,
-      });
-    }
-    for (const p of powers) {
-      const key = deviceKey(p);
-      if (elkResult.positions[key] == null) continue;
-      const powerKind: "vcc" | "gnd" = key === (opts.gnd ?? "GND") ? "gnd" : "vcc";
-      out.push({
-        key,
-        kind: "power",
-        template: table.byKey.get(powerKind),
-        size: elkResult.sizes[key] ?? { w: 20, h: 30 },
-        device: p,
-        powerKind,
-      });
-    }
-    for (const io of ioNets) {
-      const key = `io:${io.netId}`;
-      if (elkResult.positions[key] == null) continue;
-      out.push({ key, kind: "io", size: elkResult.sizes[key] ?? { w: 30, h: 20 }, label: io.name });
-    }
-    return out;
-  }, [elkResult, devices, powers, ioNets, table, opts.gnd]);
+  }, [onUndo, onRedo, deviceKeys]);
 
   if (devices.length === 0) {
     return (
@@ -642,21 +740,21 @@ export function InteractiveAnalogSchematic({
         </button>
         <button
           type="button"
-          className={"btn sm" + (selectedKey && locked[selectedKey] ? " on" : "")}
+          className={"btn sm" + (selection.length > 0 && selection.every((k) => locked[k]) ? " on" : "")}
           onClick={onToggleLock}
-          disabled={!selectedKey}
-          title={selectedKey ? "Lock/unlock the selected device (locked devices survive re-layout)" : "Click a device to select it first"}
-          style={{ opacity: selectedKey ? 1 : 0.4 }}
+          disabled={selection.length === 0}
+          title={selection.length ? "Lock/unlock the selected device(s) (locked ones survive re-layout)" : "Select a device first (click, shift+click, or marquee)"}
+          style={{ opacity: selection.length ? 1 : 0.4 }}
         >
-          {selectedKey && locked[selectedKey] ? "Unlock" : "Lock"}
+          {selection.length > 0 && selection.every((k) => locked[k]) ? "Unlock" : "Lock"}
         </button>
         <button
           type="button"
           className="btn sm"
           onClick={onRotate}
-          disabled={!selectedKey}
-          title={selectedKey ? "Rotate the selected device 90° clockwise" : "Click a device to select it first"}
-          style={{ opacity: selectedKey ? 1 : 0.4 }}
+          disabled={selection.length === 0}
+          title={selection.length ? `Rotate the ${selection.length} selected device(s) 90° clockwise` : "Select a device first"}
+          style={{ opacity: selection.length ? 1 : 0.4 }}
         >
           Rotate ⟳
         </button>
@@ -664,9 +762,9 @@ export function InteractiveAnalogSchematic({
           type="button"
           className="btn sm"
           onClick={onFlipH}
-          disabled={!selectedKey}
-          title={selectedKey ? "Mirror the selected device horizontally" : "Click a device to select it first"}
-          style={{ opacity: selectedKey ? 1 : 0.4 }}
+          disabled={selection.length === 0}
+          title={selection.length ? "Mirror the selected device(s) horizontally" : "Select a device first"}
+          style={{ opacity: selection.length ? 1 : 0.4 }}
         >
           Flip ⇄
         </button>
@@ -674,11 +772,14 @@ export function InteractiveAnalogSchematic({
           type="button"
           className="btn sm"
           onClick={onFlipV}
-          disabled={!selectedKey}
-          title={selectedKey ? "Mirror the selected device vertically" : "Click a device to select it first"}
-          style={{ opacity: selectedKey ? 1 : 0.4 }}
+          disabled={selection.length === 0}
+          title={selection.length ? "Mirror the selected device(s) vertically" : "Select a device first"}
+          style={{ opacity: selection.length ? 1 : 0.4 }}
         >
           Flip ⇅
+        </button>
+        <button type="button" className="btn sm" onClick={onSelectAll} title="Select all devices (Ctrl+A)">
+          Select all
         </button>
         <button type="button" className="btn sm" onClick={onReset} title="Reset all positions and locks, run a fresh ELK layout">
           Reset
@@ -745,7 +846,7 @@ export function InteractiveAnalogSchematic({
               key={n.key}
               node={n}
               pos={positions[n.key] ?? { x: 0, y: 0 }}
-              selected={selectedKey === n.key}
+              selected={selectionSet.has(n.key)}
               isLocked={!!locked[n.key]}
               orient={orientations[n.key]}
               hovered={hoverDevice === n.key}
@@ -753,6 +854,20 @@ export function InteractiveAnalogSchematic({
               onHover={setHoverDevice}
             />
           ))}
+          {/* Marquee select rect (world space, inside the transform) */}
+          {marquee && (
+            <rect
+              x={Math.min(marquee.x0, marquee.x1)}
+              y={Math.min(marquee.y0, marquee.y1)}
+              width={Math.abs(marquee.x1 - marquee.x0)}
+              height={Math.abs(marquee.y1 - marquee.y0)}
+              fill="rgba(127, 178, 255, 0.12)"
+              stroke={HL_COLOR}
+              strokeWidth={1}
+              strokeDasharray="4 3"
+              pointerEvents="none"
+            />
+          )}
         </g>
       </svg>
 
