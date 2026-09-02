@@ -140,14 +140,16 @@ const BLOCK_MAX_WIDTH = 260;
 
 /**
  * Sized block box: width scales with the longest label (block name + port
- * net names) so text fits, height from the number of ports.
+ * net names) so text fits, height from the number of ports. A small extra
+ * pad keeps labels off the box edge (the ELK nodeNode gap is measured from
+ * this outer box, so neighbours never touch the rendered block).
  */
 export function blockSize(b: HierarchyBlock): { w: number; h: number } {
-  const h = blockHeight(b.nets.length);
+  const h = blockHeight(b.nets.length) + 12;
   let maxLen = b.name.length;
   for (const n of b.nets) maxLen = Math.max(maxLen, n.name.length);
-  // ~7px per glyph at 8-9px font with a small fixed padding.
-  const w = Math.max(BLOCK_MIN_WIDTH, Math.min(BLOCK_MAX_WIDTH, 40 + maxLen * 7));
+  // ~7px per glyph at 8-9px font with a small fixed padding + side pad.
+  const w = Math.max(BLOCK_MIN_WIDTH, Math.min(BLOCK_MAX_WIDTH, 40 + maxLen * 7 + 16));
   return { w, h };
 }
 

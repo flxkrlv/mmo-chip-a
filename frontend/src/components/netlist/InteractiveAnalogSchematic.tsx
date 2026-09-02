@@ -431,8 +431,8 @@ export function InteractiveAnalogSchematic({
   // settings change (strategy/direction/compaction) re-arranges
   // everything except locked devices.
   const dataSig = useMemo(
-    () => `${devices.length}|${namedNets.size}|${[...devices].map((d) => deviceKey(d)).join(",")}`,
-    [devices, namedNets],
+    () => `${devices.length}|${namedNets.size}|${[...devices].map((d) => deviceKey(d)).join(",")}|${(blocks ?? []).map((b) => `${b.regionId}:${b.name}:${b.nets.map((n) => `${n.name}:${n.direction}`).join(",")}`).join(";")}`,
+    [devices, namedNets, blocks],
   );
   const settingsSig = `${layoutStrategy}|${layoutDirection}|${compactionLevel}|${nodeNode}|${betweenLayers}|${edgeEdge}|${edgeNode}|${mergeEdges}|${favorStraightEdges}`;
   const prevSigRef = useRef<{ data: string; settings: string } | null>(null);
@@ -441,8 +441,13 @@ export function InteractiveAnalogSchematic({
     store.getState().pruneScope(scopeKey, [...devices].map((d) => deviceKey(d)));
     const prev = prevSigRef.current;
     const settingsChanged = prev != null && prev.settings !== settingsSig;
+    // A dataset change after mount (new devices, new hierarchy blocks, a
+    // different region/fragment) must NOT inherit the old persisted layout —
+    // block sizes change and a stored position can overlap its new neighbours.
+    // Re-run the FULL ELK arrangement (ignoreStored) in that case.
+    const dataChanged = prev != null && prev.data !== dataSig;
     prevSigRef.current = { data: dataSig, settings: settingsSig };
-    runLayout(settingsChanged);
+    runLayout(settingsChanged || dataChanged);
     return () => {
       layoutSeq.current++; // cancel in-flight layout on dataset switch
     };
