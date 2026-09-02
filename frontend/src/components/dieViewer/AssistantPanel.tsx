@@ -6,6 +6,8 @@ import { ApiError } from "../../api/client";
 import { LvsMatchCard } from "./LvsMatchCard";
 import { formatDevicesAsNetlist2Svg } from "../../lib/schematic/netlist2svgFormat";
 import { Netlist2SvgView } from "../netlist/Netlist2SvgView";
+import { InteractiveAnalogSchematic } from "../netlist/InteractiveAnalogSchematic";
+import { scopeKey as interactiveScopeKey } from "../../state/interactiveSchematic";
 import { useAssistantSession } from "../../state/assistantSession";
 import { usePreferences } from "../../state/preferences";
 import { renderDeviceCrop, getTopVisibleLayerName, resolveLayerNameToSourceId } from "../../lib/vision/renderDeviceCrop";
@@ -88,7 +90,16 @@ export function AssistantPanel({ dieId, annotations, devices, netNames, warnings
   const [lvsError, setLvsError] = useState<string | null>(null);
   const [lvsChecking, setLvsChecking] = useState(false);
   const [lvsProgress, setLvsProgress] = useState<{ checked: number; total: number } | null>(null);
-  const [schematicPopup, setSchematicPopup] = useState<{ title: string; json: unknown } | null>(null);
+  const [schematicPopup, setSchematicPopup] = useState<{
+    title: string;
+    json: unknown;
+    /** Devices of the finding fragment — enables the interactive engine. */
+    devices?: import("shared").AnalogDevice[];
+    netNames?: Map<number, string>;
+    vdd?: string;
+    gnd?: string;
+    scopeKey?: string;
+  } | null>(null);
   const [lvsFinding, setLvsFinding] = useState<AssistantFinding | null>(null);
   const [libraries, setLibraries] = useState<AssistantLvsLibrarySummary[]>([]);
   const [activeLib, setActiveLib] = useState<string>("analog-circuits-sky130");
@@ -380,7 +391,15 @@ export function AssistantPanel({ dieId, annotations, devices, netNames, warnings
     const vdd = allNames.find((n) => /^(VDD|VCC|AVDD)$/i.test(n)) ?? "VDD";
     const gnd = allNames.find((n) => /^(GND|VSS)$/i.test(n)) ?? "GND";
     const json = formatDevicesAsNetlist2Svg(fragDevices, netNames, `finding-${finding.id}`, { vdd, gnd, showNetLabels: true });
-    setSchematicPopup({ title: `${finding.label} · ${finding.instanceNames.join(", ")}`, json });
+    setSchematicPopup({
+      title: `${finding.label} · ${finding.instanceNames.join(", ")}`,
+      json,
+      devices: fragDevices,
+      netNames,
+      vdd,
+      gnd,
+      scopeKey: `fragment:${finding.id}`,
+    });
   };
 
   const runLvs = async (params: { libraryId: string; topologies: string[]; budget: number }) => {
@@ -711,31 +730,68 @@ export function AssistantPanel({ dieId, annotations, devices, netNames, warnings
       )}
 
       {schematicPopup && createPortal(
-        <div
-          className="dark"
-          onClick={() => setSchematicPopup(null)}
-          style={{ position: "fixed", inset: 0, zIndex: 200, background: "rgba(0,0,0,0.5)", display: "flex", alignItems: "center", justifyContent: "center", padding: 24 }}
-        >
-          <div
-            onClick={(event) => event.stopPropagation()}
-            style={{ display: "grid", gridTemplateRows: "auto 1fr", width: "min(760px, 92vw)", height: "min(80vh, 820px)", background: "var(--card)", border: "1px solid var(--l2)", borderRadius: 8, boxShadow: "0 8px 32px rgba(0,0,0,0.5)", overflow: "hidden" }}
-          >
-            <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", borderBottom: "1px solid var(--l2)" }}>
-              <div style={{ minWidth: 0 }}>
-                <div style={{ color: "var(--ink3)", fontSize: 9, textTransform: "uppercase", letterSpacing: 0.4 }}>Schematic fragment</div>
-                <div style={{ fontSize: 11, fontWeight: 600, color: "var(--ink)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{schematicPopup.title}</div>
-              </div>
-              <button className="btn ghost" type="button" style={{ marginLeft: "auto", fontSize: 10, padding: "3px 8px" }} onClick={() => setSchematicPopup(null)}>Close</button>
-            </div>
-            <div style={{ position: "relative", minHeight: 0 }}>
-              <Netlist2SvgView netlistJson={schematicPopup.json} height="100%" />
-            </div>
-          </div>
-        </div>,
+        <SchematicFragmentPopup
+          popup={schematicPopup}
+          dieId={dieId}
+          onClose={() => setSchematicPopup(null)}
+        />,
         document.body,
       )}
     </div>
     </>
+  );
+}
+
+function SchematicFragmentPopup({ popup, dieId, onClose }: {
+  popup: { title: string; json: unknown; devices?: AnalogDevice[]; netNames?: Map<number, string>; vdd?: string; gnd?: string; scopeKey?: string };
+  dieId: string;
+  onClose: () => void;
+}) {
+  // Static (netlist2svg, default) vs interactive engine. Interactive only
+  // when we have the live device data — otherwise stay on the SVG path.
+  const canInteractive = !!popup.devices && popup.devices.length > 0;
+  const [engine, setEngine] = useState<"static" | "interactive">("static");
+  const moduleName = popup.scopeKey ?? "fragment";
+  const sk = interactiveScopeKey(dieId, moduleName, popup.scopeKey ?? "fragment");
+
+  return (
+    <div
+      className="dark"
+      onClick={onClose}
+      style={{ position: "fixed", inset: 0, zIndex: 200, background: "rgba(0,0,0,0.5)", display: "flex", alignItems: "center", justifyContent: "center", padding: 24 }}
+    >
+      <div
+        onClick={(event) => event.stopPropagation()}
+        style={{ display: "grid", gridTemplateRows: "auto 1fr", width: "min(760px, 92vw)", height: "min(80vh, 820px)", background: "var(--card)", border: "1px solid var(--l2)", borderRadius: 8, boxShadow: "0 8px 32px rgba(0,0,0,0.5)", overflow: "hidden" }}
+      >
+        <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", borderBottom: "1px solid var(--l2)" }}>
+          <div style={{ minWidth: 0 }}>
+            <div style={{ color: "var(--ink3)", fontSize: 9, textTransform: "uppercase", letterSpacing: 0.4 }}>Schematic fragment</div>
+            <div style={{ fontSize: 11, fontWeight: 600, color: "var(--ink)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{popup.title}</div>
+          </div>
+          {canInteractive && (
+            <div className="row" style={{ gap: 2, background: "var(--l2)", borderRadius: 4, padding: 2 }}>
+              <button type="button" className={"btn sm" + (engine === "static" ? " on" : "")} onClick={() => setEngine("static")}>Static</button>
+              <button type="button" className={"btn sm" + (engine === "interactive" ? " on" : "")} onClick={() => setEngine("interactive")}>Interactive</button>
+            </div>
+          )}
+          <button className="btn ghost" type="button" style={{ marginLeft: "auto", fontSize: 10, padding: "3px 8px" }} onClick={onClose}>Close</button>
+        </div>
+        <div style={{ position: "relative", minHeight: 0 }}>
+          {engine === "interactive" && canInteractive && popup.devices && popup.netNames ? (
+            <InteractiveAnalogSchematic
+              devices={popup.devices}
+              namedNets={popup.netNames}
+              vdd={popup.vdd}
+              gnd={popup.gnd}
+              scopeKey={sk}
+            />
+          ) : (
+            <Netlist2SvgView netlistJson={popup.json} height="100%" />
+          )}
+        </div>
+      </div>
+    </div>
   );
 }
 
