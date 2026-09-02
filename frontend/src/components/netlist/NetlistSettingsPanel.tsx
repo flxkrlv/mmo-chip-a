@@ -43,6 +43,10 @@ type Props = {
   setMergeEdges: (v: boolean) => void;
   favorStraightEdges: boolean;
   setFavorStraightEdges: (v: boolean) => void;
+  showIoPins: boolean;
+  setShowIoPins: (v: boolean) => void;
+  showHierarchy: boolean;
+  setShowHierarchy: (v: boolean) => void;
 };
 
 const labelStyle: React.CSSProperties = {
@@ -135,6 +139,8 @@ export function NetlistSettingsPanel({
   edgeNode, setEdgeNode,
   mergeEdges, setMergeEdges,
   favorStraightEdges, setFavorStraightEdges,
+  showIoPins, setShowIoPins,
+  showHierarchy, setShowHierarchy,
 }: Props) {
   const backdropRef = useRef<HTMLDivElement>(null);
 
@@ -246,6 +252,16 @@ export function NetlistSettingsPanel({
               label="Prefer straight edges"
               checked={favorStraightEdges}
               onChange={setFavorStraightEdges}
+            />
+            <Toggle
+              label="Show die I/O pins"
+              checked={showIoPins}
+              onChange={setShowIoPins}
+            />
+            <Toggle
+              label="Show hierarchy (floorplan blocks)"
+              checked={showHierarchy}
+              onChange={setShowHierarchy}
             />
             <div style={{ fontSize: 9, color: "var(--ink3)", lineHeight: 1.4 }}>
               Fine-tuning applies to the Interactive engine. Changing layout settings re-arranges

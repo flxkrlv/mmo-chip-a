@@ -10,7 +10,10 @@ import {
   orientedSize,
   deviceObstacle,
   WIRE_OBSTACLE_PAD,
+  regionExternalNets,
+  blockDevices,
   type Obstacle,
+  type HierarchyBlock,
 } from "./interactiveAnalogLayout";
 import { parseSymbolSkin } from "./interactiveSymbols";
 import type { AnalogDevice } from "shared";
@@ -352,5 +355,68 @@ describe("runInteractiveLayout (ELK, node)", () => {
     // VDD rail wired (≥1 polyline), VDD symbol placed, and ELK didn't blow up
     expect(res.wires.get(3)?.polylines.length ?? 0).toBeGreaterThan(0);
     expect(res.positions["VDD"]).toBeDefined();
+  }, 30000);
+});
+
+describe("hierarchy blocks", () => {
+  it("regionExternalNets exposes only cross-region / io nets as block ports", () => {
+    // net 1 crosses regions A and B → becomes a port on both.
+    // net 2 is region-A-local → NOT a port.
+    // net 5 is a die io pin on region A → becomes a port.
+    const a = [mos("A1", "nmos", [["D", 1], ["G", 2], ["S", 5], ["B", 5]])];
+    const b = [mos("B1", "pmos", [["D", 1], ["G", 3], ["S", 4], ["B", 4]])];
+    const fp = new Map<string, AnalogDevice[]>([["A", a], ["B", b]]);
+    const nets = new Map<number, string>([
+      [1, "share"], [2, "localA"], [3, "gateB"], [4, "srcB"], [5, "ioV"],
+    ]);
+    const blocks: HierarchyBlock[] = regionExternalNets(
+      fp, [], new Set([5]), nets, { vdd: "VDD", gnd: "GND" },
+    );
+    const portNames = (blk: HierarchyBlock) => blk.nets.map((n) => n.name).sort();
+    const aNames = portNames(blocks.find((b) => b.regionId === "A")!);
+    expect(aNames).toEqual(["ioV", "share"]); // localA excluded
+    const bNames = portNames(blocks.find((b) => b.regionId === "B")!);
+    expect(bNames).toEqual(["share"]);
+  });
+
+  it("blockDevices synthesizes in_/out_ terminals bound to the net ids", () => {
+    const blocks: HierarchyBlock[] = [{
+      regionId: "A",
+      name: "A",
+      nets: [
+        { netId: 1, name: "share", direction: "input" },
+        { netId: 5, name: "ioV", direction: "output" },
+      ],
+    }];
+    const devs = blockDevices(blocks);
+    expect(devs).toHaveLength(1);
+    expect(deviceKey(devs[0])).toBe("blk:A");
+    expect(devs[0].terminals).toEqual([
+      { name: "in_share", netId: 1 },
+      { name: "out_ioV", netId: 5 },
+    ]);
+  });
+
+  it("runInteractiveLayout accepts blocks and routes their port nets", async () => {
+    const devices = [mos("U1", "nmos", [["D", 1], ["G", 2], ["S", 3], ["B", 3]])];
+    const nets = new Map<number, string>([[1, "out"], [2, "inp"], [3, "GND"], [4, "VDD"]]);
+    const blocks: HierarchyBlock[] = [{
+      regionId: "REG",
+      name: "REG",
+      nets: [
+        { netId: 1, name: "out", direction: "output" },
+        { netId: 2, name: "inp", direction: "input" },
+      ],
+    }];
+    const res = await runInteractiveLayout(devices, nets, table, {
+      vdd: "VDD", gnd: "GND", strategy: "SIMPLE", direction: "DOWN", compaction: 0,
+      blocks,
+    });
+    expect(res.usedFallback).toBe(false);
+    expect(res.positions["blk:REG"]).toBeDefined();
+    // wires between block ports and the device via shared nets 1/2
+    for (const netId of [1, 2]) {
+      expect(res.wires.get(netId)?.polylines.length ?? 0, `net ${netId}`).toBeGreaterThan(0);
+    }
   }, 30000);
 });

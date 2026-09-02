@@ -24,6 +24,7 @@ import { generateBlockDiagram } from "../../lib/schematic/blockDiagramFormat";
 import { NetlistSettingsPanel } from "./NetlistSettingsPanel";
 import { collectDieWideAnalogDevices, getRenameVersion } from "../../api/dieWideAnalog";
 import { matchGeometry } from "../../lib/export/matching";
+import { regionExternalNets, type HierarchyBlock } from "../../lib/schematic/interactiveAnalogLayout";
 import { InteractiveAnalogSchematic } from "./InteractiveAnalogSchematic";
 import { scopeKey as interactiveScopeKey } from "../../state/interactiveSchematic";
 import { useSession } from "../../state/session";
@@ -74,6 +75,8 @@ export function SchematicViewPanel({
   const edgeNode = usePreferences((s) => s.netlistEdgeNode);
   const mergeEdges = usePreferences((s) => s.netlistMergeEdges);
   const favorStraightEdges = usePreferences((s) => s.netlistFavorStraightEdges);
+  const showIoPins = usePreferences((s) => s.netlistShowIoPins);
+  const showHierarchy = usePreferences((s) => s.netlistShowHierarchy);
   const {
     setNetlistLayoutStrategy: setLayoutStrategy,
     setNetlistLayoutDirection: setLayoutDirection,
@@ -84,6 +87,8 @@ export function SchematicViewPanel({
     setNetlistEdgeNode: setEdgeNode,
     setNetlistMergeEdges: setMergeEdges,
     setNetlistFavorStraightEdges: setFavorStraightEdges,
+    setNetlistShowIoPins: setShowIoPins,
+    setNetlistShowHierarchy: setShowHierarchy,
   } = usePreferences.getState();
 
   const n2sRef = useRef<Netlist2SvgHandle>(null);
@@ -276,14 +281,39 @@ export function SchematicViewPanel({
     return n2sData.flatJson;
   }, [hierarchical, activeRegion, n2sData, moduleName, spiceConfig, selectedDeviceNames]);
 
+  // ── Hierarchy blocks ─────────────────────────────────────────
+  // Floorplan regions collapsed into subcircuit rectangles (interactive
+  // "show hierarchy"). Defined BEFORE interactiveScope (it keys the slot).
+  const hierarchyBlocks: HierarchyBlock[] | undefined = useMemo(() => {
+    if (!showHierarchy) return undefined;
+    if (!hierarchical || !floorplanRegions || floorplanRegions.length === 0) return undefined;
+    if (!n2sData.floorplanDevices) return undefined;
+    const regionDevices = new Map<string, AnalogDevice[]>();
+    let unassignedDevices: AnalogDevice[] = [];
+    for (const [regionId, devs] of n2sData.floorplanDevices) {
+      if (regionId === "__unassigned__") unassignedDevices = devs;
+      else regionDevices.set(regionId, devs);
+    }
+    if (regionDevices.size === 0) return undefined;
+    const cfg: SpiceConfig = { vdd: "VDD", gnd: "GND", ...spiceConfig };
+    return regionExternalNets(
+      regionDevices,
+      unassignedDevices,
+      n2sData.ioNetIds,
+      n2sData.namedNets,
+      { vdd: cfg.vdd ?? "VDD", gnd: cfg.gnd ?? "GND" },
+    );
+  }, [showHierarchy, hierarchical, floorplanRegions, n2sData, spiceConfig]);
+
   // ── Interactive engine data (draggable canvas) ────────────────
   // Scope slot keeps layouts of different datasets (full / region /
   // assistant fragment) apart in the persisted store.
   const interactiveScope = useMemo(() => {
     if (selectedDeviceNames.length > 0) return `fragment:${hashFragmentScope(selectedDeviceNames)}`;
+    if (showHierarchy && hierarchyBlocks) return "hierarchy";
     if (hierarchical && activeRegion) return `region:${activeRegion}`;
     return "full";
-  }, [selectedDeviceNames, hierarchical, activeRegion]);
+  }, [selectedDeviceNames, hierarchical, activeRegion, showHierarchy, hierarchyBlocks]);
 
   const interactiveDevices = useMemo(() => {
     if (selectedDeviceNames.length > 0) {
@@ -298,9 +328,23 @@ export function SchematicViewPanel({
     return n2sData.devices;
   }, [hierarchical, activeRegion, n2sData, selectedDeviceNames]);
 
-  // io pin labels: only the assistant fragment shows them (matches the
-  // static view's showNetLabels behaviour).
-  const interactiveIoNetIds = selectedDeviceNames.length > 0 ? n2sData.ioNetIds : undefined;
+  // I/O pin net ids: shown when the user toggles "Show I/O pins" (
+  // permission matched: assistant fragment always shows them).
+  const interactiveIoNetIds = showIoPins || selectedDeviceNames.length > 0 ? n2sData.ioNetIds : undefined;
+
+  // When hierarchy is shown, the interactive canvas lays out ONLY the
+  // top-level (unassigned) devices — region contents collapse into block
+  // nodes (passed via `blocks`).
+  const interactiveDevicesWithHierarchy = useMemo(() => {
+    if (!hierarchyBlocks) return interactiveDevices;
+    return n2sData.devices.filter((d) =>
+      !hierarchyBlocks.some((b) =>
+        (n2sData.floorplanDevices?.get(b.regionId) ?? []).some(
+          (rd) => (rd.instanceName ?? rd.id) === (d.instanceName ?? d.id),
+        ),
+      ),
+    );
+  }, [hierarchyBlocks, interactiveDevices, n2sData]);
 
   return (
     <div
@@ -394,6 +438,21 @@ export function SchematicViewPanel({
               Interactive
             </button>
           </div>
+        )}
+
+        {/* ── Hierarchy toggle: show/hide floorplan region blocks ── */}
+        {renderMode === "analog" && engine === "interactive" && (
+          <button
+            type="button"
+            className={"btn sm" + (showHierarchy ? " on" : "")}
+            onClick={() => setShowHierarchy(!showHierarchy)}
+            style={{ fontSize: 10, fontWeight: 600 }}
+            title={showHierarchy
+              ? "Hide hierarchy — expand floorplan regions back into devices"
+              : "Show hierarchy — collapse floorplan regions into subcircuit blocks"}
+          >
+            {showHierarchy ? "Hide hierarchy" : "Show hierarchy"}
+          </button>
         )}
 
         {/* Layout strategy selector */}
@@ -611,7 +670,7 @@ export function SchematicViewPanel({
           // ── Analog schematic ─────────────────────────────────
           engine === "interactive" ? (
             <InteractiveAnalogSchematic
-              devices={interactiveDevices}
+              devices={interactiveDevicesWithHierarchy}
               namedNets={n2sData.namedNets}
               ioNetIds={interactiveIoNetIds}
               scopeKey={interactiveScopeKey(dieId, moduleName, interactiveScope)}
@@ -626,6 +685,7 @@ export function SchematicViewPanel({
               edgeNode={edgeNode}
               mergeEdges={mergeEdges}
               favorStraightEdges={favorStraightEdges}
+              blocks={hierarchyBlocks}
             />
           ) : currentN2sJson ? (
             <Netlist2SvgView ref={n2sRef} netlistJson={currentN2sJson} layoutStrategy={layoutStrategy} layoutDirection={layoutDirection} compactionLevel={compactionLevel} />
@@ -657,6 +717,10 @@ export function SchematicViewPanel({
         setMergeEdges={setMergeEdges}
         favorStraightEdges={favorStraightEdges}
         setFavorStraightEdges={setFavorStraightEdges}
+        showIoPins={showIoPins}
+        setShowIoPins={setShowIoPins}
+        showHierarchy={showHierarchy}
+        setShowHierarchy={setShowHierarchy}
       />
     </div>
   );

@@ -93,11 +93,157 @@ export interface AnalogLayoutOptions {
   mergeEdges?: boolean;
   /** Prefer straight edges over detours (elk.layered.nodePlacement.favorStraightEdges). */
   favorStraightEdges?: boolean;
+  /** Hierarchy blocks (floorplan regions) collapsed into subcircuit
+   *  rectangles. When present they are laid out as `kind:"block"` nodes. */
+  blocks?: HierarchyBlock[];
+}
+
+/**
+ * Port specs for a hierarchy block: one West (input) / East (output) stub
+ * per external net. Mirror of the static block diagram.
+ */
+function blockPorts(b: HierarchyBlock): NodePortSpec[] {
+  const ins = b.nets.filter((n) => n.direction === "input");
+  const outs = b.nets.filter((n) => n.direction === "output");
+  const h = blockHeight(Math.max(ins.length, outs.length, 1));
+  const center = h / 2;
+  const insSpacing = ins.length > 0 ? (h - 16) / (ins.length + 1) : 0;
+  const outsSpacing = outs.length > 0 ? (h - 16) / (outs.length + 1) : 0;
+  const pins: NodePortSpec[] = [];
+  ins.forEach((n, i) => {
+    pins.push({ pid: `in_${n.name}`, x: 0, y: 16 + (i + 1) * insSpacing, side: "WEST", netId: n.netId });
+  });
+  outs.forEach((n, i) => {
+    pins.push({ pid: `out_${n.name}`, x: BLOCK_WIDTH, y: 16 + (i + 1) * outsSpacing, side: "EAST", netId: n.netId });
+  });
+  // mark center ref for label (pins carry no UI weight)
+  (pins as Array<NodePortSpec & { _center?: number }>).forEach((p) => (p._center = center));
+  return pins;
 }
 
 /** Read an optional spacing option, falling back to a per-key default. */
 function spacingOf(v: number | undefined, dflt: number): string {
   return v == null ? String(dflt) : String(v);
+}
+
+// ── Hierarchy blocks (floorplan regions as subcircuit rectangles) ──
+
+/** A floorplan region collapsed into a schematic block. */
+export interface HierarchyBlock {
+  /** Region id — becomes the node key (deviceKey = `blk:<regionId>`). */
+  regionId: string;
+  /** Display name (region.name or id). */
+  name: string;
+  /** External nets this block exposes as ports:
+   *  direction input → pin on the LEFT (WEST), output → RIGHT (EAST). */
+  nets: Array<{ netId: number; name: string; direction: "input" | "output" }>;
+}
+
+/** Layout height of a block with `n` ports (rows stacked 18px). */
+function blockHeight(portCount: number): number {
+  return Math.max(40, 16 + portCount * 18);
+}
+const BLOCK_WIDTH = 90;
+
+/**
+ * Build synthetic AnalogDevice nodes for hierarchy blocks. Each block owns
+ * terminals named `in_<net>` / `out_<net>` (the canvas routes wires against
+ * these + the port lookup), and devicePorts() maps them to WEST/EAST pins.
+ */
+export function blockDevices(blocks: HierarchyBlock[]): AnalogDevice[] {
+  return blocks.map((b) => ({
+    id: `blk:${b.regionId}`,
+    kind: "block",
+    instanceName: `blk:${b.regionId}`,
+    layer: "metal1",
+    bbox: { x: 0, y: 0, width: 1, height: 1 },
+    geometry: {},
+    terminals: b.nets.map((n) => ({
+      name: `${n.direction === "input" ? "in" : "out"}_${n.name}`,
+      netId: n.netId,
+    })),
+  }) as unknown as AnalogDevice);
+}
+
+/** Device-key prefix for hierarchy blocks. */
+export function isBlockKey(key: string): boolean {
+  return key.startsWith("blk:");
+}
+
+/** True when the device is a synthetic hierarchy block (not a real device). */
+export function isBlockDevice(d: AnalogDevice): boolean {
+  return (d.kind as string) === "block";
+}
+
+/**
+ * External nets of each region: nets used by the region AND (used elsewhere
+ * OR a die IO pin). Mirrors the static block diagram's port selection —
+ * only cross-region / io nets become block ports.
+ */
+export function regionExternalNets(
+  floorplanDevices: Map<string, AnalogDevice[]>,
+  unassigned: AnalogDevice[],
+  ioNetIds: Set<number>,
+  namedNets: Map<number, string>,
+  props: { vdd: string; gnd: string },
+): HierarchyBlock[] {
+  const blocks: HierarchyBlock[] = [];
+  const usedElsewhere = new Set<number>();
+  for (const d of unassigned) {
+    for (const t of d.terminals) if (t.netId >= 0) usedElsewhere.add(t.netId);
+  }
+  const regionNetSets = new Map<string, Set<number>>();
+  for (const [rid, devs] of floorplanDevices) {
+    const s = new Set<number>();
+    for (const d of devs) for (const t of d.terminals) if (t.netId >= 0) s.add(t.netId);
+    regionNetSets.set(rid, s);
+  }
+  const regimeIds = [...regionNetSets.keys()];
+  for (let i = 0; i < regimeIds.length; i++) {
+    const nets = regionNetSets.get(regimeIds[i])!;
+    for (const netId of nets) {
+      for (let j = i + 1; j < regimeIds.length; j++) {
+        if (regionNetSets.get(regimeIds[j])!.has(netId)) { usedElsewhere.add(netId); break; }
+      }
+    }
+  }
+
+  for (const [rid, devs] of floorplanDevices) {
+    if (devs.length === 0) continue;
+    const regionNets = regionNetSets.get(rid)!;
+    const nets: HierarchyBlock["nets"] = [];
+    for (const netId of regionNets) {
+      const name = namedNets.get(netId);
+      if (!name) continue;
+      if (name === props.vdd || name === props.gnd) continue; // global power, not a block port
+      if (!usedElsewhere.has(netId) && !ioNetIds.has(netId)) continue; // region-local
+      const direction = inferBlockPortDirection(devs, netId);
+      nets.push({ netId, name, direction });
+    }
+    if (nets.length === 0) continue;
+    blocks.push({ regionId: rid, name: rid, nets });
+  }
+  return blocks;
+}
+
+function inferBlockPortDirection(
+  regionDevices: AnalogDevice[],
+  netId: number,
+): "input" | "output" {
+  let hasGate = false;
+  let hasPassive = false;
+  for (const d of regionDevices) {
+    for (const t of d.terminals) {
+      if (t.netId !== netId) continue;
+      if (d.kind === "mos" && t.name === "G") hasGate = true;
+      else if ((d.kind === "bjt_npn" || d.kind === "bjt_pnp") && t.name === "B") hasGate = true;
+      else if ((d.kind === "jfet_n" || d.kind === "jfet_p") && t.name === "G") hasGate = true;
+      else hasPassive = true;
+    }
+  }
+  if (hasGate && hasPassive) return "output"; // inout — treat as output pin
+  if (hasGate) return "input";
+  return "output";
 }
 
 /** Defaults kept aligned with the static skin's <s:layoutEngine>. */
@@ -339,7 +485,9 @@ async function elkInteractiveLayout(
 ): Promise<InteractiveLayoutResult> {
   const powers = powerDevices(devices, namedNets, opts);
   const ioNets = ioNetList(devices, namedNets, opts);
-  const all = [...devices, ...powers];
+  const blocks = opts.blocks ?? [];
+  const blockDevs = blockDevices(blocks);
+  const all = [...devices, ...powers, ...blockDevs];
 
   // Terminal membership: netId → [{deviceKey, terminal}]
   const netMembers = new Map<number, Array<{ deviceKey: string; device: AnalogDevice; terminal: string }>>();
@@ -350,12 +498,16 @@ async function elkInteractiveLayout(
     const key = deviceKey(d);
     const template = templateForDevice(table, d);
     const isGnd = d.instanceName === (opts.gnd ?? "GND");
+    const isBlock = isBlockDevice(d);
+    const bIndex = blocks.findIndex((b) => b.regionId === key.slice("blk:".length));
     const size =
-      (d.kind as string) === "power"
-        ? isGnd ? POWER_TEMPLATE_SIZE.gnd : POWER_TEMPLATE_SIZE.vcc
-        : template
-          ? { w: template.width, h: template.height }
-          : { w: 30, h: 40 };
+      isBlock
+        ? { w: BLOCK_WIDTH, h: blockHeight(blocks[bIndex]?.nets.length ?? 1) }
+        : (d.kind as string) === "power"
+          ? isGnd ? POWER_TEMPLATE_SIZE.gnd : POWER_TEMPLATE_SIZE.vcc
+          : template
+            ? { w: template.width, h: template.height }
+            : { w: 30, h: 40 };
     sizes[key] = size;
 
     const ports: NodePortSpec[] = [];
@@ -371,6 +523,8 @@ async function elkInteractiveLayout(
           netId: term.netId,
         });
       }
+    } else if (isBlock && bIndex >= 0) {
+      ports.push(...blockPorts(blocks[bIndex]));
     } else {
       ports.push(...devicePorts(d, table));
     }
@@ -476,6 +630,10 @@ async function elkInteractiveLayout(
         return (powerDev.instanceName ?? "") === (opts.gnd ?? "GND") ? "input" : "output";
       }
       if (isIoNet && m.deviceKey === `io:${netId}`) return "input"; // inputExt
+      // Hierarchy block: in_* is a consumer, out_* is a driver.
+      if (isBlockDevice(m.device)) {
+        return m.terminal.startsWith("in_") ? "input" : "output";
+      }
       // Direct skin pin position (no ELK-side round-trip needed):
       const template = templateForDevice(table, m.device);
       const pin = template ? pinForTerminal(m.device, m.terminal, template) : undefined;
@@ -598,14 +756,18 @@ export function gridFallback(
   opts: AnalogLayoutOptions = {},
 ): InteractiveLayoutResult {
   const powers = powerDevices(devices, namedNets, opts);
-  const all = [...powers, ...devices];
+  const blockDevs = blockDevices(opts.blocks ?? []);
+  const all = [...powers, ...blockDevs, ...devices];
   const positions: Record<string, Point> = {};
   const sizes: Record<string, { w: number; h: number }> = {};
   let maxW = 40;
   let maxH = 60;
   for (const d of all) {
     const t = templateForDevice(table, d);
-    if (t) {
+    if (isBlockDevice(d)) {
+      maxW = Math.max(maxW, BLOCK_WIDTH);
+      maxH = Math.max(maxH, blockHeight(1));
+    } else if (t) {
       maxW = Math.max(maxW, t.width);
       maxH = Math.max(maxH, t.height);
     }
@@ -619,20 +781,42 @@ export function gridFallback(
       y: 16 + Math.floor(i / cols) * ch,
     };
     const t = templateForDevice(table, d);
-    sizes[deviceKey(d)] = (d.kind as string) === "power"
-      ? (d.instanceName === (opts.gnd ?? "GND") ? POWER_TEMPLATE_SIZE.gnd : POWER_TEMPLATE_SIZE.vcc)
-      : t ? { w: t.width, h: t.height } : { w: 30, h: 40 };
+    sizes[deviceKey(d)] = isBlockDevice(d)
+      ? { w: BLOCK_WIDTH, h: blockHeight((d.terminals?.length ?? 0) > 0 ? Math.min(8, d.terminals.length) : 1) }
+      : (d.kind as string) === "power"
+        ? (d.instanceName === (opts.gnd ?? "GND") ? POWER_TEMPLATE_SIZE.gnd : POWER_TEMPLATE_SIZE.vcc)
+        : t ? { w: t.width, h: t.height } : { w: 30, h: 40 };
   });
 
   // Local routing for all nets.
   const wires = new Map<number, WireData>();
   const netIndex = buildNetIndex(devices, opts, powers);
+  // Add block members into the net index so local routing covers block ports.
+  for (const bd of blockDevs) {
+    for (const t of bd.terminals) {
+      if (t.netId < 0) continue;
+      let list = netIndex.get(t.netId);
+      if (!list) netIndex.set(t.netId, (list = []));
+      list.push({ deviceKey: deviceKey(bd), terminal: t.name });
+    }
+  }
   const obstacles: Obstacle[] = Object.entries(positions).map(([key, p]) =>
     deviceObstacle(p, sizes[key] ?? { w: 30, h: 40 }),
   );
   const keySet = new Set(Object.keys(positions));
   const lookups = new Map<string, SymbolPinLookup | undefined>();
   for (const d of all) lookups.set(deviceKey(d), portsForDeviceStatic(devices, powers, table, opts, deviceKey(d)));
+  // Block lookups: hand port pins (no skin template).
+  for (const bd of blockDevs) {
+    const key = deviceKey(bd);
+    const b = (opts.blocks ?? []).find((x) => x.regionId === key.slice("blk:".length));
+    if (!b) continue;
+    const bp = blockPorts(b);
+    lookups.set(key, (terminal: string) => {
+      const pin = bp.find((p) => p.pid === terminal);
+      return pin ? { dx: pin.x, dy: pin.y } : undefined;
+    });
+  }
   for (const [netId, members] of netIndex) {
     if (!members.some((m) => keySet.has(m.deviceKey))) continue;
     const anchors = members
@@ -684,6 +868,14 @@ export function terminalPinLookup(
     const isGnd = p.instanceName === (opts.gnd ?? "GND");
     map.set(deviceKey(p), (terminal: string) =>
       terminal === "PLUS" ? { dx: 10, dy: isGnd ? -15 : 30 } : undefined);
+  }
+  // Hierarchy blocks: hand pins at WEST/EAST stubs.
+  for (const b of opts.blocks ?? []) {
+    const bp = blockPorts(b);
+    map.set(`blk:${b.regionId}`, (terminal: string) => {
+      const pin = bp.find((p) => p.pid === terminal);
+      return pin ? { dx: pin.x, dy: pin.y } : undefined;
+    });
   }
   return map;
 }

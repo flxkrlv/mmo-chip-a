@@ -200,6 +200,10 @@ interface PreferencesState {
   netlistEdgeNode: number | undefined;
   netlistMergeEdges: boolean;
   netlistFavorStraightEdges: boolean;
+  /** Show die-level I/O pin symbols (inputExt) in the interactive schematic. */
+  netlistShowIoPins: boolean;
+  /** Collapse floorplan regions into subcircuit blocks in the interactive schematic. */
+  netlistShowHierarchy: boolean;
 }
 
 interface PreferencesActions {
@@ -299,6 +303,8 @@ interface PreferencesActions {
   setNetlistEdgeNode: (v: number | undefined) => void;
   setNetlistMergeEdges: (v: boolean) => void;
   setNetlistFavorStraightEdges: (v: boolean) => void;
+  setNetlistShowIoPins: (v: boolean) => void;
+  setNetlistShowHierarchy: (v: boolean) => void;
 }
 
 const DEFAULT_EXPANDED_SECTIONS: AnnotationKind[] = ["net", "via", "roi"];
@@ -375,6 +381,8 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
         netlistEdgeNode: undefined,
         netlistMergeEdges: false,
         netlistFavorStraightEdges: false,
+        netlistShowIoPins: true,
+        netlistShowHierarchy: false,
 
         setNetWidth: (width) => set({ netWidth: width }),
         setNetColor: (color) => set({ netColor: color }),
@@ -564,6 +572,8 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
         setNetlistEdgeNode: (v) => set({ netlistEdgeNode: v }),
         setNetlistMergeEdges: (v) => set({ netlistMergeEdges: v }),
         setNetlistFavorStraightEdges: (v) => set({ netlistFavorStraightEdges: v }),
+        setNetlistShowIoPins: (v) => set({ netlistShowIoPins: v }),
+        setNetlistShowHierarchy: (v) => set({ netlistShowHierarchy: v }),
       }),
       {
         name: "mmo-chip-preferences",
@@ -635,7 +645,9 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
           netlistEdgeEdge: state.netlistEdgeEdge,
           netlistEdgeNode: state.netlistEdgeNode,
           netlistMergeEdges: state.netlistMergeEdges,
-          netlistFavorStraightEdges: state.netlistFavorStraightEdges
+          netlistFavorStraightEdges: state.netlistFavorStraightEdges,
+          netlistShowIoPins: state.netlistShowIoPins,
+          netlistShowHierarchy: state.netlistShowHierarchy
         })
       }
     )

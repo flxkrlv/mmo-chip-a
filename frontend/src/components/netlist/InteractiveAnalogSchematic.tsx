@@ -42,8 +42,10 @@ import {
   transformPin,
   orientedSize,
   deviceObstacle,
+  blockDevices,
   type InteractiveLayoutResult,
   type DeviceOrientationLike,
+  type HierarchyBlock,
   type Point,
   type WireData,
 } from "../../lib/schematic/interactiveAnalogLayout";
@@ -81,6 +83,8 @@ interface Props {
   edgeNode?: number;
   mergeEdges?: boolean;
   favorStraightEdges?: boolean;
+  /** Hierarchy blocks (floorplan regions as subcircuit rectangles). */
+  blocks?: HierarchyBlock[];
 }
 
 // ── Constants ────────────────────────────────────────────────────
@@ -103,7 +107,7 @@ const EMPTY_ORIENT: Record<string, DeviceOrientationLike> = {};
 
 interface RenderNode {
   key: string;
-  kind: "device" | "power" | "io";
+  kind: "device" | "power" | "io" | "block";
   template?: SymbolTemplate;
   size: { w: number; h: number };
   device?: AnalogDevice;
@@ -111,6 +115,8 @@ interface RenderNode {
   label?: string;
   /** For power nodes: which rail symbol to draw/color. */
   powerKind?: "vcc" | "gnd";
+  /** Hierarchy block name (kind: "block"). */
+  blockName?: string;
 }
 
 // ── Component ────────────────────────────────────────────────────
@@ -118,7 +124,7 @@ interface RenderNode {
 export function InteractiveAnalogSchematic({
   devices, namedNets, ioNetIds, scopeKey, vdd, gnd,
   layoutStrategy = "BRANDES_KOEPF", layoutDirection = "DOWN", compactionLevel = 2,
-  nodeNode, betweenLayers, edgeEdge, edgeNode, mergeEdges, favorStraightEdges,
+  nodeNode, betweenLayers, edgeEdge, edgeNode, mergeEdges, favorStraightEdges, blocks,
 }: Props) {
   const opts = useMemo(
     () => ({
@@ -128,9 +134,10 @@ export function InteractiveAnalogSchematic({
       direction: layoutDirection,
       compaction: compactionLevel,
       nodeNode, betweenLayers, edgeEdge, edgeNode, mergeEdges, favorStraightEdges,
+      blocks,
     }),
     [vdd, gnd, ioNetIds, layoutStrategy, layoutDirection, compactionLevel,
-      nodeNode, betweenLayers, edgeEdge, edgeNode, mergeEdges, favorStraightEdges],
+      nodeNode, betweenLayers, edgeEdge, edgeNode, mergeEdges, favorStraightEdges, blocks],
   );
   const table = useMemo(() => parseSymbolSkin(), []);
 
@@ -183,8 +190,8 @@ export function InteractiveAnalogSchematic({
     return map;
   }, [pinLookup, ioNets]);
   const netIndex = useMemo(
-    () => buildNetIndex(devices, opts, powers),
-    [devices, opts, powers],
+    () => buildNetIndex(devices, opts, [...powers, ...blockDevices(blocks ?? [])]),
+    [devices, opts, powers, blocks],
   );
 
   /** Final render positions: stored/persisted positions win over ELK's. */
@@ -232,10 +239,24 @@ export function InteractiveAnalogSchematic({
     for (const io of ioNets) {
       const key = `io:${io.netId}`;
       if (positions[key] == null) continue;
-      out.push({ key, kind: "io", size: elkResult.sizes[key] ?? { w: 30, h: 20 }, label: io.name });
+      out.push({
+        key,
+        kind: "io",
+        template: table.byKey.get("inputExt"),
+        size: elkResult.sizes[key] ?? { w: 30, h: 20 },
+        label: io.name,
+      });
+    }
+
+    // Hierarchy blocks (floorplan regions collapsed into subcircuit
+    // rectangles). Rendered as block art + side port labels.
+    for (const b of blocks ?? []) {
+      const key = `blk:${b.regionId}`;
+      if (positions[key] == null) continue;
+      out.push({ key, kind: "block", size: elkResult.sizes[key] ?? { w: 30, h: 40 }, blockName: b.name });
     }
     return out;
-  }, [elkResult, positions, devices, powers, ioNets, table, opts.gnd]);
+  }, [elkResult, positions, devices, powers, ioNets, blocks, table, opts.gnd]);
 
   /** Nets touched by the given node keys. */
   const netsTouched = useCallback(
@@ -1270,7 +1291,7 @@ const DeviceNode = memo(function DeviceNode({
   onPointerDown: (e: ReactPointerEvent<SVGGElement>, node: RenderNode) => void;
   onHover: (key: string | null) => void;
 }) {
-  const { key, template, size, kind, device, label, powerKind } = node;
+  const { key, template, size, kind, device, label, powerKind, blockName } = node;
   const os = orientedSize(size, orient);
   const rot = orient?.rot ?? 0;
   const flip = orient?.flip ?? "none";
@@ -1328,9 +1349,19 @@ const DeviceNode = memo(function DeviceNode({
       {/* Art (rotated/mirrored) — only the symbol, never the labels. */}
       <g transform={artTransform || undefined}>
         {template ? <use href={`#isch-${template.type}`} /> : (
-          <rect width={size.w} height={size.h} fill="none" stroke="var(--ink2)" strokeDasharray="3 2" />
+          kind === "block" ? (
+            <rect x={0} y={0} width={size.w} height={size.h} fill="var(--l1)" stroke="var(--ink2)" strokeWidth={1.5} strokeDasharray="2 1" rx={3} />
+          ) : (
+            <rect width={size.w} height={size.h} fill="none" stroke="var(--ink2)" strokeDasharray="3 2" />
+          )
         )}
       </g>
+      {/* Hierarchy block name */}
+      {kind === "block" && blockName && (
+        <text x={size.w / 2} y={size.h / 2} fontSize={10} fill="var(--ink)" textAnchor="middle" pointerEvents="none">
+          {blockName}
+        </text>
+      )}
       {/* Per-instance labels (cannot live inside <use> — shared DOM).
           Kept horizontal/un-mirrored by living OUTSIDE the art transform. */}
       {template?.labels.map((spec, i) => {
