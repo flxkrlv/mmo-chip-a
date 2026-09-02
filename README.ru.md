@@ -190,14 +190,16 @@ Die viewer поддерживает 1–6 слоёв металла (ME1–ME6) 
 
 ---
 
-## Schematic Viewer (netlist2svg)
+## Schematic Viewer
 
-Электрические принципиальные схемы на уровне транзисторов и функциональные блок-диаграммы (для floorplan иерархии) из SPICE-нетлиста.
+Принципиальные схемы уровня транзисторов из SPICE-нетлиста с **интерактивным канвасом** (движок по умолчанию).
 
-- **Analog mode:** полная схема со всеми устройствами  
-- **Functional mode:** floorplan-регионы как блоки с I/O портами  
-- ELK layout, pan/zoom, тултипы, раскраска питания (VDD красный, GND синий)  
-- Экспорт: SVG, PNG (2×), Yosys JSON
+- **Интерактив (по умолчанию)** — перетаскивание устройств, фиксация позиций (сохраняется), мультивыбор, поворот/зеркалирование символов, undo/redo
+- **Иерархия** — floorplan-регионы как свернутые блоки с подписями портов; двойной клик / ПКМ по блоку — открыть его схему. Вкладки регионов (All, bandgap, …)
+- **I/O pins** — пины и нетсы уровня кристалла
+- ELK-раскладка (strategy/direction/compaction + настройка зазоров/рёбер в Netlist Settings), zoom колесом с Ctrl, тултипы имён нетов на проводах
+- Экспорт: PNG, SVG (чёрно-белая)
+- **Legacy static рендер** (netlist2svg, опционально): тумблер Static/Interactive, функциональная блок-диаграмма, кнопки pan/zoom, скачивание SVG/PNG/JSON
 
 ---
 
@@ -317,7 +319,7 @@ Full-экспорт сохраняет оригинал + overlay-изображ
 - **DMOS, диод Шоттки, VPNP, JFET** — нет детекции или маркеров  
 - **Wire matching** — допуск = размер контакта × 0.5; возможны ложные срабатывания  
 - **Редактирование polyline** после размещения (только перерисовать)  
-- **Hierarchical netlist + floorplan:** нужно тестирование (alias collision, rename speed)
+- **Hierarchical netlist / floorplan** — интерактивный viewer поддерживает; alias collision и скорость rename требуют реального тестирования
 
 ---
 
@@ -343,13 +345,3 @@ docs/
 ```
 
 Ключевые файлы экстракции: `dieWideAnalog.ts`, `simpleAnalog.ts`, `spice.ts` (`frontend/src/`).
-
-## v1.4-alpha - общие многослойные динамические tiled overlays
-
-Во viewer реализован **многослойный динамический tiled renderer** для overlay images. Источники overlay являются **общими для LAN-команды в рамках die**, а visibility, opacity, порядок и offsets каждого слоя сохраняются локально в browser preferences конкретного пользователя. Renderer запрашивает только tiles активного viewport, сохраняет coarse preview до прихода sharp tiles, приоритизирует текущую цель pan/zoom и перерисовывает только затронутые output tiles после загрузки source tile.
-
-ML/CV действие берёт верхний видимый overlay, выбранный в browser отправившего пользователя, и фиксирует этот source как snapshot фоновой job. Merge Cells и RE Cell сохраняют лёгкие server-side static crop previews выбранного общего tiled overlay; существующие layer hotkeys обновляют эти previews.
-
-Full project export содержит только portable `manifest.json` и original image каждого общего overlay. Производные `tiles/` в архив не входят; при import manifest перепривязывается к пути нового сервера, coarse levels создаются в фоне, а остальные tiles остаются lazy.
-
-Подробности актуальной архитектуры находятся в [`docs/CHANGELOG_2026-08-14_TILED_OVERLAY_RELEASE.md`](docs/CHANGELOG_2026-08-14_TILED_OVERLAY_RELEASE.md), а отложенный план ускорения cold latency - в [`docs/PERSISTENT_LEVEL_IMAGES_PLAN.md`](docs/PERSISTENT_LEVEL_IMAGES_PLAN.md).

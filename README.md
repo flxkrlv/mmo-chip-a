@@ -190,14 +190,16 @@ Computer vision tools for automated cell instance detection. Available in the ri
 
 ---
 
-## Schematic Viewer (netlist2svg)
+## Schematic Viewer
 
-Transistor-level schematics and functional block diagrams from SPICE netlists.
+Transistor-level schematics from SPICE netlists with an **interactive canvas** (default engine).
 
-- **Analog mode:** full schematic with all detected devices  
-- **Functional mode:** floorplan regions as blocks with I/O ports  
-- ELK layout, pan/zoom, device tooltips, power net coloring (VDD red, GND blue)  
-- Export: SVG, PNG (2×), Yosys JSON
+- **Interactive (default)** — drag devices, lock positions (persisted), multi-select, rotate/flip symbols, undo/redo
+- **Hierarchy** — floorplan regions as collapsed blocks with port labels; double-click / right-click a block to open its schematic. Region tabs (All, bandgap, …)
+- **I/O pins** — die-level I/O pin symbols and nets
+- ELK layout (strategy/direction/compaction + spacing/edge tuning in Netlist Settings), ctrl+wheel zoom, net-name tooltips on wires
+- Export: PNG, SVG (black-on-white)
+- **Legacy static renderer** (netlist2svg, opt-in): Static/Interactive toggle, Functional block diagram, pan/zoom buttons, SVG/PNG/JSON download
 
 ---
 
@@ -317,7 +319,7 @@ Overlay layer settings (visibility, opacity, offset) are persisted per-die in lo
 - **DMOS, Schottky diode, VPNP, JFET** — no detection or markers  
 - **Wire matching** — tolerance = contact size × 0.5; dense routing may false-positive  
 - **Polyline post-edit** — stretch/reshape (only redraw from scratch)  
-- **Hierarchical netlist + floorplan:** needs real-world testing (alias collision, rename speed)
+- **Hierarchical netlist / floorplan** — interactive viewer supports it; alias collision + rename speed still need real-world validation
 
 ---
 
@@ -343,13 +345,3 @@ docs/
 ```
 
 Key extraction files: `dieWideAnalog.ts`, `simpleAnalog.ts`, `spice.ts` (`frontend/src/`).
-
-## v1.4-alpha - shared multilayer dynamic tiled overlays
-
-The die viewer uses a **multilayer dynamic tiled renderer** for overlay images. Overlay sources are **shared by the LAN team for each die**, while each browser keeps its own layer visibility, opacity, order, and offsets in local preferences. The renderer requests only tiles relevant to the active viewport, keeps a coarse preview while sharp tiles load, prioritizes the current pan/zoom target, and invalidates only the output tiles affected when an overlay source tile arrives.
-
-ML/CV actions use the top visible overlay selected in the requesting user's browser and preserve that source as a job snapshot. Merge Cells and RE Cell retain lightweight server-side static crop previews from the selected shared tiled overlay; the existing layer hotkeys update those previews.
-
-A full project export contains each shared overlay's portable `manifest.json` and original image only. Generated `tiles/` are excluded, and the imported manifest is rebound to the new server path; coarse levels are regenerated in the background and remaining tiles stay lazy.
-
-See [`docs/CHANGELOG_2026-08-14_TILED_OVERLAY_RELEASE.md`](docs/CHANGELOG_2026-08-14_TILED_OVERLAY_RELEASE.md) for the current architecture and implementation summary, and [`docs/PERSISTENT_LEVEL_IMAGES_PLAN.md`](docs/PERSISTENT_LEVEL_IMAGES_PLAN.md) for the deferred cold-latency optimization plan.
