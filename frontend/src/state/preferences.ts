@@ -204,6 +204,9 @@ interface PreferencesState {
   netlistShowIoPins: boolean;
   /** Collapse floorplan regions into subcircuit blocks in the interactive schematic. */
   netlistShowHierarchy: boolean;
+  /** Show the legacy static netlist2svg renderer (toggle, download, functional).
+   *  Off by default — the interactive canvas is the primary engine. */
+  netlistShowLegacyStatic: boolean;
 }
 
 interface PreferencesActions {
@@ -305,6 +308,7 @@ interface PreferencesActions {
   setNetlistFavorStraightEdges: (v: boolean) => void;
   setNetlistShowIoPins: (v: boolean) => void;
   setNetlistShowHierarchy: (v: boolean) => void;
+  setNetlistShowLegacyStatic: (v: boolean) => void;
 }
 
 const DEFAULT_EXPANDED_SECTIONS: AnnotationKind[] = ["net", "via", "roi"];
@@ -383,6 +387,7 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
         netlistFavorStraightEdges: false,
         netlistShowIoPins: true,
         netlistShowHierarchy: false,
+        netlistShowLegacyStatic: false,
 
         setNetWidth: (width) => set({ netWidth: width }),
         setNetColor: (color) => set({ netColor: color }),
@@ -574,6 +579,7 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
         setNetlistFavorStraightEdges: (v) => set({ netlistFavorStraightEdges: v }),
         setNetlistShowIoPins: (v) => set({ netlistShowIoPins: v }),
         setNetlistShowHierarchy: (v) => set({ netlistShowHierarchy: v }),
+        setNetlistShowLegacyStatic: (v) => set({ netlistShowLegacyStatic: v }),
       }),
       {
         name: "mmo-chip-preferences",
@@ -647,7 +653,8 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
           netlistMergeEdges: state.netlistMergeEdges,
           netlistFavorStraightEdges: state.netlistFavorStraightEdges,
           netlistShowIoPins: state.netlistShowIoPins,
-          netlistShowHierarchy: state.netlistShowHierarchy
+          netlistShowHierarchy: state.netlistShowHierarchy,
+          netlistShowLegacyStatic: state.netlistShowLegacyStatic
         })
       }
     )

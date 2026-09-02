@@ -47,6 +47,8 @@ type Props = {
   setShowIoPins: (v: boolean) => void;
   showHierarchy: boolean;
   setShowHierarchy: (v: boolean) => void;
+  showLegacyStatic: boolean;
+  setShowLegacyStatic: (v: boolean) => void;
 };
 
 const labelStyle: React.CSSProperties = {
@@ -141,6 +143,7 @@ export function NetlistSettingsPanel({
   favorStraightEdges, setFavorStraightEdges,
   showIoPins, setShowIoPins,
   showHierarchy, setShowHierarchy,
+  showLegacyStatic, setShowLegacyStatic,
 }: Props) {
   const backdropRef = useRef<HTMLDivElement>(null);
 
@@ -267,6 +270,23 @@ export function NetlistSettingsPanel({
               Fine-tuning applies to the Interactive engine. Changing layout settings re-arranges
               the schematic (locked devices stay put). Clearing a gap box returns the ELK default.
             </div>
+          </div>
+        </div>
+
+        {/* Display — legacy renderer visibility */}
+        <div>
+          <div style={{ fontSize: 10, fontWeight: 600, color: "var(--ink3)", textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 8 }}>
+            Display
+          </div>
+          <Toggle
+            label="Show legacy static renderer"
+            checked={showLegacyStatic}
+            onChange={setShowLegacyStatic}
+          />
+          <div style={{ fontSize: 9, color: "var(--ink3)", lineHeight: 1.4, marginTop: 4 }}>
+            The interactive canvas is the default engine. Enable this to restore the legacy
+            netlist2svg renderer controls: Static/Interactive toggle, Functional diagram,
+            pan/zoom buttons and SVG/PNG/JSON download.
           </div>
         </div>
       </div>

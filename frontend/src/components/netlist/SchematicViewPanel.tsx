@@ -59,8 +59,9 @@ export function SchematicViewPanel({
   selectedDeviceNames = [],
 }: Props) {
   const [renderMode, setRenderMode] = useState<"analog" | "functional">("analog");
-  /** Schematic engine: static netlist2svg SVG or interactive draggable canvas. */
-  const [engine, setEngine] = useState<"static" | "interactive">("static");
+  /** Schematic engine: static netlist2svg SVG or interactive draggable canvas.
+   *  Interactive is the default (legacy static is opt-in). */
+  const [engine, setEngine] = useState<"static" | "interactive">("interactive");
   /** Netlist render settings modal. */
   const [settingsOpen, setSettingsOpen] = useState(false);
   const dieId = useSession((s) => s.dieId);
@@ -77,6 +78,7 @@ export function SchematicViewPanel({
   const favorStraightEdges = usePreferences((s) => s.netlistFavorStraightEdges);
   const showIoPins = usePreferences((s) => s.netlistShowIoPins);
   const showHierarchy = usePreferences((s) => s.netlistShowHierarchy);
+  const showLegacyStatic = usePreferences((s) => s.netlistShowLegacyStatic);
   const {
     setNetlistLayoutStrategy: setLayoutStrategy,
     setNetlistLayoutDirection: setLayoutDirection,
@@ -89,6 +91,7 @@ export function SchematicViewPanel({
     setNetlistFavorStraightEdges: setFavorStraightEdges,
     setNetlistShowIoPins: setShowIoPins,
     setNetlistShowHierarchy: setShowHierarchy,
+    setNetlistShowLegacyStatic: setShowLegacyStatic,
   } = usePreferences.getState();
 
   const n2sRef = useRef<Netlist2SvgHandle>(null);
@@ -247,6 +250,14 @@ export function SchematicViewPanel({
     }
   }, [regionIds.join(",")]);
 
+  // Legacy static renderer is opt-in: when hidden, force the interactive
+  // engine and the analog render mode (a stale persisted "static" choice or
+  // hidden "functional" from an earlier session must not override defaults).
+  useEffect(() => {
+    if (!showLegacyStatic && engine !== "interactive") setEngine("interactive");
+    if (!showLegacyStatic && renderMode !== "analog") setRenderMode("analog");
+  }, [showLegacyStatic, engine, renderMode]);
+
   const handleSelectRegion = (id: string) => {
     setInternalRegion(id);
     onSelectRegion?.(id);
@@ -388,7 +399,8 @@ export function SchematicViewPanel({
           alignItems: "center",
         }}
       >
-        {/* ── Render mode toggle: Analog vs Functional ── */}
+        {/* ── Render mode toggle: Analog vs Functional (legacy static only) ── */}
+        {showLegacyStatic && (
         <div
           className="row"
           style={{
@@ -425,9 +437,10 @@ export function SchematicViewPanel({
             Functional
           </button>
         </div>
+        )}
 
-        {/* ── Engine toggle: Static vs Interactive (analog mode only) ── */}
-        {renderMode === "analog" && (
+        {/* ── Engine toggle: Static vs Interactive (legacy static only) ── */}
+        {showLegacyStatic && renderMode === "analog" && (
           <div
             className="row"
             style={{
@@ -559,42 +572,43 @@ export function SchematicViewPanel({
         {/* Separator */}
         <span style={{ width: 1, height: 16, background: "var(--l2)", flexShrink: 0 }} />
 
-        {/* Zoom controls */}
+        {/* Zoom controls + downloads — static netlist2svg only */}
+        {showLegacyStatic && (
         <>
-          <button
-            type="button"
-            className="btn sm"
-            onClick={() => n2sRef.current?.zoomIn()}
-            style={{ fontSize: 10, fontWeight: 600 }}
-            title="Zoom in"
-          >
-            +
-          </button>
-          <button
-            type="button"
-            className="btn sm"
-            onClick={() => n2sRef.current?.zoomOut()}
-            style={{ fontSize: 10, fontWeight: 600 }}
-            title="Zoom out"
-          >
-            −
-          </button>
-          <button
-            type="button"
-            className="btn sm"
-            onClick={() => n2sRef.current?.zoomReset()}
-            style={{ fontSize: 10 }}
-            title="Reset zoom to 1:1"
-          >
-            ⊖
-          </button>
-        </>
+        {/* Zoom controls */}
+        <span style={{ width: 1, height: 16, background: "var(--l2)", flexShrink: 0 }} />
+        <button
+          type="button"
+          className="btn sm"
+          onClick={() => n2sRef.current?.zoomIn()}
+          style={{ fontSize: 10, fontWeight: 600 }}
+          title="Zoom in"
+        >
+          +
+        </button>
+        <button
+          type="button"
+          className="btn sm"
+          onClick={() => n2sRef.current?.zoomOut()}
+          style={{ fontSize: 10, fontWeight: 600 }}
+          title="Zoom out"
+        >
+          −
+        </button>
+        <button
+          type="button"
+          className="btn sm"
+          onClick={() => n2sRef.current?.zoomReset()}
+          style={{ fontSize: 10 }}
+          title="Reset zoom to 1:1"
+        >
+          ⊖
+        </button>
 
         {/* Separator */}
         <span style={{ width: 1, height: 16, background: "var(--l2)", flexShrink: 0 }} />
 
         {/* Download buttons */}
-        <>
           <button
             type="button"
             className="btn sm"
@@ -623,6 +637,7 @@ export function SchematicViewPanel({
             ↓ JSON
           </button>
         </>
+        )}
 
         {/* Hierarchical region buttons (analog mode only) */}
         {renderMode === "analog" && hierarchical && regionIds.length > 0 && (
@@ -741,6 +756,8 @@ export function SchematicViewPanel({
         setShowIoPins={setShowIoPins}
         showHierarchy={showHierarchy}
         setShowHierarchy={setShowHierarchy}
+        showLegacyStatic={showLegacyStatic}
+        setShowLegacyStatic={setShowLegacyStatic}
       />
     </div>
   );
