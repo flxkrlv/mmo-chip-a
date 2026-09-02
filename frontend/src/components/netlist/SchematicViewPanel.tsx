@@ -21,6 +21,7 @@ import { Netlist2SvgView, type Netlist2SvgHandle } from "./Netlist2SvgView";
 import { LAYOUT_STRATEGIES, LAYOUT_DIRECTIONS, COMPACTION_LEVELS, type LayoutStrategy, type LayoutDirection, type CompactionLevel } from "../../lib/schematic/netlist2svgSkin";
 import { formatDevicesAsNetlist2Svg } from "../../lib/schematic/netlist2svgFormat";
 import { generateBlockDiagram } from "../../lib/schematic/blockDiagramFormat";
+import { NetlistSettingsPanel } from "./NetlistSettingsPanel";
 import { collectDieWideAnalogDevices, getRenameVersion } from "../../api/dieWideAnalog";
 import { matchGeometry } from "../../lib/export/matching";
 import { InteractiveAnalogSchematic } from "./InteractiveAnalogSchematic";
@@ -61,6 +62,15 @@ export function SchematicViewPanel({
   const [compactionLevel, setCompactionLevel] = useState<CompactionLevel>(2);
   /** Schematic engine: static netlist2svg SVG or interactive draggable canvas. */
   const [engine, setEngine] = useState<"static" | "interactive">("static");
+  /** Netlist render settings modal. */
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  // Fine ELK tuning (interactive engine; undefined = ELK default).
+  const [nodeNode, setNodeNode] = useState<number | undefined>(undefined);
+  const [betweenLayers, setBetweenLayers] = useState<number | undefined>(undefined);
+  const [edgeEdge, setEdgeEdge] = useState<number | undefined>(undefined);
+  const [edgeNode, setEdgeNode] = useState<number | undefined>(undefined);
+  const [mergeEdges, setMergeEdges] = useState(false);
+  const [favorStraightEdges, setFavorStraightEdges] = useState(false);
   const dieId = useSession((s) => s.dieId);
 
   const n2sRef = useRef<Netlist2SvgHandle>(null);
@@ -444,6 +454,17 @@ export function SchematicViewPanel({
           </select>
         )}
 
+        {/* Settings — fine ELK tuning */}
+        <button
+          type="button"
+          className="btn sm"
+          onClick={() => setSettingsOpen(true)}
+          style={{ fontSize: 10, fontWeight: 600 }}
+          title="Netlist render settings — spacing, edge behavior, compaction"
+        >
+          ⚙
+        </button>
+
         {/* Separator */}
         <span style={{ width: 1, height: 16, background: "var(--l2)", flexShrink: 0 }} />
 
@@ -586,6 +607,12 @@ export function SchematicViewPanel({
               layoutStrategy={layoutStrategy}
               layoutDirection={layoutDirection}
               compactionLevel={compactionLevel}
+              nodeNode={nodeNode}
+              betweenLayers={betweenLayers}
+              edgeEdge={edgeEdge}
+              edgeNode={edgeNode}
+              mergeEdges={mergeEdges}
+              favorStraightEdges={favorStraightEdges}
             />
           ) : currentN2sJson ? (
             <Netlist2SvgView ref={n2sRef} netlistJson={currentN2sJson} layoutStrategy={layoutStrategy} layoutDirection={layoutDirection} compactionLevel={compactionLevel} />
@@ -594,6 +621,30 @@ export function SchematicViewPanel({
           )
         )}
       </div>
+
+      {/* Render settings modal */}
+      <NetlistSettingsPanel
+        open={settingsOpen}
+        onClose={() => setSettingsOpen(false)}
+        layoutStrategy={layoutStrategy}
+        setLayoutStrategy={setLayoutStrategy}
+        layoutDirection={layoutDirection}
+        setLayoutDirection={setLayoutDirection}
+        compactionLevel={compactionLevel}
+        setCompactionLevel={setCompactionLevel}
+        nodeNode={nodeNode}
+        setNodeNode={setNodeNode}
+        betweenLayers={betweenLayers}
+        setBetweenLayers={setBetweenLayers}
+        edgeEdge={edgeEdge}
+        setEdgeEdge={setEdgeEdge}
+        edgeNode={edgeNode}
+        setEdgeNode={setEdgeNode}
+        mergeEdges={mergeEdges}
+        setMergeEdges={setMergeEdges}
+        favorStraightEdges={favorStraightEdges}
+        setFavorStraightEdges={setFavorStraightEdges}
+      />
     </div>
   );
 }

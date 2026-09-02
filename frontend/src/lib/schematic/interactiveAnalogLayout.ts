@@ -80,7 +80,33 @@ export interface AnalogLayoutOptions {
   /** Post-compaction level 0-4 (0=off, 1=LUT, 2=scanline,
    *  3=scanline+sweep, 4=pocket). Default 2, matching the static view. */
   compaction?: CompactionLevel;
+  /** Gap between adjacent devices (elk.spacing.nodeNode). Static default 35. */
+  nodeNode?: number;
+  /** Gap between device layers (elk.layered.spacing.nodeNodeBetweenLayers).
+   *  Static default 5. */
+  betweenLayers?: number;
+  /** Gap between wire and wire (elk.spacing.edgeEdge). Undefined → ELK default. */
+  edgeEdge?: number;
+  /** Gap between wire and device (elk.spacing.edgeNode). Undefined → ELK default. */
+  edgeNode?: number;
+  /** Merge parallel edges into a single routed wire (rail/bus look). */
+  mergeEdges?: boolean;
+  /** Prefer straight edges over detours (elk.layered.nodePlacement.favorStraightEdges). */
+  favorStraightEdges?: boolean;
 }
+
+/** Read an optional spacing option, falling back to a per-key default. */
+function spacingOf(v: number | undefined, dflt: number): string {
+  return v == null ? String(dflt) : String(v);
+}
+
+/** Defaults kept aligned with the static skin's <s:layoutEngine>. */
+export const INTERACTIVE_ELK_DEFAULTS = {
+  nodeNode: 35,
+  betweenLayers: 5,
+  edgeEdge: 10,
+  edgeNode: 12,
+} as const;
 
 // ── ELK singleton (same pattern as netlist.tsx) ──────────────────
 
@@ -509,9 +535,14 @@ async function elkInteractiveLayout(
       "elk.edgeRouting": "ORTHOGONAL",
       // Static parity: the vendored netlist2svg.bundle.js forwards ONLY
       // betweenLayers + nodeNode from the skin's layoutEngine; everything
-      // else is ELK defaults.
-      "elk.spacing.nodeNode": "35",
-      "elk.layered.spacing.nodeNodeBetweenLayers": "5",
+      // else is ELK defaults. Extra spacings/behavior are optional toggles
+      // (Netlist Settings) to fine-tune the layout.
+      "elk.spacing.nodeNode": spacingOf(opts.nodeNode, INTERACTIVE_ELK_DEFAULTS.nodeNode),
+      "elk.layered.spacing.nodeNodeBetweenLayers": spacingOf(opts.betweenLayers, INTERACTIVE_ELK_DEFAULTS.betweenLayers),
+      ...(opts.edgeEdge != null ? { "elk.spacing.edgeEdge": String(opts.edgeEdge) } : {}),
+      ...(opts.edgeNode != null ? { "elk.spacing.edgeNode": String(opts.edgeNode) } : {}),
+      ...(opts.mergeEdges ? { "elk.layered.mergeEdges": "true" } : {}),
+      ...(opts.favorStraightEdges ? { "elk.layered.nodePlacement.favorStraightEdges": "true" } : {}),
     },
     children,
     edges,

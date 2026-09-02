@@ -74,6 +74,13 @@ interface Props {
   layoutDirection?: LayoutDirection;
   /** Post-compaction level 0-4 — same selector as the static view. */
   compactionLevel?: CompactionLevel;
+  /** Fine-tuning (Netlist Settings) — undefined keeps layouts stable. */
+  nodeNode?: number;
+  betweenLayers?: number;
+  edgeEdge?: number;
+  edgeNode?: number;
+  mergeEdges?: boolean;
+  favorStraightEdges?: boolean;
 }
 
 // ── Constants ────────────────────────────────────────────────────
@@ -111,6 +118,7 @@ interface RenderNode {
 export function InteractiveAnalogSchematic({
   devices, namedNets, ioNetIds, scopeKey, vdd, gnd,
   layoutStrategy = "BRANDES_KOEPF", layoutDirection = "DOWN", compactionLevel = 2,
+  nodeNode, betweenLayers, edgeEdge, edgeNode, mergeEdges, favorStraightEdges,
 }: Props) {
   const opts = useMemo(
     () => ({
@@ -119,8 +127,10 @@ export function InteractiveAnalogSchematic({
       strategy: layoutStrategy,
       direction: layoutDirection,
       compaction: compactionLevel,
+      nodeNode, betweenLayers, edgeEdge, edgeNode, mergeEdges, favorStraightEdges,
     }),
-    [vdd, gnd, ioNetIds, layoutStrategy, layoutDirection, compactionLevel],
+    [vdd, gnd, ioNetIds, layoutStrategy, layoutDirection, compactionLevel,
+      nodeNode, betweenLayers, edgeEdge, edgeNode, mergeEdges, favorStraightEdges],
   );
   const table = useMemo(() => parseSymbolSkin(), []);
 
@@ -369,7 +379,7 @@ export function InteractiveAnalogSchematic({
     () => `${devices.length}|${namedNets.size}|${[...devices].map((d) => deviceKey(d)).join(",")}`,
     [devices, namedNets],
   );
-  const settingsSig = `${layoutStrategy}|${layoutDirection}|${compactionLevel}`;
+  const settingsSig = `${layoutStrategy}|${layoutDirection}|${compactionLevel}|${nodeNode}|${betweenLayers}|${edgeEdge}|${edgeNode}|${mergeEdges}|${favorStraightEdges}`;
   const prevSigRef = useRef<{ data: string; settings: string } | null>(null);
   useEffect(() => {
     // Drop persisted entries for devices that no longer exist.
@@ -736,7 +746,7 @@ export function InteractiveAnalogSchematic({
     return findIndex.filter((f) => f.label.toLowerCase().includes(q)).slice(0, 12);
   }, [findQuery, findIndex]);
 
-  // ── Export PNG (white background, dark/black elements) ───────
+  // ── Export SVG/PNG (white background, dark/black elements) ────
   /** Serialize the current scene to a standalone SVG string suitable for
    *  documents: white background, black elements. Approach:
    *   - clone the live SVG; find the CONTENT group via `g[transform]`
@@ -746,17 +756,16 @@ export function InteractiveAnalogSchematic({
    *   - strip the view transform, set an explicit viewBox, force every
    *     stroke/fill to black via a `!important` stylesheet (the live art
    *     and CSS custom properties like `var(--ink2)` don't resolve in a
-   *     standalone SVG image);
-   *   - rasterize to a white canvas at 2x. */
-  const exportPng = useCallback(() => {
+   *     standalone SVG image). */
+  const buildExportSvg = useCallback((): { svgStr: string; w: number; h: number } | null => {
     const svg = svgRef.current;
-    if (!svg) return;
+    if (!svg) return null;
     const liveContent = svg.querySelector("g[transform]") as SVGGElement | null;
-    if (!liveContent) return;
+    if (!liveContent) return null;
 
     const clone = svg.cloneNode(true) as SVGSVGElement;
     const content = clone.querySelector("g[transform]") as SVGGElement | null;
-    if (!content) return;
+    if (!content) return null;
 
     // Content bbox in world (group-local) coordinates.
     let bb = { x: 0, y: 0, w: 100, h: 100 };
@@ -792,35 +801,69 @@ export function InteractiveAnalogSchematic({
     clone.setAttribute("width", String(w));
     clone.setAttribute("height", String(h));
 
-    const svgStr = new XMLSerializer().serializeToString(clone);
+    return { svgStr: new XMLSerializer().serializeToString(clone), w, h };
+  }, []);
+
+  /** Download helper — revokes the object URL only after the click has
+   *  been given enough time to start (delayed revoke on the a.href). */
+  const downloadBlob = useCallback((blob: Blob, name: string) => {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = name;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 2000);
+  }, []);
+
+  /** Export the current schematic as SVG (synchronous, reliable). */
+  const exportSvg = useCallback(() => {
+    const scene = buildExportSvg();
+    if (!scene) return;
+    const blob = new Blob([scene.svgStr], { type: "image/svg+xml;charset=utf-8" });
+    downloadBlob(blob, `${scopeKey.replace(/[^\w.-]+/g, "_")}.svg`);
+  }, [buildExportSvg, downloadBlob, scopeKey]);
+
+  /** Export the current schematic as PNG (2x, white background). */
+  const exportPng = useCallback(() => {
+    const scene = buildExportSvg();
+    if (!scene) return;
+    const { svgStr, w, h } = scene;
     const blob = new Blob([svgStr], { type: "image/svg+xml;charset=utf-8" });
     const url = URL.createObjectURL(blob);
     const img = new Image();
     img.onload = () => {
-      URL.revokeObjectURL(url);
       const SCALE = 2;
       const canvas = document.createElement("canvas");
       canvas.width = Math.max(1, Math.round(w * SCALE));
       canvas.height = Math.max(1, Math.round(h * SCALE));
       const ctx = canvas.getContext("2d");
-      if (!ctx) return;
-      ctx.fillStyle = "#ffffff";
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
-      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+      if (ctx) {
+        ctx.fillStyle = "#ffffff";
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+      }
+      // Revoke the source SVG only AFTER drawing — early revoke can
+      // invalidate the image decode on some browsers.
+      URL.revokeObjectURL(url);
+      // Try toBlob; fall back to toDataURL if it's unavailable/null.
       canvas.toBlob((b) => {
-        if (!b) return;
-        const a = document.createElement("a");
-        a.href = URL.createObjectURL(b);
-        a.download = `${scopeKey.replace(/[^\w.-]+/g, "_")}.png`;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+        if (b) {
+          downloadBlob(b, `${scopeKey.replace(/[^\w.-]+/g, "_")}.png`);
+          return;
+        }
+        try {
+          const dataUrl = canvas.toDataURL("image/png");
+          downloadBlob(base64ToBlob(dataUrl), `${scopeKey.replace(/[^\w.-]+/g, "_")}.png`);
+        } catch {
+          // last resort — nothing to do
+        }
       }, "image/png");
     };
     img.onerror = () => URL.revokeObjectURL(url);
     img.src = url;
-  }, [scopeKey]);
+  }, [buildExportSvg, downloadBlob, scopeKey]);
 
   const onReset = useCallback(() => {
     store.getState().resetScope(scopeKey);
@@ -969,8 +1012,11 @@ export function InteractiveAnalogSchematic({
           )}
         </div>
         <span style={{ width: 1, height: 16, background: "var(--l2)", margin: "0 2px" }} />
-        <button type="button" className="btn sm" onClick={exportPng} title="Export the current schematic as a PNG (white background, dark elements)" disabled={!elkResult}>
+        <button type="button" className="btn sm" onClick={exportPng} title="Export the current schematic as a PNG (white background, dark elements, 2x)" disabled={!elkResult}>
           Export PNG
+        </button>
+        <button type="button" className="btn sm" onClick={exportSvg} title="Export the current schematic as a standalone SVG (white background, dark elements)" disabled={!elkResult}>
+          Export SVG
         </button>
         {elkResult?.usedFallback && (
           <span style={{ fontSize: 10, color: "var(--warn)", marginLeft: 4 }}>grid fallback</span>
@@ -1063,6 +1109,16 @@ export function InteractiveAnalogSchematic({
 }
 
 // ── Memoized children ────────────────────────────────────────────
+
+/** data:image/png;base64,... → Blob (fallback when canvas.toBlob fails). */
+function base64ToBlob(dataUrl: string): Blob {
+  const [meta, b64] = dataUrl.split(",");
+  const mime = /data:([^;]+)/.exec(meta)?.[1] ?? "image/png";
+  const bin = atob(b64);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return new Blob([bytes], { type: mime });
+}
 
 function worldFromEvent(
   e: { clientX: number; clientY: number },

@@ -224,6 +224,26 @@ describe("runInteractiveLayout (ELK, node)", () => {
     expect(res.wires.get(1)?.polylines.length).toBeGreaterThan(0);
   }, 30000);
 
+  it("accepts fine-tuning options (spacing, merge, straight) without fallback", async () => {
+    const devices = [
+      mos("M_1", "nmos", [["D", 1], ["G", 2], ["S", 3], ["B", 3]]),
+      mos("M_2", "pmos", [["D", 1], ["G", 2], ["S", 3], ["B", 3]]),
+    ];
+    const nets = new Map([[1, "n1"], [2, "n2"], [3, "VDD"]]);
+    const res = await runInteractiveLayout(devices, nets, table, {
+      vdd: "VDD", gnd: "GND",
+      nodeNode: 60,
+      betweenLayers: 15,
+      edgeEdge: 20,
+      edgeNode: 25,
+      mergeEdges: true,
+      favorStraightEdges: true,
+    });
+    expect(res.usedFallback).toBe(false);
+    expect(res.wires.get(1)?.polylines.length).toBeGreaterThan(0);
+    expect(res.positions["VDD"]).toBeDefined();
+  }, 30000);
+
   it("direction RIGHT puts the driver left of its consumer", async () => {
     const devices = [
       mos("M_1", "nmos", [["D", 1], ["G", 2], ["S", 3], ["B", 3]]),

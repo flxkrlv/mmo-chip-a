@@ -234,3 +234,23 @@ SVG/JSON export, detour-repair роутера с обходом препятст
 огромных дай, RAG-подсказки LLM по состоянию канваса.
 
 Тесты: 82 frontend (все зелёные), `tsc --noEmit` (frontend+backend), `vite build` OK.
+
+## 13. Netlist Settings + Export fixes (2026-09-02)
+
+Разница в «вальяжности» static vs interactive при одинаковом compaction не только в
+spacing: статик кладёт в ELK только betweenLayers/nodeNode (из skin) + splits/joins
+метаузлы + `edgeLabels.inline` — итоговая плотность сильно зависит от топологии графа
+(splits/joins), а не от доступных нам параметров. Поэтому даём рычаги в UI.
+
+- `AnalogLayoutOptions` расширен: `nodeNode`, `betweenLayers`, `edgeEdge`, `edgeNode`,
+  `mergeEdges`, `favorStraightEdges` → проброс в `elk.*`. `INTERACTIVE_ELK_DEFAULTS`
+  = { nodeNode:35, betweenLayers:5, edgeEdge:10, edgeNode:12 }.
+- `NetlistSettingsPanel.tsx` — модал (паттерн die-viewer SettingsPanel): strategy /
+  direction / compaction + fine spacing (numeric, пусто=ELK default) + merge / straight
+  toggles. Кнопка ⚙ в тулбаре SchematicViewPanel; `settingsSig` включён в re-layout.
+- Export: `buildExportSvg()` (чёрный/белый SVG с viewBox), `exportSvg` (синхронный
+  Blob-download, надёжно), `exportPng` (Image→canvas 2x; towBlob→toDataURL fallback).
+  Фикс бага «PNG не скачивается»: `revokeObjectURL` теперь ПОСЛЕ `drawImage`, а
+  `a.click()` из async терял user-activation (Chrome блокировал) — `downloadBlob`
+  с delayed revoke.
+- Тесты: 86 frontend, tsc + vite build OK.
