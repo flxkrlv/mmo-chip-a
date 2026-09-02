@@ -23,6 +23,9 @@ import { formatDevicesAsNetlist2Svg } from "../../lib/schematic/netlist2svgForma
 import { generateBlockDiagram } from "../../lib/schematic/blockDiagramFormat";
 import { collectDieWideAnalogDevices, getRenameVersion } from "../../api/dieWideAnalog";
 import { matchGeometry } from "../../lib/export/matching";
+import { InteractiveAnalogSchematic } from "./InteractiveAnalogSchematic";
+import { scopeKey as interactiveScopeKey } from "../../state/interactiveSchematic";
+import { useSession } from "../../state/session";
 
 // ── Props ───────────────────────────────────────────────────────
 
@@ -56,6 +59,9 @@ export function SchematicViewPanel({
   const [layoutStrategy, setLayoutStrategy] = useState<LayoutStrategy>("BRANDES_KOEPF");
   const [layoutDirection, setLayoutDirection] = useState<LayoutDirection>("DOWN");
   const [compactionLevel, setCompactionLevel] = useState<CompactionLevel>(2);
+  /** Schematic engine: static netlist2svg SVG or interactive draggable canvas. */
+  const [engine, setEngine] = useState<"static" | "interactive">("static");
+  const dieId = useSession((s) => s.dieId);
 
   const n2sRef = useRef<Netlist2SvgHandle>(null);
 
@@ -247,6 +253,32 @@ export function SchematicViewPanel({
     return n2sData.flatJson;
   }, [hierarchical, activeRegion, n2sData, moduleName, spiceConfig, selectedDeviceNames]);
 
+  // ── Interactive engine data (draggable canvas) ────────────────
+  // Scope slot keeps layouts of different datasets (full / region /
+  // assistant fragment) apart in the persisted store.
+  const interactiveScope = useMemo(() => {
+    if (selectedDeviceNames.length > 0) return `fragment:${hashFragmentScope(selectedDeviceNames)}`;
+    if (hierarchical && activeRegion) return `region:${activeRegion}`;
+    return "full";
+  }, [selectedDeviceNames, hierarchical, activeRegion]);
+
+  const interactiveDevices = useMemo(() => {
+    if (selectedDeviceNames.length > 0) {
+      const selected = n2sData.devices.filter((device) => selectedDeviceNames.includes(device.instanceName ?? device.id));
+      if (selected.length > 0) return selected;
+    }
+    if (hierarchical && activeRegion && n2sData.floorplanDevices) {
+      const regionDevices = n2sData.floorplanDevices.get(activeRegion);
+      if (regionDevices) return regionDevices;
+      return [];
+    }
+    return n2sData.devices;
+  }, [hierarchical, activeRegion, n2sData, selectedDeviceNames]);
+
+  // io pin labels: only the assistant fragment shows them (matches the
+  // static view's showNetLabels behaviour).
+  const interactiveIoNetIds = selectedDeviceNames.length > 0 ? n2sData.ioNetIds : undefined;
+
   return (
     <div
       style={{
@@ -307,6 +339,39 @@ export function SchematicViewPanel({
             Functional
           </button>
         </div>
+
+        {/* ── Engine toggle: Static vs Interactive (analog mode only) ── */}
+        {renderMode === "analog" && (
+          <div
+            className="row"
+            style={{
+              gap: 2,
+              background: "var(--l2)",
+              borderRadius: 4,
+              padding: 2,
+              flexShrink: 0,
+            }}
+          >
+            <button
+              type="button"
+              className={"btn sm" + (engine === "static" ? " on" : "")}
+              onClick={() => setEngine("static")}
+              style={{ fontSize: 10, fontWeight: 600 }}
+              title="Static netlist2svg rendering (ELK full layout)"
+            >
+              Static
+            </button>
+            <button
+              type="button"
+              className={"btn sm" + (engine === "interactive" ? " on" : "")}
+              onClick={() => setEngine("interactive")}
+              style={{ fontSize: 10, fontWeight: 600 }}
+              title="Interactive canvas — drag devices, lock positions (persisted)"
+            >
+              Interactive
+            </button>
+          </div>
+        )}
 
         {/* Layout strategy selector */}
         <select
@@ -509,8 +574,20 @@ export function SchematicViewPanel({
             <EmptyView message="No regions to show in block diagram" />
           )
         ) : (
-          // ── Analog schematic via netlist2svg ────────────────
-          currentN2sJson ? (
+          // ── Analog schematic ─────────────────────────────────
+          engine === "interactive" ? (
+            <InteractiveAnalogSchematic
+              devices={interactiveDevices}
+              namedNets={n2sData.namedNets}
+              ioNetIds={interactiveIoNetIds}
+              scopeKey={interactiveScopeKey(dieId, moduleName, interactiveScope)}
+              vdd={spiceConfig?.vdd ?? "VDD"}
+              gnd={spiceConfig?.gnd ?? "GND"}
+              layoutStrategy={layoutStrategy}
+              layoutDirection={layoutDirection}
+              compactionLevel={compactionLevel}
+            />
+          ) : currentN2sJson ? (
             <Netlist2SvgView ref={n2sRef} netlistJson={currentN2sJson} layoutStrategy={layoutStrategy} layoutDirection={layoutDirection} compactionLevel={compactionLevel} />
           ) : (
             <EmptyView hasRegions={regionIds.length > 0} />
@@ -524,6 +601,16 @@ export function SchematicViewPanel({
 // ── Empty view ──────────────────────────────────────────────────
 
 // ── Utility ────────────────────────────────────────────────────
+
+/** Stable short hash of an assistant fragment's device list — used as
+ *  the interactive scope slot key so each fragment persists its own
+ *  layout. djb2, deterministic across sessions. */
+function hashFragmentScope(names: string[]): string {
+  const s = [...names].sort().join("|");
+  let h = 5381;
+  for (let i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) | 0;
+  return (h >>> 0).toString(36);
+}
 
 function downloadBlob(blob: Blob, filename: string) {
   const url = URL.createObjectURL(blob);

@@ -340,10 +340,14 @@ export const CUSTOM_ANALOG_SKIN = `<svg xmlns="http://www.w3.org/2000/svg"
     <path d="M0,16 H12 M12,6 V26" class="detail $cell_id"/>
     <path d="m12,10 11,-8" class="detail $cell_id"/>
     <path d="m12,21 11,8" class="detail $cell_id"/>
+    <!-- PNP: the arrow (emitter) is drawn on the TOP diagonal, pointing
+         into the base — so the E pin anchor must be TOP. C goes bottom.
+         (Was copied from NPN with C top / E bottom — wires landed on the
+         drawn collector.) -->
     <path d="m14,9 6,-1 -3,-5 z" style="fill:#000000" class="$cell_id"/>
-    <g s:x="22" s:y="2" s:pid="C" s:position="top"/>
+    <g s:x="22" s:y="2" s:pid="E" s:position="top"/>
     <g s:x="0" s:y="16" s:pid="B" s:position="left"/>
-    <g s:x="23" s:y="29" s:pid="E" s:position="bottom"/>
+    <g s:x="23" s:y="29" s:pid="C" s:position="bottom"/>
   </g>
 
   <!-- ===== TRANSISTORS: MOS ===== -->

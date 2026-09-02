@@ -847,7 +847,7 @@ export async function layoutNetlist(
  * grid so floating-point drift in ELK's routing doesn't fragment
  * what should be a shared point.
  */
-function computeJunctions(edges: PlacedEdge[]): Junction[] {
+export function computeJunctions(edges: PlacedEdge[]): Junction[] {
   const byNet = new Map<number, PlacedEdge[]>();
   for (const e of edges) {
     let list = byNet.get(e.netId);

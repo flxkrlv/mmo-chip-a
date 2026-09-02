@@ -58,7 +58,7 @@ interface YosysNetlist {
 
 // ── Terminal-to-port mapping per device kind ─────────────────────
 
-const DEVICE_PORT_MAP: Record<string, Record<string, string>> = {
+export const DEVICE_PORT_MAP: Record<string, Record<string, string>> = {
   mos:    { D: "D", G: "G", S: "S", B: "B" },
   bjt_npn: { C: "C", B: "B", E: "E", S: "S" },
   bjt_pnp: { C: "C", B: "B", E: "E", S: "S" },
@@ -74,7 +74,7 @@ const DEVICE_PORT_MAP: Record<string, Record<string, string>> = {
 
 // ── Cell type per device kind (maps to netlist2svg skin types) ──
 
-function cellTypeForDevice(d: AnalogDevice): string {
+export function cellTypeForDevice(d: AnalogDevice): string {
   switch (d.kind) {
     case "mos": {
       const g = d.geometry as DeviceGeometryMOS;
@@ -185,8 +185,22 @@ function bjtAttributes(d: AnalogDevice): Record<string, string> | undefined {
   return result;
 }
 
-// ── Build net ID mapping ────────────────────────────────────────
-// netlist2svg uses integer "bit IDs" for connections.
+/**
+ * Display attributes for a device — the `ref` (instance name) and optional
+ * multi-line `value` string (W/L for MOS, resistance/capacitance for
+ * passives, M for BJTs). Shared by the static Yosys formatter and the
+ * interactive symbol renderer so both show identical labels.
+ */
+export function deviceAttributes(d: AnalogDevice): { ref: string; value?: string } {
+  let value: string | undefined = valueString(d);
+  const mos = mosAttributes(d);
+  if (mos?.value) value = mos.value;
+  const bjt = bjtAttributes(d);
+  if (bjt?.value) value = bjt.value;
+  return { ref: d.instanceName ?? d.id, value };
+}
+
+// ── Build net ID mapping ────────────────────────────────────────// netlist2svg uses integer "bit IDs" for connections.
 // We assign sequential IDs to each unique net.
 
 function buildNetIdMap(
