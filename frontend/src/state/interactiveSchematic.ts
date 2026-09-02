@@ -43,7 +43,11 @@ interface InteractiveSchematicState {
   layouts: Record<string, ScopeLayout>;
   /** In-progress drag positions (transient — never persisted). */
   draft: { scopeKey: string; positions: Record<string, DevicePos> } | null;
+  /** In-memory undo/redo stacks per scope (NOT persisted — too large). */
+  history: Record<string, { undo: ScopeLayout[]; redo: ScopeLayout[] }>;
 }
+
+const HISTORY_LIMIT = 50;
 
 interface InteractiveSchematicActions {
   /** Called on device pointerdown — opens a drag session for the scope. */
@@ -66,14 +70,43 @@ interface InteractiveSchematicActions {
   /** Drop entries for devices no longer present in the dataset (renames,
    *  re-extraction). Call when the device set changes. */
   pruneScope: (scopeKey: string, validKeys: readonly string[]) => void;
+  /** Undo the scope's last mutating action (drag commit, re-arrange,
+   *  lock/orientation toggle, reset). */
+  undo: (scopeKey: string) => void;
+  /** Redo the scope's last undone action. */
+  redo: (scopeKey: string) => void;
 }
 
 // ── Helpers ──────────────────────────────────────────────────────
 
 const emptyLayout = (): ScopeLayout => ({ positions: {}, locked: {}, orientation: {} });
 
+/** Structural clone of a scope layout — snapshots must never alias live
+ *  objects (store mutations are immutable, but freezes future edits). */
+function cloneLayout(l: ScopeLayout): ScopeLayout {
+  return {
+    positions: { ...l.positions },
+    locked: { ...l.locked },
+    orientation: { ...l.orientation },
+  };
+}
+
 function layoutOf(state: InteractiveSchematicState, scopeKey: string): ScopeLayout {
   return state.layouts[scopeKey] ?? emptyLayout();
+}
+
+/** Push the layout (as its pre-mutation state) onto the scope's undo
+ *  stack and clear redo. `before` must be the layout PRIOR to the change
+ *  that is about to be committed. */
+function pushUndo(
+  state: InteractiveSchematicState,
+  scopeKey: string,
+  before: ScopeLayout,
+): { history: Record<string, { undo: ScopeLayout[]; redo: ScopeLayout[] }> } {
+  const h = state.history[scopeKey] ?? { undo: [], redo: [] };
+  const undo = [...h.undo, cloneLayout(before)];
+  if (undo.length > HISTORY_LIMIT) undo.splice(0, undo.length - HISTORY_LIMIT);
+  return { history: { ...state.history, [scopeKey]: { undo, redo: [] } } };
 }
 
 /** Effective positions for rendering: draft overrides during a drag. */
@@ -102,6 +135,7 @@ export const useInteractiveSchematic = create<
     (set, get) => ({
       layouts: {},
       draft: null,
+      history: {},
 
       dragBegin: (scopeKey) => set({ draft: { scopeKey, positions: {} } }),
 
@@ -115,7 +149,8 @@ export const useInteractiveSchematic = create<
         const { draft, layouts } = get();
         if (!draft) return;
         const prev = layouts[draft.scopeKey] ?? emptyLayout();
-        set({
+        set((state) => ({
+          ...pushUndo(state, draft.scopeKey, prev),
           layouts: {
             ...layouts,
             [draft.scopeKey]: {
@@ -125,36 +160,34 @@ export const useInteractiveSchematic = create<
             },
           },
           draft: null,
-        });
+        }));
       },
 
       setLocked: (scopeKey, deviceKey, locked) =>
         set((state) => {
           const prev = layoutOf(state, scopeKey);
+          const next: ScopeLayout = {
+            positions: prev.positions,
+            locked: { ...prev.locked, [deviceKey]: locked },
+            orientation: prev.orientation,
+          };
           return {
-            layouts: {
-              ...state.layouts,
-              [scopeKey]: {
-                positions: prev.positions,
-                locked: { ...prev.locked, [deviceKey]: locked },
-                orientation: prev.orientation,
-              },
-            },
+            ...pushUndo(state, scopeKey, prev),
+            layouts: { ...state.layouts, [scopeKey]: next },
           };
         }),
 
       setOrientation: (scopeKey, deviceKey, orient) =>
         set((state) => {
           const prev = layoutOf(state, scopeKey);
+          const next: ScopeLayout = {
+            positions: prev.positions,
+            locked: prev.locked,
+            orientation: { ...prev.orientation, [deviceKey]: orient },
+          };
           return {
-            layouts: {
-              ...state.layouts,
-              [scopeKey]: {
-                positions: prev.positions,
-                locked: prev.locked,
-                orientation: { ...prev.orientation, [deviceKey]: orient },
-              },
-            },
+            ...pushUndo(state, scopeKey, prev),
+            layouts: { ...state.layouts, [scopeKey]: next },
           };
         }),
 
@@ -166,13 +199,21 @@ export const useInteractiveSchematic = create<
             if (prev.locked[key]) continue; // locked = outside ELK's reach
             merged[key] = pos;
           }
+          const next: ScopeLayout = { positions: merged, locked: prev.locked, orientation: prev.orientation };
           return {
-            layouts: { ...state.layouts, [scopeKey]: { positions: merged, locked: prev.locked, orientation: prev.orientation } },
+            ...pushUndo(state, scopeKey, prev),
+            layouts: { ...state.layouts, [scopeKey]: next },
           };
         }),
 
       resetScope: (scopeKey) =>
-        set((state) => ({ layouts: { ...state.layouts, [scopeKey]: emptyLayout() } })),
+        set((state) => {
+          const prev = layoutOf(state, scopeKey);
+          return {
+            ...pushUndo(state, scopeKey, prev),
+            layouts: { ...state.layouts, [scopeKey]: emptyLayout() },
+          };
+        }),
 
       pruneScope: (scopeKey, validKeys) =>
         set((state) => {
@@ -196,6 +237,32 @@ export const useInteractiveSchematic = create<
           }
           if (!changed) return state;
           return { layouts: { ...state.layouts, [scopeKey]: { positions, locked, orientation } } };
+        }),
+
+      undo: (scopeKey) =>
+        set((state) => {
+          const h = state.history[scopeKey];
+          if (!h || h.undo.length === 0) return state;
+          const undo = [...h.undo];
+          const snapshot = undo.pop()!;            // state BEFORE the last change
+          const current = layoutOf(state, scopeKey); // state to restore on redo
+          return {
+            history: { ...state.history, [scopeKey]: { undo, redo: [...h.redo, cloneLayout(current)] } },
+            layouts: { ...state.layouts, [scopeKey]: snapshot },
+          };
+        }),
+
+      redo: (scopeKey) =>
+        set((state) => {
+          const h = state.history[scopeKey];
+          if (!h || h.redo.length === 0) return state;
+          const redo = [...h.redo];
+          const snapshot = redo.pop()!; // state to restore
+          const current = layoutOf(state, scopeKey);
+          return {
+            history: { ...state.history, [scopeKey]: { undo: [...h.undo, cloneLayout(current)], redo } },
+            layouts: { ...state.layouts, [scopeKey]: snapshot },
+          };
         }),
     }),
     {

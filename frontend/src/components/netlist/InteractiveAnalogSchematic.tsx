@@ -550,6 +550,33 @@ export function InteractiveAnalogSchematic({
     runLayout(true);
   }, [store, scopeKey, runLayout]);
 
+  // ── Undo / redo ───────────────────────────────────────────────
+  const onUndo = useCallback(() => {
+    store.getState().undo(scopeKey);
+  }, [store, scopeKey]);
+  const onRedo = useCallback(() => {
+    store.getState().redo(scopeKey);
+  }, [store, scopeKey]);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!(e.ctrlKey || e.metaKey)) return;
+      if (e.key.toLowerCase() === "z") {
+        e.preventDefault();
+        if (e.shiftKey) onRedo();
+        else onUndo();
+      } else if (e.key.toLowerCase() === "y" && e.shiftKey) {
+        e.preventDefault();
+        onRedo();
+      }
+    };
+    // Listen on the canvas so edits elsewhere (inputs, dialogs) don't
+    // trigger layout undo.
+    const host = hostRef.current;
+    host?.addEventListener("keydown", onKey);
+    return () => host?.removeEventListener("keydown", onKey);
+  }, [onUndo, onRedo]);
+
   // ── Render nodes ─────────────────────────────────────────────
   const nodes: RenderNode[] = useMemo(() => {
     if (!elkResult) return [];
@@ -595,7 +622,11 @@ export function InteractiveAnalogSchematic({
   }
 
   return (
-    <div ref={hostRef} style={{ position: "relative", width: "100%", height: "100%", background: "var(--canvas-bg)", overflow: "hidden", overscrollBehavior: "none" }}>
+    <div
+      ref={hostRef}
+      tabIndex={0}
+      style={{ position: "relative", width: "100%", height: "100%", background: "var(--canvas-bg)", overflow: "hidden", overscrollBehavior: "none", outline: "none" }}
+    >
       {laying && (
         <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--ink3)", fontSize: 12, zIndex: 2, pointerEvents: "none" }}>
           laying out…
@@ -651,6 +682,13 @@ export function InteractiveAnalogSchematic({
         </button>
         <button type="button" className="btn sm" onClick={onReset} title="Reset all positions and locks, run a fresh ELK layout">
           Reset
+        </button>
+        <span style={{ width: 1, height: 16, background: "var(--l2)", margin: "0 2px" }} />
+        <button type="button" className="btn sm" onClick={onUndo} title="Undo (Ctrl+Z)">
+          ↩ Undo
+        </button>
+        <button type="button" className="btn sm" onClick={onRedo} title="Redo (Ctrl+Shift+Z)">
+          ↪ Redo
         </button>
         {elkResult?.usedFallback && (
           <span style={{ fontSize: 10, color: "var(--warn)", marginLeft: 4 }}>grid fallback</span>

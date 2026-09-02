@@ -174,3 +174,66 @@ describe("orientation", () => {
     expect(orientationMap(useInteractiveSchematic.getState(), S1)).toEqual({});
   });
 });
+
+describe("undo / redo", () => {
+  beforeEach(() => {
+    useInteractiveSchematic.setState({ layouts: {}, draft: null, history: {} });
+  });
+
+  it("undos a drag commit back to the pre-drag layout", () => {
+    const st = useInteractiveSchematic.getState();
+    st.dragBegin(S1);
+    st.dragMove("M_1", { x: 10, y: 20 });
+    st.dragEnd();
+    expect(useInteractiveSchematic.getState().layouts[S1].positions.M_1).toEqual({ x: 10, y: 20 });
+
+    st.undo(S1);
+    expect(useInteractiveSchematic.getState().layouts[S1].positions.M_1).toBeUndefined();
+  });
+
+  it("re-applies the committed drag after undo → redo", () => {
+    const st = useInteractiveSchematic.getState();
+    st.dragBegin(S1);
+    st.dragMove("M_1", { x: 10, y: 20 });
+    st.dragEnd();
+    st.undo(S1);
+    st.redo(S1);
+    expect(useInteractiveSchematic.getState().layouts[S1].positions.M_1).toEqual({ x: 10, y: 20 });
+  });
+
+  it("undo after applyPositions (re-arrange) restores the previous arrangement", () => {
+    const st = useInteractiveSchematic.getState();
+    st.applyPositions(S1, { M_1: { x: 5, y: 5 } });
+    st.applyPositions(S1, { M_1: { x: 9, y: 9 } });
+    st.undo(S1);
+    expect(useInteractiveSchematic.getState().layouts[S1].positions.M_1).toEqual({ x: 5, y: 5 });
+    st.undo(S1);
+    expect(useInteractiveSchematic.getState().layouts[S1].positions.M_1).toBeUndefined();
+  });
+
+  it("undo/redo respect orientation and locked too", () => {
+    const st = useInteractiveSchematic.getState();
+    st.setOrientation(S1, "M_1", { rot: 90, flip: "none" });
+    st.undo(S1);
+    expect(orientationMap(useInteractiveSchematic.getState(), S1)).toEqual({});
+    st.redo(S1);
+    expect(orientationMap(useInteractiveSchematic.getState(), S1)).toEqual({ M_1: { rot: 90, flip: "none" } });
+  });
+
+  it("undo on empty history is a no-op", () => {
+    const st = useInteractiveSchematic.getState();
+    expect(() => st.undo(S1)).not.toThrow();
+    expect(useInteractiveSchematic.getState().layouts[S1]).toBeUndefined();
+  });
+
+  it("history is scope-isolated", () => {
+    const st = useInteractiveSchematic.getState();
+    st.applyPositions(S1, { M_1: { x: 1, y: 1 } });
+    st.undo(S1);
+    // S1 restored to its pre-mutation (empty) layout
+    expect(useInteractiveSchematic.getState().layouts[S1]?.positions).toEqual({});
+    // S2 never had history — redo is a no-op and creates no S2 entry
+    st.redo(S2);
+    expect(useInteractiveSchematic.getState().layouts[S2]).toBeUndefined();
+  });
+});
