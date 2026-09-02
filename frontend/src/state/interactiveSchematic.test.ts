@@ -237,3 +237,20 @@ describe("undo / redo", () => {
     expect(useInteractiveSchematic.getState().layouts[S2]).toBeUndefined();
   });
 });
+
+describe("seedPositions", () => {
+  it("persists positions verbatim (no lock filter, no undo entry)", () => {
+    const st = useInteractiveSchematic.getState();
+    st.setLocked(S1, "M_1", true);
+    st.seedPositions(S1, { M_1: { x: 42, y: 7 } });
+    expect(useInteractiveSchematic.getState().layouts[S1].positions).toEqual({ M_1: { x: 42, y: 7 } });
+    // applyPositions afterwards would normally skip locked — the seeded
+    // position must survive a subsequent (locked-skipping) merge.
+    st.applyPositions(S1, { M_2: { x: 1, y: 1 } });
+    expect(useInteractiveSchematic.getState().layouts[S1].positions.M_1).toEqual({ x: 42, y: 7 });
+    // seed does NOT push an undo entry of its own: the single undo entry
+    // comes from applyPositions, restoring the seeded M_1 position.
+    st.undo(S1);
+    expect(useInteractiveSchematic.getState().layouts[S1].positions).toEqual({ M_1: { x: 42, y: 7 } });
+  });
+});

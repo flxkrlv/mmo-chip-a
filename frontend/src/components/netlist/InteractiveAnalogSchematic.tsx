@@ -181,6 +181,9 @@ export function InteractiveAnalogSchematic({
     if (!elkResult) return {};
     return { ...elkResult.positions, ...storedPositions };
   }, [elkResult, storedPositions]);
+  /** Live copy for layout runs (seed locked positions before ELK). */
+  const positionsRef = useRef(positions);
+  positionsRef.current = positions;
 
   // ── Render nodes (defined early — drag/marquee handlers need them) ──
   const nodes: RenderNode[] = useMemo(() => {
@@ -188,18 +191,23 @@ export function InteractiveAnalogSchematic({
     const out: RenderNode[] = [];
     for (const d of devices) {
       const key = deviceKey(d);
-      if (elkResult.positions[key] == null) continue;
+      // A device is rendered whenever it has an effective position — ELK
+      // result OR a persisted/stored one. Locked devices are excluded from
+      // the ELK graph entirely (elkjs can't pin nodes), so they only ever
+      // have a stored position; filtering on elkResult would drop them.
+      if (positions[key] == null) continue;
+      const template = templateForDevice(table, d);
       out.push({
         key,
         kind: "device",
-        template: templateForDevice(table, d),
-        size: elkResult.sizes[key] ?? { w: 30, h: 40 },
+        template,
+        size: elkResult.sizes[key] ?? (template ? { w: template.width, h: template.height } : { w: 30, h: 40 }),
         device: d,
       });
     }
     for (const p of powers) {
       const key = deviceKey(p);
-      if (elkResult.positions[key] == null) continue;
+      if (positions[key] == null) continue;
       const powerKind: "vcc" | "gnd" = key === (opts.gnd ?? "GND") ? "gnd" : "vcc";
       out.push({
         key,
@@ -212,11 +220,11 @@ export function InteractiveAnalogSchematic({
     }
     for (const io of ioNets) {
       const key = `io:${io.netId}`;
-      if (elkResult.positions[key] == null) continue;
+      if (positions[key] == null) continue;
       out.push({ key, kind: "io", size: elkResult.sizes[key] ?? { w: 30, h: 20 }, label: io.name });
     }
     return out;
-  }, [elkResult, devices, powers, ioNets, table, opts.gnd]);
+  }, [elkResult, positions, devices, powers, ioNets, table, opts.gnd]);
 
   /** Nets touched by the given node keys. */
   const netsTouched = useCallback(
@@ -326,8 +334,19 @@ export function InteractiveAnalogSchematic({
     (ignoreStored: boolean) => {
       const seq = ++layoutSeq.current;
       setLaying(true);
-      const lockMapNow = store.getState().layouts[scopeKey]?.locked ?? {};
+      const st = store.getState();
+      const lockMapNow = st.layouts[scopeKey]?.locked ?? {};
       const exclude = new Set(Object.keys(lockMapNow).filter((k) => lockMapNow[k]));
+      // Seed locked devices' CURRENT render positions into the store before
+      // ELK runs — locked nodes are excluded from ELK entirely, so the
+      // result won't carry their position and a never-dragged locked device
+      // would otherwise vanish from the canvas after re-layout.
+      const seed: Record<string, Point> = {};
+      for (const k of exclude) {
+        const p = positionsRef.current[k];
+        if (p) seed[k] = p;
+      }
+      if (Object.keys(seed).length > 0) st.seedPositions(scopeKey, seed);
       runInteractiveLayout(devices, namedNets, table, { ...opts, excludeKeys: exclude })
         .then((res) => {
           if (seq !== layoutSeq.current) return; // stale result — drop
@@ -508,14 +527,20 @@ export function InteractiveAnalogSchematic({
   );
 
   const applyDragPosition = useCallback(
-    (delta: Point) => {
+    (grabAbs: Point) => {
       const d = dragRef.current;
-      if (!d) return;
+      if (!d || d.keys.length === 0) return;
+      // `grabAbs` is the absolute world position of the grab point. Compute
+      // the delta against the grab key's pointer-down base, then apply the
+      // SAME delta to the whole group.
+      const g0 = d.base[d.keys[0]] ?? { x: 0, y: 0 };
+      const dx = grabAbs.x - g0.x;
+      const dy = grabAbs.y - g0.y;
       const st = useInteractiveSchematic.getState();
       for (const key of d.keys) {
         const b = d.base[key];
         if (!b) continue;
-        st.dragMove(key, { x: b.x + delta.x, y: b.y + delta.y });
+        st.dragMove(key, { x: b.x + dx, y: b.y + dy });
       }
       const posNow = effectivePositions(st, scopeKey);
       setWires((prev) => rerouteNets(prev, d.netIds, posNow));
@@ -713,46 +738,70 @@ export function InteractiveAnalogSchematic({
 
   // ── Export PNG (white background, dark/black elements) ───────
   /** Serialize the current scene to a standalone SVG string suitable for
-   *  documents: white background, colors inverted so the white-baked art
-   *  reads as dark lines on white. */
+   *  documents: white background, black elements. Approach:
+   *   - clone the live SVG; find the CONTENT group via `g[transform]`
+   *     (the first bare `g` is inside <defs> — the symbol library);
+   *   - capture the content bbox from the live DOM (getBBox is only valid
+   *     on an attached element);
+   *   - strip the view transform, set an explicit viewBox, force every
+   *     stroke/fill to black via a `!important` stylesheet (the live art
+   *     and CSS custom properties like `var(--ink2)` don't resolve in a
+   *     standalone SVG image);
+   *   - rasterize to a white canvas at 2x. */
   const exportPng = useCallback(() => {
     const svg = svgRef.current;
     if (!svg) return;
+    const liveContent = svg.querySelector("g[transform]") as SVGGElement | null;
+    if (!liveContent) return;
+
     const clone = svg.cloneNode(true) as SVGSVGElement;
-    const vb = clone.getAttribute("viewBox") ?? "";
-    // Recolor: wrap content in an invert filter (white art → dark), and
-    // render the whole thing over a white background rect.
+    const content = clone.querySelector("g[transform]") as SVGGElement | null;
+    if (!content) return;
+
+    // Content bbox in world (group-local) coordinates.
+    let bb = { x: 0, y: 0, w: 100, h: 100 };
+    try {
+      const b = liveContent.getBBox();
+      if (b.width > 0 && b.height > 0) bb = { x: b.x, y: b.y, w: b.width, h: b.height };
+    } catch { /* detached/undrawable fallthrough */ }
+    const pad = 12;
+    const x = bb.x - pad, y = bb.y - pad, w = bb.w + 2 * pad, h = bb.h + 2 * pad;
+
+    // Recolor everything via !important CSS (beats presentation attrs and
+    // is independent of page-level --ink2 / --ink custom properties).
     const style = document.createElementNS("http://www.w3.org/2000/svg", "style");
     style.textContent = `
-      .exp-inv { filter: invert(1) hue-rotate(180deg); }
-      .exp-bg { fill: #ffffff; }
+      .exp-all * { stroke: #000 !important; fill: none !important; }
+      .exp-all text { fill: #000 !important; stroke: none !important; }
     `;
     clone.prepend(style);
-    clone.style.background = "#ffffff";
-    // First child = background rect under the transform group.
-    const marker = clone.firstChild;
+    // Background rect below the content (document order = paint order).
     const bg = document.createElementNS("http://www.w3.org/2000/svg", "rect");
-    bg.setAttribute("class", "exp-bg");
-    bg.setAttribute("x", "-50");
-    bg.setAttribute("y", "-50");
-    bg.setAttribute("width", "100000");
-    bg.setAttribute("height", "100000");
-    clone.insertBefore(bg, marker);
-    const content = clone.querySelector("g");
-    if (content) content.setAttribute("class", `${content.getAttribute("class") ?? ""} exp-inv`.trim());
+    bg.setAttribute("x", String(x));
+    bg.setAttribute("y", String(y));
+    bg.setAttribute("width", String(w));
+    bg.setAttribute("height", String(h));
+    bg.setAttribute("fill", "#ffffff");
+    clone.insertBefore(bg, clone.firstChild);
+
+    // Drop the view transform so world coords map 1:1 into the viewBox.
+    content.removeAttribute("transform");
+    content.setAttribute("class", `${content.getAttribute("class") ?? ""} exp-all`.trim());
+
+    clone.setAttribute("viewBox", `${x} ${y} ${w} ${h}`);
+    clone.setAttribute("width", String(w));
+    clone.setAttribute("height", String(h));
+
     const svgStr = new XMLSerializer().serializeToString(clone);
     const blob = new Blob([svgStr], { type: "image/svg+xml;charset=utf-8" });
     const url = URL.createObjectURL(blob);
     const img = new Image();
     img.onload = () => {
       URL.revokeObjectURL(url);
-      // Render at 2x for print quality.
       const SCALE = 2;
-      const w = vb ? (parseFloat(vb.split(/[\s,]+/)[2]) || svg.clientWidth) * SCALE : svg.clientWidth * SCALE;
-      const h = vb ? (parseFloat(vb.split(/[\s,]+/)[3]) || svg.clientHeight) * SCALE : svg.clientHeight * SCALE;
       const canvas = document.createElement("canvas");
-      canvas.width = Math.max(1, Math.round(w));
-      canvas.height = Math.max(1, Math.round(h));
+      canvas.width = Math.max(1, Math.round(w * SCALE));
+      canvas.height = Math.max(1, Math.round(h * SCALE));
       const ctx = canvas.getContext("2d");
       if (!ctx) return;
       ctx.fillStyle = "#ffffff";
@@ -1097,10 +1146,10 @@ const DeviceNode = memo(function DeviceNode({
     "isch",
     kind === "power" ? (powerKind === "gnd" ? "isch-gnd" : "isch-vcc") : "",
   ].filter(Boolean).join(" ");
-  // Compose the transform: translate → rotate about center → mirror.
-  // Mirror is flipped AFTER rotation (screen axes), matching transformPin.
-  const t = [
-    `translate(${pos.x}, ${pos.y})`,
+  // Art transform: rotate about center → mirror (screen axes), matching
+  // transformPin. Labels, outlines and the hitbox live in the OUTER group
+  // (plain translate) so device text stays horizontal and un-mirrored.
+  const artTransform = [
     rot !== 0 ? `rotate(${rot} ${size.w / 2} ${size.h / 2})` : "",
     flip === "h" ? `translate(${size.w / 2} 0) scale(-1 1) translate(${-size.w / 2} 0)` : "",
     flip === "v" ? `translate(0 ${size.h / 2}) scale(1 -1) translate(0 ${-size.h / 2})` : "",
@@ -1109,7 +1158,7 @@ const DeviceNode = memo(function DeviceNode({
     <g
       data-device-id={key}
       className={cls}
-      transform={t}
+      transform={`translate(${pos.x}, ${pos.y})`}
       onPointerDown={(e) => onPointerDown(e, node)}
       onMouseEnter={() => onHover(key)}
       onMouseLeave={() => onHover(null)}
@@ -1144,10 +1193,14 @@ const DeviceNode = memo(function DeviceNode({
           pointerEvents="none"
         />
       )}
-      {template ? <use href={`#isch-${template.type}`} /> : (
-        <rect width={size.w} height={size.h} fill="none" stroke="var(--ink2)" strokeDasharray="3 2" />
-      )}
-      {/* Per-instance labels (cannot live inside <use> — shared DOM) */}
+      {/* Art (rotated/mirrored) — only the symbol, never the labels. */}
+      <g transform={artTransform || undefined}>
+        {template ? <use href={`#isch-${template.type}`} /> : (
+          <rect width={size.w} height={size.h} fill="none" stroke="var(--ink2)" strokeDasharray="3 2" />
+        )}
+      </g>
+      {/* Per-instance labels (cannot live inside <use> — shared DOM).
+          Kept horizontal/un-mirrored by living OUTSIDE the art transform. */}
       {template?.labels.map((spec, i) => {
         const text = device
           ? labelForSpec(spec, device, key)

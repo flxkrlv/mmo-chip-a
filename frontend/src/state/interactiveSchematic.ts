@@ -62,6 +62,11 @@ interface InteractiveSchematicActions {
   /** Merge ELK (or grid fallback) positions into the scope, skipping
    *  locked devices. */
   applyPositions: (scopeKey: string, positions: Record<string, DevicePos>) => void;
+  /** Persist the given positions verbatim (no lock filter, no undo entry).
+   *  Used right before a re-arrangement to seed locked devices' current
+   *  (ELK-placed but never-dragged) positions, so they survive re-layout.
+   *  The subsequent ELK `applyPositions` pushes the single undo entry. */
+  seedPositions: (scopeKey: string, positions: Record<string, DevicePos>) => void;
   /** Rotate/flip a device (applied to its orientation slot). The change
    *  is additive — devices default to rot 0 / flip none. */
   setOrientation: (scopeKey: string, deviceKey: string, orient: DeviceOrientation) => void;
@@ -188,6 +193,21 @@ export const useInteractiveSchematic = create<
           return {
             ...pushUndo(state, scopeKey, prev),
             layouts: { ...state.layouts, [scopeKey]: next },
+          };
+        }),
+
+      seedPositions: (scopeKey, positions) =>
+        set((state) => {
+          const prev = layoutOf(state, scopeKey);
+          return {
+            layouts: {
+              ...state.layouts,
+              [scopeKey]: {
+                positions: { ...prev.positions, ...positions },
+                locked: prev.locked,
+                orientation: prev.orientation,
+              },
+            },
           };
         }),
 
