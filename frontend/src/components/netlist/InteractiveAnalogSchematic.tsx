@@ -117,6 +117,8 @@ interface RenderNode {
   powerKind?: "vcc" | "gnd";
   /** Hierarchy block name (kind: "block"). */
   blockName?: string;
+  /** Hierarchy block port labels (net names) positioned near each stub. */
+  blockPorts?: Array<{ terminal: string; netName: string; dx: number; dy: number; isInput: boolean }>;
 }
 
 // ── Component ────────────────────────────────────────────────────
@@ -253,7 +255,16 @@ export function InteractiveAnalogSchematic({
     for (const b of blocks ?? []) {
       const key = `blk:${b.regionId}`;
       if (positions[key] == null) continue;
-      out.push({ key, kind: "block", size: elkResult.sizes[key] ?? { w: 30, h: 40 }, blockName: b.name });
+      const size = elkResult.sizes[key] ?? { w: 30, h: 40 };
+      const ins = b.nets.filter((n) => n.direction === "input");
+      const outs = b.nets.filter((n) => n.direction === "output");
+      const h = Math.max(40, 16 + Math.max(ins.length, outs.length, 1) * 18);
+      const inStep = ins.length > 0 ? (h - 16) / (ins.length + 1) : 0;
+      const outStep = outs.length > 0 ? (h - 16) / (outs.length + 1) : 0;
+      const blockPorts: NonNullable<RenderNode["blockPorts"]> = [];
+      ins.forEach((n, i) => blockPorts.push({ terminal: `in_${n.name}`, netName: n.name, dx: 0, dy: 16 + (i + 1) * inStep, isInput: true }));
+      outs.forEach((n, i) => blockPorts.push({ terminal: `out_${n.name}`, netName: n.name, dx: size.w, dy: 16 + (i + 1) * outStep, isInput: false }));
+      out.push({ key, kind: "block", size, blockName: b.name, blockPorts });
     }
     return out;
   }, [elkResult, positions, devices, powers, ioNets, blocks, table, opts.gnd]);
@@ -263,10 +274,18 @@ export function InteractiveAnalogSchematic({
     (keys: Iterable<string>): number[] => {
       const set = new Set(keys);
       const out: number[] = [];
+      // io pseudo-nodes aren't in netIndex — resolve `io:<netId>` directly.
+      for (const k of set) {
+        if (k.startsWith("io:")) {
+          const nid = Number(k.slice(3));
+          if (Number.isFinite(nid)) out.push(nid);
+        }
+      }
       for (const [netId, members] of netIndex) {
         if (members.some((m) => set.has(m.deviceKey))) out.push(netId);
       }
-      return out;
+      // de-dup while keeping order
+      return [...new Set(out)];
     },
     [netIndex],
   );
@@ -1291,7 +1310,7 @@ const DeviceNode = memo(function DeviceNode({
   onPointerDown: (e: ReactPointerEvent<SVGGElement>, node: RenderNode) => void;
   onHover: (key: string | null) => void;
 }) {
-  const { key, template, size, kind, device, label, powerKind, blockName } = node;
+  const { key, template, size, kind, device, label, powerKind, blockName, blockPorts } = node;
   const os = orientedSize(size, orient);
   const rot = orient?.rot ?? 0;
   const flip = orient?.flip ?? "none";
@@ -1358,10 +1377,25 @@ const DeviceNode = memo(function DeviceNode({
       </g>
       {/* Hierarchy block name */}
       {kind === "block" && blockName && (
-        <text x={size.w / 2} y={size.h / 2} fontSize={10} fill="var(--ink)" textAnchor="middle" pointerEvents="none">
+        <text x={size.w / 2} y={size.h / 2} fontSize={10} fill="var(--ink)" textAnchor="middle" fontWeight={600} pointerEvents="none">
           {blockName}
         </text>
       )}
+      {/* Hierarchy block port labels — net names next to their wire stubs
+          (inputs left, outputs right), inside the block body. */}
+      {kind === "block" && blockPorts?.map((p) => (
+        <text
+          key={p.terminal}
+          x={p.isInput ? 4 : size.w - 4}
+          y={p.dy + 3}
+          fontSize={8}
+          fill="var(--ink3)"
+          textAnchor={p.isInput ? "start" : "end"}
+          pointerEvents="none"
+        >
+          {p.netName}
+        </text>
+      ))}
       {/* Per-instance labels (cannot live inside <use> — shared DOM).
           Kept horizontal/un-mirrored by living OUTSIDE the art transform. */}
       {template?.labels.map((spec, i) => {

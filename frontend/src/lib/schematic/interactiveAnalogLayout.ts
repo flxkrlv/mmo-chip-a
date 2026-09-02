@@ -186,6 +186,7 @@ export function regionExternalNets(
   ioNetIds: Set<number>,
   namedNets: Map<number, string>,
   props: { vdd: string; gnd: string },
+  regionNames?: Map<string, string>,
 ): HierarchyBlock[] {
   const blocks: HierarchyBlock[] = [];
   const usedElsewhere = new Set<number>();
@@ -221,7 +222,8 @@ export function regionExternalNets(
       nets.push({ netId, name, direction });
     }
     if (nets.length === 0) continue;
-    blocks.push({ regionId: rid, name: rid, nets });
+    const displayName = regionNames?.get(rid) ?? rid;
+    blocks.push({ regionId: rid, name: displayName, nets });
   }
   return blocks;
 }

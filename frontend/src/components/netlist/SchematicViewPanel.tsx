@@ -296,12 +296,16 @@ export function SchematicViewPanel({
     }
     if (regionDevices.size === 0) return undefined;
     const cfg: SpiceConfig = { vdd: "VDD", gnd: "GND", ...spiceConfig };
+    // region.name is the readable block label (not the raw regionId).
+    const regionNames = new Map<string, string>();
+    for (const r of floorplanRegions) regionNames.set(r.id, r.name ?? r.id);
     return regionExternalNets(
       regionDevices,
       unassignedDevices,
       n2sData.ioNetIds,
       n2sData.namedNets,
       { vdd: cfg.vdd ?? "VDD", gnd: cfg.gnd ?? "GND" },
+      regionNames,
     );
   }, [showHierarchy, hierarchical, floorplanRegions, n2sData, spiceConfig]);
 

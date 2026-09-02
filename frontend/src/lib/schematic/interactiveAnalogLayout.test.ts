@@ -379,6 +379,20 @@ describe("hierarchy blocks", () => {
     expect(bNames).toEqual(["share"]);
   });
 
+  it("regionExternalNets uses region.name when provided (readable block label)", () => {
+    const a = [mos("A1", "nmos", [["D", 1], ["G", 2], ["S", 5], ["B", 5]])];
+    const b = [mos("B1", "pmos", [["D", 1], ["G", 3], ["S", 4], ["B", 4]])];
+    const fp = new Map<string, AnalogDevice[]>([["A", a], ["B", b]]);
+    const nets = new Map<number, string>([[1, "share"], [5, "ioV"]]);
+    const blocks = regionExternalNets(
+      fp, [], new Set([5]), nets, { vdd: "VDD", gnd: "GND" },
+      new Map([["A", "bandgap"], ["B", "diffpair"]]),
+    );
+    const blk = (rid: string) => blocks.find((b) => b.regionId === rid)!;
+    expect(blk("A").name).toBe("bandgap");
+    expect(blk("B").name).toBe("diffpair");
+  });
+
   it("blockDevices synthesizes in_/out_ terminals bound to the net ids", () => {
     const blocks: HierarchyBlock[] = [{
       regionId: "A",
