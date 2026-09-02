@@ -23,9 +23,19 @@ export interface DevicePos {
   y: number;
 }
 
+/** Device orientation — manual per-device rotation/mirror (v1 only
+ *  manual; ELK-proposed orientations deferred to future features). */
+export interface DeviceOrientation {
+  /** Clockwise rotation in degrees. */
+  rot: 0 | 90 | 180 | 270;
+  /** Mirror along an axis after rotation. */
+  flip: "none" | "h" | "v";
+}
+
 export interface ScopeLayout {
   positions: Record<string, DevicePos>;
   locked: Record<string, boolean>;
+  orientation: Record<string, DeviceOrientation>;
 }
 
 interface InteractiveSchematicState {
@@ -48,7 +58,10 @@ interface InteractiveSchematicActions {
   /** Merge ELK (or grid fallback) positions into the scope, skipping
    *  locked devices. */
   applyPositions: (scopeKey: string, positions: Record<string, DevicePos>) => void;
-  /** Clear the scope's positions and locks. */
+  /** Rotate/flip a device (applied to its orientation slot). The change
+   *  is additive — devices default to rot 0 / flip none. */
+  setOrientation: (scopeKey: string, deviceKey: string, orient: DeviceOrientation) => void;
+  /** Clear the scope's positions, locks and orientations. */
   resetScope: (scopeKey: string) => void;
   /** Drop entries for devices no longer present in the dataset (renames,
    *  re-extraction). Call when the device set changes. */
@@ -57,7 +70,7 @@ interface InteractiveSchematicActions {
 
 // ── Helpers ──────────────────────────────────────────────────────
 
-const emptyLayout = (): ScopeLayout => ({ positions: {}, locked: {} });
+const emptyLayout = (): ScopeLayout => ({ positions: {}, locked: {}, orientation: {} });
 
 function layoutOf(state: InteractiveSchematicState, scopeKey: string): ScopeLayout {
   return state.layouts[scopeKey] ?? emptyLayout();
@@ -108,6 +121,7 @@ export const useInteractiveSchematic = create<
             [draft.scopeKey]: {
               positions: { ...prev.positions, ...draft.positions },
               locked: prev.locked,
+              orientation: prev.orientation,
             },
           },
           draft: null,
@@ -123,6 +137,22 @@ export const useInteractiveSchematic = create<
               [scopeKey]: {
                 positions: prev.positions,
                 locked: { ...prev.locked, [deviceKey]: locked },
+                orientation: prev.orientation,
+              },
+            },
+          };
+        }),
+
+      setOrientation: (scopeKey, deviceKey, orient) =>
+        set((state) => {
+          const prev = layoutOf(state, scopeKey);
+          return {
+            layouts: {
+              ...state.layouts,
+              [scopeKey]: {
+                positions: prev.positions,
+                locked: prev.locked,
+                orientation: { ...prev.orientation, [deviceKey]: orient },
               },
             },
           };
@@ -137,7 +167,7 @@ export const useInteractiveSchematic = create<
             merged[key] = pos;
           }
           return {
-            layouts: { ...state.layouts, [scopeKey]: { positions: merged, locked: prev.locked } },
+            layouts: { ...state.layouts, [scopeKey]: { positions: merged, locked: prev.locked, orientation: prev.orientation } },
           };
         }),
 
@@ -159,15 +189,33 @@ export const useInteractiveSchematic = create<
             if (valid.has(key)) locked[key] = v;
             else changed = true;
           }
+          const orientation: Record<string, DeviceOrientation> = {};
+          for (const [key, v] of Object.entries(prev.orientation)) {
+            if (valid.has(key)) orientation[key] = v;
+            else changed = true;
+          }
           if (!changed) return state;
-          return { layouts: { ...state.layouts, [scopeKey]: { positions, locked } } };
+          return { layouts: { ...state.layouts, [scopeKey]: { positions, locked, orientation } } };
         }),
     }),
     {
       name: "mmo-chip-interactive-schematic",
-      version: 1,
+      version: 2,
       // Draft is transient — persist layouts only.
       partialize: (state) => ({ layouts: state.layouts }),
+      // v1 layouts lack `orientation` — backfill to empty per scope.
+      migrate: (persisted: unknown) => {
+        const state = persisted as { layouts?: Record<string, ScopeLayout> };
+        const layouts: Record<string, ScopeLayout> = {};
+        for (const [key, l] of Object.entries(state.layouts ?? {})) {
+          layouts[key] = {
+            positions: l.positions ?? {},
+            locked: l.locked ?? {},
+            orientation: l.orientation ?? {},
+          };
+        }
+        return { layouts };
+      },
     },
   ),
 );
@@ -175,4 +223,10 @@ export const useInteractiveSchematic = create<
 /** Convenience read: locked flags for a scope. */
 export function lockedMap(state: InteractiveSchematicState, scopeKey: string): Record<string, boolean> {
   return layoutOf(state, scopeKey).locked;
+}
+
+/** Convenience read: device orientations for a scope (defaults to none —
+ *  every device is rot 0 / flip none unless explicitly rotated). */
+export function orientationMap(state: InteractiveSchematicState, scopeKey: string): Record<string, DeviceOrientation> {
+  return layoutOf(state, scopeKey).orientation;
 }

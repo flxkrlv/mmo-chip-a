@@ -670,6 +670,54 @@ export function anchorWorld(
   return { x: pos.x + pin.dx, y: pos.y + pin.dy };
 }
 
+/**
+ * Transform a pin (local dx/dy within the symbol box) under a device
+ * orientation. Rotation is clockwise about the symbol center, mirror is
+ * applied after rotation along the box axes.
+ *
+ * RETURN units: the SAME local frame the caller uses for `pin.dx/dy` —
+ * i.e. top-left origin, y grows down. For rot 90/270 the caller should
+ * also swap the node's width/height (see `orientedSize`).
+ */
+export interface DeviceOrientationLike {
+  rot: 0 | 90 | 180 | 270;
+  flip: "none" | "h" | "v";
+}
+
+export function transformPin(
+  pin: { dx: number; dy: number },
+  w: number,
+  h: number,
+  orient?: DeviceOrientationLike,
+): { dx: number; dy: number } {
+  if (!orient || (orient.rot === 0 && orient.flip === "none")) return { dx: pin.dx, dy: pin.dy };
+  // normalize to center-relative coords (before rotation)
+  const cx = w / 2;
+  const cy = h / 2;
+  let x = pin.dx - cx;
+  let y = pin.dy - cy;
+  // Rotate along the SVG rotate(θ) convention (positive θ = clockwise in
+  // screen coords, y down): matrix x' = cos·x − sin·y, y' = sin·x + cos·y.
+  switch (orient.rot) {
+    case 90: { const nx = -y; y = x; x = nx; break; }
+    case 180: { x = -x; y = -y; break; }
+    case 270: { const nx = y; y = -x; x = nx; break; }
+    default: break;
+  }
+  if (orient.flip === "h") { x = -x; }
+  if (orient.flip === "v") { y = -y; }
+  return { dx: x + cx, dy: y + cy };
+}
+
+/** Node size under rotation — 90/270 swap width and height. */
+export function orientedSize(
+  size: { w: number; h: number },
+  orient?: DeviceOrientationLike,
+): { w: number; h: number } {
+  if (orient && (orient.rot === 90 || orient.rot === 270)) return { w: size.h, h: size.w };
+  return size;
+}
+
 // ── Local drag-time router ───────────────────────────────────────
 
 const OBSTACLE_MARGIN = 4;

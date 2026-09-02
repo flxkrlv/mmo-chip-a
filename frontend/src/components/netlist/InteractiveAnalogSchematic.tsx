@@ -39,7 +39,10 @@ import {
   terminalPinLookup,
   deviceKey,
   routeNetLocal,
+  transformPin,
+  orientedSize,
   type InteractiveLayoutResult,
+  type DeviceOrientationLike,
   type Point,
   type WireData,
 } from "../../lib/schematic/interactiveAnalogLayout";
@@ -88,6 +91,7 @@ interface View { tx: number; ty: number; scale: number }
  *  a render/selector, that's the infinite-loop footgun (see store note). */
 const EMPTY_POSITIONS: Record<string, Point> = {};
 const EMPTY_LOCKED: Record<string, boolean> = {};
+const EMPTY_ORIENT: Record<string, DeviceOrientationLike> = {};
 
 interface RenderNode {
   key: string;
@@ -140,6 +144,8 @@ export function InteractiveAnalogSchematic({
   }, [scopeLayout, draft, scopeKey]);
   /** Locked flags (stable reference; EMPTY_LOCKED when scope absent). */
   const locked = scopeLayout?.locked ?? EMPTY_LOCKED;
+  /** Device orientations (stable ref; EMPTY_ORIENT when scope absent). */
+  const orientations = scopeLayout?.orientation ?? EMPTY_ORIENT;
 
   // ── Layout load ──────────────────────────────────────────────
   const [elkResult, setElkResult] = useState<InteractiveLayoutResult | null>(null);
@@ -197,7 +203,8 @@ export function InteractiveAnalogSchematic({
         .filter(([key]) => key !== excludeKey)
         .map(([key, p]) => {
           const size = elkResult?.sizes[key] ?? { w: 30, h: 40 };
-          return { x: p.x, y: p.y, w: size.w, h: size.h };
+          const os = orientedSize(size, orientations[key]);
+          return { x: p.x, y: p.y, w: os.w, h: os.h };
         });
       for (const netId of netIds) {
         const members = netIndex.get(netId);
@@ -207,14 +214,17 @@ export function InteractiveAnalogSchematic({
             const pin = ioPinLookup.get(m.deviceKey);
             const p = pos[m.deviceKey];
             const off = pin?.(m.terminal);
-            return p && off ? { x: p.x + off.dx, y: p.y + off.dy } : undefined;
+            if (!p || !off) return undefined;
+            const size = elkResult?.sizes[m.deviceKey] ?? { w: 30, h: 40 };
+            const t = transformPin({ dx: off.dx, dy: off.dy }, size.w, size.h, orientations[m.deviceKey]);
+            return { x: p.x + t.dx, y: p.y + t.dy };
           })
           .filter((p): p is Point => !!p);
         next.set(netId, routeNetLocal(anchors, obstacles));
       }
       return next;
     },
-    [elkResult, netIndex, pinLookup],
+    [elkResult, netIndex, orientations],
   );
 
   /** Merge an ELK result: stored positions win (unless ignoreStored),
@@ -225,6 +235,7 @@ export function InteractiveAnalogSchematic({
       const scope = st.layouts[scopeKey];
       const stored = scope?.positions ?? {};
       const isLocked = scope?.locked ?? {};
+      const storedOrient = scope?.orientation ?? {};
 
       const final: Record<string, Point> = {};
       const changedKeys: string[] = [];
@@ -244,13 +255,20 @@ export function InteractiveAnalogSchematic({
       // Patch wires for every net touching a device whose effective
       // position differs from the ELK routing assumption, plus every
       // net of a locked device (locked nodes were excluded from ELK's
-      // graph entirely).
+      // graph entirely), plus any device that carries a manual
+      // orientation (ELK routed the net at rot 0 / flip none).
       const dirty = new Set<number>();
       for (const key of changedKeys) {
         for (const netId of netsTouched([key])) dirty.add(netId);
       }
       for (const key of Object.keys(isLocked)) {
         if (isLocked[key] && res.positions[key] == null) {
+          for (const netId of netsTouched([key])) dirty.add(netId);
+        }
+      }
+      for (const key of Object.keys(storedOrient)) {
+        const o = storedOrient[key];
+        if (o && (o.rot !== 0 || o.flip !== "none")) {
           for (const netId of netsTouched([key])) dirty.add(netId);
         }
       }
@@ -489,6 +507,44 @@ export function InteractiveAnalogSchematic({
     if (!selectedKey) return;
     store.getState().setLocked(scopeKey, selectedKey, !locked[selectedKey]);
   }, [selectedKey, locked, scopeKey, store]);
+
+  /** Rotate the selection clockwise by 90°. */
+  const onRotate = useCallback(() => {
+    if (!selectedKey) return;
+    const cur = orientations[selectedKey] ?? { rot: 0, flip: "none" };
+    const next: DeviceOrientationLike = {
+      rot: (((cur.rot + 90) % 360) as 0 | 90 | 180 | 270),
+      flip: cur.flip,
+    };
+    store.getState().setOrientation(scopeKey, selectedKey, next);
+    // Re-route nets of this device under the new anchor positions.
+    const st = store.getState();
+    const posNow = effectivePositions(st, scopeKey);
+    setWires((prev) => rerouteNets(prev, netsTouched([selectedKey]), posNow));
+  }, [selectedKey, orientations, scopeKey, store, netsTouched, rerouteNets]);
+
+  /** Flip the selection horizontally (mirror along the vertical axis). */
+  const onFlipH = useCallback(() => {
+    if (!selectedKey) return;
+    const cur = orientations[selectedKey] ?? { rot: 0, flip: "none" };
+    const next: DeviceOrientationLike = { rot: cur.rot, flip: cur.flip === "h" ? "none" : "h" };
+    store.getState().setOrientation(scopeKey, selectedKey, next);
+    const st = store.getState();
+    const posNow = effectivePositions(st, scopeKey);
+    setWires((prev) => rerouteNets(prev, netsTouched([selectedKey]), posNow));
+  }, [selectedKey, orientations, scopeKey, store, netsTouched, rerouteNets]);
+
+  /** Flip the selection vertically (mirror along the horizontal axis). */
+  const onFlipV = useCallback(() => {
+    if (!selectedKey) return;
+    const cur = orientations[selectedKey] ?? { rot: 0, flip: "none" };
+    const next: DeviceOrientationLike = { rot: cur.rot, flip: cur.flip === "v" ? "none" : "v" };
+    store.getState().setOrientation(scopeKey, selectedKey, next);
+    const st = store.getState();
+    const posNow = effectivePositions(st, scopeKey);
+    setWires((prev) => rerouteNets(prev, netsTouched([selectedKey]), posNow));
+  }, [selectedKey, orientations, scopeKey, store, netsTouched, rerouteNets]);
+
   const onReset = useCallback(() => {
     store.getState().resetScope(scopeKey);
     runLayout(true);
@@ -563,6 +619,36 @@ export function InteractiveAnalogSchematic({
         >
           {selectedKey && locked[selectedKey] ? "Unlock" : "Lock"}
         </button>
+        <button
+          type="button"
+          className="btn sm"
+          onClick={onRotate}
+          disabled={!selectedKey}
+          title={selectedKey ? "Rotate the selected device 90° clockwise" : "Click a device to select it first"}
+          style={{ opacity: selectedKey ? 1 : 0.4 }}
+        >
+          Rotate ⟳
+        </button>
+        <button
+          type="button"
+          className="btn sm"
+          onClick={onFlipH}
+          disabled={!selectedKey}
+          title={selectedKey ? "Mirror the selected device horizontally" : "Click a device to select it first"}
+          style={{ opacity: selectedKey ? 1 : 0.4 }}
+        >
+          Flip ⇄
+        </button>
+        <button
+          type="button"
+          className="btn sm"
+          onClick={onFlipV}
+          disabled={!selectedKey}
+          title={selectedKey ? "Mirror the selected device vertically" : "Click a device to select it first"}
+          style={{ opacity: selectedKey ? 1 : 0.4 }}
+        >
+          Flip ⇅
+        </button>
         <button type="button" className="btn sm" onClick={onReset} title="Reset all positions and locks, run a fresh ELK layout">
           Reset
         </button>
@@ -623,6 +709,7 @@ export function InteractiveAnalogSchematic({
               pos={positions[n.key] ?? { x: 0, y: 0 }}
               selected={selectedKey === n.key}
               isLocked={!!locked[n.key]}
+              orient={orientations[n.key]}
               hovered={hoverDevice === n.key}
               onPointerDown={onDevicePointerDown}
               onHover={setHoverDevice}
@@ -702,6 +789,7 @@ const DeviceNode = memo(function DeviceNode({
   pos,
   selected,
   isLocked,
+  orient,
   onPointerDown,
   onHover,
 }: {
@@ -709,34 +797,47 @@ const DeviceNode = memo(function DeviceNode({
   pos: Point;
   selected: boolean;
   isLocked: boolean;
+  /** Manual user orientation (rot/flip) — applied around the symbol box. */
+  orient?: DeviceOrientationLike;
   /** Kept in props so hover changes re-render memoized nodes (cursor). */
   hovered: boolean;
   onPointerDown: (e: ReactPointerEvent<SVGGElement>, node: RenderNode) => void;
   onHover: (key: string | null) => void;
 }) {
   const { key, template, size, kind, device, label, powerKind } = node;
+  const os = orientedSize(size, orient);
+  const rot = orient?.rot ?? 0;
+  const flip = orient?.flip ?? "none";
   const cls = [
     "isch",
     kind === "power" ? (powerKind === "gnd" ? "isch-gnd" : "isch-vcc") : "",
+  ].filter(Boolean).join(" ");
+  // Compose the transform: translate → rotate about center → mirror.
+  // Mirror is flipped AFTER rotation (screen axes), matching transformPin.
+  const t = [
+    `translate(${pos.x}, ${pos.y})`,
+    rot !== 0 ? `rotate(${rot} ${size.w / 2} ${size.h / 2})` : "",
+    flip === "h" ? `translate(${size.w / 2} 0) scale(-1 1) translate(${-size.w / 2} 0)` : "",
+    flip === "v" ? `translate(0 ${size.h / 2}) scale(1 -1) translate(0 ${-size.h / 2})` : "",
   ].filter(Boolean).join(" ");
   return (
     <g
       data-device-id={key}
       className={cls}
-      transform={`translate(${pos.x}, ${pos.y})`}
+      transform={t}
       onPointerDown={(e) => onPointerDown(e, node)}
       onMouseEnter={() => onHover(key)}
       onMouseLeave={() => onHover(null)}
       style={{ cursor: isLocked ? "default" : "move" }}
     >
-      {/* Selection / lock indicators — thin outlines, no fill halo
-          (a filled bbox rect reads as a bright square over the art). */}
+      {/* Selection / lock indicators — thin outlines, use ORIENTED size so
+          the highlight matches the rotated footprint. */}
       {selected && (
         <rect
           x={-3}
           y={-3}
-          width={size.w + 6}
-          height={size.h + 6}
+          width={os.w + 6}
+          height={os.h + 6}
           rx={4}
           fill="none"
           stroke={HL_COLOR}
@@ -748,8 +849,8 @@ const DeviceNode = memo(function DeviceNode({
         <rect
           x={-3}
           y={-3}
-          width={size.w + 6}
-          height={size.h + 6}
+          width={os.w + 6}
+          height={os.h + 6}
           rx={4}
           fill="none"
           stroke={LOCK_COLOR}
@@ -778,12 +879,12 @@ const DeviceNode = memo(function DeviceNode({
         );
       })}
       {isLocked && (
-        <text x={size.w + 2} y={-2} fontSize={8} fill={LOCK_COLOR} pointerEvents="none">
+        <text x={os.w + 2} y={-2} fontSize={8} fill={LOCK_COLOR} pointerEvents="none">
           L
         </text>
       )}
-      {/* Hit overlay: whole bbox receives pointer events */}
-      <rect width={size.w} height={size.h} fill="transparent" pointerEvents="all" />
+      {/* Hit overlay: whole ORIENTED bbox receives pointer events */}
+      <rect width={os.w} height={os.h} fill="transparent" pointerEvents="all" />
     </g>
   );
 });

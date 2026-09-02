@@ -6,6 +6,8 @@ import {
   powerDevices,
   deviceKey,
   runInteractiveLayout,
+  transformPin,
+  orientedSize,
   type Obstacle,
 } from "./interactiveAnalogLayout";
 import { parseSymbolSkin } from "./interactiveSymbols";
@@ -137,6 +139,52 @@ describe("gridFallback", () => {
 describe("deviceKey", () => {
   it("prefers instanceName over id", () => {
     expect(deviceKey(mos("M_9", "nmos", []))).toBe("M_9");
+  });
+});
+
+describe("transformPin / orientedSize", () => {
+  // NMOS_v: box 42×36, center (21,18). D top (30,0), S bottom (30,36),
+  // G left (0,18), B right (36,18). Rotation is cw per SVG rotate().
+  const W = 42, H = 36;
+  const D = { dx: 30, dy: 0 };
+  const S = { dx: 30, dy: 36 };
+  const G = { dx: 0, dy: 18 };
+  const B = { dx: 36, dy: 18 };
+
+  it("identity — no transform, same coords", () => {
+    expect(transformPin(D, W, H, undefined)).toEqual(D);
+    expect(transformPin(S, W, H, { rot: 0, flip: "none" })).toEqual(S);
+  });
+
+  it("90° clockwise: D top→right (39,27), S bottom→left (3,27), G left→top, B right→bottom", () => {
+    const r90 = { rot: 90 as const, flip: "none" as const };
+    expect(transformPin(D, W, H, r90)).toEqual({ dx: 39, dy: 27 });
+    expect(transformPin(S, W, H, r90)).toEqual({ dx: 3, dy: 27 });
+    expect(transformPin(G, W, H, r90)).toEqual({ dx: 21, dy: -3 });
+    expect(transformPin(B, W, H, r90)).toEqual({ dx: 21, dy: 33 });
+  });
+
+  it("180° flips both axes (D top ↔ S bottom, G left ↔ B right)", () => {
+    const r180 = { rot: 180 as const, flip: "none" as const };
+    expect(transformPin(D, W, H, r180)).toEqual({ dx: 12, dy: 36 });
+    expect(transformPin(S, W, H, r180)).toEqual({ dx: 12, dy: 0 });
+    expect(transformPin(G, W, H, r180)).toEqual({ dx: 42, dy: 18 });
+    expect(transformPin(B, W, H, r180)).toEqual({ dx: 6, dy: 18 });
+  });
+
+  it("mirror h flips x about center: G left→(42,18), B right→(6,18)", () => {
+    const fh = { rot: 0 as const, flip: "h" as const };
+    expect(transformPin(G, W, H, fh)).toEqual({ dx: 42, dy: 18 });
+    expect(transformPin(B, W, H, fh)).toEqual({ dx: 6, dy: 18 });
+    expect(transformPin(D, W, H, fh)).toEqual({ dx: 12, dy: 0 });
+  });
+
+  it("orientedSize swaps width/height only for 90/270", () => {
+    const base = { w: 42, h: 36 };
+    expect(orientedSize(base, { rot: 0, flip: "none" })).toEqual(base);
+    expect(orientedSize(base, { rot: 180, flip: "none" })).toEqual(base);
+    expect(orientedSize(base, { rot: 90, flip: "none" })).toEqual({ w: 36, h: 42 });
+    expect(orientedSize(base, { rot: 270, flip: "none" })).toEqual({ w: 36, h: 42 });
   });
 });
 

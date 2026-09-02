@@ -3,6 +3,7 @@ import {
   useInteractiveSchematic,
   effectivePositions,
   lockedMap,
+  orientationMap,
   scopeKey,
 } from "./interactiveSchematic";
 
@@ -127,5 +128,49 @@ describe("scopeKey", () => {
   it("composes die:module:scope", () => {
     expect(scopeKey("die1", "top", "full")).toBe("die1:top:full");
     expect(scopeKey(null, "top", "region:r1")).toBe("nodie:top:region:r1");
+  });
+});
+
+describe("orientation", () => {
+  it("defaults to rot 0 / flip none and tolerates missing orientation", () => {
+    const st = useInteractiveSchematic.getState();
+    st.applyPositions(S1, { M_1: { x: 5, y: 6 } });
+    expect(orientationMap(useInteractiveSchematic.getState(), S1)).toEqual({});
+  });
+
+  it("setOrientation persists per scope and survives prune", () => {
+    const st = useInteractiveSchematic.getState();
+    st.setOrientation(S1, "M_1", { rot: 90, flip: "none" });
+    st.setOrientation(S1, "M_2", { rot: 180, flip: "h" });
+    expect(orientationMap(useInteractiveSchematic.getState(), S1)).toEqual({
+      M_1: { rot: 90, flip: "none" },
+      M_2: { rot: 180, flip: "h" },
+    });
+    st.pruneScope(S1, ["M_1"]);
+    expect(orientationMap(useInteractiveSchematic.getState(), S1)).toEqual({
+      M_1: { rot: 90, flip: "none" },
+    });
+  });
+
+  it("orientation slots are scope-isolated", () => {
+    const st = useInteractiveSchematic.getState();
+    st.setOrientation(S1, "M_1", { rot: 90, flip: "none" });
+    expect(orientationMap(useInteractiveSchematic.getState(), S2)).toEqual({});
+  });
+
+  it("applyPositions keeps orientations untouched", () => {
+    const st = useInteractiveSchematic.getState();
+    st.setOrientation(S1, "M_1", { rot: 270, flip: "v" });
+    st.applyPositions(S1, { M_1: { x: 1, y: 1 } });
+    expect(orientationMap(useInteractiveSchematic.getState(), S1)).toEqual({
+      M_1: { rot: 270, flip: "v" },
+    });
+  });
+
+  it("resetScope clears orientations too", () => {
+    const st = useInteractiveSchematic.getState();
+    st.setOrientation(S1, "M_1", { rot: 90, flip: "h" });
+    st.resetScope(S1);
+    expect(orientationMap(useInteractiveSchematic.getState(), S1)).toEqual({});
   });
 });
