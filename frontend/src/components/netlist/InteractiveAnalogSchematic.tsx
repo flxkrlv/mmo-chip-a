@@ -466,6 +466,8 @@ export function InteractiveAnalogSchematic({
   const [selection, setSelection] = useState<string[]>([]);
   const [hoverNet, setHoverNet] = useState<number | null>(null);
   const [hoverDevice, setHoverDevice] = useState<string | null>(null);
+  /** Floating tooltip shown while hovering a wire — net name + cursor. */
+  const [netTooltip, setNetTooltip] = useState<{ text: string; x: number; y: number } | null>(null);
   /** World-space marquee rect while dragging empty area with Shift. */
   const [marquee, setMarquee] = useState<{ x0: number; y0: number; x1: number; y1: number } | null>(null);
 
@@ -1064,7 +1066,18 @@ export function InteractiveAnalogSchematic({
               netId={netId}
               wire={wire}
               hovered={hoverNet === netId}
-              onHover={setHoverNet}
+              onHover={(id, x, y) => {
+                setHoverNet(id);
+                if (id == null) { setNetTooltip(null); return; }
+                // Convert viewport client coords → host-local (tooltip is
+                // positioned inside the relatively-positioned host div).
+                const r = hostRef.current?.getBoundingClientRect();
+                setNetTooltip({
+                  text: namedNets.get(id) ?? `net ${id}`,
+                  x: (x ?? 0) - (r?.left ?? 0),
+                  y: (y ?? 0) - (r?.top ?? 0),
+                });
+              }}
             />
           ))}
           {/* Devices */}
@@ -1104,6 +1117,29 @@ export function InteractiveAnalogSchematic({
           ? `net: ${namedNets.get(hoverNet)}`
           : `${devices.length} devices · drag to move · ctrl+wheel to zoom`}
       </div>
+
+      {/* Wire net-name tooltip (floats with the cursor) */}
+      {netTooltip && (
+        <div
+          style={{
+            position: "absolute",
+            left: netTooltip.x + 12,
+            top: netTooltip.y + 12,
+            zIndex: 3,
+            pointerEvents: "none",
+            background: "var(--card)",
+            border: "1px solid var(--l2)",
+            borderRadius: 4,
+            padding: "2px 8px",
+            fontSize: 10,
+            color: "var(--ink)",
+            whiteSpace: "nowrap",
+            boxShadow: "0 3px 10px rgba(0,0,0,0.4)",
+          }}
+        >
+          {netTooltip.text}
+        </div>
+      )}
     </div>
   );
 }
@@ -1143,11 +1179,12 @@ const NetWire = memo(function NetWire({
   netId: number;
   wire: WireData;
   hovered: boolean;
-  onHover: (netId: number | null) => void;
+  onHover: (netId: number | null, clientX?: number, clientY?: number) => void;
 }) {
   return (
     <g
-      onMouseEnter={() => onHover(netId)}
+      onMouseEnter={(e) => onHover(netId, e.clientX, e.clientY)}
+      onMouseMove={(e) => onHover(netId, e.clientX, e.clientY)}
       onMouseLeave={() => onHover(null)}
     >
       {wire.polylines.map((line, li) => {
