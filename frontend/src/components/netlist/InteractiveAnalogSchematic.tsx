@@ -755,7 +755,7 @@ export function InteractiveAnalogSchematic({
    *     (the first bare `g` is inside <defs> — the symbol library);
    *   - capture the content bbox from the live DOM (getBBox is only valid
    *     on an attached element);
-   *   - strip the view transform, set an explicit viewBox, force every
+* - strip the view transform, set an explicit viewBox, force every
    *     stroke/fill to black via a `!important` stylesheet (the live art
    *     and CSS custom properties like `var(--ink2)` don't resolve in a
    *     standalone SVG image). */
@@ -768,6 +768,22 @@ export function InteractiveAnalogSchematic({
     const clone = svg.cloneNode(true) as SVGSVGElement;
     const content = clone.querySelector("g[transform]") as SVGGElement | null;
     if (!content) return null;
+
+    // The <defs> symbol bodies come from the netlist2svg skin, which uses
+    // the `s:` namespace (<s:alias>, s:generic="body"). A standalone SVG
+    // opened as a document/image has no xmlns:s declared, so those kill XML
+    // parsing ("Namespace prefix s ... is not defined") — strip them. They
+    // carry no visual content.
+    for (const el of Array.from(clone.querySelectorAll("*"))) {
+      const tag = el.tagName?.toLowerCase() ?? "";
+      if (tag.startsWith("s:")) {
+        el.remove();
+        continue;
+      }
+      for (const attr of Array.from(el.attributes)) {
+        if (attr.name.startsWith("s:")) el.removeAttribute(attr.name);
+      }
+    }
 
     // Content bbox in world (group-local) coordinates.
     let bb = { x: 0, y: 0, w: 100, h: 100 };
