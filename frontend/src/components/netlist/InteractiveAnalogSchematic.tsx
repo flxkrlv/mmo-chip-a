@@ -87,6 +87,8 @@ interface Props {
   favorStraightEdges?: boolean;
   /** Hierarchy blocks (floorplan regions as subcircuit rectangles). */
   blocks?: HierarchyBlock[];
+  /** Double-click on a hierarchy block — drill into that region's schematic. */
+  onOpenBlock?: (regionId: string) => void;
 }
 
 // ── Constants ────────────────────────────────────────────────────
@@ -128,7 +130,7 @@ interface RenderNode {
 export function InteractiveAnalogSchematic({
   devices, namedNets, ioNetIds, scopeKey, vdd, gnd,
   layoutStrategy = "BRANDES_KOEPF", layoutDirection = "DOWN", compactionLevel = 2,
-  nodeNode, betweenLayers, edgeEdge, edgeNode, mergeEdges, favorStraightEdges, blocks,
+  nodeNode, betweenLayers, edgeEdge, edgeNode, mergeEdges, favorStraightEdges, blocks, onOpenBlock,
 }: Props) {
   const opts = useMemo(
     () => ({
@@ -1191,6 +1193,7 @@ export function InteractiveAnalogSchematic({
               hovered={hoverDevice === n.key}
               onPointerDown={onDevicePointerDown}
               onHover={setHoverDevice}
+              onOpenBlock={onOpenBlock}
             />
           ))}
           {/* Marquee select rect (world space, inside the transform) */}
@@ -1318,6 +1321,7 @@ const DeviceNode = memo(function DeviceNode({
   orient,
   onPointerDown,
   onHover,
+  onOpenBlock,
 }: {
   node: RenderNode;
   pos: Point;
@@ -1329,6 +1333,8 @@ const DeviceNode = memo(function DeviceNode({
   hovered: boolean;
   onPointerDown: (e: ReactPointerEvent<SVGGElement>, node: RenderNode) => void;
   onHover: (key: string | null) => void;
+  /** Double-click a hierarchy block — drill into its region schematic. */
+  onOpenBlock?: (regionId: string) => void;
 }) {
   const { key, template, size, kind, device, label, powerKind, blockName, blockPorts } = node;
   const os = orientedSize(size, orient);
@@ -1352,9 +1358,12 @@ const DeviceNode = memo(function DeviceNode({
       className={cls}
       transform={`translate(${pos.x}, ${pos.y})`}
       onPointerDown={(e) => onPointerDown(e, node)}
+      onDoubleClick={kind === "block" && onOpenBlock
+        ? () => onOpenBlock(key.slice("blk:".length))
+        : undefined}
       onMouseEnter={() => onHover(key)}
       onMouseLeave={() => onHover(null)}
-      style={{ cursor: isLocked ? "default" : "move" }}
+      style={{ cursor: kind === "block" ? "pointer" : isLocked ? "default" : "move" }}
     >
       {/* Selection / lock indicators — thin outlines, use ORIENTED size so
           the highlight matches the rotated footprint. */}

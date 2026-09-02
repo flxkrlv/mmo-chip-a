@@ -350,6 +350,16 @@ export function SchematicViewPanel({
     );
   }, [hierarchyBlocks, interactiveDevices, n2sData]);
 
+  // ── Drilling into a hierarchy block ──────────────────────────
+  // Double-click on a block (interactive hierarchy) opens that region's
+  // schematic: select the region and leave the hierarchy overview, so the
+  // interactive canvas shows the region's devices (per-region slot).
+  const handleOpenBlock = useCallback((regionId: string) => {
+    setInternalRegion(regionId);
+    onSelectRegion?.(regionId);
+    setShowHierarchy(false);
+  }, [onSelectRegion]);
+
   return (
     <div
       style={{
@@ -690,6 +700,7 @@ export function SchematicViewPanel({
               mergeEdges={mergeEdges}
               favorStraightEdges={favorStraightEdges}
               blocks={hierarchyBlocks}
+              onOpenBlock={handleOpenBlock}
             />
           ) : currentN2sJson ? (
             <Netlist2SvgView ref={n2sRef} netlistJson={currentN2sJson} layoutStrategy={layoutStrategy} layoutDirection={layoutDirection} compactionLevel={compactionLevel} />
