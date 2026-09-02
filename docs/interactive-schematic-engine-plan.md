@@ -1,6 +1,6 @@
 # План: динамический (интерактивный) схемный рендер аналоговых схем
 
-Дата: 2026-09-02 · Ветка: `analog-re-wip` · Статус: MVP реализован (см. §10)
+Дата: 2026-09-02 · Ветка: `analog-re-wip` · Статус: MVP реализован (см. §10), Фаза 2 (2A-2G) реализована (см. §12)
 
 ## 10. Реализация (2026-09-02, MVP)
 
@@ -217,3 +217,20 @@ MVP (`80f7e8c`) работает. Фаза 2 добавляет UX/стабил�
 
 ### Проверка каждой фазы
 `tsc --noEmit` (frontend+backend), `vitest run`, `vite build`, коммит по фазам.
+
+## 12. Фаза 2 — статус реализации (2026-09-02, DONE)
+
+| Фаза | Коммит | Содержание |
+|---|---|---|
+| 2A | `35bbaf8` | Паритет со static: роли портов (top=input, bottom=output, left/right по типу), power vcc=драйвер/gnd=сток, spacing 35/5; guards driverless→pseudo-driver, consumerless→star-bridge, fanout≤48. |
+| 2F | `b38775e` | Поворот/зеркалирование вручную: `ScopeLayout.orientation`, `transformPin` (cw по SVG rotate, затем flip), `orientedSize`; кнопки Rotate/Flip; rerouteNets/absorbResult учитывают orientation; persist v2+migrate. |
+| 2B | `eca69ca` | Undo/redo: in-memory history (не персист), лимит 50, кнопки + Ctrl+Z/Shift+Z/Y. |
+| 2E | `7b72128` | Multi-select: shift+click, marquee (shift+drag), Ctrl+A; group drag (не-locked); Lock/Rotate/Flip по всей selection. |
+| 2G | `69def27` | `SchematicFragmentPopup` в AssistantPanel (Static/Interactive), слот `fragment:<id>`. |
+| 2C+2D | `a07e584` | Find/zoom-to-device; Export PNG (белый фон, тёмные элементы). |
+
+**Отложено в features:** ELK-предложение ориентаций (дифпары зеркалить автоматически),
+SVG/JSON export, detour-repair роутера с обходом препятствий, chunked/region-ELK для
+огромных дай, RAG-подсказки LLM по состоянию канваса.
+
+Тесты: 82 frontend (все зелёные), `tsc --noEmit` (frontend+backend), `vite build` OK.
