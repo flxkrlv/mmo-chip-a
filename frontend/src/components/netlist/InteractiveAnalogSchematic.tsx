@@ -1217,7 +1217,9 @@ export function InteractiveAnalogSchematic({
       <div style={{ position: "absolute", bottom: 6, left: 6, zIndex: 1, fontSize: 10, color: "var(--ink3)", pointerEvents: "none" }}>
         {hoverNet != null && namedNets.get(hoverNet)
           ? `net: ${namedNets.get(hoverNet)}`
-          : `${devices.length} devices · drag to move · ctrl+wheel to zoom`}
+          : blocks && blocks.length > 0
+            ? `${devices.length} devices · ${blocks.length} blocks · right-click a block to open it`
+            : `${devices.length} devices · drag to move · ctrl+wheel to zoom`}
       </div>
 
       {/* Wire net-name tooltip (floats with the cursor) */}
@@ -1360,6 +1362,12 @@ const DeviceNode = memo(function DeviceNode({
       onPointerDown={(e) => onPointerDown(e, node)}
       onDoubleClick={kind === "block" && onOpenBlock
         ? () => onOpenBlock(key.slice("blk:".length))
+        : undefined}
+      onContextMenu={kind === "block" && onOpenBlock
+        ? (e) => {
+            e.preventDefault();
+            onOpenBlock(key.slice("blk:".length));
+          }
         : undefined}
       onMouseEnter={() => onHover(key)}
       onMouseLeave={() => onHover(null)}

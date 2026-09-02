@@ -250,6 +250,11 @@ export function SchematicViewPanel({
   const handleSelectRegion = (id: string) => {
     setInternalRegion(id);
     onSelectRegion?.(id);
+    // A concrete region means "open that block": leave the hierarchy
+    // overview so the tab (bandgap, …) shows the per-region schematic even
+    // when the hierarchy toggle is on. "All" keeps the current hierarchy
+    // state (overview when enabled).
+    if (id) setShowHierarchy(false);
   };
 
   // ── Current data ──────────────────────────────────────────────
