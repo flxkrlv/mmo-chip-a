@@ -596,9 +596,9 @@ export function gridFallback(
   // Local routing for all nets.
   const wires = new Map<number, WireData>();
   const netIndex = buildNetIndex(devices, opts, powers);
-  const obstacles: Obstacle[] = Object.entries(positions).map(([key, p]) => ({
-    x: p.x, y: p.y, w: sizes[key]?.w ?? 30, h: sizes[key]?.h ?? 40,
-  }));
+  const obstacles: Obstacle[] = Object.entries(positions).map(([key, p]) =>
+    deviceObstacle(p, sizes[key] ?? { w: 30, h: 40 }),
+  );
   const keySet = new Set(Object.keys(positions));
   const lookups = new Map<string, SymbolPinLookup | undefined>();
   for (const d of all) lookups.set(deviceKey(d), portsForDeviceStatic(devices, powers, table, opts, deviceKey(d)));
@@ -720,9 +720,28 @@ export function orientedSize(
 
 // ── Local drag-time router ───────────────────────────────────────
 
-const OBSTACLE_MARGIN = 4;
+const OBSTACLE_MARGIN = 8;
 const OVERLAP_PENALTY = 60;
 const BEND_PENALTY = 2;
+
+/**
+ * Extra padding applied to every device's obstacle box on all sides, so
+ * wires keep a clear visual distance from the symbol art (the raw symbol
+ * template size only covers the glyph; pins and lead stubs sit on/near the
+ * edges). Builders should emit obstacles as
+ * `{ x: p.x - PAD, y: p.y - PAD, w: os.w + 2*PAD, h: os.h + 2*PAD }`.
+ */
+export const WIRE_OBSTACLE_PAD = 5;
+
+/** Build an inflated obstacle box for a device at top-left `p`. */
+export function deviceObstacle(
+  p: Point,
+  size: { w: number; h: number },
+  orient?: DeviceOrientationLike,
+): Obstacle {
+  const os = orientedSize(size, orient);
+  return { x: p.x - WIRE_OBSTACLE_PAD, y: p.y - WIRE_OBSTACLE_PAD, w: os.w + 2 * WIRE_OBSTACLE_PAD, h: os.h + 2 * WIRE_OBSTACLE_PAD };
+}
 
 /** Segment length inside an expanded rect (0 if no overlap). */
 function segmentRectOverlap(a: Point, b: Point, r: Obstacle): number {

@@ -41,6 +41,7 @@ import {
   routeNetLocal,
   transformPin,
   orientedSize,
+  deviceObstacle,
   type InteractiveLayoutResult,
   type DeviceOrientationLike,
   type Point,
@@ -247,8 +248,7 @@ export function InteractiveAnalogSchematic({
         .filter(([key]) => key !== excludeKey)
         .map(([key, p]) => {
           const size = elkResult?.sizes[key] ?? { w: 30, h: 40 };
-          const os = orientedSize(size, orientations[key]);
-          return { x: p.x, y: p.y, w: os.w, h: os.h };
+          return deviceObstacle(p, size, orientations[key]);
         });
       for (const netId of netIds) {
         const members = netIndex.get(netId);

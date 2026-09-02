@@ -8,6 +8,8 @@ import {
   runInteractiveLayout,
   transformPin,
   orientedSize,
+  deviceObstacle,
+  WIRE_OBSTACLE_PAD,
   type Obstacle,
 } from "./interactiveAnalogLayout";
 import { parseSymbolSkin } from "./interactiveSymbols";
@@ -106,6 +108,19 @@ describe("routeNetLocal", () => {
   it("empty / single anchors → no wires", () => {
     expect(routeNetLocal([], noObs).polylines).toHaveLength(0);
     expect(routeNetLocal([{ x: 5, y: 5 }], noObs).polylines).toHaveLength(0);
+  });
+});
+
+describe("deviceObstacle", () => {
+  it("inflates the box by WIRE_OBSTACLE_PAD on every side", () => {
+    const o = deviceObstacle({ x: 10, y: 20 }, { w: 42, h: 36 });
+    expect(o).toEqual({ x: 10 - WIRE_OBSTACLE_PAD, y: 20 - WIRE_OBSTACLE_PAD, w: 42 + 2 * WIRE_OBSTACLE_PAD, h: 36 + 2 * WIRE_OBSTACLE_PAD });
+  });
+
+  it("uses oriented size for 90/270 rotation", () => {
+    const o = deviceObstacle({ x: 0, y: 0 }, { w: 42, h: 36 }, { rot: 90, flip: "none" });
+    expect(o.w).toBe(36 + 2 * WIRE_OBSTACLE_PAD);
+    expect(o.h).toBe(42 + 2 * WIRE_OBSTACLE_PAD);
   });
 });
 
