@@ -239,14 +239,16 @@ export function SchematicViewPanel({
     img.src = "data:image/svg+xml;base64," + btoa(unescape(encodeURIComponent(svgString)));
   }, [activeRegion, moduleName]);
 
-  // Sync internal region when regions change
-  useEffect(() => {
-    if (regionIds.length > 0 && !regionIds.includes(activeRegion ?? "")) {
-      const next = regionIds[0];
-      setInternalRegion(next);
-      onSelectRegion?.(next);
-    }
-  }, [regionIds.join(",")]);
+  // Sync internal region when regions change. "" (All) is a valid selection —
+// the default with hierarchy enabled — so we only re-pin a stale CONCRETE
+// region, never force regionIds[0] over the empty "All" state.
+useEffect(() => {
+  if (regionIds.length > 0 && activeRegion != null && activeRegion !== "" && !regionIds.includes(activeRegion)) {
+    const next = regionIds[0];
+    setInternalRegion(next);
+    onSelectRegion?.(next);
+  }
+}, [regionIds.join(",")]);
 
   // Legacy static renderer is opt-in: when hidden, force the interactive
   // engine and the analog render mode (a stale persisted "static" choice or
