@@ -774,16 +774,48 @@ export function InteractiveAnalogSchematic({
     // opened as a document/image has no xmlns:s declared, so those kill XML
     // parsing ("Namespace prefix s ... is not defined") — strip them. They
     // carry no visual content.
+    //
+    // Also drop any <style> blocks: the live canvas styles depend on page-level
+    // CSS custom properties (--ink2/--mono) and a dark theme — they cannot be
+    // resolved in a standalone document. Instead we bake plain colors as
+    // PRESENTATION ATTRIBUTES below (no CSS needed).
     for (const el of Array.from(clone.querySelectorAll("*"))) {
       const tag = el.tagName?.toLowerCase() ?? "";
-      if (tag.startsWith("s:")) {
-        el.remove();
-        continue;
-      }
+      if (tag === "style") { el.remove(); continue; }
+      if (tag.startsWith("s:")) { el.remove(); continue; }
       for (const attr of Array.from(el.attributes)) {
         if (attr.name.startsWith("s:")) el.removeAttribute(attr.name);
       }
     }
+
+    // Recolor for print: black strokes, hollow bodies, black text. The live
+    // art is baked white-on-dark (stroke="#ffffff", fill="#ffffff"), wires use
+    // stroke="var(--ink2)", and text is styled via page CSS. Resolve them all
+    // to static attributes so the exported SVG renders identically everywhere.
+    const colorize = (el: Element) => {
+      const tag = el.tagName?.toLowerCase() ?? "";
+      // Kill interaction leftovers (hit rects, cursor styles).
+      el.removeAttribute("style");
+      el.removeAttribute("pointer-events");
+      if (tag === "text" || tag === "tspan") {
+        el.setAttribute("fill", "#000000");
+        el.setAttribute("stroke", "none");
+        return;
+      }
+      const stroke = el.getAttribute("stroke");
+      if (stroke && stroke !== "transparent") {
+        // var(--ink2) or white -> black
+        el.setAttribute("stroke", /#fff/i.test(stroke) || stroke.startsWith("var(") ? "#000000" : stroke);
+      }
+      const fill = el.getAttribute("fill");
+      if (fill) {
+        // white fill -> none (hollow symbols); resolve vars/transparent -> none
+        if (/^#fff|transparent/i.test(fill) || fill.startsWith("var(")) {
+          el.setAttribute("fill", "none");
+        }
+      }
+    };
+    clone.querySelectorAll("*").forEach(colorize);
 
     // Content bbox in world (group-local) coordinates.
     let bb = { x: 0, y: 0, w: 100, h: 100 };
@@ -794,14 +826,6 @@ export function InteractiveAnalogSchematic({
     const pad = 12;
     const x = bb.x - pad, y = bb.y - pad, w = bb.w + 2 * pad, h = bb.h + 2 * pad;
 
-    // Recolor everything via !important CSS (beats presentation attrs and
-    // is independent of page-level --ink2 / --ink custom properties).
-    const style = document.createElementNS("http://www.w3.org/2000/svg", "style");
-    style.textContent = `
-      .exp-all * { stroke: #000 !important; fill: none !important; }
-      .exp-all text { fill: #000 !important; stroke: none !important; }
-    `;
-    clone.prepend(style);
     // Background rect below the content (document order = paint order).
     const bg = document.createElementNS("http://www.w3.org/2000/svg", "rect");
     bg.setAttribute("x", String(x));
@@ -813,7 +837,6 @@ export function InteractiveAnalogSchematic({
 
     // Drop the view transform so world coords map 1:1 into the viewBox.
     content.removeAttribute("transform");
-    content.setAttribute("class", `${content.getAttribute("class") ?? ""} exp-all`.trim());
 
     clone.setAttribute("viewBox", `${x} ${y} ${w} ${h}`);
     clone.setAttribute("width", String(w));
