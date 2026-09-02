@@ -12,6 +12,7 @@ import {
   WIRE_OBSTACLE_PAD,
   regionExternalNets,
   blockDevices,
+  blockSize,
   type Obstacle,
   type HierarchyBlock,
 } from "./interactiveAnalogLayout";
@@ -391,6 +392,23 @@ describe("hierarchy blocks", () => {
     const blk = (rid: string) => blocks.find((b) => b.regionId === rid)!;
     expect(blk("A").name).toBe("bandgap");
     expect(blk("B").name).toBe("diffpair");
+  });
+
+  it("blockSize scales with block name + port label length", () => {
+    const small: HierarchyBlock = {
+      regionId: "A", name: "A",
+      nets: [{ netId: 1, name: "in", direction: "input" }],
+    };
+    const big: HierarchyBlock = {
+      regionId: "B", name: "amplifier_output_stage",
+      nets: [{ netId: 9, name: "bandgap_reference_divider", direction: "output" }],
+    };
+    const s = blockSize(small);
+    const bsz = blockSize(big);
+    expect(bsz.w).toBeGreaterThan(s.w);
+    expect(bsz.h).toBeGreaterThanOrEqual(48);
+    // width is clamped to a sane max
+    expect(bsz.w).toBeLessThanOrEqual(260);
   });
 
   it("blockDevices synthesizes in_/out_ terminals bound to the net ids", () => {

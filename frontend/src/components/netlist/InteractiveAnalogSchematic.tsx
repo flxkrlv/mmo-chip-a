@@ -43,6 +43,8 @@ import {
   orientedSize,
   deviceObstacle,
   blockDevices,
+  blockSize,
+  blockPortStubs,
   type InteractiveLayoutResult,
   type DeviceOrientationLike,
   type HierarchyBlock,
@@ -191,9 +193,23 @@ export function InteractiveAnalogSchematic({
     }
     return map;
   }, [pinLookup, ioNets]);
+  // io pseudo-devices so netIndex knows their nets too (drag / re-layout
+  // re-route must include the io pin — previously the wire disappeared).
+  const ioDevs = useMemo<import("shared").AnalogDevice[]>(
+    () => ioNets.map((io) => ({
+      id: `io:${io.netId}`,
+      kind: "__io",
+      instanceName: `io:${io.netId}`,
+      layer: "metal1",
+      bbox: { x: 0, y: 0, width: 1, height: 1 },
+      geometry: {},
+      terminals: [{ name: "Y", netId: io.netId }],
+    }) as unknown as import("shared").AnalogDevice),
+    [ioNets],
+  );
   const netIndex = useMemo(
-    () => buildNetIndex(devices, opts, [...powers, ...blockDevices(blocks ?? [])]),
-    [devices, opts, powers, blocks],
+    () => buildNetIndex(devices, opts, [...powers, ...blockDevices(blocks ?? []), ...ioDevs]),
+    [devices, opts, powers, blocks, ioDevs],
   );
 
   /** Final render positions: stored/persisted positions win over ELK's. */
@@ -255,15 +271,14 @@ export function InteractiveAnalogSchematic({
     for (const b of blocks ?? []) {
       const key = `blk:${b.regionId}`;
       if (positions[key] == null) continue;
-      const size = elkResult.sizes[key] ?? { w: 30, h: 40 };
-      const ins = b.nets.filter((n) => n.direction === "input");
-      const outs = b.nets.filter((n) => n.direction === "output");
-      const h = Math.max(40, 16 + Math.max(ins.length, outs.length, 1) * 18);
-      const inStep = ins.length > 0 ? (h - 16) / (ins.length + 1) : 0;
-      const outStep = outs.length > 0 ? (h - 16) / (outs.length + 1) : 0;
-      const blockPorts: NonNullable<RenderNode["blockPorts"]> = [];
-      ins.forEach((n, i) => blockPorts.push({ terminal: `in_${n.name}`, netName: n.name, dx: 0, dy: 16 + (i + 1) * inStep, isInput: true }));
-      outs.forEach((n, i) => blockPorts.push({ terminal: `out_${n.name}`, netName: n.name, dx: size.w, dy: 16 + (i + 1) * outStep, isInput: false }));
+      const size = elkResult.sizes[key] ?? blockSize(b);
+      const blockPorts: NonNullable<RenderNode["blockPorts"]> = blockPortStubs(b, size).map((s) => ({
+        terminal: s.terminal,
+        netName: s.netName,
+        dx: s.dx,
+        dy: s.dy,
+        isInput: s.isInput,
+      }));
       out.push({ key, kind: "block", size, blockName: b.name, blockPorts });
     }
     return out;

@@ -103,22 +103,14 @@ export interface AnalogLayoutOptions {
  * per external net. Mirror of the static block diagram.
  */
 function blockPorts(b: HierarchyBlock): NodePortSpec[] {
-  const ins = b.nets.filter((n) => n.direction === "input");
-  const outs = b.nets.filter((n) => n.direction === "output");
-  const h = blockHeight(Math.max(ins.length, outs.length, 1));
-  const center = h / 2;
-  const insSpacing = ins.length > 0 ? (h - 16) / (ins.length + 1) : 0;
-  const outsSpacing = outs.length > 0 ? (h - 16) / (outs.length + 1) : 0;
-  const pins: NodePortSpec[] = [];
-  ins.forEach((n, i) => {
-    pins.push({ pid: `in_${n.name}`, x: 0, y: 16 + (i + 1) * insSpacing, side: "WEST", netId: n.netId });
-  });
-  outs.forEach((n, i) => {
-    pins.push({ pid: `out_${n.name}`, x: BLOCK_WIDTH, y: 16 + (i + 1) * outsSpacing, side: "EAST", netId: n.netId });
-  });
-  // mark center ref for label (pins carry no UI weight)
-  (pins as Array<NodePortSpec & { _center?: number }>).forEach((p) => (p._center = center));
-  return pins;
+  const size = blockSize(b);
+  return blockPortStubs(b, size).map((s) => ({
+    pid: s.terminal,
+    x: s.dx,
+    y: s.dy,
+    side: s.isInput ? "WEST" : "EAST",
+    netId: b.nets.find((n) => `${n.direction === "input" ? "in" : "out"}_${n.name}` === s.terminal)!.netId,
+  }));
 }
 
 /** Read an optional spacing option, falling back to a per-key default. */
@@ -141,9 +133,44 @@ export interface HierarchyBlock {
 
 /** Layout height of a block with `n` ports (rows stacked 18px). */
 function blockHeight(portCount: number): number {
-  return Math.max(40, 16 + portCount * 18);
+  return Math.max(48, 22 + portCount * 20);
 }
-const BLOCK_WIDTH = 90;
+const BLOCK_MIN_WIDTH = 90;
+const BLOCK_MAX_WIDTH = 260;
+
+/**
+ * Sized block box: width scales with the longest label (block name + port
+ * net names) so text fits, height from the number of ports.
+ */
+export function blockSize(b: HierarchyBlock): { w: number; h: number } {
+  const h = blockHeight(b.nets.length);
+  let maxLen = b.name.length;
+  for (const n of b.nets) maxLen = Math.max(maxLen, n.name.length);
+  // ~7px per glyph at 8-9px font with a small fixed padding.
+  const w = Math.max(BLOCK_MIN_WIDTH, Math.min(BLOCK_MAX_WIDTH, 40 + maxLen * 7));
+  return { w, h };
+}
+
+/** Block-relative port stubs: positions + direction, reused by canvas labels. */
+export interface BlockPortStub {
+  terminal: string;
+  netName: string;
+  dx: number;
+  dy: number;
+  isInput: boolean;
+}
+
+/** Port stubs for a hierarchy block (inputs left / outputs right). */
+export function blockPortStubs(b: HierarchyBlock, size: { w: number; h: number }): BlockPortStub[] {
+  const ins = b.nets.filter((n) => n.direction === "input");
+  const outs = b.nets.filter((n) => n.direction === "output");
+  const inStep = ins.length > 0 ? (size.h - 22) / (ins.length + 1) : 0;
+  const outStep = outs.length > 0 ? (size.h - 22) / (outs.length + 1) : 0;
+  const stubs: BlockPortStub[] = [];
+  ins.forEach((n, i) => stubs.push({ terminal: `in_${n.name}`, netName: n.name, dx: 0, dy: 22 + (i + 1) * inStep, isInput: true }));
+  outs.forEach((n, i) => stubs.push({ terminal: `out_${n.name}`, netName: n.name, dx: size.w, dy: 22 + (i + 1) * outStep, isInput: false }));
+  return stubs;
+}
 
 /**
  * Build synthetic AnalogDevice nodes for hierarchy blocks. Each block owns
@@ -504,7 +531,7 @@ async function elkInteractiveLayout(
     const bIndex = blocks.findIndex((b) => b.regionId === key.slice("blk:".length));
     const size =
       isBlock
-        ? { w: BLOCK_WIDTH, h: blockHeight(blocks[bIndex]?.nets.length ?? 1) }
+        ? blockSize(bIndex >= 0 ? blocks[bIndex] : { regionId: key, name: key, nets: [] })
         : (d.kind as string) === "power"
           ? isGnd ? POWER_TEMPLATE_SIZE.gnd : POWER_TEMPLATE_SIZE.vcc
           : template
@@ -767,8 +794,10 @@ export function gridFallback(
   for (const d of all) {
     const t = templateForDevice(table, d);
     if (isBlockDevice(d)) {
-      maxW = Math.max(maxW, BLOCK_WIDTH);
-      maxH = Math.max(maxH, blockHeight(1));
+      const b = (opts.blocks ?? []).find((x) => x.regionId === d.id.slice("blk:".length));
+      const bs = blockSize(b ?? { regionId: d.id, name: d.id, nets: [] });
+      maxW = Math.max(maxW, bs.w);
+      maxH = Math.max(maxH, bs.h);
     } else if (t) {
       maxW = Math.max(maxW, t.width);
       maxH = Math.max(maxH, t.height);
@@ -784,7 +813,7 @@ export function gridFallback(
     };
     const t = templateForDevice(table, d);
     sizes[deviceKey(d)] = isBlockDevice(d)
-      ? { w: BLOCK_WIDTH, h: blockHeight((d.terminals?.length ?? 0) > 0 ? Math.min(8, d.terminals.length) : 1) }
+      ? blockSize((opts.blocks ?? []).find((b) => b.regionId === d.id.slice("blk:".length)) ?? { regionId: d.id, name: d.id, nets: [] })
       : (d.kind as string) === "power"
         ? (d.instanceName === (opts.gnd ?? "GND") ? POWER_TEMPLATE_SIZE.gnd : POWER_TEMPLATE_SIZE.vcc)
         : t ? { w: t.width, h: t.height } : { w: 30, h: 40 };
