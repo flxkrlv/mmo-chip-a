@@ -676,6 +676,103 @@ export function InteractiveAnalogSchematic({
     setSelection(deviceKeys);
   }, [deviceKeys]);
 
+  // ── Zoom-to-device / find ─────────────────────────────────────
+  /** Device keys + display names for the find box (case-insensitive). */
+  const findIndex = useMemo(() => {
+    const out: Array<{ key: string; label: string }> = [];
+    for (const d of devices) {
+      out.push({ key: deviceKey(d), label: `${deviceKey(d)}${d.geometry && (d.geometry as { mosType?: string }).mosType ? ` · ${(d.geometry as { mosType?: string }).mosType}` : ""}` });
+    }
+    return out;
+  }, [devices]);
+  const [findQuery, setFindQuery] = useState("");
+  const [findOpen, setFindOpen] = useState(false);
+
+  const zoomToDevice = useCallback(
+    (key: string) => {
+      if (!elkResult || size.w === 0 || size.h === 0) return;
+      const pos = positions[key];
+      const sizeDev = elkResult.sizes[key] ?? { w: 30, h: 40 };
+      if (!pos) return;
+      // Center the device bounding box on the current viewport, keep zoom.
+      const cx = pos.x + sizeDev.w / 2;
+      const cy = pos.y + sizeDev.h / 2;
+      setView((v) => ({ ...v, tx: size.w / 2 - cx * v.scale, ty: size.h / 2 - cy * v.scale }));
+      setSelection([key]);
+      setFindQuery("");
+      setFindOpen(false);
+    },
+    [elkResult, positions, size.w, size.h],
+  );
+
+  const findMatches = useMemo(() => {
+    if (!findQuery.trim()) return [];
+    const q = findQuery.trim().toLowerCase();
+    return findIndex.filter((f) => f.label.toLowerCase().includes(q)).slice(0, 12);
+  }, [findQuery, findIndex]);
+
+  // ── Export PNG (white background, dark/black elements) ───────
+  /** Serialize the current scene to a standalone SVG string suitable for
+   *  documents: white background, colors inverted so the white-baked art
+   *  reads as dark lines on white. */
+  const exportPng = useCallback(() => {
+    const svg = svgRef.current;
+    if (!svg) return;
+    const clone = svg.cloneNode(true) as SVGSVGElement;
+    const vb = clone.getAttribute("viewBox") ?? "";
+    // Recolor: wrap content in an invert filter (white art → dark), and
+    // render the whole thing over a white background rect.
+    const style = document.createElementNS("http://www.w3.org/2000/svg", "style");
+    style.textContent = `
+      .exp-inv { filter: invert(1) hue-rotate(180deg); }
+      .exp-bg { fill: #ffffff; }
+    `;
+    clone.prepend(style);
+    clone.style.background = "#ffffff";
+    // First child = background rect under the transform group.
+    const marker = clone.firstChild;
+    const bg = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+    bg.setAttribute("class", "exp-bg");
+    bg.setAttribute("x", "-50");
+    bg.setAttribute("y", "-50");
+    bg.setAttribute("width", "100000");
+    bg.setAttribute("height", "100000");
+    clone.insertBefore(bg, marker);
+    const content = clone.querySelector("g");
+    if (content) content.setAttribute("class", `${content.getAttribute("class") ?? ""} exp-inv`.trim());
+    const svgStr = new XMLSerializer().serializeToString(clone);
+    const blob = new Blob([svgStr], { type: "image/svg+xml;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const img = new Image();
+    img.onload = () => {
+      URL.revokeObjectURL(url);
+      // Render at 2x for print quality.
+      const SCALE = 2;
+      const w = vb ? (parseFloat(vb.split(/[\s,]+/)[2]) || svg.clientWidth) * SCALE : svg.clientWidth * SCALE;
+      const h = vb ? (parseFloat(vb.split(/[\s,]+/)[3]) || svg.clientHeight) * SCALE : svg.clientHeight * SCALE;
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.max(1, Math.round(w));
+      canvas.height = Math.max(1, Math.round(h));
+      const ctx = canvas.getContext("2d");
+      if (!ctx) return;
+      ctx.fillStyle = "#ffffff";
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+      canvas.toBlob((b) => {
+        if (!b) return;
+        const a = document.createElement("a");
+        a.href = URL.createObjectURL(b);
+        a.download = `${scopeKey.replace(/[^\w.-]+/g, "_")}.png`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+      }, "image/png");
+    };
+    img.onerror = () => URL.revokeObjectURL(url);
+    img.src = url;
+  }, [scopeKey]);
+
   const onReset = useCallback(() => {
     store.getState().resetScope(scopeKey);
     runLayout(true);
@@ -790,6 +887,41 @@ export function InteractiveAnalogSchematic({
         </button>
         <button type="button" className="btn sm" onClick={onRedo} title="Redo (Ctrl+Shift+Z)">
           ↪ Redo
+        </button>
+        <span style={{ width: 1, height: 16, background: "var(--l2)", margin: "0 2px" }} />
+        {/* Find / zoom-to-device */}
+        <div style={{ position: "relative" }}>
+          <input
+            value={findQuery}
+            placeholder="Find device…"
+            onChange={(e) => { setFindQuery(e.target.value); setFindOpen(true); }}
+            onFocus={() => setFindOpen(true)}
+            onBlur={() => setTimeout(() => setFindOpen(false), 120)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && findMatches.length > 0) zoomToDevice(findMatches[0].key);
+              if (e.key === "Escape") setFindOpen(false);
+            }}
+            style={{ width: 150, font: "inherit", background: "var(--l1)", color: "#fff", border: "1px solid var(--l2)", borderRadius: 4, padding: "3px 6px", fontSize: 11 }}
+          />
+          {findOpen && findMatches.length > 0 && (
+            <div style={{ position: "absolute", top: "100%", left: 0, zIndex: 5, minWidth: 180, maxHeight: 240, overflow: "auto", background: "var(--card)", border: "1px solid var(--l2)", borderRadius: 4, boxShadow: "0 6px 20px rgba(0,0,0,0.4)" }}>
+              {findMatches.map((m) => (
+                <button
+                  key={m.key}
+                  type="button"
+                  className="btn ghost"
+                  onMouseDown={(e) => { e.preventDefault(); zoomToDevice(m.key); }}
+                  style={{ display: "block", width: "100%", textAlign: "left", fontSize: 11, padding: "4px 8px", borderBottom: "1px solid var(--l2)", borderRadius: 0 }}
+                >
+                  {m.label}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+        <span style={{ width: 1, height: 16, background: "var(--l2)", margin: "0 2px" }} />
+        <button type="button" className="btn sm" onClick={exportPng} title="Export the current schematic as a PNG (white background, dark elements)" disabled={!elkResult}>
+          Export PNG
         </button>
         {elkResult?.usedFallback && (
           <span style={{ fontSize: 10, color: "var(--warn)", marginLeft: 4 }}>grid fallback</span>
