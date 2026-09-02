@@ -157,3 +157,63 @@ Re-layout       → layoutInteractiveAnalog → applyElkLayout (skip locked)
   `docs/llm-netlist-research` при наличии);
 - fra00/CircuitLLM — React Flow + ELK placement-only; **нет lock/персиста**;
 - наш `netlist.tsx`/`LogicSchematicCanvas` — собственный ortho-роутер паттерн.
+
+## 11. Фаза 2 — расширения (2026-09-02, план)
+
+MVP (`80f7e8c`) работает. Фаза 2 добавляет UX/стабильность. Порядок задан по приоритету:
+паритет → геометрия поворота → undo/multi-select → reuse → мелочи.
+
+### 2A Паритет со static (долг, приоритет №1)
+- Восстановить конвенцию рёбер static: `s:position top=input, bottom=output; left/right →
+  port_directions` (классификация из `netlist2svgFormat.ts`).
+- Multi-driver безопасно: `driverSet` (все output-пины), edge driver→consumer, но с
+  защитой от взрыва fan-out на power-рельсах (кап рёбер/net).
+- Вернуть spacing static (5/35) в конфиг-константы + тесты.
+- Новые тесты на кейсы отката: net «все пины одного направления» (nmos S×N + vcc) →
+  провода есть; power-рифан VDD → разумное число рёбер, без краша; locked-вода
+  (все члены net залочены) → провод дорисовывается (dirty-патч покрыт тестом).
+- Тест «same input → positions близки к static» (не strict equal — ELK недетерминирован).
+
+### 2F Поворот/зеркалирование — ТОЛЬКО вручную (v1)
+- Store: `ScopeLayout.orientation: Record<deviceKey, { rot: 0|90|180|270, flip: "none"|"h"|"v" }>`,
+  те же draft/персист/undo.
+- Рендер: transform на `<g>`: translate + rotate(rot, w/2, h/2) + scale(flip); при
+  rot 90/270 swap width/height.
+- **Критично**: якоря пинов поворачиваются — `transformPin(pin,w,h,orientation)` →
+  `{dx,dy,side}`. Применяется к `devicePorts` (ELK input), `ioPinLookup`, `routeNetLocal`
+  одновременно; side меняется (NORTH→WEST при rot90), иначе ELK-порты «прыгают».
+- UI: кнопки Rotate ⟳/⟲, Flip ⇄/⇅ в тулбаре (применяются к selection).
+- Ограничение v1: initial layout rot 0/flip none (как static); **ELK-предложение
+  разворотов отложено в features** (дифпары зеркалить автоматически — будещая фича).
+- Тесты: `transformPin` 0/90/180/270+flip; width/height swap; ELK-port side корректен;
+  локальный роутер якорей после поворота.
+
+### 2B Undo/redo
+- Снапшот-стек `Array<{positions, locked, orientation}>` в памяти (персист только
+  current state), лимит ~50, `undo(scopeKey)`/`redo(scopeKey)`.
+- Ctrl+Z / Ctrl+Shift+Z (keydown на канвас), кнопки в тулбаре.
+- Тесты: drag→undo→redo; applyPositions (ELK) → undo возвращает прежнее.
+
+### 2E Multi-select + group drag
+- `selection: Set<string>` (вместо single) — shift+click, прямоугольник выделения,
+  Ctrl+A.
+- Group drag применяет смещение ко всем не-locked; routing затронутых net разом.
+- Lock-кнопка для всей selection (логика «все locked / все unlocked»).
+- Тесты: rect-выделение; group drag; locked-член группы заморожен + его net пересчитаны.
+
+### 2G Reuse в AssistantPanel
+- `InteractiveAnalogSchematic` в AssistantPanel для фрагмента находки
+  (данные уже есть через `selectedDeviceNames`/`formatDevices...`); слот `fragment:<hash>`.
+- Static toggle по умолчанию — без регресса.
+
+### 2C Zoom-to-device
+- Поиск по `instanceName`/`deviceKey` → панорамирование viewport на узел + подсветка.
+- Тест: узел попадает в центр viewport.
+
+### 2D Export — PNG на белом фоне, чёрные элементы (для документов/отчётов)
+- Сериализация сцены (defs + viewport + полилинии + узлы + лейблы) → SVG → PNG через
+  canvas; SVG/JSON export отложены.
+- Тест: парс сгенерированного SVG содержит все узлы и полилинии.
+
+### Проверка каждой фазы
+`tsc --noEmit` (frontend+backend), `vitest run`, `vite build`, коммит по фазам.

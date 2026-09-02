@@ -192,9 +192,44 @@ export function buildNetIndex(
   return index;
 }
 
+/**
+ * Port role of a terminal, mirroring the STATIC netlist2svg convention
+ * (derived from the vendored bundle's classification):
+ *
+ *   - skin pin `s:position` top → input, bottom → output;
+ *   - left/right pins → the explicit `port_directions` netlist2svgFormat
+ *     assigns (NMOS D input / S output; PMOS S input / D output; BJT
+ *     E output; JFET S output; MOS G/B and BJT B input);
+ *   - power: vcc (A bottom) is the driver of its rail, gnd (A top) is a
+ *     SINK (the rail is driven by e.g. NMOS S terminals);
+ *   - io pseudo-nodes are inputExt = input.
+ *
+ * Undefined role → device is neither a driver nor consumer in ELK edge
+ * terms, but still participates in the final routing (bridge/fallback).
+ */
+export type PortRole = "input" | "output" | undefined;
+
+function roleFromPosition(position: string, d: AnalogDevice): PortRole {
+  // The STATIC bundle classifies pins by skin position first:
+  //   top → input, bottom → output
+  // and only left/right pins go through explicit port_directions
+  // (netlist2svgFormat: MOS G/B input, BJT B input, JFET G input;
+  //  passive/diode left → input, right → output as ELK default).
+  if (position === "top") return "input";
+  if (position === "bottom") return "output";
+  const kind = d.kind;
+  if (kind === "mos") return "input"; // G/B are always inputs
+  if (kind === "bjt_npn" || kind === "bjt_pnp") return "input"; // B left
+  if (kind === "jfet_n" || kind === "jfet_p") return "input"; // G left
+  // passives/diodes/generic with left/right pins: ELK position default
+  return position === "left" ? "input" : "output";
+}
+
 /** Driver terminal of a net: prefer a port-directions "output" pin
  *  (NMOS S, PMOS D, BJT E), else the first terminal. Mirrors the
- *  port_directions netlist2svgFormat assigns for the static view. */
+ *  port_directions netlist2svgFormat assigns for the static view.
+ *  Kept for fallback path (bridge routing) only; edge building uses
+ *  `portRole` (static multi-driver convention). */
 function driverOf(netTerminals: Array<{ deviceKey: string; device: AnalogDevice; terminal: string }>): string {
   for (const t of netTerminals) {
     const kind = t.device.kind;
@@ -209,6 +244,12 @@ function driverOf(netTerminals: Array<{ deviceKey: string; device: AnalogDevice;
   }
   return netTerminals[0]?.deviceKey ?? "";
 }
+
+/** Fan-out guard for power rails / bus nets: a net with N drivers × M
+ *  consumers would otherwise issue N×M ELK edges and both explode the
+ *  graph and risk a layered-crash. Above this product we collapse to a
+ *  single (hub) driver → all consumers, matching how a rail is drawn. */
+const MAX_EDGES_PER_NET = 48;
 
 // ── ELK graph build + run ────────────────────────────────────────
 
@@ -375,46 +416,82 @@ async function elkInteractiveLayout(
 
   // Binary edges per (driver, consumer) — hyperedge split (netlist.tsx
   // convention; ELK layered+ORTHOGONAL rejects multi-source/multi-target).
+  //
+  // STATIC-convention roles (see roleFromPosition): a net's
+  // output-role pins are its drivers, input-role pins its consumers;
+  // power vcc is the rail driver, gnd a sink. driver→consumer edges
+  // mirror the static view. Guards: driverless → pseudo-driver (first
+  // member, as static does); consumerless (all pins output — e.g. a
+  // bus pulled by NMOS S only) → star bridge from the first driver;
+  // huge fan-out (drivers × consumers > MAX_EDGES_PER_NET) collapses to
+  // one hub driver → all consumers so power rails don't explode ELK.
   type ElkEdge = { id: string; sources: string[]; targets: string[] };
   const edges: ElkEdge[] = [];
   const edgeNetId = new Map<string, number>();
   let edgeCounter = 0;
   for (const [netId, members] of netMembers) {
     const portOf = (deviceKey: string, netId: number): string | undefined => {
-      const spec = (portsByKey.get(deviceKey) ?? []).find((p) => p.netId === netId);
-      return spec ? `${deviceKey}:${spec.pid}:${(portsByKey.get(deviceKey) ?? []).indexOf(spec)}` : undefined;
+      const specs = portsByKey.get(deviceKey) ?? [];
+      const spec = specs.find((p) => p.netId === netId);
+      return spec ? `${deviceKey}:${spec.pid}:${specs.indexOf(spec)}` : undefined;
     };
     const isIoNet = ioNets.some((io) => io.netId === netId);
     const powerDev = powers.find((p) =>
       (p.terminals ?? []).some((t) => t.netId === netId),
     );
-    let driverKey: string | undefined;
-    if (powerDev) driverKey = deviceKey(powerDev);
-    else if (isIoNet) driverKey = `io:${netId}`;
-    else driverKey = driverOf(members) || undefined;
-    // Driver locked (excluded from ELK) or portless (skin has no anchor
-    // for that terminal) — fall back to another member that CAN hold an
-    // edge. Dropping the driver used to silently drop the WHOLE net's
-    // wires until the user dragged one of its devices.
-    if (!driverKey || opts.excludeKeys?.has(driverKey) || !portOf(driverKey, netId)) {
-      const alt = members.find((m) =>
-        m.deviceKey !== driverKey &&
-        !opts.excludeKeys?.has(m.deviceKey) &&
-        !!portOf(m.deviceKey, netId),
-      );
-      driverKey = alt ? alt.deviceKey : undefined;
+
+    // Role of each routable member (has a port, not locked).
+    const routable = members.filter((m) => !opts.excludeKeys?.has(m.deviceKey) && !!portOf(m.deviceKey, netId));
+    if (routable.length < 2) continue; // nothing to wire
+
+    const roleOf = (m: { deviceKey: string; device: AnalogDevice; terminal: string }): PortRole => {
+      if (powerDev && m.deviceKey === deviceKey(powerDev)) {
+        // power roles are fixed by rail kind (vcc driver, gnd sink)
+        return (powerDev.instanceName ?? "") === (opts.gnd ?? "GND") ? "input" : "output";
+      }
+      if (isIoNet && m.deviceKey === `io:${netId}`) return "input"; // inputExt
+      // Direct skin pin position (no ELK-side round-trip needed):
+      const template = templateForDevice(table, m.device);
+      const pin = template ? pinForTerminal(m.device, m.terminal, template) : undefined;
+      return roleFromPosition(pin?.position ?? "", m.device);
+    };
+
+    let drivers = routable.filter((m) => roleOf(m) === "output");
+    let consumers = routable.filter((m) => roleOf(m) === "input");
+
+    // Consumerless net (everything is an output — e.g. NMOS S×N + vcc):
+    // star-bridge from the first driver, so the wires still draw.
+    if (consumers.length === 0 && drivers.length > 0) {
+      const hub = drivers[0];
+      consumers = drivers.slice(1);
+      drivers = [hub];
     }
-    if (!driverKey) continue; // nothing routable in the ELK graph
-    const srcPort = portOf(driverKey, netId);
+    // Driverless net (e.g. VDD rail when the vcc node was dropped/locked):
+    // pseudo-driver = first member (static driverless-net convention).
+    if (drivers.length === 0 && consumers.length > 0) {
+      drivers = [consumers[0]];
+      consumers = consumers.slice(1);
+    }
+    if (drivers.length === 0 || consumers.length === 0) continue;
+
+    // Fan-out guard: collapse to a single hub driver when the full
+    // product would blow up the ELK graph on a power/bus rail.
+    if (drivers.length * consumers.length > MAX_EDGES_PER_NET) {
+      drivers = [drivers[0]];
+    }
+
+    const srcPort = portOf(drivers[0].deviceKey, netId);
     if (!srcPort) continue;
-    for (const m of members) {
-      if (m.deviceKey === driverKey) continue;
-      if (opts.excludeKeys?.has(m.deviceKey)) continue; // locked: no ELK edges
-      const dstPort = portOf(m.deviceKey, netId);
-      if (!dstPort) continue;
-      const id = `e${edgeCounter++}`;
-      edges.push({ id, sources: [srcPort], targets: [dstPort] });
-      edgeNetId.set(id, netId);
+    for (const driver of drivers) {
+      const dsrc = portOf(driver.deviceKey, netId);
+      if (!dsrc) continue;
+      for (const c of consumers) {
+        const dstPort = portOf(c.deviceKey, netId);
+        if (!dstPort) continue;
+        const id = `e${edgeCounter++}`;
+        edges.push({ id, sources: [dsrc], targets: [dstPort] });
+        edgeNetId.set(id, netId);
+      }
     }
   }
 
@@ -430,11 +507,11 @@ async function elkInteractiveLayout(
       "elk.layered.nodePlacement.strategy": opts.strategy ?? "BRANDES_KOEPF",
       "elk.layered.compaction.postCompaction.strategy": String(opts.compaction ?? 2),
       "elk.edgeRouting": "ORTHOGONAL",
-      "elk.spacing.nodeNode": "36",
-      "elk.layered.spacing.nodeNodeBetweenLayers": "56",
-      "elk.spacing.edgeNode": "12",
-      "elk.spacing.edgeEdge": "10",
-      "elk.padding": "[top=16,left=16,bottom=40,right=16]",
+      // Static parity: the vendored netlist2svg.bundle.js forwards ONLY
+      // betweenLayers + nodeNode from the skin's layoutEngine; everything
+      // else is ELK defaults.
+      "elk.spacing.nodeNode": "35",
+      "elk.layered.spacing.nodeNodeBetweenLayers": "5",
     },
     children,
     edges,

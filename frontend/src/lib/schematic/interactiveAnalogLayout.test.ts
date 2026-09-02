@@ -221,4 +221,53 @@ describe("runInteractiveLayout (ELK, node)", () => {
     // locked M_1 itself has no ELK position (excluded from the graph)
     expect(res.positions["M_1"]).toBeUndefined();
   }, 30000);
+
+  // Regression from the 2A edge-role revert: a net whose members are ALL
+  // one direction (e.g. two NMOS S terminals + no input-role pin) used to
+  // drop every wire because consumers were empty.
+  it("all-output net (nmos S×N only, no input pin) still gets wires", async () => {
+    const devices = [
+      mos("M_1", "nmos", [["D", 1], ["G", 2], ["S", 3], ["B", 3]]),
+      mos("M_2", "nmos", [["D", 4], ["G", 2], ["S", 3], ["B", 3]]),
+      // net 3 (S+B of both): every pin is output-role (S bottom) or
+      // undefined (B right → input for MOS) — no power node, no io.
+    ];
+    const nets = new Map([[1, "n1"], [2, "gate"], [3, "n3"], [4, "n4"]]);
+    const res = await runInteractiveLayout(devices, nets, table, {
+      vdd: "VDD", gnd: "GND", strategy: "SIMPLE", direction: "DOWN", compaction: 0,
+    });
+    expect(res.usedFallback).toBe(false);
+    expect(res.wires.get(3)?.polylines.length ?? 0).toBeGreaterThan(0);
+    // every net with ≥2 members routed
+    for (const netId of [2, 3]) {
+      expect(res.wires.get(netId)?.polylines.length ?? 0, `net ${netId}`).toBeGreaterThan(0);
+    }
+    // single-member nets have no wires (nothing to draw to) — not a regression
+    expect(res.wires.get(1) ?? res.wires.get(4) ?? { polylines: [] }).toMatchObject({ polylines: [] });
+  }, 30000);
+
+  // Power-rail fan-out: one vcc driver, many consumers. ELK edges must be
+  // bounded (no N×M explosion) yet the rail wires must still exist.
+  it("power rail fan-out (1 driver, many consumers) survives without crash", async () => {
+    const devices: AnalogDevice[] = [
+      mos("M_1", "nmos", [["D", 1], ["G", 2], ["S", 3], ["B", 3]]),
+    ];
+    const nets = new Map([[1, "n1"], [2, "gate"], [3, "VDD"]]);
+    // 20 pmos sources all sourcing from the same VDD rail (S=3)
+    let nextNet = 100;
+    for (let i = 2; i <= 21; i++) {
+      devices.push(mos(`M_${i}`, "pmos", [["D", nextNet], ["G", 2], ["S", 3], ["B", 3]]));
+      nets.set(nextNet, `n${i}`);
+      nextNet++;
+      // NOTE: netId 3 stays "VDD" — power rail netNames come from
+      // namedNets by netId, never clobbered by the loop.
+    }
+    const res = await runInteractiveLayout(devices, nets, table, {
+      vdd: "VDD", gnd: "GND", strategy: "SIMPLE", direction: "DOWN", compaction: 0,
+    });
+    expect(res.usedFallback).toBe(false);
+    // VDD rail wired (≥1 polyline), VDD symbol placed, and ELK didn't blow up
+    expect(res.wires.get(3)?.polylines.length ?? 0).toBeGreaterThan(0);
+    expect(res.positions["VDD"]).toBeDefined();
+  }, 30000);
 });
