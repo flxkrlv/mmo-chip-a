@@ -27,6 +27,7 @@ import { matchGeometry } from "../../lib/export/matching";
 import { InteractiveAnalogSchematic } from "./InteractiveAnalogSchematic";
 import { scopeKey as interactiveScopeKey } from "../../state/interactiveSchematic";
 import { useSession } from "../../state/session";
+import { usePreferences } from "../../state/preferences";
 
 // ── Props ───────────────────────────────────────────────────────
 
@@ -57,21 +58,33 @@ export function SchematicViewPanel({
   selectedDeviceNames = [],
 }: Props) {
   const [renderMode, setRenderMode] = useState<"analog" | "functional">("analog");
-  const [layoutStrategy, setLayoutStrategy] = useState<LayoutStrategy>("BRANDES_KOEPF");
-  const [layoutDirection, setLayoutDirection] = useState<LayoutDirection>("DOWN");
-  const [compactionLevel, setCompactionLevel] = useState<CompactionLevel>(2);
   /** Schematic engine: static netlist2svg SVG or interactive draggable canvas. */
   const [engine, setEngine] = useState<"static" | "interactive">("static");
   /** Netlist render settings modal. */
   const [settingsOpen, setSettingsOpen] = useState(false);
-  // Fine ELK tuning (interactive engine; undefined = ELK default).
-  const [nodeNode, setNodeNode] = useState<number | undefined>(undefined);
-  const [betweenLayers, setBetweenLayers] = useState<number | undefined>(undefined);
-  const [edgeEdge, setEdgeEdge] = useState<number | undefined>(undefined);
-  const [edgeNode, setEdgeNode] = useState<number | undefined>(undefined);
-  const [mergeEdges, setMergeEdges] = useState(false);
-  const [favorStraightEdges, setFavorStraightEdges] = useState(false);
   const dieId = useSession((s) => s.dieId);
+
+  // Persisted (user settings) layout + fine ELK tuning.
+  const layoutStrategy = usePreferences((s) => s.netlistLayoutStrategy);
+  const layoutDirection = usePreferences((s) => s.netlistLayoutDirection);
+  const compactionLevel = usePreferences((s) => s.netlistCompaction);
+  const nodeNode = usePreferences((s) => s.netlistNodeNode);
+  const betweenLayers = usePreferences((s) => s.netlistBetweenLayers);
+  const edgeEdge = usePreferences((s) => s.netlistEdgeEdge);
+  const edgeNode = usePreferences((s) => s.netlistEdgeNode);
+  const mergeEdges = usePreferences((s) => s.netlistMergeEdges);
+  const favorStraightEdges = usePreferences((s) => s.netlistFavorStraightEdges);
+  const {
+    setNetlistLayoutStrategy: setLayoutStrategy,
+    setNetlistLayoutDirection: setLayoutDirection,
+    setNetlistCompaction: setCompactionLevel,
+    setNetlistNodeNode: setNodeNode,
+    setNetlistBetweenLayers: setBetweenLayers,
+    setNetlistEdgeEdge: setEdgeEdge,
+    setNetlistEdgeNode: setEdgeNode,
+    setNetlistMergeEdges: setMergeEdges,
+    setNetlistFavorStraightEdges: setFavorStraightEdges,
+  } = usePreferences.getState();
 
   const n2sRef = useRef<Netlist2SvgHandle>(null);
 

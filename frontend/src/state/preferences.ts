@@ -188,6 +188,18 @@ interface PreferencesState {
   /** May the assistant LLM ask the user clarifying questions before hypotheses?
    *  off | auto | always — global default for all dies. */
   assistantClarificationMode: AssistantClarificationMode;
+  /** Netlist schematic render settings (Static + Interactive). Persisted as
+   *  user settings so the renderer opens the way the user left it. */
+  netlistLayoutStrategy: import("../lib/schematic/netlist2svgSkin").LayoutStrategy;
+  netlistLayoutDirection: import("../lib/schematic/netlist2svgSkin").LayoutDirection;
+  netlistCompaction: import("../lib/schematic/netlist2svgSkin").CompactionLevel;
+  /** Fine ELK tuning (interactive engine); undefined = ELK default. */
+  netlistNodeNode: number | undefined;
+  netlistBetweenLayers: number | undefined;
+  netlistEdgeEdge: number | undefined;
+  netlistEdgeNode: number | undefined;
+  netlistMergeEdges: boolean;
+  netlistFavorStraightEdges: boolean;
 }
 
 interface PreferencesActions {
@@ -278,6 +290,15 @@ interface PreferencesActions {
   setAssistantDataFlags: (flags: AssistantDataFlags) => void;
   setAssistantMaxHypotheses: (count: number) => void;
   setAssistantClarificationMode: (mode: AssistantClarificationMode) => void;
+  setNetlistLayoutStrategy: (v: import("../lib/schematic/netlist2svgSkin").LayoutStrategy) => void;
+  setNetlistLayoutDirection: (v: import("../lib/schematic/netlist2svgSkin").LayoutDirection) => void;
+  setNetlistCompaction: (v: import("../lib/schematic/netlist2svgSkin").CompactionLevel) => void;
+  setNetlistNodeNode: (v: number | undefined) => void;
+  setNetlistBetweenLayers: (v: number | undefined) => void;
+  setNetlistEdgeEdge: (v: number | undefined) => void;
+  setNetlistEdgeNode: (v: number | undefined) => void;
+  setNetlistMergeEdges: (v: boolean) => void;
+  setNetlistFavorStraightEdges: (v: boolean) => void;
 }
 
 const DEFAULT_EXPANDED_SECTIONS: AnnotationKind[] = ["net", "via", "roi"];
@@ -345,6 +366,15 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
         assistantDataFlags: { projectJson: true, textNetlist: false },
         assistantMaxHypotheses: 5,
         assistantClarificationMode: "auto",
+        netlistLayoutStrategy: "BRANDES_KOEPF",
+        netlistLayoutDirection: "DOWN",
+        netlistCompaction: 2,
+        netlistNodeNode: undefined,
+        netlistBetweenLayers: undefined,
+        netlistEdgeEdge: undefined,
+        netlistEdgeNode: undefined,
+        netlistMergeEdges: false,
+        netlistFavorStraightEdges: false,
 
         setNetWidth: (width) => set({ netWidth: width }),
         setNetColor: (color) => set({ netColor: color }),
@@ -525,6 +555,15 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
         setAssistantDataFlags: (flags) => set({ assistantDataFlags: flags }),
         setAssistantMaxHypotheses: (count) => set({ assistantMaxHypotheses: count }),
         setAssistantClarificationMode: (mode) => set({ assistantClarificationMode: mode }),
+        setNetlistLayoutStrategy: (v) => set({ netlistLayoutStrategy: v }),
+        setNetlistLayoutDirection: (v) => set({ netlistLayoutDirection: v }),
+        setNetlistCompaction: (v) => set({ netlistCompaction: v }),
+        setNetlistNodeNode: (v) => set({ netlistNodeNode: v }),
+        setNetlistBetweenLayers: (v) => set({ netlistBetweenLayers: v }),
+        setNetlistEdgeEdge: (v) => set({ netlistEdgeEdge: v }),
+        setNetlistEdgeNode: (v) => set({ netlistEdgeNode: v }),
+        setNetlistMergeEdges: (v) => set({ netlistMergeEdges: v }),
+        setNetlistFavorStraightEdges: (v) => set({ netlistFavorStraightEdges: v }),
       }),
       {
         name: "mmo-chip-preferences",
@@ -587,7 +626,16 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
           llmProvider: state.llmProvider,
           assistantDataFlags: state.assistantDataFlags,
           assistantMaxHypotheses: state.assistantMaxHypotheses,
-          assistantClarificationMode: state.assistantClarificationMode
+          assistantClarificationMode: state.assistantClarificationMode,
+          netlistLayoutStrategy: state.netlistLayoutStrategy,
+          netlistLayoutDirection: state.netlistLayoutDirection,
+          netlistCompaction: state.netlistCompaction,
+          netlistNodeNode: state.netlistNodeNode,
+          netlistBetweenLayers: state.netlistBetweenLayers,
+          netlistEdgeEdge: state.netlistEdgeEdge,
+          netlistEdgeNode: state.netlistEdgeNode,
+          netlistMergeEdges: state.netlistMergeEdges,
+          netlistFavorStraightEdges: state.netlistFavorStraightEdges
         })
       }
     )
