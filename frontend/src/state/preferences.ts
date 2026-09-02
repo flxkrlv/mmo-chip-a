@@ -386,7 +386,7 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
         netlistMergeEdges: false,
         netlistFavorStraightEdges: false,
         netlistShowIoPins: true,
-        netlistShowHierarchy: false,
+        netlistShowHierarchy: true,
         netlistShowLegacyStatic: false,
 
         setNetWidth: (width) => set({ netWidth: width }),

@@ -194,9 +194,7 @@ export function SchematicViewPanel({
     () => [...views.perRegion.keys()],
     [views.perRegion],
   );
-  const [internalRegion, setInternalRegion] = useState<string | null>(
-    regionIds[0] ?? null,
-  );
+  const [internalRegion, setInternalRegion] = useState<string | null>(null);
   const activeRegion = selectedRegionProp ?? internalRegion;
 
   // ── Download handler (netlist2svg only) ──────────────────────
