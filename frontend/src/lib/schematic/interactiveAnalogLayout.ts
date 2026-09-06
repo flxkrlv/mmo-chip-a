@@ -358,8 +358,12 @@ function devicePorts(d: AnalogDevice, table: SymbolTable): NodePortSpec[] {
   return out;
 }
 
-/** Synthesized power devices: one VCC + one GND symbol (matches the
- *  static view, which always adds global VDD/GND cells). */
+/** Synthesized power devices: one symbol per power-net. If multiple
+ *  netIds share the same power name (e.g. two "GDD nets — common for
+ *  substrate connections that aren't wire-connected), a SEPARATE symbol is
+ *  created per netId with a unique key ("GND:109"). This avoids key
+ *  collisions in positions/portsByKey and lets the user see distinct
+ *  power domains. Each symbol has a single terminal. */
 export function powerDevices(
   devices: AnalogDevice[],
   namedNets: Map<number, string>,
@@ -374,9 +378,9 @@ export function powerDevices(
     if (!used.has(netId)) continue;
     if (name === vdd || name === gnd) {
       out.push({
-        id: name,
+        id: `${name}:${netId}`,
         kind: "power",
-        instanceName: name,
+        instanceName: `${name}:${netId}`,
         layer: "metal1",
         bbox: { x: 0, y: 0, width: 1, height: 1 },
         terminals: [{ name: "PLUS", netId }],
@@ -748,12 +752,26 @@ async function elkInteractiveLayout(
 
     const srcPort = portOf(drivers[0].deviceKey, netId, drivers[0].terminal);
     if (!srcPort) continue;
+    // DEBUG: log power net edge creation
+    if (namedNets.get(netId) === (opts.gnd ?? "GND") || namedNets.get(netId) === (opts.vdd ?? "VDD")) {
+      console.log(`[ELK-edges] net ${netId}: drivers=${drivers.map((d) => d.deviceKey + "/" + d.terminal).join(",")}, consumers=${consumers.length}`);
+    }
     for (const driver of drivers) {
       const dsrc = portOf(driver.deviceKey, netId, driver.terminal);
-      if (!dsrc) continue;
+      if (!dsrc) {
+        if (namedNets.get(netId) === (opts.gnd ?? "GND") || namedNets.get(netId) === (opts.vdd ?? "VDD")) {
+          console.log(`[ELK-edges]   driver ${driver.deviceKey}/${driver.terminal}: portOf=undefined, specs=${(portsByKey.get(driver.deviceKey) ?? []).map((p) => `pid=${p.pid}net=${p.netId}t=${p.terminal}`).join(";")}`);
+        }
+        continue;
+      }
       for (const c of consumers) {
         const dstPort = portOf(c.deviceKey, netId, c.terminal);
-        if (!dstPort) continue;
+        if (!dstPort) {
+          if (namedNets.get(netId) === (opts.gnd ?? "GND") || namedNets.get(netId) === (opts.vdd ?? "VDD")) {
+            console.log(`[ELK-edges]   consumer ${c.deviceKey}/${c.terminal}: portOf=undefined, specs=${(portsByKey.get(c.deviceKey) ?? []).map((p) => `pid=${p.pid}net=${p.netId}t=${p.terminal}`).join(";")}`);
+          }
+          continue;
+        }
         const id = `e${edgeCounter++}`;
         edges.push({ id, sources: [dsrc], targets: [dstPort] });
         edgeNetId.set(id, netId);

@@ -268,7 +268,8 @@ export function InteractiveAnalogSchematic({
     for (const p of powers) {
       const key = deviceKey(p);
       if (positions[key] == null) continue;
-      const powerKind: "vcc" | "gnd" = key === (opts.gnd ?? "GND") ? "gnd" : "vcc";
+      // power symbol key is "GDD:109" or "VDD:177" — extract kind from prefix
+      const powerKind: "vcc" | "gnd" = key.startsWith("GND") || key.startsWith("Gnd") || key.startsWith("gnd") ? "gnd" : "vcc";
       out.push({
         key,
         kind: "power",

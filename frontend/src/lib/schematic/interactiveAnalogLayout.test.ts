@@ -57,12 +57,12 @@ describe("buildNetIndex", () => {
     const nets = new Map([[7, "VDD"]]);
     const powers = powerDevices(devices, nets, { vdd: "VDD", gnd: "GND" });
     expect(powers).toHaveLength(1);
-    expect(powers[0].instanceName).toBe("VDD");
+    expect(powers[0].instanceName).toBe("VDD:7");
     const idx = buildNetIndex(devices, {}, powers);
     expect(idx.get(5)).toEqual([{ deviceKey: "M_1", terminal: "D" }]);
     expect(idx.get(7)).toEqual([
       { deviceKey: "M_1", terminal: "S" },
-      { deviceKey: "VDD", terminal: "PLUS" },
+      { deviceKey: "VDD:7", terminal: "PLUS" },
     ]);
   });
 });
@@ -159,7 +159,7 @@ describe("gridFallback", () => {
     ]);
     const result = gridFallback(devices, nets, table, { vdd: "VDD", gnd: "GND" });
     expect(result.usedFallback).toBe(true);
-    expect(Object.keys(result.positions).sort()).toEqual(["GND", "M_1", "M_2", "R_1", "VDD"].sort());
+    expect(Object.keys(result.positions).sort()).toEqual(["GND:4", "M_1", "M_2", "R_1", "VDD:3"].sort());
     // Every net got routed
     for (const netId of [1, 2, 3, 4]) {
       const w = result.wires.get(netId);
@@ -241,9 +241,9 @@ describe("runInteractiveLayout (ELK, node)", () => {
     });
     expect(res.usedFallback).toBe(false);
     expect(res.applied).toEqual({ strategy: "BRANDES_KOEPF", direction: "DOWN", compaction: 4 });
-    expect(Object.keys(res.positions).sort()).toEqual(["M_1", "M_2", "VDD"]);
+    expect(Object.keys(res.positions).sort()).toEqual(["M_1", "M_2", "VDD:3"]);
     // DOWN direction: VDD symbol (driver) above the nmos S pin it feeds
-    expect(res.positions["VDD"].y).toBeLessThan(res.positions["M_1"].y);
+    expect(res.positions["VDD:3"].y).toBeLessThan(res.positions["M_1"].y);
     expect(res.wires.get(1)?.polylines.length).toBeGreaterThan(0);
   }, 30000);
 
@@ -263,7 +263,7 @@ describe("runInteractiveLayout (ELK, node)", () => {
     });
     expect(res.usedFallback).toBe(false);
     expect(res.wires.get(1)?.polylines.length).toBeGreaterThan(0);
-    expect(res.positions["VDD"]).toBeDefined();
+    expect(res.positions["VDD:3"]).toBeDefined();
   }, 30000);
 
   it("direction RIGHT puts the driver left of its consumer", async () => {
@@ -279,7 +279,7 @@ describe("runInteractiveLayout (ELK, node)", () => {
       compaction: 0,
     });
     expect(res.applied?.direction).toBe("RIGHT");
-    expect(res.positions["VDD"].x).toBeLessThan(res.positions["M_2"].x);
+    expect(res.positions["VDD:3"].x).toBeLessThan(res.positions["M_2"].x);
   }, 30000);
 
   // Regression: nets used to lose ALL their ELK edges (and thus wires)
@@ -373,7 +373,7 @@ describe("runInteractiveLayout (ELK, node)", () => {
     expect(res.usedFallback).toBe(false);
     // VDD rail wired (≥1 polyline), VDD symbol placed, and ELK didn't blow up
     expect(res.wires.get(3)?.polylines.length ?? 0).toBeGreaterThan(0);
-    expect(res.positions["VDD"]).toBeDefined();
+    expect(res.positions["VDD:3"]).toBeDefined();
   }, 30000);
 });
 
