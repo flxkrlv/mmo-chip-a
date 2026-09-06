@@ -69,7 +69,7 @@ describe("buildNetIndex", () => {
 
 describe("routeNetLocal", () => {
   const noObs: Obstacle[] = [];
-  const ai = (x: number, y: number, k = "d") => ({ point: { x, y }, deviceKey: k });
+  const ai = (x: number, y: number, k = "d", t = "T") => ({ point: { x, y }, deviceKey: k, terminal: t });
 
   it("two anchors → single polyline, orthogonal, deterministic", () => {
     const w1 = routeNetLocal([ai(0, 0, "a"), ai(100, 50, "b")], noObs);
@@ -501,7 +501,7 @@ describe("WireGrid (wire-wire spacing)", () => {
 });
 
 describe("routeNetLocal spacing options", () => {
-  const ai = (x: number, y: number, k = "d") => ({ point: { x, y }, deviceKey: k });
+  const ai = (x: number, y: number, k = "d", t = "T") => ({ point: { x, y }, deviceKey: k, terminal: t });
   it("uses edgeNode margin to steer wires around obstacles", () => {
     // Two anchors with a device obstacle between them.
     const obstacle: Obstacle = { x: 40, y: -10, w: 20, h: 60 };
@@ -543,15 +543,15 @@ describe("routeNetLocal spacing options", () => {
 });
 
 describe("surgical re-route (edge trace)", () => {
-  const ai = (x: number, y: number, k = "d") => ({ point: { x, y }, deviceKey: k });
+  const ai = (x: number, y: number, k = "d", t = "T") => ({ point: { x, y }, deviceKey: k, terminal: t });
   it("preserves untouched edges when only one device of a 2-terminal net moves", () => {
     // Simulate an ELK-produced wire with two edges (a-b and b-c).
     const edgeAB: TracedEdge = {
-      id: "e1", netId: 1, fromKey: "a", toKey: "b",
+      id: "e1", netId: 1, fromKey: "a", toKey: "b", fromTerminal: "D", toTerminal: "S",
       polylines: [[{ x: 0, y: 0 }, { x: 50, y: 0 }, { x: 100, y: 0 }]],
     };
     const edgeBC: TracedEdge = {
-      id: "e2", netId: 1, fromKey: "b", toKey: "c",
+      id: "e2", netId: 1, fromKey: "b", toKey: "c", fromTerminal: "S", toTerminal: "G",
       polylines: [[{ x: 100, y: 0 }, { x: 100, y: 50 }, { x: 100, y: 100 }]],
     };
     const wd: WireData = {
@@ -575,7 +575,7 @@ describe("surgical re-route (edge trace)", () => {
       const toAnchor = toTerm ? { x: pos[edge.toKey].x, y: pos[edge.toKey].y } : undefined;
       if (!fromAnchor || !toAnchor) return edge;
       const routed = routeNetLocal(
-        [{ point: fromAnchor, deviceKey: edge.fromKey }, { point: toAnchor, deviceKey: edge.toKey }],
+        [{ point: fromAnchor, deviceKey: edge.fromKey, terminal: edge.fromTerminal }, { point: toAnchor, deviceKey: edge.toKey, terminal: edge.toTerminal }],
         noObs, opts,
       );
       return { ...edge, polylines: (routed.edges ?? [])[0]?.polylines ?? edge.polylines };

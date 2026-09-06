@@ -43,6 +43,7 @@ import {
   orientedSize,
   deviceObstacle,
   WireGrid,
+  AnchorInfo,
   blockDevices,
   blockSize,
   blockPortStubs,
@@ -386,29 +387,48 @@ export function InteractiveAnalogSchematic({
         const netOpts = { ...opts, wireGrid };
         if (mode === "surgical" && wd.edges && wd.edges.length > 0) {
           // Surgical: only re-route edges touching a moved device.
-          const members = netIndex.get(netId);
-          if (!members) continue;
-          const terminalOf = new Map(members.map((m) => [m.deviceKey, m.terminal]));
+          // If any edge fails to compute an anchor (missing pin lookup,
+          // etc.), fall back to full re-route for this net.
+          let failed = false;
           const newEdges = wd.edges.map((edge) => {
             if (!movedSet.has(edge.fromKey) && !movedSet.has(edge.toKey)) return edge;
-            const fromTerm = terminalOf.get(edge.fromKey);
-            const toTerm = terminalOf.get(edge.toKey);
-            const fromAnchor = fromTerm ? computeAnchor(edge.fromKey, fromTerm, pos) : undefined;
-            // Hub spoke: keep hub at its existing junction position.
+            // Use the terminal name stored on the edge (from the ELK port
+            // id) — correct even when a device has multiple terminals on
+            // the same net (e.g. PNP base+collector in a current mirror).
+            const fromAnchor = computeAnchor(edge.fromKey, edge.fromTerminal, pos);
+            // Hub/spoke stub: keep hub at its existing junction position.
             let toAnchor: Point | undefined;
-            if (edge.toKey === "__hub__" || edge.fromKey === "__hub__") {
+            if (edge.toKey === "__hub__" || edge.fromKey === "__hub__" || edge.toKey === "__stub__" || edge.fromKey === "__stub__") {
               toAnchor = wd.junctions[0] ?? undefined;
             } else {
-              toAnchor = toTerm ? computeAnchor(edge.toKey, toTerm, pos) : undefined;
+              toAnchor = computeAnchor(edge.toKey, edge.toTerminal, pos);
             }
-            if (!fromAnchor || !toAnchor) return edge;
+            if (!fromAnchor || !toAnchor) { failed = true; return edge; }
             const routed = routeNetLocal(
-              [{ point: fromAnchor, deviceKey: edge.fromKey }, { point: toAnchor, deviceKey: edge.toKey }],
+              [{ point: fromAnchor, deviceKey: edge.fromKey, terminal: edge.fromTerminal }, { point: toAnchor, deviceKey: edge.toKey, terminal: edge.toTerminal }],
               obstacles,
               netOpts,
             );
             return { ...edge, polylines: (routed.edges ?? [])[0]?.polylines ?? edge.polylines };
           });
+          if (failed) {
+            // Fallback to full re-route for this net.
+            const members = netIndex.get(netId);
+            if (members) {
+              const anchors = members
+                .map((m) => {
+                  const a = computeAnchor(m.deviceKey, m.terminal, pos);
+                  return a ? { point: a, deviceKey: m.deviceKey, terminal: m.terminal } : undefined;
+                })
+                .filter((a): a is AnchorInfo => !!a);
+              const newWd = routeNetLocal(anchors, obstacles, netOpts);
+              next.set(netId, newWd);
+              for (const poly of newWd.polylines) {
+                for (let i = 1; i < poly.length; i++) gridSegments.push({ a: poly[i - 1], b: poly[i] });
+              }
+              continue;
+            }
+          }
           const placed = newEdges.map((e) => ({ id: e.id, netId, polylines: e.polylines }));
           const junctions = computeJunctions(placed);
           const newWd = { polylines: newEdges.flatMap((e) => e.polylines), junctions, edges: newEdges };
@@ -424,9 +444,9 @@ export function InteractiveAnalogSchematic({
           const anchors = members
             .map((m) => {
               const a = computeAnchor(m.deviceKey, m.terminal, pos);
-              return a ? { point: a, deviceKey: m.deviceKey } : undefined;
+              return a ? { point: a, deviceKey: m.deviceKey, terminal: m.terminal } : undefined;
             })
-            .filter((a): a is { point: Point; deviceKey: string } => !!a);
+            .filter((a): a is AnchorInfo => !!a);
           const newWd = routeNetLocal(anchors, obstacles, netOpts);
           next.set(netId, newWd);
           // Add this net's routed segments to the grid for subsequent nets.
@@ -533,7 +553,7 @@ export function InteractiveAnalogSchematic({
           if (!anchor) continue;
           const target = nearestOnPolylines(anchor, wd.polylines);
           const stub = routeNetLocal(
-            [{ point: anchor, deviceKey: key }, { point: target, deviceKey: "__stub__" }],
+            [{ point: anchor, deviceKey: key, terminal: member.terminal }, { point: target, deviceKey: "__stub__", terminal: "" }],
             Object.entries(final)
               .filter(([k]) => k !== key)
               .map(([k, p]) => deviceObstacle(p, elkResult?.sizes[k] ?? { w: 30, h: 40 }, orientations[k])),

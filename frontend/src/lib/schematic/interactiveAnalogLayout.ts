@@ -60,14 +60,19 @@ export interface TracedEdge {
   netId: number;
   fromKey: string;
   toKey: string;
+  /** Terminal name at each end (from the port id) — used by surgical
+   *  re-route to pick the correct pin anchor. */
+  fromTerminal: string;
+  toTerminal: string;
   polylines: Point[][];
 }
 
-/** Anchor paired with its device key so local routing can build
- *  per-edge traces (surgical re-route). */
+/** Anchor paired with its device key + terminal so local routing can
+ *  build per-edge traces (surgical re-route). */
 export interface AnchorInfo {
   point: Point;
   deviceKey: string;
+  terminal: string;
 }
 
 export interface InteractiveLayoutResult {
@@ -767,10 +772,20 @@ async function elkInteractiveLayout(
 
   // Group routed sections per net → polylines → junctions.
   const byNet = new Map<number, PlacedEdge[]>();
-  // Per-edge endpoint device keys (for surgical re-route). Port ids are
-  // `${deviceKey}:${portName}:${index}` → deviceKey is the prefix.
+  // Per-edge endpoint device keys + terminal names (for surgical re-route).
+  // Port ids: regular `${deviceKey}:${term}:${idx}` (e.g. "Q1:B:0"),
+  // io pins `io:${netId}:${term}:${idx}` (e.g. "io:123:Y:0"). The io: prefix
+  // contains a colon, so split(":")[0] would yield "io" — wrong. Extract
+  // the full key (io:123) and the terminal name from the port id.
   const edgeFromKey = new Map<string, string>();
   const edgeToKey = new Map<string, string>();
+  const edgeFromTerm = new Map<string, string>();
+  const edgeToTerm = new Map<string, string>();
+  const deviceKeyFromPort = (portId: string): { key: string; term: string } => {
+    const p = String(portId).split(":");
+    if (p[0] === "io" && p.length >= 3) return { key: `${p[0]}:${p[1]}`, term: p[2] };
+    return { key: p[0] ?? "", term: p[1] ?? "" };
+  };
   for (const e of result.edges ?? []) {
     const netId = edgeNetId.get(e.id);
     if (netId == null) continue;
@@ -783,8 +798,16 @@ async function elkInteractiveLayout(
     let list = byNet.get(netId);
     if (!list) byNet.set(netId, (list = []));
     list.push({ id: e.id, polylines, netId });
-    if (e.sources?.[0]) edgeFromKey.set(e.id, String(e.sources[0]).split(":")[0]);
-    if (e.targets?.[0]) edgeToKey.set(e.id, String(e.targets[0]).split(":")[0]);
+    if (e.sources?.[0]) {
+      const { key, term } = deviceKeyFromPort(e.sources[0]);
+      edgeFromKey.set(e.id, key);
+      edgeFromTerm.set(e.id, term);
+    }
+    if (e.targets?.[0]) {
+      const { key, term } = deviceKeyFromPort(e.targets[0]);
+      edgeToKey.set(e.id, key);
+      edgeToTerm.set(e.id, term);
+    }
   }
   const wires = new Map<number, WireData>();
   for (const [netId, placed] of byNet) {
@@ -793,6 +816,8 @@ async function elkInteractiveLayout(
       netId,
       fromKey: edgeFromKey.get(p.id) ?? "",
       toKey: edgeToKey.get(p.id) ?? "",
+      fromTerminal: edgeFromTerm.get(p.id) ?? "",
+      toTerminal: edgeToTerm.get(p.id) ?? "",
       polylines: p.polylines,
     }));
     wires.set(netId, {
@@ -889,7 +914,7 @@ export function gridFallback(
     if (!members.some((m) => keySet.has(m.deviceKey))) continue;
     const anchors = members
       .filter((m) => keySet.has(m.deviceKey))
-      .map((m) => ({ point: anchorWorld(m.deviceKey, positions, lookups.get(m.deviceKey), m.terminal), deviceKey: m.deviceKey }))
+      .map((m) => ({ point: anchorWorld(m.deviceKey, positions, lookups.get(m.deviceKey), m.terminal), deviceKey: m.deviceKey, terminal: m.terminal }))
       .filter((p): p is AnchorInfo => !!p.point);
     if (anchors.length === 0) continue;
     wires.set(netId, routeNetLocal(anchors, obstacles));
@@ -1043,7 +1068,8 @@ export function deviceObstacle(
  */
 export class WireGrid {
   private cells = new Set<string>();
-  private cellSize: number;
+  /** Cell size in px (= edgeEdge gap). */
+  readonly cellSize: number;
 
   constructor(segments: Array<{ a: Point; b: Point }>, gap: number) {
     this.cellSize = Math.max(gap, 2);
@@ -1093,6 +1119,34 @@ export class WireGrid {
     }
     return (occupied / (steps + 1)) * dist;
   }
+
+  /** True if segment (a,b) passes through any occupied cell (hard check). */
+  collides(a: Point, b: Point): boolean {
+    const dist = Math.abs(b.x - a.x) + Math.abs(b.y - a.y);
+    if (dist < 0.001) {
+      return this.cells.has(this.key(Math.floor(a.x / this.cellSize), Math.floor(a.y / this.cellSize)));
+    }
+    const steps = Math.max(1, Math.ceil(dist / (this.cellSize / 2)));
+    for (let i = 0; i <= steps; i++) {
+      const t = i / steps;
+      const x = a.x + (b.x - a.x) * t;
+      const y = a.y + (b.y - a.y) * t;
+      if (this.cells.has(this.key(Math.floor(x / this.cellSize), Math.floor(y / this.cellSize)))) return true;
+    }
+    return false;
+  }
+}
+
+/** Snap a coordinate to the nearest multiple of `grid`. grid≤0 → unchanged. */
+function snap(v: number, grid: number): number {
+  if (grid <= 0) return v;
+  return Math.round(v / grid) * grid;
+}
+
+/** Snap a point to the grid (for discrete channel routing). */
+function snapPt(p: Point, grid: number): Point {
+  if (grid <= 0) return p;
+  return { x: snap(p.x, grid), y: snap(p.y, grid) };
 }
 
 /** Segment length inside an expanded rect (0 if no overlap). */
@@ -1149,33 +1203,75 @@ function candidatePaths(a: Point, b: Point): Point[][] {
 }
 
 function bestPath(a: Point, b: Point, obstacles: Obstacle[], edgeNode: number, wireGrid?: WireGrid): Point[] {
-  const cands = candidatePaths(a, b);
+  // Snap anchors to the wire grid so all vertices lie on discrete channels
+  // (multiples of edgeEdge) — wires can only exist ON grid lines, never
+  // between them. This enforces hard min spacing between different nets.
+  const grid = wireGrid ? wireGrid.cellSize : 0;
+  const sa = grid > 0 ? snapPt(a, grid) : a;
+  const sb = grid > 0 ? snapPt(b, grid) : b;
+  const cands = candidatePaths(sa, sb);
   // Obstacle-aware detour rails: when the plain L/Z candidates all cut
   // through a nearby device, offer above/below/left/right corridors.
   // Corridor filter keeps the candidate count bounded during drag.
-  const x0 = Math.min(a.x, b.x), x1 = Math.max(a.x, b.x);
-  const y0 = Math.min(a.y, b.y), y1 = Math.max(a.y, b.y);
+  const x0 = Math.min(sa.x, sb.x), x1 = Math.max(sa.x, sb.x);
+  const y0 = Math.min(sa.y, sb.y), y1 = Math.max(sa.y, sb.y);
   let detours = 0;
   for (const o of obstacles) {
     if (detours >= 8) break;
     if (o.x > x1 + 24 || o.x + o.w < x0 - 24 || o.y > y1 + 24 || o.y + o.h < y0 - 24) continue;
-    const m = edgeNode + 4;
-    cands.push([a, { x: a.x, y: o.y - m }, { x: b.x, y: o.y - m }, b]);
-    cands.push([a, { x: a.x, y: o.y + o.h + m }, { x: b.x, y: o.y + o.h + m }, b]);
-    cands.push([a, { x: o.x - m, y: a.y }, { x: o.x - m, y: b.y }, b]);
-    cands.push([a, { x: o.x + o.w + m, y: a.y }, { x: o.x + o.w + m, y: b.y }, b]);
+    const m = snap(edgeNode + 4, grid > 0 ? grid : 1);
+    cands.push([sa, { x: sa.x, y: snap(o.y - m, grid) }, { x: sb.x, y: snap(o.y - m, grid) }, sb]);
+    cands.push([sa, { x: sa.x, y: snap(o.y + o.h + m, grid) }, { x: sb.x, y: snap(o.y + o.h + m, grid) }, sb]);
+    cands.push([sa, { x: snap(o.x - m, grid), y: sa.y }, { x: snap(o.x - m, grid), y: sb.y }, sb]);
+    cands.push([sa, { x: snap(o.x + o.w + m, grid), y: sa.y }, { x: snap(o.x + o.w + m, grid), y: sb.y }, sb]);
     detours++;
   }
-  let best = cands[0];
+  // Wire-aware detours: if existing candidates collide with occupied cells,
+  // add corridors that go around the occupied band (one grid cell further).
+  if (wireGrid) {
+    const band = grid > 0 ? grid : 10;
+    for (const o of obstacles.slice(0, 4)) {
+      const m = band;
+      const ys = [snap(o.y - m, grid), snap(o.y + o.h + m, grid)];
+      const xs = [snap(o.x - m, grid), snap(o.x + o.w + m, grid)];
+      for (const ry of ys) {
+        cands.push([sa, { x: sa.x, y: ry }, { x: sb.x, y: ry }, sb]);
+      }
+      for (const rx of xs) {
+        cands.push([sa, { x: rx, y: sa.y }, { x: rx, y: sb.y }, sb]);
+      }
+    }
+  }
+  // Two-pass scoring: prefer candidates that do NOT collide with occupied
+  // cells (hard constraint). Only if EVERY candidate collides do we fall
+  // back to the least-bad (fewest collisions).
+  let best: Point[] | undefined;
   let bestScore = Infinity;
+  let bestCollide = Infinity;
+  let bestCollideScore = Infinity;
   for (const c of cands) {
+    const collisions = wireGrid ? countCollisions(c, wireGrid) : 0;
     const s = scorePath(c, obstacles, edgeNode, wireGrid);
-    if (s < bestScore) {
+    if (collisions === 0 && s < bestScore) {
       bestScore = s;
       best = c;
     }
+    if (collisions < bestCollide || (collisions === bestCollide && s < bestCollideScore)) {
+      bestCollide = collisions;
+      bestCollideScore = s;
+      if (!best) best = c;
+    }
   }
-  return best;
+  return best ?? cands[0];
+}
+
+/** Count how many segments of a path collide with occupied grid cells. */
+function countCollisions(path: Point[], wireGrid: WireGrid): number {
+  let n = 0;
+  for (let i = 1; i < path.length; i++) {
+    if (wireGrid.collides(path[i - 1], path[i])) n++;
+  }
+  return n;
 }
 
 function median(values: number[]): number {
@@ -1217,7 +1313,7 @@ export function routeNetLocal(anchors: AnchorInfo[], obstacles: Obstacle[], opti
     return {
       polylines,
       junctions: [],
-      edges: [{ id: `${pts[0].deviceKey}-${pts[1].deviceKey}`, netId: -1, fromKey: pts[0].deviceKey, toKey: pts[1].deviceKey, polylines }],
+      edges: [{ id: `${pts[0].deviceKey}-${pts[1].deviceKey}`, netId: -1, fromKey: pts[0].deviceKey, toKey: pts[1].deviceKey, fromTerminal: pts[0].terminal, toTerminal: pts[1].terminal, polylines }],
     };
   }
   const hub = { x: median(pts.map((p) => p.point.x)), y: median(pts.map((p) => p.point.y)) };
@@ -1226,6 +1322,8 @@ export function routeNetLocal(anchors: AnchorInfo[], obstacles: Obstacle[], opti
     netId: -1,
     fromKey: p.deviceKey,
     toKey: "__hub__",
+    fromTerminal: p.terminal,
+    toTerminal: "",
     polylines: [bestPath(p.point, hub, obstacles, edgeNode, wireGrid)],
   }));
   return { polylines: edges.flatMap((e) => e.polylines), junctions: [hub], edges };
