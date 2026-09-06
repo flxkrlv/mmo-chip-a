@@ -411,7 +411,13 @@ export function InteractiveAnalogSchematic({
             } else {
               toAnchor = computeAnchor(edge.toKey, edge.toTerminal, pos);
             }
-            if (!fromAnchor || !toAnchor) { failed = true; return edge; }
+            if (!fromAnchor || !toAnchor) {
+              if (netName === "GND" || netName === "VDD" || netName === "VSS" || netName === "VCC") {
+                console.log(`[surgical-fail] edge ${edge.fromKey}/${edge.fromTerminal}→${edge.toKey}/${edge.toTerminal}: fromAnchor=${fromAnchor ? "ok" : "undefined"}, toAnchor=${toAnchor ? "ok" : "undefined"}`);
+              }
+              failed = true;
+              return edge;
+            }
             const routed = routeNetLocal(
               [{ point: fromAnchor, deviceKey: edge.fromKey, terminal: edge.fromTerminal }, { point: toAnchor, deviceKey: edge.toKey, terminal: edge.toTerminal }],
               obstacles,
