@@ -486,6 +486,10 @@ function IcPackageView({ dieId }: { dieId: string }) {
                 onPointerDown={onPointerDown}
                 onCanvasClick={onCanvasClick}
                 onViewportChange={() => setViewportVersion((v) => v + 1)}
+                // No min-zoom cap: large packages (QFP-128 spans ~30 mm) at
+                // umPerPx=0.25 still need to fit; default 0.01 cuts them off.
+                minZoom={1e-9}
+                maxZoom={64}
                 cursor={
                   tool === "name" ? "text"
                     : tool === "bond" ? (selectedPinNumber == null ? "crosshair" : "cell")
