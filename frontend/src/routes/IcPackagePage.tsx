@@ -6,6 +6,7 @@ import { useAnnotations } from "../api/annotations";
 import { useDie } from "../api/dies";
 import { apiPut } from "../api/client";
 import { useIcPackageStore } from "../state/icPackage";
+import { useOverlayLayers } from "../state/overlayLayers";
 import { AppShell } from "../components/shell/AppShell";
 import {
   TiledCanvas,
@@ -18,15 +19,19 @@ import { DieImageLayer } from "../renderer/layers/DieImageLayer";
 import { PackageOutlineLayer } from "../renderer/layers/PackageOutlineLayer";
 import { DiePadMarkersLayer } from "../renderer/layers/DiePadMarkersLayer";
 import { WireBondLayer } from "../renderer/layers/WireBondLayer";
+import { StaticImageLayer } from "../renderer/layers/StaticImageLayer";
 import {
   findNearestPad,
   findClickedPin,
+  rotatedImageBbox,
 } from "../lib/ic-package/transform";
 import { loadPackageGeom } from "../lib/ic-package/footprinter";
 import type { Layer, Viewport } from "../renderer/types";
 import { PackageSelector } from "../components/ic-package/PackageSelector";
 import { PinListPanel } from "../components/ic-package/PinListPanel";
 import { DieTransformPanel } from "../components/ic-package/DieTransformPanel";
+import { IcPackageToolbar } from "../components/ic-package/IcPackageToolbar";
+import { OverlaySelector } from "../components/ic-package/OverlaySelector";
 import { useToast } from "../components/Toast";
 
 /** Scale at which to render the package: assume umPerPx defaults to 0.25 µm/px
@@ -78,6 +83,12 @@ function IcPackageView({ dieId }: { dieId: string }) {
   const [editDraft, setEditDraft] = useState("");
   /** Bumps on every viewport change so the input re-positions during pan/zoom. */
   const [viewportVersion, setViewportVersion] = useState(0);
+  /** Background image under the package outline: null = base die photo,
+   *  otherwise an overlay layer id from useOverlayLayers. */
+  const [bgOverlayId, setBgOverlayId] = useState<string | null>(null);
+  /** Snapshot of the overlay image (mirrored to state so StaticImageLayer's
+   *  draw() can re-read it via the live ref). */
+  const [bgOverlayImage, setBgOverlayImage] = useState<HTMLImageElement | null>(null);
 
   // Seed store from annotations when first loaded (or when dieId changes).
   const loadFromAnnotations = useIcPackageStore((s) => s.loadFromAnnotations);
@@ -98,6 +109,54 @@ function IcPackageView({ dieId }: { dieId: string }) {
     setContainerSize({ width: r.width, height: r.height });
     return () => ro.disconnect();
   }, []);
+
+  // Auto-load overlay images from server (same as DieViewerPage) so the
+  // overlay selector has options to pick from.
+  const autoLoadRef = useRef(false);
+  useEffect(() => {
+    if (!dieId || autoLoadRef.current) return;
+    autoLoadRef.current = true;
+    void import("../api/overlayImages").then(async (mod) => {
+      try {
+        const list = await mod.fetchOverlayImageList(dieId);
+        const addLayer = useOverlayLayers.getState().addLayer;
+        const addTiledLayer = useOverlayLayers.getState().addTiledLayer;
+        for (const source of list.images) {
+          if (source.legacy) {
+            try {
+              const legacy = await mod.loadOverlayImageFromServer(
+                dieId, source.originalFilename
+              );
+              addLayer(legacy.name, legacy.image, true, legacy.serverFilename);
+            } catch (error) {
+              console.warn("Failed to load legacy overlay", source.name, error);
+            }
+          } else {
+            addTiledLayer(source, true);
+          }
+        }
+      } catch (error) {
+        console.warn("Failed to fetch overlay list", error);
+      }
+    });
+  }, [dieId]);
+
+  // Mirror the selected overlay's image into local state so StaticImageLayer
+  // can re-read it via getImage(). Layered/tiled overlays aren't supported
+  // here — only legacy (full-image) ones for now.
+  const overlayLayers = useOverlayLayers((s) => s.layers);
+  useEffect(() => {
+    if (!bgOverlayId) {
+      setBgOverlayImage(null);
+      return;
+    }
+    const layer = overlayLayers.find((l) => l.id === bgOverlayId);
+    if (!layer || !layer.image) {
+      setBgOverlayImage(null);
+      return;
+    }
+    setBgOverlayImage(layer.image);
+  }, [bgOverlayId, overlayLayers]);
 
   // Compute pxPerMm from umPerPx. Default if missing.
   const umPerPx = annotations?.umPerPx ?? DEFAULT_UM_PER_PX;
@@ -159,22 +218,23 @@ function IcPackageView({ dieId }: { dieId: string }) {
     }
   }, [footprint]);
 
-  // Initial viewport: fit the union of die image and package outline, so the
-  // user sees both at once even when the package is larger than the die
-  // (typical — SOIC-8 is ~5×4 mm, dies are 1–2 mm).
+  // Initial viewport: fit the union of (rotated die image bbox) and (package
+  // outline bbox), so the user sees both at once even when the package is
+  // larger than the die (typical — SOIC-8 is ~5×4 mm, dies are 1–2 mm) AND
+  // when rotation 90°/270° expands the visual bbox of a rectangular die.
   const initialViewport = useMemo<Viewport | null>(() => {
     if (!die || !geom || containerSize.width === 0 || containerSize.height === 0) {
       return null;
     }
-    // Package outline in world px (package mm origin → world px via origin/pxPerMm).
+    const imgBbox = rotatedImageBbox(die.width, die.height, transform.rotationDeg);
     const pkgMinX = origin.x + geom.body.minX * pxPerMm;
     const pkgMinY = origin.y + geom.body.minY * pxPerMm;
     const pkgMaxX = origin.x + geom.body.maxX * pxPerMm;
     const pkgMaxY = origin.y + geom.body.maxY * pxPerMm;
-    const minX = Math.min(0, pkgMinX);
-    const minY = Math.min(0, pkgMinY);
-    const maxX = Math.max(die.width, pkgMaxX);
-    const maxY = Math.max(die.height, pkgMaxY);
+    const minX = Math.min(imgBbox.x, pkgMinX);
+    const minY = Math.min(imgBbox.y, pkgMinY);
+    const maxX = Math.max(imgBbox.x + imgBbox.width, pkgMaxX);
+    const maxY = Math.max(imgBbox.y + imgBbox.height, pkgMaxY);
     return fitRectViewport(
       { x: minX, y: minY, width: maxX - minX, height: maxY - minY },
       containerSize.width,
@@ -182,16 +242,31 @@ function IcPackageView({ dieId }: { dieId: string }) {
       48,
       32
     );
-  }, [die, geom, containerSize.width, containerSize.height, origin, pxPerMm]);
+    // initialViewport only on mount; later rotation/footprint changes are
+    // handled by the auto-fit useEffect below.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [die, containerSize.width, containerSize.height]);
 
   // ── Layers ────────────────────────────────────────────────────────
   const layers = useMemo<Layer[]>(() => {
     if (!die) return [];
     const imgSize = { width: die.width, height: die.height };
-    return [
-      new DieImageLayer(die, {
+    const out: Layer[] = [];
+    // Background image: static overlay when one is selected, otherwise the
+    // base die tile pyramid. Both honour the same transform so rotation
+    // behaves identically.
+    if (bgOverlayImage) {
+      out.push(new StaticImageLayer({
+        getImage: () => bgOverlayImage,
+        getBounds: () => ({ x: 0, y: 0, width: die.width, height: die.height }),
         getTransform: () => inputsRef.current.transform,
-      }),
+      }));
+    } else {
+      out.push(new DieImageLayer(die, {
+        getTransform: () => inputsRef.current.transform,
+      }));
+    }
+    out.push(
       new DiePadMarkersLayer({
         getPads: () => inputsRef.current.annotations?.pins ?? [],
         getTransform: () => inputsRef.current.transform,
@@ -231,8 +306,9 @@ function IcPackageView({ dieId }: { dieId: string }) {
           return { pinNumber: sel, padId: hov };
         },
       }),
-    ];
-  }, [die, geom, pxPerMm, origin]);
+    );
+    return out;
+  }, [die, geom, pxPerMm, origin, bgOverlayImage]);
 
   // Re-render canvas on any store change (cheap; rAF coalesces).
   useEffect(() => {
@@ -392,6 +468,39 @@ function IcPackageView({ dieId }: { dieId: string }) {
     };
   }, [tool, setHoveredPad, die]);
 
+  // Auto-fit viewport when rotation or footprint changes, so the entire
+  // (possibly rotated) image and package outline stay on screen. Mirrors
+  // don't change the bbox so they're excluded from the refit trigger.
+  const lastFitKey = useRef<string | null>(null);
+  useEffect(() => {
+    if (!die || !geom || containerSize.width === 0 || containerSize.height === 0) {
+      return;
+    }
+    const key = `${transform.rotationDeg}|${footprint}`;
+    if (lastFitKey.current === key) return;
+    lastFitKey.current = key;
+    const imgBbox = rotatedImageBbox(die.width, die.height, transform.rotationDeg);
+    const pkgMinX = origin.x + geom.body.minX * pxPerMm;
+    const pkgMinY = origin.y + geom.body.minY * pxPerMm;
+    const pkgMaxX = origin.x + geom.body.maxX * pxPerMm;
+    const pkgMaxY = origin.y + geom.body.maxY * pxPerMm;
+    const minX = Math.min(imgBbox.x, pkgMinX);
+    const minY = Math.min(imgBbox.y, pkgMinY);
+    const maxX = Math.max(imgBbox.x + imgBbox.width, pkgMaxX);
+    const maxY = Math.max(imgBbox.y + imgBbox.height, pkgMaxY);
+    const vp = fitRectViewport(
+      { x: minX, y: minY, width: maxX - minX, height: maxY - minY },
+      containerSize.width,
+      containerSize.height,
+      48, 32
+    );
+    canvasHandle.current?.setViewport(vp);
+  }, [
+    transform.rotationDeg, footprint,
+    die, geom, containerSize.width, containerSize.height,
+    origin, pxPerMm,
+  ]);
+
   // Re-compute preview endpoint from hoveredPad → reads from store via WireBondLayer's
   // getBondPreview above. The store's hoveredPadId drives it.
 
@@ -458,6 +567,63 @@ function IcPackageView({ dieId }: { dieId: string }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [bonds, transform, footprint, pins.map((p) => p.name).join("|")]);
 
+  // Walk all bonds; for every bond whose package pin has a name, copy that
+  // name into annotations.pins[].name. Persisted on Apply click — keeps the
+  // die viewer in sync with what the user has mapped in this view.
+  const applyToDieViewer = useCallback(async () => {
+    if (!annotations || !die) return;
+    const { pins: pkgPins, bonds: pkgBonds } = useIcPackageStore.getState();
+    const nameByPinNum = new Map<number, string>();
+    for (const p of pkgPins) {
+      const n = p.name.trim();
+      if (n) nameByPinNum.set(p.number, n);
+    }
+    const padIdToName = new Map<string, string>();
+    for (const bond of pkgBonds) {
+      const n = nameByPinNum.get(bond.pinNumber);
+      if (n) padIdToName.set(bond.diePadId, n);
+    }
+    if (padIdToName.size === 0) {
+      toast.warning("No named bonds — name a package pin first.");
+      return;
+    }
+    const basePins = annotations.pins ?? [];
+    let updated = 0;
+    const nextPins = basePins.map((p) => {
+      const newName = padIdToName.get(p.id);
+      if (newName && p.name !== newName) {
+        updated++;
+        return { ...p, name: newName };
+      }
+      return p;
+    });
+    if (updated === 0) {
+      toast.warning("Die pads already match package names.");
+      return;
+    }
+    const next: DieAnnotations = { ...annotations, pins: nextPins };
+    setSaveStatus("saving");
+    try {
+      await apiPut(`/api/dies/${dieId}/annotations`, next);
+      queryClient.setQueryData(["annotations", dieId], next);
+      setSaveStatus("saved");
+      setTimeout(() => setSaveStatus("idle"), 1200);
+      toast.success(`Applied names to ${updated} die pad(s)`);
+    } catch (e) {
+      setSaveStatus("error");
+      toast.error(`Apply failed: ${(e as Error).message}`);
+    }
+  }, [annotations, die, dieId, queryClient, toast]);
+
+  // Disable the Apply button when no bonds have a named pin.
+  const applyDisabled = useMemo(() => {
+    const { pins: pkgPins, bonds: pkgBonds } = useIcPackageStore.getState();
+    const namedPinNums = new Set(
+      pkgPins.filter((p) => p.name.trim()).map((p) => p.number)
+    );
+    return !pkgBonds.some((b) => namedPinNums.has(b.pinNumber));
+  }, [pins, bonds]);
+
   // ── Render ────────────────────────────────────────────────────────
   const centerMsg = !die
     ? isLoading ? "loading die…" : error ? `error: ${(error as Error).message}` : "loading die…"
@@ -473,6 +639,11 @@ function IcPackageView({ dieId }: { dieId: string }) {
               : undefined
       }
     >
+      <IcPackageToolbar
+        onApplyToDieViewer={applyToDieViewer}
+        applyDisabled={applyDisabled}
+        right={<OverlaySelector value={bgOverlayId} onChange={setBgOverlayId} />}
+      />
       <div style={{ flex: "1 1 auto", display: "flex", minHeight: 0 }}>
         <div
           ref={containerRef}

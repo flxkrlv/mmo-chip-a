@@ -58,7 +58,9 @@ export class PackageOutlineLayer implements Layer {
     // Pin pads + labels.
     const scale = ctx.getTransform().a || 1;
     const numFontPx = Math.max(8, Math.min(13, scale * 1.3));
-    const nameFontPx = Math.max(9, Math.min(15, scale * 1.6));
+    // Pin name text is intentionally large so datasheet labels read at a
+    // glance, even when many pins are in view.
+    const nameFontPx = Math.max(11, Math.min(22, scale * 2.4));
     for (const pin of geom.pins) {
       const cx = origin.x + pin.x * px;
       const cy = origin.y + pin.y * px;
@@ -126,10 +128,11 @@ export class PackageOutlineLayer implements Layer {
         const ntx = tx;
         const nty = ty + nameFontPx + 2 / scale;
         ctx.save();
-        ctx.font = `${nameFontPx}px ui-monospace, monospace`;
-        ctx.fillStyle = "rgba(0, 0, 0, 0.95)";
+        ctx.font = `bold ${nameFontPx}px ui-monospace, monospace`;
+        ctx.fillStyle = "rgba(0, 0, 0, 1)";
         ctx.strokeStyle = "rgba(255, 255, 255, 0.95)";
-        ctx.lineWidth = 3 / scale;
+        ctx.lineWidth = 3.5 / scale;
+        ctx.lineJoin = "round";
         ctx.strokeText(pin.name, ntx, nty);
         ctx.fillText(pin.name, ntx, nty);
         ctx.restore();

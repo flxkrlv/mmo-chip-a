@@ -9,7 +9,6 @@ export function PinListPanel() {
   const selectedPinNumber = useIcPackageStore((s) => s.selectedPinNumber);
   const namePin = useIcPackageStore((s) => s.namePin);
   const removePinName = useIcPackageStore((s) => s.removePinName);
-  const setTool = useIcPackageStore((s) => s.setTool);
   const selectPin = useIcPackageStore((s) => s.selectPin);
   const removeBond = useIcPackageStore((s) => s.removeBond);
 
@@ -116,29 +115,6 @@ export function PinListPanel() {
             })}
           </tbody>
         </table>
-      </div>
-      <div style={{ marginTop: 6, display: "flex", gap: 4 }}>
-        <button
-          className={`chip${tool === "pan" ? " active" : ""}`}
-          onClick={() => setTool("pan")}
-          style={{ fontSize: 10, padding: "3px 8px" }}
-        >
-          Pan
-        </button>
-        <button
-          className={`chip${tool === "name" ? " active" : ""}`}
-          onClick={() => setTool("name")}
-          style={{ fontSize: 10, padding: "3px 8px" }}
-        >
-          Name
-        </button>
-        <button
-          className={`chip${tool === "bond" ? " active" : ""}`}
-          onClick={() => setTool("bond")}
-          style={{ fontSize: 10, padding: "3px 8px" }}
-        >
-          Bond
-        </button>
       </div>
     </div>
   );

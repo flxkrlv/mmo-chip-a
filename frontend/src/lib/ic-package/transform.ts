@@ -1,5 +1,34 @@
 import type { DieTransform, PackagePin } from "shared";
 
+/** A axis-aligned rectangle. */
+export interface Bbox {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+/** Bounding box of the source image after applying the given rotation (deg).
+ *  Mirrors are ignored here — they don't change the bbox. The returned box is
+ *  centered on the original image center; for 0°/180° it coincides with the
+ *  source [0,w]×[0,h]; for 90°/270° the dimensions swap and the box shifts so
+ *  its center stays put (which means it can extend past the original bounds
+ *  for rectangular dies — caller must account for this). */
+export function rotatedImageBbox(w: number, h: number, deg: number): Bbox {
+  if (deg === 0 || deg === 180) {
+    return { x: 0, y: 0, width: w, height: h };
+  }
+  // 90° / 270°: rotated image is h × w, still centered on (w/2, h/2).
+  const cx = w / 2;
+  const cy = h / 2;
+  return {
+    x: cx - h / 2,
+    y: cy - w / 2,
+    width: h,
+    height: w,
+  };
+}
+
 /** Apply rotation + mirror to a point in die-image pixel coordinates,
  *  returning the new pixel coordinates. The image is treated as anchored
  *  at its center, which matches how DieImageLayer positions it.

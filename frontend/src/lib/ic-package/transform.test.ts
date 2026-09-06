@@ -5,6 +5,7 @@ import {
   findNearestPad,
   findClickedPin,
   DEFAULT_DIE_TRANSFORM,
+  rotatedImageBbox,
 } from "./transform";
 import type { IOPin } from "shared";
 
@@ -100,6 +101,36 @@ describe("findNearestPad", () => {
       rotationDeg: 180, mirrorX: false, mirrorY: false,
     }, 10);
     expect(r?.id).toBe("p3");
+  });
+});
+
+describe("rotatedImageBbox", () => {
+  it("0°/180°: returns source rect", () => {
+    expect(rotatedImageBbox(1000, 500, 0)).toEqual({ x: 0, y: 0, width: 1000, height: 500 });
+    expect(rotatedImageBbox(1000, 500, 180)).toEqual({ x: 0, y: 0, width: 1000, height: 500 });
+  });
+
+  it("90°: rect swap, centered on original center, may extend outside source rect", () => {
+    const b = rotatedImageBbox(1000, 500, 90);
+    expect(b.width).toBe(500);
+    expect(b.height).toBe(1000);
+    // center stays at (500, 250)
+    expect(b.x + b.width / 2).toBeCloseTo(500);
+    expect(b.y + b.height / 2).toBeCloseTo(250);
+    // y extends below 0
+    expect(b.y).toBeLessThan(0);
+    expect(b.y + b.height).toBeGreaterThan(500);
+  });
+
+  it("270°: same dims as 90°, same center", () => {
+    const a = rotatedImageBbox(1000, 500, 90);
+    const b = rotatedImageBbox(1000, 500, 270);
+    expect(a).toEqual(b);
+  });
+
+  it("square image: bbox stays in source rect", () => {
+    const b = rotatedImageBbox(500, 500, 90);
+    expect(b).toEqual({ x: 0, y: 0, width: 500, height: 500 });
   });
 });
 
