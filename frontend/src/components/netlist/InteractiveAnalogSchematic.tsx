@@ -468,6 +468,24 @@ export function InteractiveAnalogSchematic({
     [elkResult, netIndex, orientations, edgeEdge, edgeNode, computeAnchor],
   );
 
+  /** Merge power-symbol positions (from ELK) into the effective positions
+   *  map. Surgical re-route needs these to compute anchors for edges
+   *  incident to power symbols — without them, computeAnchor fails and
+   *  surgical falls back to full re-route, destroying the ELK bus. */
+  const positionsWithPower = useCallback(
+    (pos: Record<string, Point>): Record<string, Point> => {
+      if (!elkResult) return pos;
+      const merged = { ...pos };
+      for (const [key, p] of Object.entries(elkResult.positions)) {
+        if ((key.startsWith("GND") || key.startsWith("VDD") || key.startsWith("VSS") || key.startsWith("VCC")) && !(key in merged)) {
+          merged[key] = p;
+        }
+      }
+      return merged;
+    },
+    [elkResult],
+  );
+
   /** Nearest point on any orthogonal segment of `polylines` to `p`
    *  (used to attach a locked-device stub to the existing trunk). */
   const nearestOnPolylines = useCallback(
@@ -809,7 +827,7 @@ export function InteractiveAnalogSchematic({
         if (!b) continue;
         st.dragMove(key, { x: b.x + dx, y: b.y + dy });
       }
-      const posNow = effectivePositions(st, scopeKey);
+      const posNow = positionsWithPower(effectivePositions(st, scopeKey));
       // Shift overrides to full re-route for this gesture; otherwise use the
       // persisted dragMode preference.
       const mode: "surgical" | "full" = shiftRef.current ? "full" : dragMode;
@@ -950,7 +968,7 @@ export function InteractiveAnalogSchematic({
         flip: cur.flip,
       });
     }
-    const posNow = effectivePositions(st, scopeKey);
+    const posNow = positionsWithPower(effectivePositions(st, scopeKey));
     setWires((prev) => rerouteNets(prev, netsTouched(selection), posNow, undefined, dragMode, selection));
   }, [selection, orientations, scopeKey, store, netsTouched, rerouteNets, dragMode]);
 
@@ -962,7 +980,7 @@ export function InteractiveAnalogSchematic({
       const cur = orientations[key] ?? { rot: 0, flip: "none" };
       st.setOrientation(scopeKey, key, { rot: cur.rot, flip: cur.flip === "h" ? "none" : "h" });
     }
-    const posNow = effectivePositions(st, scopeKey);
+    const posNow = positionsWithPower(effectivePositions(st, scopeKey));
     setWires((prev) => rerouteNets(prev, netsTouched(selection), posNow, undefined, dragMode, selection));
   }, [selection, orientations, scopeKey, store, netsTouched, rerouteNets, dragMode]);
 
@@ -974,7 +992,7 @@ export function InteractiveAnalogSchematic({
       const cur = orientations[key] ?? { rot: 0, flip: "none" };
       st.setOrientation(scopeKey, key, { rot: cur.rot, flip: cur.flip === "v" ? "none" : "v" });
     }
-    const posNow = effectivePositions(st, scopeKey);
+    const posNow = positionsWithPower(effectivePositions(st, scopeKey));
     setWires((prev) => rerouteNets(prev, netsTouched(selection), posNow, undefined, dragMode, selection));
   }, [selection, orientations, scopeKey, store, netsTouched, rerouteNets, dragMode]);
 
