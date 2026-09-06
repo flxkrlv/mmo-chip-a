@@ -754,8 +754,19 @@ async function elkInteractiveLayout(
     const isPowerNet = netName === (opts.vdd ?? "VDD") || netName === (opts.gnd ?? "GND");
     if (isPowerNet && powerDev) {
       const pKey = deviceKey(powerDev);
-      consumers = consumers.filter((c) => c.deviceKey === pKey && c.terminal === "PLUS");
-      if (consumers.length === 0) consumers = routable.filter((m) => m.deviceKey === pKey);
+      // For power nets, ALL non-power devices are drivers (current flows
+      // to/from the power rail). Only the power symbol is the consumer.
+      // This ensures every device gets its own edge to the power symbol,
+      // regardless of pin position-based role classification.
+      const powerConsumer = routable.filter((m) => m.deviceKey === pKey);
+      const deviceDrivers = routable.filter((m) => m.deviceKey !== pKey);
+      drivers = deviceDrivers;
+      consumers = powerConsumer.length > 0 ? powerConsumer : consumers.filter((c) => c.deviceKey === pKey);
+      if (drivers.length === 0 || consumers.length === 0) {
+        // Fallback to original classification if something went wrong
+        drivers = routable.filter((m) => roleOf(m) === "output");
+        consumers = routable.filter((m) => roleOf(m) === "input");
+      }
     } else {
       // Fan-out guard: collapse to a single hub driver when the full
       // product would blow up the ELK graph on a power/bus rail.
