@@ -571,6 +571,8 @@ export interface DieAnnotations {
   comments?: CommentAnnotation[];
   /** Floorplan regions — functional block outlines (Phase 2.1). */
   floorplanRegions?: FloorplanRegion[];
+  /** IC Package bond mapping — die pad to package pin wirebond connections. */
+  icPackage?: IcPackageConfig;
 }
 
 export interface MLExportRequest {
@@ -1658,4 +1660,46 @@ export interface AssistantLvsLibrarySummary {
   cellCount: number;
   /** Topology groups available in this library, with the number of cells in each. */
   groups?: Array<{ topology: string; count: number }>;
+}
+
+// ── IC Package bond mapping ─────────────────────────────────────
+
+/** Die transform (rotation + mirror) for aligning die image to package. */
+export interface DieTransform {
+  rotationDeg: number;
+  mirrorX: boolean;
+  mirrorY: boolean;
+}
+
+/** A single package pin with user-assigned name from datasheet. */
+export interface PackagePin {
+  number: number;
+  name: string;
+  /** X position from footprinter (mm, package-local coords). */
+  x: number;
+  /** Y position from footprinter (mm, package-local coords). */
+  y: number;
+  /** Pad width (mm) — from footprinter output. */
+  w: number;
+  /** Pad height (mm) — from footprinter output. */
+  h: number;
+}
+
+/** A wirebond connection between a package pin and a die pad. */
+export interface WireBond {
+  id: string;
+  pinNumber: number;
+  /** IOPin.id on the die. */
+  diePadId: string;
+  /** Optional routed path (polyline points in world coords). */
+  path?: { x: number; y: number }[];
+}
+
+/** Full IC Package configuration for bond mapping reverse engineering. */
+export interface IcPackageConfig {
+  /** Footprinter descriptor string, e.g. "soic8_p1.27mm". */
+  footprint: string;
+  pins: PackagePin[];
+  bonds: WireBond[];
+  transform: DieTransform;
 }

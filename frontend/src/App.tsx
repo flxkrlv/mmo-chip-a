@@ -6,6 +6,7 @@ import { MergeCellsPage } from "./routes/MergeCellsPage";
 import { RECellPage } from "./routes/RECellPage";
 import { CodePage } from "./routes/CodePage";
 import { AnalogNetlistPage } from "./routes/AnalogNetlistPage";
+import { IcPackagePage } from "./routes/IcPackagePage";
 import { LoginPage } from "./routes/LoginPage";
 import { NAV_HOTKEYS } from "./lib/hotkeys";
 import { useAuth } from "./state/auth";
@@ -24,6 +25,7 @@ const TAB_ROUTES: Array<{ path: string; die: "none" | "param" | "query" }> = [
   { path: "/re", die: "query" },
   { path: "/code", die: "query" },
   { path: "/analog-netlist", die: "query" },
+  { path: "/ic-package", die: "query" },
 ];
 
 function tabTarget(index: number, dieId: string | null): string {
@@ -229,6 +231,14 @@ export default function App() {
           element={
             <AuthGate>
               <AnalogNetlistPage />
+            </AuthGate>
+          }
+        />
+        <Route
+          path="/ic-package"
+          element={
+            <AuthGate>
+              <IcPackagePage />
             </AuthGate>
           }
         />

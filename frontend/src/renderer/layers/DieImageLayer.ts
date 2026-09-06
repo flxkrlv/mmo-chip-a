@@ -1,4 +1,4 @@
-import type { DieMetadata } from "shared";
+import type { DieMetadata, DieTransform } from "shared";
 import type { Rect } from "../../lib/geometry";
 import type { Layer, TileBounds } from "../types";
 
@@ -36,6 +36,9 @@ export interface DieImageDisplay {
   getHidden?: () => boolean;
   /** 0..1 multiplier applied to the painted image. */
   getOpacity?: () => number;
+  /** Rotation+mirror applied to the entire image (die-image-pixel space).
+   *  Image is treated as anchored at its center. Return null/undefined to skip. */
+  getTransform?: () => DieTransform | null;
 }
 
 export class DieImageLayer implements Layer {
@@ -65,6 +68,7 @@ export class DieImageLayer implements Layer {
     if (this.display.getHidden?.()) return;
     const opacity = this.display.getOpacity?.() ?? 1;
     if (opacity <= 0) return;
+    const transform = this.display.getTransform?.() ?? null;
 
     const { world, zoom } = bounds;
     const targetLevel = this.pickLevel(zoom);
@@ -81,8 +85,26 @@ export class DieImageLayer implements Layer {
       this.drawLevel(g, targetLevel, world, true);
     };
 
+    // Apply die transform (rotation+mirror around image center) in world space.
+    // The image's world bounds are [0,0]..[width,height] in source-pixel coords.
+    const applyTransform = (g: CanvasRenderingContext2D) => {
+      if (!transform) return;
+      const w = this.metadata.width;
+      const h = this.metadata.height;
+      g.save();
+      g.translate(w / 2, h / 2);
+      g.rotate((transform.rotationDeg * Math.PI) / 180);
+      g.scale(transform.mirrorX ? -1 : 1, transform.mirrorY ? -1 : 1);
+      g.translate(-w / 2, -h / 2);
+    };
+    const restoreTransform = (g: CanvasRenderingContext2D) => {
+      if (transform) g.restore();
+    };
+
     if (opacity >= 1) {
+      applyTransform(ctx);
       drawPyramid(ctx);
+      restoreTransform(ctx);
       this.evictIfNeeded();
       return;
     }
@@ -104,7 +126,9 @@ export class DieImageLayer implements Layer {
       // zoom-dependent) direct path rather than drawing nothing.
       ctx.save();
       ctx.globalAlpha = opacity;
+      applyTransform(ctx);
       drawPyramid(ctx);
+      restoreTransform(ctx);
       ctx.restore();
       this.evictIfNeeded();
       return;
@@ -116,7 +140,9 @@ export class DieImageLayer implements Layer {
     sctx.clearRect(0, 0, px, px);
     sctx.scale(bounds.dpr * zoom, bounds.dpr * zoom);
     sctx.translate(-world.x, -world.y);
+    applyTransform(sctx);
     drawPyramid(sctx);
+    restoreTransform(sctx);
 
     ctx.save();
     ctx.setTransform(1, 0, 0, 1, 0, 0); // blit 1:1 in device pixels
