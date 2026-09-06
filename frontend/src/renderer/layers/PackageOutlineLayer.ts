@@ -57,7 +57,8 @@ export class PackageOutlineLayer implements Layer {
 
     // Pin pads + labels.
     const scale = ctx.getTransform().a || 1;
-    const labelFontPx = Math.max(8, Math.min(14, scale * 1.5));
+    const numFontPx = Math.max(8, Math.min(13, scale * 1.3));
+    const nameFontPx = Math.max(9, Math.min(15, scale * 1.6));
     for (const pin of geom.pins) {
       const cx = origin.x + pin.x * px;
       const cy = origin.y + pin.y * px;
@@ -82,19 +83,57 @@ export class PackageOutlineLayer implements Layer {
       ctx.strokeRect(cx - w / 2, cy - h / 2, w, h);
       ctx.restore();
 
-      // Pin number + name label. Place to the outside of the package body
-      // (away from die center) when possible.
-      const tx = origin.x + pin.x * px + (w / 2 + 6 / scale);
-      const ty = origin.y + pin.y * px + labelFontPx * 0.35;
+      // Pin number: small white-bordered text floating to the package-outside
+      // (away from die center). Always shown so the user can identify pins
+      // without hovering. Name (when present) is drawn a bit further out.
+      const offsetX = w / 2 + 5 / scale;
+      const tx = origin.x + pin.x * px + offsetX;
+      const ty = origin.y + pin.y * px + numFontPx * 0.35;
+
       ctx.save();
-      ctx.font = `${labelFontPx}px ui-monospace, monospace`;
-      ctx.fillStyle = "rgba(0, 0, 0, 0.85)";
-      ctx.strokeStyle = "rgba(255, 255, 255, 0.85)";
-      ctx.lineWidth = 3 / scale;
-      const label = pin.name ? `${pin.number}:${pin.name}` : `${pin.number}`;
-      ctx.strokeText(label, tx, ty);
-      ctx.fillText(label, tx, ty);
+      ctx.font = `bold ${numFontPx}px ui-monospace, monospace`;
+      ctx.textBaseline = "alphabetic";
+      // Filled rounded "chip" behind the number for legibility on any image.
+      const numText = `${pin.number}`;
+      const m = ctx.measureText(numText);
+      const chipW = m.width + 6 / scale;
+      const chipH = numFontPx + 2 / scale;
+      const chipX = tx - 3 / scale;
+      const chipY = ty - chipH + 2 / scale;
+      ctx.fillStyle = "rgba(40, 30, 10, 0.92)";
+      ctx.strokeStyle = "rgba(255, 200, 80, 0.95)";
+      ctx.lineWidth = 1 / scale;
+      // Rounded rect via path so we don't depend on roundRect (newer API).
+      const r = 2 / scale;
+      ctx.beginPath();
+      ctx.moveTo(chipX + r, chipY);
+      ctx.lineTo(chipX + chipW - r, chipY);
+      ctx.arcTo(chipX + chipW, chipY, chipX + chipW, chipY + r, r);
+      ctx.lineTo(chipX + chipW, chipY + chipH - r);
+      ctx.arcTo(chipX + chipW, chipY + chipH, chipX + chipW - r, chipY + chipH, r);
+      ctx.lineTo(chipX + r, chipY + chipH);
+      ctx.arcTo(chipX, chipY + chipH, chipX, chipY + chipH - r, r);
+      ctx.lineTo(chipX, chipY + r);
+      ctx.arcTo(chipX, chipY, chipX + r, chipY, r);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+      ctx.fillStyle = "rgba(255, 230, 120, 1)";
+      ctx.fillText(numText, tx, ty);
       ctx.restore();
+
+      if (pin.name) {
+        const ntx = tx;
+        const nty = ty + nameFontPx + 2 / scale;
+        ctx.save();
+        ctx.font = `${nameFontPx}px ui-monospace, monospace`;
+        ctx.fillStyle = "rgba(0, 0, 0, 0.95)";
+        ctx.strokeStyle = "rgba(255, 255, 255, 0.95)";
+        ctx.lineWidth = 3 / scale;
+        ctx.strokeText(pin.name, ntx, nty);
+        ctx.fillText(pin.name, ntx, nty);
+        ctx.restore();
+      }
     }
   }
 }

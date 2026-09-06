@@ -73,6 +73,11 @@ function IcPackageView({ dieId }: { dieId: string }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [containerSize, setContainerSize] = useState({ width: 0, height: 0 });
   const [saveStatus, setSaveStatus] = useState<"idle" | "saving" | "saved" | "error">("idle");
+  /** Pin number being inline-edited on the canvas (HTML input overlay). */
+  const [editingPinNumber, setEditingPinNumber] = useState<number | null>(null);
+  const [editDraft, setEditDraft] = useState("");
+  /** Bumps on every viewport change so the input re-positions during pan/zoom. */
+  const [viewportVersion, setViewportVersion] = useState(0);
 
   // Seed store from annotations when first loaded (or when dieId changes).
   const loadFromAnnotations = useIcPackageStore((s) => s.loadFromAnnotations);
@@ -120,6 +125,8 @@ function IcPackageView({ dieId }: { dieId: string }) {
   const selectPin = useIcPackageStore((s) => s.selectPin);
   const addBond = useIcPackageStore((s) => s.addBond);
   const setTool = useIcPackageStore((s) => s.setTool);
+  const namePin = useIcPackageStore((s) => s.namePin);
+  const removePinName = useIcPackageStore((s) => s.removePinName);
 
   // Live ref to the latest inputs so layer callbacks see fresh values.
   const inputsRef = useRef({
@@ -152,17 +159,30 @@ function IcPackageView({ dieId }: { dieId: string }) {
     }
   }, [footprint]);
 
-  // Initial viewport: fit the die image into the container.
+  // Initial viewport: fit the union of die image and package outline, so the
+  // user sees both at once even when the package is larger than the die
+  // (typical — SOIC-8 is ~5×4 mm, dies are 1–2 mm).
   const initialViewport = useMemo<Viewport | null>(() => {
-    if (!die || containerSize.width === 0 || containerSize.height === 0) return null;
+    if (!die || !geom || containerSize.width === 0 || containerSize.height === 0) {
+      return null;
+    }
+    // Package outline in world px (package mm origin → world px via origin/pxPerMm).
+    const pkgMinX = origin.x + geom.body.minX * pxPerMm;
+    const pkgMinY = origin.y + geom.body.minY * pxPerMm;
+    const pkgMaxX = origin.x + geom.body.maxX * pxPerMm;
+    const pkgMaxY = origin.y + geom.body.maxY * pxPerMm;
+    const minX = Math.min(0, pkgMinX);
+    const minY = Math.min(0, pkgMinY);
+    const maxX = Math.max(die.width, pkgMaxX);
+    const maxY = Math.max(die.height, pkgMaxY);
     return fitRectViewport(
-      { x: 0, y: 0, width: die.width, height: die.height },
+      { x: minX, y: minY, width: maxX - minX, height: maxY - minY },
       containerSize.width,
       containerSize.height,
       48,
       32
     );
-  }, [die, containerSize.width, containerSize.height]);
+  }, [die, geom, containerSize.width, containerSize.height, origin, pxPerMm]);
 
   // ── Layers ────────────────────────────────────────────────────────
   const layers = useMemo<Layer[]>(() => {
@@ -228,6 +248,11 @@ function IcPackageView({ dieId }: { dieId: string }) {
     [origin, pxPerMm]
   );
 
+  /** Looser tolerance — packages are small (~mm scale); 1.5 mm covers
+   *  pin-width + click slop. Pad snap is generous too (40 px). */
+  const PIN_CLICK_MM = 1.5;
+  const PAD_SNAP_PX = 40;
+
   const onPointerDown = useCallback(
     (e: PointerEventData): Interaction => {
       if (e.button !== 0) return "pan";
@@ -238,10 +263,25 @@ function IcPackageView({ dieId }: { dieId: string }) {
       return {
         onPointerUp: ({ dragged, modifiers }) => {
           if (dragged) return;
+          if (t === "name") {
+            // Click a package pin → open inline editor on canvas.
+            const pinMm = worldToPackageMm(e.worldPoint.x, e.worldPoint.y);
+            const num = findClickedPin(
+              pinMm.x,
+              pinMm.y,
+              inputsRef.current.pins,
+              PIN_CLICK_MM
+            );
+            if (num != null) {
+              const pin = inputsRef.current.pins.find((p) => p.number === num);
+              setEditDraft(pin?.name ?? "");
+              setEditingPinNumber(num);
+            }
+            return;
+          }
           if (t === "bond") {
             const sel = inputsRef.current.selectedPinNumber;
             if (sel == null) {
-              // Click on package pin (in mm).
               const pinMm = worldToPackageMm(
                 e.worldPoint.x,
                 e.worldPoint.y
@@ -250,11 +290,10 @@ function IcPackageView({ dieId }: { dieId: string }) {
                 pinMm.x,
                 pinMm.y,
                 inputsRef.current.pins,
-                0.5
+                PIN_CLICK_MM
               );
               if (num != null) selectPin(num);
             } else {
-              // Commit bond: snap to die pad in display coords = world coords.
               const pads = inputsRef.current.annotations?.pins ?? [];
               const img = die
                 ? { width: die.width, height: die.height }
@@ -266,18 +305,16 @@ function IcPackageView({ dieId }: { dieId: string }) {
                 img.width,
                 img.height,
                 inputsRef.current.transform,
-                24
+                PAD_SNAP_PX
               );
               if (snap) {
                 addBond(sel, snap.id);
               } else {
-                // No pad under cursor → cancel selection.
                 selectPin(null);
               }
             }
             return;
           }
-          // "name" goes through PinListPanel click; "pan" handled by default.
           void modifiers;
         },
       } as Interaction;
@@ -287,13 +324,32 @@ function IcPackageView({ dieId }: { dieId: string }) {
 
   const onCanvasClick = useCallback(
     (point: { x: number; y: number }) => {
-      // Mirror of onPointerDown's no-drag branch for users that prefer click.
       const t = inputsRef.current.tool;
+      if (t === "name") {
+        const pinMm = worldToPackageMm(point.x, point.y);
+        const num = findClickedPin(
+          pinMm.x,
+          pinMm.y,
+          inputsRef.current.pins,
+          PIN_CLICK_MM
+        );
+        if (num != null) {
+          const pin = inputsRef.current.pins.find((p) => p.number === num);
+          setEditDraft(pin?.name ?? "");
+          setEditingPinNumber(num);
+        }
+        return;
+      }
       if (t !== "bond") return;
       const sel = inputsRef.current.selectedPinNumber;
       if (sel == null) {
         const pinMm = worldToPackageMm(point.x, point.y);
-        const num = findClickedPin(pinMm.x, pinMm.y, inputsRef.current.pins, 0.5);
+        const num = findClickedPin(
+          pinMm.x,
+          pinMm.y,
+          inputsRef.current.pins,
+          PIN_CLICK_MM
+        );
         if (num != null) selectPin(num);
       }
     },
@@ -326,7 +382,7 @@ function IcPackageView({ dieId }: { dieId: string }) {
         die.width,
         die.height,
         inputsRef.current.transform,
-        24
+        PAD_SNAP_PX
       );
       setHoveredPad(snap?.id ?? null);
     };
@@ -338,6 +394,34 @@ function IcPackageView({ dieId }: { dieId: string }) {
 
   // Re-compute preview endpoint from hoveredPad → reads from store via WireBondLayer's
   // getBondPreview above. The store's hoveredPadId drives it.
+
+  // Auto-cancel inline edit when the user leaves "name" mode, switches footprint,
+  // or changes the pin number externally (e.g. via the right panel).
+  useEffect(() => {
+    if (editingPinNumber == null) return;
+    const stillExists = pins.some((p) => p.number === editingPinNumber);
+    if (tool !== "name" || !stillExists) {
+      setEditingPinNumber(null);
+      setEditDraft("");
+    }
+  }, [tool, pins, editingPinNumber]);
+
+  // Global Escape: cancel inline edit or selected pin.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      if (editingPinNumber != null) {
+        setEditingPinNumber(null);
+        setEditDraft("");
+        e.preventDefault();
+      } else if (selectedPinNumber != null && tool === "bond") {
+        selectPin(null);
+        e.preventDefault();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [editingPinNumber, selectedPinNumber, tool, selectPin]);
 
   // ── Save ─────────────────────────────────────────────────────────
   const save = useCallback(async () => {
@@ -401,6 +485,7 @@ function IcPackageView({ dieId }: { dieId: string }) {
                 initialViewport={initialViewport}
                 onPointerDown={onPointerDown}
                 onCanvasClick={onCanvasClick}
+                onViewportChange={() => setViewportVersion((v) => v + 1)}
                 cursor={
                   tool === "name" ? "text"
                     : tool === "bond" ? (selectedPinNumber == null ? "crosshair" : "cell")
@@ -433,6 +518,66 @@ function IcPackageView({ dieId }: { dieId: string }) {
                   `Drag to pan, scroll to zoom · ${pins.length} pins · ${bonds.length} bonds`
                 )}
               </div>
+              {editingPinNumber != null && (() => {
+                const pin = pins.find((p) => p.number === editingPinNumber);
+                if (!pin) return null;
+                const vp = canvasHandle.current?.getViewport();
+                if (!vp) return null;
+                const wx = origin.x + pin.x * pxPerMm;
+                const wy = origin.y + pin.y * pxPerMm;
+                const cssX = (wx - vp.originX) * vp.zoom;
+                const cssY = (wy - vp.originY) * vp.zoom;
+                // Off-screen? Hide.
+                if (cssX < -50 || cssY < -50 || cssX > containerSize.width + 50 || cssY > containerSize.height + 50) {
+                  return null;
+                }
+                return (
+                  <input
+                    autoFocus
+                    value={editDraft}
+                    onChange={(e) => setEditDraft(e.target.value)}
+                    onFocus={(e) => {
+                      // Select existing name so typing replaces; cursor at end if empty.
+                      const v = e.target.value;
+                      e.target.setSelectionRange(v.length, v.length);
+                    }}
+                    onBlur={() => {
+                      const name = editDraft.trim();
+                      if (name) namePin(pin.number, name);
+                      else removePinName(pin.number);
+                      setEditingPinNumber(null);
+                      setEditDraft("");
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+                      if (e.key === "Escape") {
+                        setEditingPinNumber(null);
+                        setEditDraft("");
+                        (e.target as HTMLInputElement).blur();
+                      }
+                      // Stop propagation so global handlers don't pan/zoom.
+                      e.stopPropagation();
+                    }}
+                    style={{
+                      position: "absolute",
+                      left: cssX + 4,
+                      top: cssY - 18,
+                      zIndex: 10,
+                      fontFamily: "ui-monospace, monospace",
+                      fontSize: 12,
+                      padding: "2px 6px",
+                      minWidth: 90,
+                      background: "var(--card)",
+                      color: "var(--ink)",
+                      border: "1px solid var(--accent)",
+                      borderRadius: 3,
+                      outline: "none",
+                    }}
+                    placeholder={`pin ${pin.number}`}
+                    title="Enter to save, Esc to cancel"
+                  />
+                );
+              })()}
             </>
           ) : (
             <div
