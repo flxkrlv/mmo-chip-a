@@ -746,10 +746,22 @@ async function elkInteractiveLayout(
     }
     if (drivers.length === 0 || consumers.length === 0) continue;
 
-    // Fan-out guard: collapse to a single hub driver when the full
-    // product would blow up the ELK graph on a power/bus rail.
-    if (drivers.length * consumers.length > MAX_EDGES_PER_NET) {
-      drivers = [drivers[0]];
+    // For power nets, every device needs its own edge to the power symbol
+    // (the hub). Don't collapse drivers, and restrict consumers to just
+    // the power symbol. This preserves the "bus" look and ensures all
+    // devices are connected.
+    const netName = namedNets.get(netId);
+    const isPowerNet = netName === (opts.vdd ?? "VDD") || netName === (opts.gnd ?? "GND");
+    if (isPowerNet && powerDev) {
+      const pKey = deviceKey(powerDev);
+      consumers = consumers.filter((c) => c.deviceKey === pKey && c.terminal === "PLUS");
+      if (consumers.length === 0) consumers = routable.filter((m) => m.deviceKey === pKey);
+    } else {
+      // Fan-out guard: collapse to a single hub driver when the full
+      // product would blow up the ELK graph on a power/bus rail.
+      if (drivers.length * consumers.length > MAX_EDGES_PER_NET) {
+        drivers = [drivers[0]];
+      }
     }
 
     const srcPort = portOf(drivers[0].deviceKey, netId, drivers[0].terminal);
@@ -825,10 +837,20 @@ async function elkInteractiveLayout(
   const edgeToKey = new Map<string, string>();
   const edgeFromTerm = new Map<string, string>();
   const edgeToTerm = new Map<string, string>();
+  // Parse a port id back into (deviceKey, terminal). Port ids are built as
+  // `${deviceKey}:${pid}:${idx}` in the ELK graph. The deviceKey itself may
+  // contain colons: regular "M_1", io "io:5", power "GND:109". We parse from
+  // the right: last segment = idx, second-to-last = pid, rest = deviceKey.
   const deviceKeyFromPort = (portId: string): { key: string; term: string } => {
     const p = String(portId).split(":");
-    if (p[0] === "io" && p.length >= 3) return { key: `${p[0]}:${p[1]}`, term: p[2] };
-    return { key: p[0] ?? "", term: p[1] ?? "" };
+    if (p.length >= 3) {
+      const idx = p[p.length - 1];
+      const pid = p[p.length - 2];
+      const key = p.slice(0, p.length - 2).join(":");
+      return { key, term: pid };
+    }
+    if (p.length === 2) return { key: p[0] ?? "", term: p[1] ?? "" };
+    return { key: p[0] ?? "", term: "" };
   };
   for (const e of result.edges ?? []) {
     const netId = edgeNetId.get(e.id);

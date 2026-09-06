@@ -279,7 +279,8 @@ describe("runInteractiveLayout (ELK, node)", () => {
       compaction: 0,
     });
     expect(res.applied?.direction).toBe("RIGHT");
-    expect(res.positions["VDD:3"].x).toBeLessThan(res.positions["M_2"].x);
+    // VDD is the consumer (sink) now, so it's to the RIGHT of devices in RIGHT direction
+    expect(res.positions["VDD:3"].x).toBeGreaterThan(res.positions["M_2"].x);
   }, 30000);
 
   // Regression: nets used to lose ALL their ELK edges (and thus wires)
