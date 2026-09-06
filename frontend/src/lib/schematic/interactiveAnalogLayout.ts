@@ -137,6 +137,7 @@ function blockPorts(b: HierarchyBlock): NodePortSpec[] {
     y: s.dy,
     side: s.isInput ? "WEST" : "EAST",
     netId: b.nets.find((n) => `${n.direction === "input" ? "in" : "out"}_${n.name}` === s.terminal)!.netId,
+    terminal: s.terminal,
   }));
 }
 
@@ -329,6 +330,9 @@ interface NodePortSpec {
   y: number;
   side: string;
   netId: number;
+  /** Terminal name (e.g. "D", "S", "G") — used to match the right port
+   *  when a device has multiple terminals on the same net. */
+  terminal: string;
 }
 
 /** All wired terminals of a device as ELK port specs (skin anchors). */
@@ -348,6 +352,7 @@ function devicePorts(d: AnalogDevice, table: SymbolTable): NodePortSpec[] {
       y: pin.dy,
       side: sideOf(pin.position),
       netId: term.netId,
+      terminal: term.name,
     });
   }
   return out;
@@ -579,6 +584,7 @@ async function elkInteractiveLayout(
           y: isGnd ? -15 : 30,
           side: isGnd ? "NORTH" : "SOUTH",
           netId: term.netId,
+          terminal: term.name,
         });
       }
     } else if (isBlock && bIndex >= 0) {
@@ -599,7 +605,7 @@ async function elkInteractiveLayout(
   for (const io of ioNets) {
     const key = `io:${io.netId}`;
     sizes[key] = POWER_TEMPLATE_SIZE.io;
-    portsByKey.set(key, [{ pid: "Y", x: 30, y: 10, side: "EAST", netId: io.netId }]);
+    portsByKey.set(key, [{ pid: "Y", x: 30, y: 10, side: "EAST", netId: io.netId, terminal: "Y" }]);
     netMembers.set(io.netId, [
       ...(netMembers.get(io.netId) ?? []),
       { deviceKey: key, device: { kind: "__io" } as unknown as AnalogDevice, terminal: "Y" },
@@ -668,9 +674,12 @@ async function elkInteractiveLayout(
   const edgeNetId = new Map<string, number>();
   let edgeCounter = 0;
   for (const [netId, members] of netMembers) {
-    const portOf = (deviceKey: string, netId: number): string | undefined => {
+    // Look up the ELK port id for a (device, net, terminal). A device can
+    // have multiple terminals on the same net (e.g. NMOS S+B on GND), so we
+    // must match by terminal name — not just take the first port on the net.
+    const portOf = (deviceKey: string, netId: number, terminal: string): string | undefined => {
       const specs = portsByKey.get(deviceKey) ?? [];
-      const spec = specs.find((p) => p.netId === netId);
+      const spec = specs.find((p) => p.netId === netId && p.terminal === terminal);
       return spec ? `${deviceKey}:${spec.pid}:${specs.indexOf(spec)}` : undefined;
     };
     const isIoNet = ioNets.some((io) => io.netId === netId);
@@ -678,8 +687,8 @@ async function elkInteractiveLayout(
       (p.terminals ?? []).some((t) => t.netId === netId),
     );
 
-    // Role of each routable member (has a port, not locked).
-    const routable = members.filter((m) => !opts.excludeKeys?.has(m.deviceKey) && !!portOf(m.deviceKey, netId));
+    // Role of each routable member (has a port for this terminal, not locked).
+    const routable = members.filter((m) => !opts.excludeKeys?.has(m.deviceKey) && !!portOf(m.deviceKey, netId, m.terminal));
     if (routable.length < 2) continue; // nothing to wire
 
     const roleOf = (m: { deviceKey: string; device: AnalogDevice; terminal: string }): PortRole => {
@@ -722,13 +731,13 @@ async function elkInteractiveLayout(
       drivers = [drivers[0]];
     }
 
-    const srcPort = portOf(drivers[0].deviceKey, netId);
+    const srcPort = portOf(drivers[0].deviceKey, netId, drivers[0].terminal);
     if (!srcPort) continue;
     for (const driver of drivers) {
-      const dsrc = portOf(driver.deviceKey, netId);
+      const dsrc = portOf(driver.deviceKey, netId, driver.terminal);
       if (!dsrc) continue;
       for (const c of consumers) {
-        const dstPort = portOf(c.deviceKey, netId);
+        const dstPort = portOf(c.deviceKey, netId, c.terminal);
         if (!dstPort) continue;
         const id = `e${edgeCounter++}`;
         edges.push({ id, sources: [dsrc], targets: [dstPort] });
