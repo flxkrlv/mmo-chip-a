@@ -875,6 +875,13 @@ async function elkInteractiveLayout(
       edgeToTerm.set(e.id, term);
     }
   }
+  // DEBUG: log ALL power nets edge summary
+  for (const [netId, placed] of byNet) {
+    const name = namedNets.get(netId) ?? "?";
+    if (name === "GND" || name === "VDD" || name === "VSS" || name === "VCC") {
+      console.log(`[ELK-summary] power net ${netId} (${name}): ${placed.length} edges: ${placed.map((p) => `${edgeFromKey.get(p.id)}→${edgeToKey.get(p.id)}`).join(", ")}`);
+    }
+  }
   const wires = new Map<number, WireData>();
   for (const [netId, placed] of byNet) {
     const edges: TracedEdge[] = placed.map((p) => ({
