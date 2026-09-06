@@ -564,7 +564,7 @@ async function elkInteractiveLayout(
   for (const d of all) {
     const key = deviceKey(d);
     const template = templateForDevice(table, d);
-    const isGnd = d.instanceName === (opts.gnd ?? "GND");
+    const isGnd = (d.instanceName ?? "").startsWith(opts.gnd ?? "GND");
     const isBlock = isBlockDevice(d);
     const bIndex = blocks.findIndex((b) => b.regionId === key.slice("blk:".length));
     const size =
@@ -712,8 +712,10 @@ async function elkInteractiveLayout(
 
     const roleOf = (m: { deviceKey: string; device: AnalogDevice; terminal: string }): PortRole => {
       if (powerDev && m.deviceKey === deviceKey(powerDev)) {
-        // power roles are fixed by rail kind (vcc driver, gnd sink)
-        return (powerDev.instanceName ?? "") === (opts.gnd ?? "GND") ? "input" : "output";
+        // power roles are fixed by rail kind (vcc driver, gnd sink).
+        // powerDev.instanceName is "GND:109" — check prefix, not exact match.
+        const isGnd = (powerDev.instanceName ?? "").startsWith((opts.gnd ?? "GND"));
+        return isGnd ? "input" : "output";
       }
       if (isIoNet && m.deviceKey === `io:${netId}`) return "input"; // inputExt
       // Hierarchy block: in_* is a consumer, out_* is a driver.
@@ -919,7 +921,7 @@ export function gridFallback(
     sizes[deviceKey(d)] = isBlockDevice(d)
       ? blockSize((opts.blocks ?? []).find((b) => b.regionId === d.id.slice("blk:".length)) ?? { regionId: d.id, name: d.id, nets: [] })
       : (d.kind as string) === "power"
-        ? (d.instanceName === (opts.gnd ?? "GND") ? POWER_TEMPLATE_SIZE.gnd : POWER_TEMPLATE_SIZE.vcc)
+        ? ((d.instanceName ?? "").startsWith(opts.gnd ?? "GND") ? POWER_TEMPLATE_SIZE.gnd : POWER_TEMPLATE_SIZE.vcc)
         : t ? { w: t.width, h: t.height } : { w: 30, h: 40 };
   });
 
@@ -1000,7 +1002,7 @@ export function terminalPinLookup(
       : undefined);
   }
   for (const p of powers) {
-    const isGnd = p.instanceName === (opts.gnd ?? "GND");
+    const isGnd = (p.instanceName ?? "").startsWith(opts.gnd ?? "GND");
     map.set(deviceKey(p), (terminal: string) =>
       terminal === "PLUS" ? { dx: 10, dy: isGnd ? -15 : 30 } : undefined);
   }
