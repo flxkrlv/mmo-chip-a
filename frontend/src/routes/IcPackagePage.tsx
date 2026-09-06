@@ -375,87 +375,100 @@ function IcPackageView({ dieId }: { dieId: string }) {
   }, [bonds, transform, footprint, pins.map((p) => p.name).join("|")]);
 
   // ── Render ────────────────────────────────────────────────────────
-  if (isLoading || error || !die || !initialViewport) {
-    return (
-      <AppShell>
-        <div
-          style={{
-            flex: "1 1 auto",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            color: "var(--ink3)",
-            fontSize: 12,
-          }}
-        >
-          {isLoading ? "loading die…" : error ? `error: ${(error as Error).message}` : "preparing…"}
-        </div>
-      </AppShell>
-    );
-  }
+  const centerMsg = !die
+    ? isLoading ? "loading die…" : error ? `error: ${(error as Error).message}` : "loading die…"
+    : !initialViewport ? "preparing…" : null;
 
   return (
-    <AppShell meta="IC Package" savedAgo={saveStatus === "saved" ? "saved" : saveStatus === "saving" ? "saving…" : saveStatus === "error" ? "save failed" : undefined}>
+    <AppShell
+      meta="IC Package"
+      savedAgo={
+        saveStatus === "saved" ? "saved"
+          : saveStatus === "saving" ? "saving…"
+            : saveStatus === "error" ? "save failed"
+              : undefined
+      }
+    >
       <div style={{ flex: "1 1 auto", display: "flex", minHeight: 0 }}>
         <div
           ref={containerRef}
           style={{ flex: "1 1 auto", position: "relative", minWidth: 0, background: "var(--bg)" }}
         >
-          <TiledCanvas
-            layers={layers}
-            initialViewport={initialViewport}
-            onPointerDown={onPointerDown}
-            onCanvasClick={onCanvasClick}
-            cursor={
-              tool === "name" ? "text"
-                : tool === "bond" ? (selectedPinNumber == null ? "crosshair" : "cell")
-                  : "default"
-            }
-            handleRef={canvasHandle}
-          />
+          {die && initialViewport ? (
+            <>
+              <TiledCanvas
+                layers={layers}
+                initialViewport={initialViewport}
+                onPointerDown={onPointerDown}
+                onCanvasClick={onCanvasClick}
+                cursor={
+                  tool === "name" ? "text"
+                    : tool === "bond" ? (selectedPinNumber == null ? "crosshair" : "cell")
+                      : "default"
+                }
+                handleRef={canvasHandle}
+              />
+              <div
+                style={{
+                  position: "absolute",
+                  left: 12,
+                  bottom: 12,
+                  padding: "6px 10px",
+                  background: "rgba(0,0,0,0.55)",
+                  borderRadius: 4,
+                  fontSize: 11,
+                  color: "var(--ink2)",
+                  pointerEvents: "none",
+                }}
+              >
+                {tool === "bond" ? (
+                  selectedPinNumber == null
+                    ? "Click a package pin to start a bond"
+                    : hoveredPadId
+                      ? `Click die pad to bond pin ${selectedPinNumber} → ${hoveredPadId}`
+                      : `Click a die pad to bond pin ${selectedPinNumber} (Esc to cancel)`
+                ) : tool === "name" ? (
+                  "Click pin name in right panel to edit"
+                ) : (
+                  `Drag to pan, scroll to zoom · ${pins.length} pins · ${bonds.length} bonds`
+                )}
+              </div>
+            </>
+          ) : (
+            <div
+              style={{
+                position: "absolute",
+                inset: 0,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                color: "var(--ink3)",
+                fontSize: 12,
+              }}
+            >
+              {centerMsg}
+            </div>
+          )}
+        </div>
+        {die && initialViewport ? (
           <div
             style={{
-              position: "absolute",
-              left: 12,
-              bottom: 12,
-              padding: "6px 10px",
-              background: "rgba(0,0,0,0.55)",
-              borderRadius: 4,
-              fontSize: 11,
-              color: "var(--ink2)",
-              pointerEvents: "none",
+              width: 260,
+              flex: "0 0 auto",
+              borderLeft: "1px solid var(--l2)",
+              background: "var(--card)",
+              display: "flex",
+              flexDirection: "column",
+              padding: 8,
+              gap: 8,
+              overflowY: "auto",
             }}
           >
-            {tool === "bond" ? (
-              selectedPinNumber == null
-                ? "Click a package pin to start a bond"
-                : hoveredPadId
-                  ? `Click die pad to bond pin ${selectedPinNumber} → ${hoveredPadId}`
-                  : `Click a die pad to bond pin ${selectedPinNumber} (Esc to cancel)`
-            ) : tool === "name" ? (
-              "Click pin name in right panel to edit"
-            ) : (
-              `Drag to pan, scroll to zoom · ${pins.length} pins · ${bonds.length} bonds`
-            )}
+            <PackageSelector />
+            <DieTransformPanel />
+            <PinListPanel />
           </div>
-        </div>
-        <div
-          style={{
-            width: 260,
-            flex: "0 0 auto",
-            borderLeft: "1px solid var(--l2)",
-            background: "var(--card)",
-            display: "flex",
-            flexDirection: "column",
-            padding: 8,
-            gap: 8,
-            overflowY: "auto",
-          }}
-        >
-          <PackageSelector />
-          <DieTransformPanel />
-          <PinListPanel />
-        </div>
+        ) : null}
       </div>
     </AppShell>
   );
