@@ -44,6 +44,8 @@ import {
   deviceObstacle,
   WireGrid,
   AnchorInfo,
+  localPowerPorts,
+  LocalPowerPort,
   blockDevices,
   blockSize,
   blockPortStubs,
@@ -125,6 +127,8 @@ interface RenderNode {
   label?: string;
   /** For power nodes: which rail symbol to draw/color. */
   powerKind?: "vcc" | "gnd";
+  /** For local power ports: short wire stub from pin anchor to symbol. */
+  stub?: Point[];
   /** Hierarchy block name (kind: "block"). */
   blockName?: string;
   /** Hierarchy block port labels (net names) positioned near each stub. */
@@ -245,6 +249,12 @@ export function InteractiveAnalogSchematic({
   const positionsRef = useRef(positions);
   positionsRef.current = positions;
 
+  // Local power ports: small GND/VDD symbols placed near each power pin.
+  const localPorts = useMemo<LocalPowerPort[]>(() => {
+    if (!elkResult) return [];
+    return localPowerPorts(elkResult.positions, elkResult.sizes, devices, namedNets, table, opts, orientations);
+  }, [elkResult, devices, namedNets, table, opts.gnd, opts.vdd, orientations]);
+
   // ── Render nodes (defined early — drag/marquee handlers need them) ──
   const nodes: RenderNode[] = useMemo(() => {
     if (!elkResult) return [];
@@ -266,17 +276,9 @@ export function InteractiveAnalogSchematic({
       });
     }
     for (const p of powers) {
-      const key = deviceKey(p);
-      if (positions[key] == null) continue;
-      const powerKind: "vcc" | "gnd" = key === (opts.gnd ?? "GND") ? "gnd" : "vcc";
-      out.push({
-        key,
-        kind: "power",
-        template: table.byKey.get(powerKind),
-        size: elkResult.sizes[key] ?? { w: 20, h: 30 },
-        device: p,
-        powerKind,
-      });
+      // Central power symbols are no longer used — replaced by local
+      // power ports (see below). Keep the loop to avoid unused-var lint.
+      void p;
     }
     for (const io of ioNets) {
       const key = `io:${io.netId}`;
@@ -287,6 +289,19 @@ export function InteractiveAnalogSchematic({
         template: table.byKey.get("inputExt"),
         size: elkResult.sizes[key] ?? { w: 30, h: 20 },
         label: io.name,
+      });
+    }
+
+    // Local power ports: small GND/VDD symbols near each power pin with a
+    // short stub. Replaces the central-symbol approach.
+    for (const port of localPorts) {
+      out.push({
+        key: port.key,
+        kind: "power",
+        template: table.byKey.get(port.kind),
+        size: port.size,
+        powerKind: port.kind,
+        stub: port.stub,
       });
     }
 
@@ -1547,7 +1562,7 @@ const DeviceNode = memo(function DeviceNode({
   /** Double-click a hierarchy block — drill into its region schematic. */
   onOpenBlock?: (regionId: string) => void;
 }) {
-  const { key, template, size, kind, device, label, powerKind, blockName, blockPorts } = node;
+  const { key, template, size, kind, device, label, powerKind, stub, blockName, blockPorts } = node;
   const os = orientedSize(size, orient);
   const rot = orient?.rot ?? 0;
   const flip = orient?.flip ?? "none";
@@ -1621,6 +1636,19 @@ const DeviceNode = memo(function DeviceNode({
           )
         )}
       </g>
+      {/* Local power port stub — short wire from the symbol's connection
+          point to the pin anchor it serves. */}
+      {kind === "power" && stub && stub.length >= 2 && (
+        <polyline
+          points={stub.map((p) => `${p.x},${p.y}`).join(" ")}
+          fill="none"
+          stroke="var(--ink2)"
+          strokeWidth={WIRE_STROKE}
+          strokeLinejoin="round"
+          strokeLinecap="round"
+          pointerEvents="none"
+        />
+      )}
       {/* Hierarchy block name */}
       {kind === "block" && blockName && (
         <text x={size.w / 2} y={size.h / 2} fontSize={10} fill="var(--ink)" textAnchor="middle" fontWeight={600} pointerEvents="none">

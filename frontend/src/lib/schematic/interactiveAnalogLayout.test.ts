@@ -50,19 +50,19 @@ function res(name: string, terminals: Array<[string, number]>): AnalogDevice {
 }
 
 describe("buildNetIndex", () => {
-  it("maps terminals to nets incl. power devices", () => {
+  it("maps terminals to nets; power devices are no longer synthesized", () => {
     const devices = [
       mos("M_1", "nmos", [["D", 5], ["G", 6], ["S", 7], ["B", 8]]),
     ];
     const nets = new Map([[7, "VDD"]]);
+    // powerDevices() now returns [] — the interactive engine uses local
+    // power ports instead of central VDD/GND symbols.
     const powers = powerDevices(devices, nets, { vdd: "VDD", gnd: "GND" });
-    expect(powers).toHaveLength(1);
-    expect(powers[0].instanceName).toBe("VDD");
+    expect(powers).toHaveLength(0);
     const idx = buildNetIndex(devices, {}, powers);
     expect(idx.get(5)).toEqual([{ deviceKey: "M_1", terminal: "D" }]);
     expect(idx.get(7)).toEqual([
       { deviceKey: "M_1", terminal: "S" },
-      { deviceKey: "VDD", terminal: "PLUS" },
     ]);
   });
 });
@@ -159,15 +159,14 @@ describe("gridFallback", () => {
     ]);
     const result = gridFallback(devices, nets, table, { vdd: "VDD", gnd: "GND" });
     expect(result.usedFallback).toBe(true);
-    expect(Object.keys(result.positions).sort()).toEqual(["GND", "M_1", "M_2", "R_1", "VDD"].sort());
-    // Every net got routed
-    for (const netId of [1, 2, 3, 4]) {
+    // No central power symbols — only real devices are positioned.
+    expect(Object.keys(result.positions).sort()).toEqual(["M_1", "M_2", "R_1"].sort());
+    // Signal nets got routed.
+    for (const netId of [1, 2]) {
       const w = result.wires.get(netId);
       expect(w, `net ${netId} unrouted`).toBeDefined();
       expect(w!.polylines.length).toBeGreaterThan(0);
     }
-    // VDD (net 3) wires reach both M_1.S and VDD pin — ≥2 terminals
-    expect(result.wires.get(3)!.polylines.length).toBeGreaterThanOrEqual(2);
     // bbox sane
     expect(result.bbox.width).toBeGreaterThan(0);
     expect(result.bbox.height).toBeGreaterThan(0);
@@ -241,9 +240,8 @@ describe("runInteractiveLayout (ELK, node)", () => {
     });
     expect(res.usedFallback).toBe(false);
     expect(res.applied).toEqual({ strategy: "BRANDES_KOEPF", direction: "DOWN", compaction: 4 });
-    expect(Object.keys(res.positions).sort()).toEqual(["M_1", "M_2", "VDD"]);
-    // DOWN direction: VDD symbol (driver) above the nmos S pin it feeds
-    expect(res.positions["VDD"].y).toBeLessThan(res.positions["M_1"].y);
+    // No central power symbols — only real devices positioned.
+    expect(Object.keys(res.positions).sort()).toEqual(["M_1", "M_2"]);
     expect(res.wires.get(1)?.polylines.length).toBeGreaterThan(0);
   }, 30000);
 
@@ -263,7 +261,7 @@ describe("runInteractiveLayout (ELK, node)", () => {
     });
     expect(res.usedFallback).toBe(false);
     expect(res.wires.get(1)?.polylines.length).toBeGreaterThan(0);
-    expect(res.positions["VDD"]).toBeDefined();
+    expect(Object.keys(res.positions).sort()).toEqual(["M_1", "M_2"]);
   }, 30000);
 
   it("direction RIGHT puts the driver left of its consumer", async () => {
@@ -279,7 +277,8 @@ describe("runInteractiveLayout (ELK, node)", () => {
       compaction: 0,
     });
     expect(res.applied?.direction).toBe("RIGHT");
-    expect(res.positions["VDD"].x).toBeLessThan(res.positions["M_2"].x);
+    // No central power symbol; both devices present.
+    expect(Object.keys(res.positions).sort()).toEqual(["M_1", "M_2"]);
   }, 30000);
 
   // Regression: nets used to lose ALL their ELK edges (and thus wires)
@@ -296,13 +295,15 @@ describe("runInteractiveLayout (ELK, node)", () => {
     return [[devices, nets]];
   }
 
-  it("mirror circuit: EVERY net gets routed wires after ELK", async () => {
+  it("mirror circuit: signal nets get routed wires after ELK", async () => {
     const [devices, nets] = mirrorCircuit()[0];
     const res = await runInteractiveLayout(devices, nets, table, {
       vdd: "VDD", gnd: "GND", strategy: "BRANDES_KOEPF", direction: "DOWN", compaction: 2,
     });
     expect(res.usedFallback).toBe(false);
-    for (const netId of [1, 2, 3, 4]) {
+    // Signal nets (out, gate) get ELK wires. Power nets (GND/VDD) have no
+    // central symbol now — they're served by local power ports instead.
+    for (const netId of [1, 2]) {
       const w = res.wires.get(netId);
       expect(w, `net ${netId} has no wires`).toBeDefined();
       expect(w!.polylines.length, `net ${netId} empty polylines`).toBeGreaterThan(0);
@@ -351,29 +352,25 @@ describe("runInteractiveLayout (ELK, node)", () => {
     expect(res.wires.get(1) ?? res.wires.get(4) ?? { polylines: [] }).toMatchObject({ polylines: [] });
   }, 30000);
 
-  // Power-rail fan-out: one vcc driver, many consumers. ELK edges must be
-  // bounded (no N×M explosion) yet the rail wires must still exist.
-  it("power rail fan-out (1 driver, many consumers) survives without crash", async () => {
+  it("power rail fan-out (many consumers) survives without crash", async () => {
     const devices: AnalogDevice[] = [
       mos("M_1", "nmos", [["D", 1], ["G", 2], ["S", 3], ["B", 3]]),
     ];
     const nets = new Map([[1, "n1"], [2, "gate"], [3, "VDD"]]);
-    // 20 pmos sources all sourcing from the same VDD rail (S=3)
+    // 20 pmos sources all on the same VDD rail (S=3)
     let nextNet = 100;
     for (let i = 2; i <= 21; i++) {
       devices.push(mos(`M_${i}`, "pmos", [["D", nextNet], ["G", 2], ["S", 3], ["B", 3]]));
       nets.set(nextNet, `n${i}`);
       nextNet++;
-      // NOTE: netId 3 stays "VDD" — power rail netNames come from
-      // namedNets by netId, never clobbered by the loop.
     }
     const res = await runInteractiveLayout(devices, nets, table, {
       vdd: "VDD", gnd: "GND", strategy: "SIMPLE", direction: "DOWN", compaction: 0,
     });
     expect(res.usedFallback).toBe(false);
-    // VDD rail wired (≥1 polyline), VDD symbol placed, and ELK didn't blow up
-    expect(res.wires.get(3)?.polylines.length ?? 0).toBeGreaterThan(0);
-    expect(res.positions["VDD"]).toBeDefined();
+    // ELK didn't blow up with many devices on a shared rail. Power net
+    // (VDD) has no central symbol — served by local power ports.
+    expect(Object.keys(res.positions).length).toBe(21);
   }, 30000);
 });
 
