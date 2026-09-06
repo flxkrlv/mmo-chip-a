@@ -44,8 +44,6 @@ import {
   deviceObstacle,
   WireGrid,
   AnchorInfo,
-  localPowerPorts,
-  LocalPowerPort,
   blockDevices,
   blockSize,
   blockPortStubs,
@@ -127,8 +125,6 @@ interface RenderNode {
   label?: string;
   /** For power nodes: which rail symbol to draw/color. */
   powerKind?: "vcc" | "gnd";
-  /** For local power ports: short wire stub from pin anchor to symbol. */
-  stub?: Point[];
   /** Hierarchy block name (kind: "block"). */
   blockName?: string;
   /** Hierarchy block port labels (net names) positioned near each stub. */
@@ -249,23 +245,6 @@ export function InteractiveAnalogSchematic({
   const positionsRef = useRef(positions);
   positionsRef.current = positions;
 
-  // Local power ports: small GND/VDD symbols placed near each power pin.
-  // Computed from CURRENT positions (not just ELK) so they follow devices
-  // during drag — otherwise a moved device leaves its power stub behind.
-  const localPorts = useMemo<LocalPowerPort[]>(() => {
-    if (!elkResult) return [];
-    return localPowerPorts(positions, elkResult.sizes, devices, namedNets, table, opts, orientations);
-  }, [elkResult, positions, devices, namedNets, table, opts.gnd, opts.vdd, orientations]);
-
-  // Combined positions: effective (stored + draft) positions for devices/io,
-  // PLUS local power port positions (which live only in the layout, not in
-  // the store). The render loop needs this combined map to place power ports.
-  const combinedPositions = useMemo<Record<string, Point>>(() => {
-    const m: Record<string, Point> = { ...positions };
-    for (const port of localPorts) m[port.key] = port.pos;
-    return m;
-  }, [positions, localPorts]);
-
   // ── Render nodes (defined early — drag/marquee handlers need them) ──
   const nodes: RenderNode[] = useMemo(() => {
     if (!elkResult) return [];
@@ -276,7 +255,7 @@ export function InteractiveAnalogSchematic({
       // result OR a persisted/stored one. Locked devices are excluded from
       // the ELK graph entirely (elkjs can't pin nodes), so they only ever
       // have a stored position; filtering on elkResult would drop them.
-      if (combinedPositions[key] == null) continue;
+      if (positions[key] == null) continue;
       const template = templateForDevice(table, d);
       out.push({
         key,
@@ -287,13 +266,21 @@ export function InteractiveAnalogSchematic({
       });
     }
     for (const p of powers) {
-      // Central power symbols are no longer used — replaced by local
-      // power ports (see below). Keep the loop to avoid unused-var lint.
-      void p;
+      const key = deviceKey(p);
+      if (positions[key] == null) continue;
+      const powerKind: "vcc" | "gnd" = key === (opts.gnd ?? "GND") ? "gnd" : "vcc";
+      out.push({
+        key,
+        kind: "power",
+        template: table.byKey.get(powerKind),
+        size: elkResult.sizes[key] ?? { w: 20, h: 30 },
+        device: p,
+        powerKind,
+      });
     }
     for (const io of ioNets) {
       const key = `io:${io.netId}`;
-      if (combinedPositions[key] == null) continue;
+      if (positions[key] == null) continue;
       out.push({
         key,
         kind: "io",
@@ -303,24 +290,11 @@ export function InteractiveAnalogSchematic({
       });
     }
 
-    // Local power ports: small GND/VDD symbols near each power pin with a
-    // short stub. Replaces the central-symbol approach.
-    for (const port of localPorts) {
-      out.push({
-        key: port.key,
-        kind: "power",
-        template: table.byKey.get(port.kind),
-        size: port.size,
-        powerKind: port.kind,
-        stub: port.stub,
-      });
-    }
-
     // Hierarchy blocks (floorplan regions collapsed into subcircuit
     // rectangles). Rendered as block art + side port labels.
     for (const b of blocks ?? []) {
       const key = `blk:${b.regionId}`;
-      if (combinedPositions[key] == null) continue;
+      if (positions[key] == null) continue;
       const size = elkResult.sizes[key] ?? blockSize(b);
       const blockPorts: NonNullable<RenderNode["blockPorts"]> = blockPortStubs(b, size).map((s) => ({
         terminal: s.terminal,
@@ -332,7 +306,7 @@ export function InteractiveAnalogSchematic({
       out.push({ key, kind: "block", size, blockName: b.name, blockPorts });
     }
     return out;
-  }, [elkResult, combinedPositions, devices, powers, ioNets, localPorts, blocks, table, opts.gnd]);
+  }, [elkResult, positions, devices, powers, ioNets, blocks, table, opts.gnd]);
 
   /** Nets touched by the given node keys. */
   const netsTouched = useCallback(
@@ -1415,7 +1389,7 @@ export function InteractiveAnalogSchematic({
             <DeviceNode
               key={n.key}
               node={n}
-              pos={combinedPositions[n.key] ?? { x: 0, y: 0 }}
+              pos={positions[n.key] ?? { x: 0, y: 0 }}
               selected={selectionSet.has(n.key)}
               isLocked={!!locked[n.key]}
               orient={orientations[n.key]}
@@ -1573,7 +1547,7 @@ const DeviceNode = memo(function DeviceNode({
   /** Double-click a hierarchy block — drill into its region schematic. */
   onOpenBlock?: (regionId: string) => void;
 }) {
-  const { key, template, size, kind, device, label, powerKind, stub, blockName, blockPorts } = node;
+  const { key, template, size, kind, device, label, powerKind, blockName, blockPorts } = node;
   const os = orientedSize(size, orient);
   const rot = orient?.rot ?? 0;
   const flip = orient?.flip ?? "none";
@@ -1647,19 +1621,6 @@ const DeviceNode = memo(function DeviceNode({
           )
         )}
       </g>
-      {/* Local power port stub — short wire from the symbol's connection
-          point to the pin anchor it serves. */}
-      {kind === "power" && stub && stub.length >= 2 && (
-        <polyline
-          points={stub.map((p) => `${p.x},${p.y}`).join(" ")}
-          fill="none"
-          stroke="var(--ink2)"
-          strokeWidth={WIRE_STROKE}
-          strokeLinejoin="round"
-          strokeLinecap="round"
-          pointerEvents="none"
-        />
-      )}
       {/* Hierarchy block name */}
       {kind === "block" && blockName && (
         <text x={size.w / 2} y={size.h / 2} fontSize={10} fill="var(--ink)" textAnchor="middle" fontWeight={600} pointerEvents="none">

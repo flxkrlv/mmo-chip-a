@@ -354,100 +354,28 @@ function devicePorts(d: AnalogDevice, table: SymbolTable): NodePortSpec[] {
 }
 
 /** Synthesized power devices: one VCC + one GND symbol (matches the
- *  static view, which always adds global VDD/GND cells).
- *
- *  Returns EMPTY — the interactive engine uses LOCAL power ports (small
- *  GND/VDD symbols placed near each power pin) instead of routing long
- *  wires to a single central symbol. The central-symbol approach left
- *  some power wires undrawn until the symbol was dragged, and produced
- *  cluttered layouts. Local ports are always drawn and need no long
- *  wires. The central symbols are still created by the STATIC engine. */
+ *  static view, which always adds global VDD/GND cells). */
 export function powerDevices(
   devices: AnalogDevice[],
   namedNets: Map<number, string>,
   opts: AnalogLayoutOptions,
 ): AnalogDevice[] {
-  return [];
-}
-
-/**
- * Local power ports: small GND/VDD symbols placed near each power pin,
- * replacing the central-symbol approach (which left some power wires
- * undrawn until the symbol was dragged). For every device terminal on a
- * GND/VDD net, place a small power symbol a short distance from the pin
- * and return its top-left position + a short wire stub connecting them.
- *
- * Returns:
- *  - positions: top-left position for each local symbol (keyed by
- *    `pwr:<netId>:<deviceKey>:<terminal>`)
- *  - sizes: symbol size per key
- *  - stubs: wire stub polylines (already in world coords) per key
- *  - kinds: "vcc" | "gnd" per key (for template lookup)
- */
-export interface LocalPowerPort {
-  key: string;
-  kind: "vcc" | "gnd";
-  pos: Point;
-  size: { w: number; h: number };
-  stub: Point[]; // short wire from pin anchor to symbol connection
-}
-
-export function localPowerPorts(
-  positions: Record<string, Point>,
-  sizes: Record<string, { w: number; h: number }>,
-  devices: AnalogDevice[],
-  namedNets: Map<number, string>,
-  table: SymbolTable,
-  opts: AnalogLayoutOptions,
-  orientations?: Record<string, DeviceOrientationLike>,
-): LocalPowerPort[] {
   const vdd = opts.vdd ?? "VDD";
   const gnd = opts.gnd ?? "GND";
-  const out: LocalPowerPort[] = [];
-  const pinLookup = terminalPinLookup(devices, [], table, opts);
-  const PORT_OFFSET = 18; // distance from pin anchor to symbol connection
-  const PORT_SIZE = { w: 16, h: 22 };
-
-  for (const d of devices) {
-    const key = deviceKey(d);
-    const devPos = positions[key];
-    if (!devPos) continue;
-    const devSize = sizes[key] ?? { w: 30, h: 40 };
-    const lookup = pinLookup.get(key);
-    const orient = orientations?.[key];
-    for (const term of d.terminals) {
-      if (term.netId < 0) continue;
-      const netName = namedNets.get(term.netId);
-      if (netName !== vdd && netName !== gnd) continue;
-      const kind: "vcc" | "gnd" = netName === gnd ? "gnd" : "vcc";
-      const pin = lookup?.(term.name);
-      if (!pin) continue;
-      const t = transformPin({ dx: pin.dx, dy: pin.dy }, devSize.w, devSize.h, orient);
-      const ax = devPos.x + t.dx;
-      const ay = devPos.y + t.dy;
-      // Place symbol outward from the device center.
-      const cx = devPos.x + devSize.w / 2;
-      const cy = devPos.y + devSize.h / 2;
-      let sx: number, sy: number;
-      if (kind === "gnd") {
-        // GND symbol below the pin.
-        sx = ax - PORT_SIZE.w / 2;
-        sy = ay + PORT_OFFSET - PORT_SIZE.h;
-      } else {
-        // VDD symbol above the pin.
-        sx = ax - PORT_SIZE.w / 2;
-        sy = ay - PORT_OFFSET;
-      }
-      const pkey = `pwr:${term.netId}:${key}:${term.name}`;
-      // Stub: from pin anchor to symbol connection point.
-      const connY = kind === "gnd" ? sy + PORT_SIZE.h : sy;
-      const stub: Point[] = [
-        { x: ax, y: ay },
-        { x: ax, y: (ay + connY) / 2 },
-        { x: sx + PORT_SIZE.w / 2, y: (ay + connY) / 2 },
-        { x: sx + PORT_SIZE.w / 2, y: connY },
-      ];
-      out.push({ key: pkey, kind, pos: { x: sx, y: sy }, size: { ...PORT_SIZE }, stub });
+  const used = new Set<number>();
+  for (const d of devices) for (const t of d.terminals) if (t.netId >= 0) used.add(t.netId);
+  const out: AnalogDevice[] = [];
+  for (const [netId, name] of namedNets) {
+    if (!used.has(netId)) continue;
+    if (name === vdd || name === gnd) {
+      out.push({
+        id: name,
+        kind: "power",
+        instanceName: name,
+        layer: "metal1",
+        bbox: { x: 0, y: 0, width: 1, height: 1 },
+        terminals: [{ name: "PLUS", netId }],
+      } as unknown as AnalogDevice);
     }
   }
   return out;
@@ -739,15 +667,7 @@ async function elkInteractiveLayout(
   const edges: ElkEdge[] = [];
   const edgeNetId = new Map<string, number>();
   let edgeCounter = 0;
-  const vddName = opts.vdd ?? "VDD";
-  const gndName = opts.gnd ?? "GND";
   for (const [netId, members] of netMembers) {
-    const netName = namedNets.get(netId);
-    // Skip power nets — they're served by local power ports, not ELK
-    // edges. Routing them in ELK creates a "bus" that breaks when any
-    // device on the net is dragged (surgical mode re-routes all edges
-    // touching the moved device, destroying the original ELK bus).
-    if (netName === vddName || netName === gndName) continue;
     const portOf = (deviceKey: string, netId: number): string | undefined => {
       const specs = portsByKey.get(deviceKey) ?? [];
       const spec = specs.find((p) => p.netId === netId);
