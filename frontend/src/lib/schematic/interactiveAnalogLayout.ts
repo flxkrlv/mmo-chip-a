@@ -631,7 +631,7 @@ async function elkInteractiveLayout(
       width: size.w,
       height: size.h,
       ports: (portsByKey.get(key) ?? []).map((p, i) => ({
-        id: `${key}:${p.pid}:${i}`,
+        id: `${key}:${p.terminal}:${i}`,
         x: p.x,
         y: p.y,
         width: 0,
@@ -688,7 +688,7 @@ async function elkInteractiveLayout(
       const specs = portsByKey.get(deviceKey) ?? [];
       let spec = specs.find((p) => p.netId === netId && p.terminal === terminal);
       if (!spec) spec = specs.find((p) => p.netId === netId);
-      return spec ? `${deviceKey}:${spec.pid}:${specs.indexOf(spec)}` : undefined;
+      return spec ? `${deviceKey}:${spec.terminal}:${specs.indexOf(spec)}` : undefined;
     };
     const isIoNet = ioNets.some((io) => io.netId === netId);
     const powerDev = powers.find((p) =>
