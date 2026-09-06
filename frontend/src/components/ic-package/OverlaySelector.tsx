@@ -11,7 +11,7 @@ interface OverlaySelectorProps {
  *  base die, which is the typical case for stacked die-layer photos). */
 export function OverlaySelector({ value, onChange }: OverlaySelectorProps) {
   const layers = useOverlayLayers((s) => s.layers);
-  const loaded = layers.filter((l) => l.loaded && !l.hidden);
+  const loaded = layers.filter((l) => l.loaded);
   return (
     <div
       style={{

@@ -1,9 +1,13 @@
+import type { PackagePin } from "shared";
 import type { Layer, TileBounds } from "../types";
 import type { PackageGeom } from "../../lib/ic-package/footprinter";
 
 /** Live inputs read fresh each draw so store changes show without rebuild. */
 export interface PackageLayerInputs {
+  /** Physical bounds (mm) from footprinter — does NOT carry user names. */
   getGeom: () => PackageGeom | null;
+  /** Current pins from the store (with user-edited names). */
+  getPins: () => PackagePin[];
   /** Pixels per millimetre — drives how big the package renders on the die. */
   getPxPerMm: () => number;
   /** Pin number of the user-selected package pin (for highlight), or null. */
@@ -31,7 +35,8 @@ export class PackageOutlineLayer implements Layer {
 
   draw(ctx: CanvasRenderingContext2D, _bounds: TileBounds): void {
     const geom = this.inputs.getGeom();
-    if (!geom) return;
+    const pins = this.inputs.getPins();
+    if (!geom || pins.length === 0) return;
     const px = this.inputs.getPxPerMm();
     const origin = this.opts.getOriginPx?.() ?? { x: 0, y: 0 };
     const sel = this.inputs.getSelectedPin();
@@ -61,7 +66,7 @@ export class PackageOutlineLayer implements Layer {
     // Pin name text is intentionally large so datasheet labels read at a
     // glance, even when many pins are in view.
     const nameFontPx = Math.max(11, Math.min(22, scale * 2.4));
-    for (const pin of geom.pins) {
+    for (const pin of pins) {
       const cx = origin.x + pin.x * px;
       const cy = origin.y + pin.y * px;
       const w = pin.w * px;

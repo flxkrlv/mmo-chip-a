@@ -49,6 +49,7 @@ export function IcPackageToolbar({ onApplyToDieViewer, applyDisabled, right }: T
             cursor: "pointer",
             fontWeight: 600,
             fontSize: 12,
+            justifyContent: "center",
           }}
         >
           {t.icon}
