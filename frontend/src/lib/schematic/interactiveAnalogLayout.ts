@@ -46,6 +46,28 @@ export interface Obstacle {
 export interface WireData {
   polylines: Point[][];
   junctions: Point[];
+  /** Per-edge trace for surgical re-route. When present, only edges
+   *  touching a moved device are re-routed; others stay pixel-identical
+   *  to the ELK pass. Optional — absent → full re-route. */
+  edges?: TracedEdge[];
+}
+
+/** One routed edge of a net: the orthogonal wire connecting two device
+ *  terminals (or a device terminal to a synthetic hub). `fromKey`/`toKey`
+ *  are device keys; `"__hub__"` marks a synthetic N-terminal hub. */
+export interface TracedEdge {
+  id: string;
+  netId: number;
+  fromKey: string;
+  toKey: string;
+  polylines: Point[][];
+}
+
+/** Anchor paired with its device key so local routing can build
+ *  per-edge traces (surgical re-route). */
+export interface AnchorInfo {
+  point: Point;
+  deviceKey: string;
 }
 
 export interface InteractiveLayoutResult {
@@ -89,9 +111,9 @@ export interface AnalogLayoutOptions {
   edgeEdge?: number;
   /** Gap between wire and device (elk.spacing.edgeNode). Undefined → ELK default. */
   edgeNode?: number;
-  /** Merge parallel edges into a single routed wire (rail/bus look). */
-  mergeEdges?: boolean;
-  /** Prefer straight edges over detours (elk.layered.nodePlacement.favorStraightEdges). */
+  /** Prefer straight edges over balanced placement (elk.layered.nodePlacement.favorStraightEdges).
+   *  Always passed explicitly so `false` overrides ELK's orthogonal auto-default
+   *  of true. Default true (best for orthogonal schematic layout). */
   favorStraightEdges?: boolean;
   /** Hierarchy blocks (floorplan regions) collapsed into subcircuit
    *  rectangles. When present they are laid out as `kind:"block"` nodes. */
@@ -730,8 +752,7 @@ async function elkInteractiveLayout(
       "elk.layered.spacing.nodeNodeBetweenLayers": spacingOf(opts.betweenLayers, INTERACTIVE_ELK_DEFAULTS.betweenLayers),
       ...(opts.edgeEdge != null ? { "elk.spacing.edgeEdge": String(opts.edgeEdge) } : {}),
       ...(opts.edgeNode != null ? { "elk.spacing.edgeNode": String(opts.edgeNode) } : {}),
-      ...(opts.mergeEdges ? { "elk.layered.mergeEdges": "true" } : {}),
-      ...(opts.favorStraightEdges ? { "elk.layered.nodePlacement.favorStraightEdges": "true" } : {}),
+      "elk.layered.nodePlacement.favorStraightEdges": String(opts.favorStraightEdges),
     },
     children,
     edges,
@@ -746,6 +767,10 @@ async function elkInteractiveLayout(
 
   // Group routed sections per net → polylines → junctions.
   const byNet = new Map<number, PlacedEdge[]>();
+  // Per-edge endpoint device keys (for surgical re-route). Port ids are
+  // `${deviceKey}:${portName}:${index}` → deviceKey is the prefix.
+  const edgeFromKey = new Map<string, string>();
+  const edgeToKey = new Map<string, string>();
   for (const e of result.edges ?? []) {
     const netId = edgeNetId.get(e.id);
     if (netId == null) continue;
@@ -758,12 +783,22 @@ async function elkInteractiveLayout(
     let list = byNet.get(netId);
     if (!list) byNet.set(netId, (list = []));
     list.push({ id: e.id, polylines, netId });
+    if (e.sources?.[0]) edgeFromKey.set(e.id, String(e.sources[0]).split(":")[0]);
+    if (e.targets?.[0]) edgeToKey.set(e.id, String(e.targets[0]).split(":")[0]);
   }
   const wires = new Map<number, WireData>();
   for (const [netId, placed] of byNet) {
+    const edges: TracedEdge[] = placed.map((p) => ({
+      id: p.id,
+      netId,
+      fromKey: edgeFromKey.get(p.id) ?? "",
+      toKey: edgeToKey.get(p.id) ?? "",
+      polylines: p.polylines,
+    }));
     wires.set(netId, {
       polylines: placed.flatMap((p) => p.polylines),
       junctions: computeJunctions(placed).map((j) => ({ x: j.x, y: j.y })),
+      edges,
     });
   }
 
@@ -854,8 +889,8 @@ export function gridFallback(
     if (!members.some((m) => keySet.has(m.deviceKey))) continue;
     const anchors = members
       .filter((m) => keySet.has(m.deviceKey))
-      .map((m) => anchorWorld(m.deviceKey, positions, lookups.get(m.deviceKey), m.terminal))
-      .filter((p): p is Point => !!p);
+      .map((m) => ({ point: anchorWorld(m.deviceKey, positions, lookups.get(m.deviceKey), m.terminal), deviceKey: m.deviceKey }))
+      .filter((p): p is AnchorInfo => !!p.point);
     if (anchors.length === 0) continue;
     wires.set(netId, routeNetLocal(anchors, obstacles));
   }
@@ -976,8 +1011,8 @@ export function orientedSize(
 
 // ── Local drag-time router ───────────────────────────────────────
 
-const OBSTACLE_MARGIN = 8;
 const OVERLAP_PENALTY = 60;
+const WIRE_PENALTY = 20;
 const BEND_PENALTY = 2;
 
 /**
@@ -999,10 +1034,71 @@ export function deviceObstacle(
   return { x: p.x - WIRE_OBSTACLE_PAD, y: p.y - WIRE_OBSTACLE_PAD, w: os.w + 2 * WIRE_OBSTACLE_PAD, h: os.h + 2 * WIRE_OBSTACLE_PAD };
 }
 
+/**
+ * Uniform-grid occupancy index for wire-wire spacing. Built once per
+ * re-route from the current segments of OTHER nets (the net being routed
+ * is excluded). Cell size = edgeEdge gap; each occupied cell is inflated
+ * to its 8 neighbours so a candidate within `edgeEdge` of an existing wire
+ * scores a proximity penalty.
+ */
+export class WireGrid {
+  private cells = new Set<string>();
+  private cellSize: number;
+
+  constructor(segments: Array<{ a: Point; b: Point }>, gap: number) {
+    this.cellSize = Math.max(gap, 2);
+    for (const seg of segments) this.rasterize(seg.a, seg.b);
+  }
+
+  private key(cx: number, cy: number): string {
+    return `${cx},${cy}`;
+  }
+
+  /** Mark a 3x3 block of cells around each point along the segment. */
+  private rasterize(a: Point, b: Point) {
+    const dist = Math.abs(b.x - a.x) + Math.abs(b.y - a.y);
+    if (dist < 0.001) {
+      this.markCellBlock(a.x, a.y);
+      return;
+    }
+    const steps = Math.max(1, Math.ceil(dist / (this.cellSize / 2)));
+    for (let i = 0; i <= steps; i++) {
+      const t = i / steps;
+      this.markCellBlock(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t);
+    }
+  }
+
+  private markCellBlock(x: number, y: number) {
+    const cx = Math.floor(x / this.cellSize);
+    const cy = Math.floor(y / this.cellSize);
+    for (let dx = -1; dx <= 1; dx++) {
+      for (let dy = -1; dy <= 1; dy++) {
+        this.cells.add(this.key(cx + dx, cy + dy));
+      }
+    }
+  }
+
+  /** Length (px) of segment (a,b) that runs within `edgeEdge` of an
+   *  existing wire. 0 when clear. */
+  proximityLength(a: Point, b: Point): number {
+    const dist = Math.abs(b.x - a.x) + Math.abs(b.y - a.y);
+    if (dist < 0.001) return 0;
+    const steps = Math.max(1, Math.ceil(dist / (this.cellSize / 2)));
+    let occupied = 0;
+    for (let i = 0; i <= steps; i++) {
+      const t = i / steps;
+      const x = a.x + (b.x - a.x) * t;
+      const y = a.y + (b.y - a.y) * t;
+      if (this.cells.has(this.key(Math.floor(x / this.cellSize), Math.floor(y / this.cellSize)))) occupied++;
+    }
+    return (occupied / (steps + 1)) * dist;
+  }
+}
+
 /** Segment length inside an expanded rect (0 if no overlap). */
-function segmentRectOverlap(a: Point, b: Point, r: Obstacle): number {
-  const rx0 = r.x - OBSTACLE_MARGIN, ry0 = r.y - OBSTACLE_MARGIN;
-  const rx1 = r.x + r.w + OBSTACLE_MARGIN, ry1 = r.y + r.h + OBSTACLE_MARGIN;
+function segmentRectOverlap(a: Point, b: Point, r: Obstacle, margin: number): number {
+  const rx0 = r.x - margin, ry0 = r.y - margin;
+  const rx1 = r.x + r.w + margin, ry1 = r.y + r.h + margin;
   if (Math.abs(a.y - b.y) < 0.001) {
     // horizontal
     if (a.y <= ry0 || a.y >= ry1) return 0;
@@ -1018,12 +1114,13 @@ function segmentRectOverlap(a: Point, b: Point, r: Obstacle): number {
   return 0;
 }
 
-function scorePath(path: Point[], obstacles: Obstacle[]): number {
+function scorePath(path: Point[], obstacles: Obstacle[], edgeNode: number, wireGrid?: WireGrid): number {
   let score = 0;
   for (let i = 1; i < path.length; i++) {
     const a = path[i - 1], b = path[i];
     score += Math.abs(b.x - a.x) + Math.abs(b.y - a.y);
-    for (const o of obstacles) score += OVERLAP_PENALTY * segmentRectOverlap(a, b, o);
+    for (const o of obstacles) score += OVERLAP_PENALTY * segmentRectOverlap(a, b, o, edgeNode);
+    if (wireGrid) score += WIRE_PENALTY * wireGrid.proximityLength(a, b);
   }
   score += BEND_PENALTY * Math.max(0, path.length - 2);
   return score;
@@ -1051,7 +1148,7 @@ function candidatePaths(a: Point, b: Point): Point[][] {
   return cands;
 }
 
-function bestPath(a: Point, b: Point, obstacles: Obstacle[]): Point[] {
+function bestPath(a: Point, b: Point, obstacles: Obstacle[], edgeNode: number, wireGrid?: WireGrid): Point[] {
   const cands = candidatePaths(a, b);
   // Obstacle-aware detour rails: when the plain L/Z candidates all cut
   // through a nearby device, offer above/below/left/right corridors.
@@ -1062,7 +1159,7 @@ function bestPath(a: Point, b: Point, obstacles: Obstacle[]): Point[] {
   for (const o of obstacles) {
     if (detours >= 8) break;
     if (o.x > x1 + 24 || o.x + o.w < x0 - 24 || o.y > y1 + 24 || o.y + o.h < y0 - 24) continue;
-    const m = OBSTACLE_MARGIN + 4;
+    const m = edgeNode + 4;
     cands.push([a, { x: a.x, y: o.y - m }, { x: b.x, y: o.y - m }, b]);
     cands.push([a, { x: a.x, y: o.y + o.h + m }, { x: b.x, y: o.y + o.h + m }, b]);
     cands.push([a, { x: o.x - m, y: a.y }, { x: o.x - m, y: b.y }, b]);
@@ -1072,7 +1169,7 @@ function bestPath(a: Point, b: Point, obstacles: Obstacle[]): Point[] {
   let best = cands[0];
   let bestScore = Infinity;
   for (const c of cands) {
-    const s = scorePath(c, obstacles);
+    const s = scorePath(c, obstacles, edgeNode, wireGrid);
     if (s < bestScore) {
       bestScore = s;
       best = c;
@@ -1087,21 +1184,49 @@ function median(values: number[]): number {
   return v.length % 2 ? v[m] : (v[m - 1] + v[m]) / 2;
 }
 
+/** Options for local drag-time routing — wire-device and wire-wire gaps. */
+export interface LocalRouteOptions {
+  /** Wire-to-device gap (replaces the old hardcoded OBSTACLE_MARGIN).
+   *  Default 12 (ELK default edgeNode). */
+  edgeNode?: number;
+  /** Wire-to-wire gap. Default 10 (ELK default edgeEdge). */
+  edgeEdge?: number;
+  /** Pre-built occupancy grid of other nets' segments (built by caller). */
+  wireGrid?: WireGrid;
+}
+
 /**
  * Re-route ONE net locally (drag-time). Two terminals → best L/Z
  * candidate; N terminals → median hub + L/Z spokes, junction at hub.
  * Deterministic; never runs ELK.
+ *
+ * Returns `edges` (per-edge trace) so the caller can do surgical
+ * re-route on the result — only spokes touching a moved device need
+ * re-routing; the rest stay pixel-identical.
  */
-export function routeNetLocal(anchors: Point[], obstacles: Obstacle[]): WireData {
+export function routeNetLocal(anchors: AnchorInfo[], obstacles: Obstacle[], options?: LocalRouteOptions): WireData {
+  const edgeNode = options?.edgeNode ?? 12;
+  const wireGrid = options?.wireGrid;
   const pts = anchors.filter(
-    (p, i, arr) => arr.findIndex((q) => Math.abs(q.x - p.x) < 0.5 && Math.abs(q.y - p.y) < 0.5) === i,
+    (p, i, arr) => arr.findIndex((q) => Math.abs(q.point.x - p.point.x) < 0.5 && Math.abs(q.point.y - p.point.y) < 0.5) === i,
   );
-  if (pts.length === 0) return { polylines: [], junctions: [] };
-  if (pts.length === 1) return { polylines: [], junctions: [] };
+  if (pts.length === 0) return { polylines: [], junctions: [], edges: [] };
+  if (pts.length === 1) return { polylines: [], junctions: [], edges: [] };
   if (pts.length === 2) {
-    return { polylines: [bestPath(pts[0], pts[1], obstacles)], junctions: [] };
+    const polylines = [bestPath(pts[0].point, pts[1].point, obstacles, edgeNode, wireGrid)];
+    return {
+      polylines,
+      junctions: [],
+      edges: [{ id: `${pts[0].deviceKey}-${pts[1].deviceKey}`, netId: -1, fromKey: pts[0].deviceKey, toKey: pts[1].deviceKey, polylines }],
+    };
   }
-  const hub = { x: median(pts.map((p) => p.x)), y: median(pts.map((p) => p.y)) };
-  const polylines = pts.map((p) => bestPath(p, hub, obstacles));
-  return { polylines, junctions: [hub] };
+  const hub = { x: median(pts.map((p) => p.point.x)), y: median(pts.map((p) => p.point.y)) };
+  const edges: TracedEdge[] = pts.map((p) => ({
+    id: `${p.deviceKey}-hub`,
+    netId: -1,
+    fromKey: p.deviceKey,
+    toKey: "__hub__",
+    polylines: [bestPath(p.point, hub, obstacles, edgeNode, wireGrid)],
+  }));
+  return { polylines: edges.flatMap((e) => e.polylines), junctions: [hub], edges };
 }

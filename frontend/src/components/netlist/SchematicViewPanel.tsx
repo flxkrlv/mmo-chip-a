@@ -74,11 +74,11 @@ export function SchematicViewPanel({
   const betweenLayers = usePreferences((s) => s.netlistBetweenLayers);
   const edgeEdge = usePreferences((s) => s.netlistEdgeEdge);
   const edgeNode = usePreferences((s) => s.netlistEdgeNode);
-  const mergeEdges = usePreferences((s) => s.netlistMergeEdges);
   const favorStraightEdges = usePreferences((s) => s.netlistFavorStraightEdges);
   const showIoPins = usePreferences((s) => s.netlistShowIoPins);
   const showHierarchy = usePreferences((s) => s.netlistShowHierarchy);
   const showLegacyStatic = usePreferences((s) => s.netlistShowLegacyStatic);
+  const dragMode = usePreferences((s) => s.netlistDragMode);
   const {
     setNetlistLayoutStrategy: setLayoutStrategy,
     setNetlistLayoutDirection: setLayoutDirection,
@@ -87,11 +87,11 @@ export function SchematicViewPanel({
     setNetlistBetweenLayers: setBetweenLayers,
     setNetlistEdgeEdge: setEdgeEdge,
     setNetlistEdgeNode: setEdgeNode,
-    setNetlistMergeEdges: setMergeEdges,
     setNetlistFavorStraightEdges: setFavorStraightEdges,
     setNetlistShowIoPins: setShowIoPins,
     setNetlistShowHierarchy: setShowHierarchy,
     setNetlistShowLegacyStatic: setShowLegacyStatic,
+    setNetlistDragMode: setDragMode,
   } = usePreferences.getState();
 
   const n2sRef = useRef<Netlist2SvgHandle>(null);
@@ -717,8 +717,8 @@ useEffect(() => {
               betweenLayers={betweenLayers}
               edgeEdge={edgeEdge}
               edgeNode={edgeNode}
-              mergeEdges={mergeEdges}
               favorStraightEdges={favorStraightEdges}
+              dragMode={dragMode}
               blocks={hierarchyBlocks}
               onOpenBlock={handleOpenBlock}
             />
@@ -748,8 +748,6 @@ useEffect(() => {
         setEdgeEdge={setEdgeEdge}
         edgeNode={edgeNode}
         setEdgeNode={setEdgeNode}
-        mergeEdges={mergeEdges}
-        setMergeEdges={setMergeEdges}
         favorStraightEdges={favorStraightEdges}
         setFavorStraightEdges={setFavorStraightEdges}
         showIoPins={showIoPins}
@@ -758,6 +756,8 @@ useEffect(() => {
         setShowHierarchy={setShowHierarchy}
         showLegacyStatic={showLegacyStatic}
         setShowLegacyStatic={setShowLegacyStatic}
+        dragMode={dragMode}
+        setDragMode={setDragMode}
       />
     </div>
   );
