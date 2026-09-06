@@ -677,9 +677,13 @@ async function elkInteractiveLayout(
     // Look up the ELK port id for a (device, net, terminal). A device can
     // have multiple terminals on the same net (e.g. NMOS S+B on GND), so we
     // must match by terminal name — not just take the first port on the net.
+    // Fallback: if terminal-specific match fails (e.g. port created with
+    // different terminal name), match by netId alone. This ensures power
+    // symbols (single terminal "PLUS") always get their port found.
     const portOf = (deviceKey: string, netId: number, terminal: string): string | undefined => {
       const specs = portsByKey.get(deviceKey) ?? [];
-      const spec = specs.find((p) => p.netId === netId && p.terminal === terminal);
+      let spec = specs.find((p) => p.netId === netId && p.terminal === terminal);
+      if (!spec) spec = specs.find((p) => p.netId === netId);
       return spec ? `${deviceKey}:${spec.pid}:${specs.indexOf(spec)}` : undefined;
     };
     const isIoNet = ioNets.some((io) => io.netId === netId);
