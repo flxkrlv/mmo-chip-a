@@ -1037,7 +1037,7 @@ export function orientedSize(
 // ── Local drag-time router ───────────────────────────────────────
 
 const OVERLAP_PENALTY = 60;
-const WIRE_PENALTY = 20;
+const WIRE_PENALTY = 200;
 const BEND_PENALTY = 2;
 
 /**
@@ -1119,34 +1119,6 @@ export class WireGrid {
     }
     return (occupied / (steps + 1)) * dist;
   }
-
-  /** True if segment (a,b) passes through any occupied cell (hard check). */
-  collides(a: Point, b: Point): boolean {
-    const dist = Math.abs(b.x - a.x) + Math.abs(b.y - a.y);
-    if (dist < 0.001) {
-      return this.cells.has(this.key(Math.floor(a.x / this.cellSize), Math.floor(a.y / this.cellSize)));
-    }
-    const steps = Math.max(1, Math.ceil(dist / (this.cellSize / 2)));
-    for (let i = 0; i <= steps; i++) {
-      const t = i / steps;
-      const x = a.x + (b.x - a.x) * t;
-      const y = a.y + (b.y - a.y) * t;
-      if (this.cells.has(this.key(Math.floor(x / this.cellSize), Math.floor(y / this.cellSize)))) return true;
-    }
-    return false;
-  }
-}
-
-/** Snap a coordinate to the nearest multiple of `grid`. grid≤0 → unchanged. */
-function snap(v: number, grid: number): number {
-  if (grid <= 0) return v;
-  return Math.round(v / grid) * grid;
-}
-
-/** Snap a point to the grid (for discrete channel routing). */
-function snapPt(p: Point, grid: number): Point {
-  if (grid <= 0) return p;
-  return { x: snap(p.x, grid), y: snap(p.y, grid) };
 }
 
 /** Segment length inside an expanded rect (0 if no overlap). */
@@ -1203,75 +1175,33 @@ function candidatePaths(a: Point, b: Point): Point[][] {
 }
 
 function bestPath(a: Point, b: Point, obstacles: Obstacle[], edgeNode: number, wireGrid?: WireGrid): Point[] {
-  // Snap anchors to the wire grid so all vertices lie on discrete channels
-  // (multiples of edgeEdge) — wires can only exist ON grid lines, never
-  // between them. This enforces hard min spacing between different nets.
-  const grid = wireGrid ? wireGrid.cellSize : 0;
-  const sa = grid > 0 ? snapPt(a, grid) : a;
-  const sb = grid > 0 ? snapPt(b, grid) : b;
-  const cands = candidatePaths(sa, sb);
+  const cands = candidatePaths(a, b);
   // Obstacle-aware detour rails: when the plain L/Z candidates all cut
   // through a nearby device, offer above/below/left/right corridors.
   // Corridor filter keeps the candidate count bounded during drag.
-  const x0 = Math.min(sa.x, sb.x), x1 = Math.max(sa.x, sb.x);
-  const y0 = Math.min(sa.y, sb.y), y1 = Math.max(sa.y, sb.y);
+  const x0 = Math.min(a.x, b.x), x1 = Math.max(a.x, b.x);
+  const y0 = Math.min(a.y, b.y), y1 = Math.max(a.y, b.y);
   let detours = 0;
   for (const o of obstacles) {
     if (detours >= 8) break;
     if (o.x > x1 + 24 || o.x + o.w < x0 - 24 || o.y > y1 + 24 || o.y + o.h < y0 - 24) continue;
-    const m = snap(edgeNode + 4, grid > 0 ? grid : 1);
-    cands.push([sa, { x: sa.x, y: snap(o.y - m, grid) }, { x: sb.x, y: snap(o.y - m, grid) }, sb]);
-    cands.push([sa, { x: sa.x, y: snap(o.y + o.h + m, grid) }, { x: sb.x, y: snap(o.y + o.h + m, grid) }, sb]);
-    cands.push([sa, { x: snap(o.x - m, grid), y: sa.y }, { x: snap(o.x - m, grid), y: sb.y }, sb]);
-    cands.push([sa, { x: snap(o.x + o.w + m, grid), y: sa.y }, { x: snap(o.x + o.w + m, grid), y: sb.y }, sb]);
+    const m = edgeNode + 4;
+    cands.push([a, { x: a.x, y: o.y - m }, { x: b.x, y: o.y - m }, b]);
+    cands.push([a, { x: a.x, y: o.y + o.h + m }, { x: b.x, y: o.y + o.h + m }, b]);
+    cands.push([a, { x: o.x - m, y: a.y }, { x: o.x - m, y: b.y }, b]);
+    cands.push([a, { x: o.x + o.w + m, y: a.y }, { x: o.x + o.w + m, y: b.y }, b]);
     detours++;
   }
-  // Wire-aware detours: if existing candidates collide with occupied cells,
-  // add corridors that go around the occupied band (one grid cell further).
-  if (wireGrid) {
-    const band = grid > 0 ? grid : 10;
-    for (const o of obstacles.slice(0, 4)) {
-      const m = band;
-      const ys = [snap(o.y - m, grid), snap(o.y + o.h + m, grid)];
-      const xs = [snap(o.x - m, grid), snap(o.x + o.w + m, grid)];
-      for (const ry of ys) {
-        cands.push([sa, { x: sa.x, y: ry }, { x: sb.x, y: ry }, sb]);
-      }
-      for (const rx of xs) {
-        cands.push([sa, { x: rx, y: sa.y }, { x: rx, y: sb.y }, sb]);
-      }
-    }
-  }
-  // Two-pass scoring: prefer candidates that do NOT collide with occupied
-  // cells (hard constraint). Only if EVERY candidate collides do we fall
-  // back to the least-bad (fewest collisions).
-  let best: Point[] | undefined;
+  let best = cands[0];
   let bestScore = Infinity;
-  let bestCollide = Infinity;
-  let bestCollideScore = Infinity;
   for (const c of cands) {
-    const collisions = wireGrid ? countCollisions(c, wireGrid) : 0;
     const s = scorePath(c, obstacles, edgeNode, wireGrid);
-    if (collisions === 0 && s < bestScore) {
+    if (s < bestScore) {
       bestScore = s;
       best = c;
     }
-    if (collisions < bestCollide || (collisions === bestCollide && s < bestCollideScore)) {
-      bestCollide = collisions;
-      bestCollideScore = s;
-      if (!best) best = c;
-    }
   }
-  return best ?? cands[0];
-}
-
-/** Count how many segments of a path collide with occupied grid cells. */
-function countCollisions(path: Point[], wireGrid: WireGrid): number {
-  let n = 0;
-  for (let i = 1; i < path.length; i++) {
-    if (wireGrid.collides(path[i - 1], path[i])) n++;
-  }
-  return n;
+  return best;
 }
 
 function median(values: number[]): number {

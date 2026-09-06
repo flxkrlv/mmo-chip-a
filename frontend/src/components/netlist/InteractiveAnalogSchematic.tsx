@@ -872,7 +872,17 @@ export function InteractiveAnalogSchematic({
       }
       const d = dragRef.current;
       if (!d) return;
-      if (d.raf) cancelAnimationFrame(d.raf);
+      // Flush any pending pointermove before canceling the rAF — otherwise a
+      // fast click-drag-release leaves the wires unrouted at the final
+      // position (device appears visually disconnected).
+      if (d.raf) {
+        cancelAnimationFrame(d.raf);
+        d.raf = 0;
+        if (d.pending) {
+          applyDragPosition(d.pending);
+          d.pending = null;
+        }
+      }
       dragRef.current = null;
       setLiveDragMode(null);
       svgRef.current?.releasePointerCapture(e.pointerId);
@@ -1061,9 +1071,12 @@ export function InteractiveAnalogSchematic({
       }
       const fill = el.getAttribute("fill");
       if (fill) {
-        // white fill -> none (hollow symbols); resolve vars/transparent -> none
-        if (/^#fff|transparent/i.test(fill) || fill.startsWith("var(")) {
+        // white/transparent/var -> none (hollow symbols); but var(--ink2)
+        // (wire/junction color) must stay visible -> black.
+        if (/^#fff|transparent/i.test(fill)) {
           el.setAttribute("fill", "none");
+        } else if (fill.startsWith("var(")) {
+          el.setAttribute("fill", "#000000");
         }
       }
     };
