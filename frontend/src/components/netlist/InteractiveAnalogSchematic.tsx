@@ -390,8 +390,15 @@ export function InteractiveAnalogSchematic({
           // If any edge fails to compute an anchor (missing pin lookup,
           // etc.), fall back to full re-route for this net.
           let failed = false;
+          // DEBUG: log surgical re-route for power nets
+          const netName = namedNets.get(netId);
+          if (netName === "GND" || netName === "VDD" || netName === "VSS" || netName === "VCC") {
+            console.log(`[surgical-power] net ${netId} (${netName}): edges=${wd.edges?.length ?? 0}, movedKeys=${movedKeys.join(",")}`);
+            console.log(`[surgical-power]   edges:`, (wd.edges ?? []).map((e) => `${e.fromKey}→${e.toKey}`).join(", "));
+          }
           const newEdges = wd.edges.map((edge) => {
-            if (!movedSet.has(edge.fromKey) && !movedSet.has(edge.toKey)) return edge;
+            const incident = movedSet.has(edge.fromKey) || movedSet.has(edge.toKey);
+            if (!incident) return edge;
             // Use the terminal name stored on the edge (from the ELK port
             // id) — correct even when a device has multiple terminals on
             // the same net (e.g. PNP base+collector in a current mirror).

@@ -693,6 +693,17 @@ async function elkInteractiveLayout(
 
     // Role of each routable member (has a port for this terminal, not locked).
     const routable = members.filter((m) => !opts.excludeKeys?.has(m.deviceKey) && !!portOf(m.deviceKey, netId, m.terminal));
+    // DEBUG: log GND net routing
+    if (namedNets.get(netId) === (opts.gnd ?? "GND") || namedNets.get(netId) === (opts.vdd ?? "VDD")) {
+      console.log(`[ELK-power] net ${netId} (${namedNets.get(netId)}): members=${members.length}, routable=${routable.length}, powerDev=${powerDev?.instanceName ?? "none"}`);
+      console.log(`[ELK-power]   members:`, members.map((m) => `${m.deviceKey}/${m.terminal}`).join(", "));
+      console.log(`[ELK-power]   routable:`, routable.map((m) => `${m.deviceKey}/${m.terminal}`).join(", "));
+      if (powerDev) {
+        const pk = deviceKey(powerDev);
+        console.log(`[ELK-power]   powerDev portsByKey:`, (portsByKey.get(pk) ?? []).map((p) => `pid=${p.pid} net=${p.netId} term=${p.terminal}`).join(", "));
+        console.log(`[ELK-power]   portOf powerDev:`, portOf(pk, netId, "PLUS"));
+      }
+    }
     if (routable.length < 2) continue; // nothing to wire
 
     const roleOf = (m: { deviceKey: string; device: AnalogDevice; terminal: string }): PortRole => {
