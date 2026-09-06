@@ -391,12 +391,6 @@ export function InteractiveAnalogSchematic({
           // If any edge fails to compute an anchor (missing pin lookup,
           // etc.), fall back to full re-route for this net.
           let failed = false;
-          // DEBUG: log surgical re-route for power nets
-          const netName = namedNets.get(netId);
-          if (netName === "GND" || netName === "VDD" || netName === "VSS" || netName === "VCC") {
-            console.log(`[surgical-power] net ${netId} (${netName}): edges=${wd.edges?.length ?? 0}, movedKeys=${movedKeys.join(",")}`);
-            console.log(`[surgical-power]   edges:`, (wd.edges ?? []).map((e) => `${e.fromKey}→${e.toKey}`).join(", "));
-          }
           const newEdges = wd.edges.map((edge) => {
             const incident = movedSet.has(edge.fromKey) || movedSet.has(edge.toKey);
             if (!incident) return edge;
@@ -412,9 +406,6 @@ export function InteractiveAnalogSchematic({
               toAnchor = computeAnchor(edge.toKey, edge.toTerminal, pos);
             }
             if (!fromAnchor || !toAnchor) {
-              if (netName === "GND" || netName === "VDD" || netName === "VSS" || netName === "VCC") {
-                console.log(`[surgical-fail] edge ${edge.fromKey}/${edge.fromTerminal}→${edge.toKey}/${edge.toTerminal}: fromAnchor=${fromAnchor ? "ok" : "undefined"}, toAnchor=${toAnchor ? "ok" : "undefined"}`);
-              }
               failed = true;
               return edge;
             }

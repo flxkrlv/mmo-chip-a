@@ -697,17 +697,6 @@ async function elkInteractiveLayout(
 
     // Role of each routable member (has a port for this terminal, not locked).
     const routable = members.filter((m) => !opts.excludeKeys?.has(m.deviceKey) && !!portOf(m.deviceKey, netId, m.terminal));
-    // DEBUG: log GND net routing
-    if (namedNets.get(netId) === (opts.gnd ?? "GND") || namedNets.get(netId) === (opts.vdd ?? "VDD")) {
-      console.log(`[ELK-power] net ${netId} (${namedNets.get(netId)}): members=${members.length}, routable=${routable.length}, powerDev=${powerDev?.instanceName ?? "none"}`);
-      console.log(`[ELK-power]   members:`, members.map((m) => `${m.deviceKey}/${m.terminal}`).join(", "));
-      console.log(`[ELK-power]   routable:`, routable.map((m) => `${m.deviceKey}/${m.terminal}`).join(", "));
-      if (powerDev) {
-        const pk = deviceKey(powerDev);
-        console.log(`[ELK-power]   powerDev portsByKey:`, (portsByKey.get(pk) ?? []).map((p) => `pid=${p.pid} net=${p.netId} term=${p.terminal}`).join(", "));
-        console.log(`[ELK-power]   portOf powerDev:`, portOf(pk, netId, "PLUS"));
-      }
-    }
     if (routable.length < 2) continue; // nothing to wire
 
     const roleOf = (m: { deviceKey: string; device: AnalogDevice; terminal: string }): PortRole => {
@@ -777,26 +766,12 @@ async function elkInteractiveLayout(
 
     const srcPort = portOf(drivers[0].deviceKey, netId, drivers[0].terminal);
     if (!srcPort) continue;
-    // DEBUG: log power net edge creation
-    if (namedNets.get(netId) === (opts.gnd ?? "GND") || namedNets.get(netId) === (opts.vdd ?? "VDD")) {
-      console.log(`[ELK-edges] net ${netId}: drivers=${drivers.map((d) => d.deviceKey + "/" + d.terminal).join(",")}, consumers=${consumers.length}`);
-    }
     for (const driver of drivers) {
       const dsrc = portOf(driver.deviceKey, netId, driver.terminal);
-      if (!dsrc) {
-        if (namedNets.get(netId) === (opts.gnd ?? "GND") || namedNets.get(netId) === (opts.vdd ?? "VDD")) {
-          console.log(`[ELK-edges]   driver ${driver.deviceKey}/${driver.terminal}: portOf=undefined, specs=${(portsByKey.get(driver.deviceKey) ?? []).map((p) => `pid=${p.pid}net=${p.netId}t=${p.terminal}`).join(";")}`);
-        }
-        continue;
-      }
+      if (!dsrc) continue;
       for (const c of consumers) {
         const dstPort = portOf(c.deviceKey, netId, c.terminal);
-        if (!dstPort) {
-          if (namedNets.get(netId) === (opts.gnd ?? "GND") || namedNets.get(netId) === (opts.vdd ?? "VDD")) {
-            console.log(`[ELK-edges]   consumer ${c.deviceKey}/${c.terminal}: portOf=undefined, specs=${(portsByKey.get(c.deviceKey) ?? []).map((p) => `pid=${p.pid}net=${p.netId}t=${p.terminal}`).join(";")}`);
-          }
-          continue;
-        }
+        if (!dstPort) continue;
         const id = `e${edgeCounter++}`;
         edges.push({ id, sources: [dsrc], targets: [dstPort] });
         edgeNetId.set(id, netId);
@@ -884,13 +859,6 @@ async function elkInteractiveLayout(
       const { key, term } = deviceKeyFromPort(e.targets[0]);
       edgeToKey.set(e.id, key);
       edgeToTerm.set(e.id, term);
-    }
-  }
-  // DEBUG: log ALL power nets edge summary
-  for (const [netId, placed] of byNet) {
-    const name = namedNets.get(netId) ?? "?";
-    if (name === "GND" || name === "VDD" || name === "VSS" || name === "VCC") {
-      console.log(`[ELK-summary] power net ${netId} (${name}): ${placed.length} edges: ${placed.map((p) => `${edgeFromKey.get(p.id)}→${edgeToKey.get(p.id)}`).join(", ")}`);
     }
   }
   const wires = new Map<number, WireData>();
