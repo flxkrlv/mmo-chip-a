@@ -363,21 +363,27 @@ export function InteractiveAnalogSchematic({
           return deviceObstacle(p, size, orientations[key]);
         });
       // Build wire-grid from OTHER nets' segments so the local router
-      // keeps `edgeEdge` clearance between wires (ELK parity).
+      // keeps `edgeEdge` clearance between wires (ELK parity). The grid
+      // is built INCREMENTALLY: after each net is routed, its segments
+      // are added so subsequent nets avoid it. Without this, two nets
+      // re-routed in the same call would share an empty grid and overlap.
       const reRouted = new Set(netIds);
-      const otherSegments: Array<{ a: Point; b: Point }> = [];
+      const gridSegments: Array<{ a: Point; b: Point }> = [];
       for (const [nid, wd] of base) {
         if (reRouted.has(nid)) continue;
         for (const poly of wd.polylines) {
-          for (let i = 1; i < poly.length; i++) otherSegments.push({ a: poly[i - 1], b: poly[i] });
+          for (let i = 1; i < poly.length; i++) gridSegments.push({ a: poly[i - 1], b: poly[i] });
         }
       }
-      const wireGrid = otherSegments.length > 0 ? new WireGrid(otherSegments, edgeEdge ?? 10) : undefined;
-      const opts = { edgeNode: edgeNode ?? 12, edgeEdge: edgeEdge ?? 10, wireGrid };
+      const edgeGap = edgeEdge ?? 10;
+      const opts = { edgeNode: edgeNode ?? 12, edgeEdge: edgeGap };
       const movedSet = new Set(movedKeys);
       for (const netId of netIds) {
         const wd = base.get(netId);
         if (!wd) continue;
+        // Build a fresh grid for this net: other nets + already-routed nets.
+        const wireGrid = gridSegments.length > 0 ? new WireGrid(gridSegments, edgeGap) : undefined;
+        const netOpts = { ...opts, wireGrid };
         if (mode === "surgical" && wd.edges && wd.edges.length > 0) {
           // Surgical: only re-route edges touching a moved device.
           const members = netIndex.get(netId);
@@ -399,13 +405,18 @@ export function InteractiveAnalogSchematic({
             const routed = routeNetLocal(
               [{ point: fromAnchor, deviceKey: edge.fromKey }, { point: toAnchor, deviceKey: edge.toKey }],
               obstacles,
-              opts,
+              netOpts,
             );
             return { ...edge, polylines: (routed.edges ?? [])[0]?.polylines ?? edge.polylines };
           });
           const placed = newEdges.map((e) => ({ id: e.id, netId, polylines: e.polylines }));
           const junctions = computeJunctions(placed);
-          next.set(netId, { polylines: newEdges.flatMap((e) => e.polylines), junctions, edges: newEdges });
+          const newWd = { polylines: newEdges.flatMap((e) => e.polylines), junctions, edges: newEdges };
+          next.set(netId, newWd);
+          // Add this net's routed segments to the grid for subsequent nets.
+          for (const poly of newWd.polylines) {
+            for (let i = 1; i < poly.length; i++) gridSegments.push({ a: poly[i - 1], b: poly[i] });
+          }
         } else {
           // Full re-route: old hub-spoke behavior (routeNetLocal).
           const members = netIndex.get(netId);
@@ -416,7 +427,12 @@ export function InteractiveAnalogSchematic({
               return a ? { point: a, deviceKey: m.deviceKey } : undefined;
             })
             .filter((a): a is { point: Point; deviceKey: string } => !!a);
-          next.set(netId, routeNetLocal(anchors, obstacles, opts));
+          const newWd = routeNetLocal(anchors, obstacles, netOpts);
+          next.set(netId, newWd);
+          // Add this net's routed segments to the grid for subsequent nets.
+          for (const poly of newWd.polylines) {
+            for (let i = 1; i < poly.length; i++) gridSegments.push({ a: poly[i - 1], b: poly[i] });
+          }
         }
       }
       return next;
@@ -680,6 +696,8 @@ export function InteractiveAnalogSchematic({
   const [netTooltip, setNetTooltip] = useState<{ text: string; x: number; y: number } | null>(null);
   /** World-space marquee rect while dragging empty area with Shift. */
   const [marquee, setMarquee] = useState<{ x0: number; y0: number; x1: number; y1: number } | null>(null);
+  /** Effective drag mode shown in the status bar while a drag is active. */
+  const [liveDragMode, setLiveDragMode] = useState<"surgical" | "full" | null>(null);
 
   /** All selectable render keys (devices only — power/io aren't draggable). */
   const deviceKeys = useMemo(() => devices.map((d) => deviceKey(d)), [devices]);
@@ -695,6 +713,8 @@ export function InteractiveAnalogSchematic({
     sx: number; sy: number;
     grabDX: number; grabDY: number;
     moved: boolean;
+    /** Shift held at pointerdown — full re-route + click toggles selection. */
+    shiftHeld: boolean;
     netIds: number[];
     raf: number;
     pending: Point | null;
@@ -706,21 +726,17 @@ export function InteractiveAnalogSchematic({
       e.stopPropagation();
       const key = node.key;
       const lockedNow = locked[key];
+      const shiftHeld = e.shiftKey;
 
-      // Shift+click: toggle membership, no drag.
-      if (e.shiftKey) {
-        setSelection((cur) => {
-          const set = new Set(cur);
-          if (set.has(key)) set.delete(key); else set.add(key);
-          return [...set];
-        });
-        return;
-      }
       // Plain click on a NOT-yet-selected device → narrow to it.
-      if (!selectionSet.has(key)) {
+      if (!selectionSet.has(key) && !shiftHeld) {
         setSelection([key]);
       }
-      if (lockedNow) return; // locked devices don't move
+      if (lockedNow && !shiftHeld) return; // locked devices don't move (unless shift-toggling)
+
+      // Shift+click (no drag) toggles selection — handled in endPointer.
+      // Start the drag regardless of Shift so Shift+drag works.
+      if (lockedNow) return;
 
       svgRef.current?.setPointerCapture(e.pointerId);
       const p = worldFromEvent(e, view, svgRef.current);
@@ -739,6 +755,7 @@ export function InteractiveAnalogSchematic({
         grabDX: p.x - (positions[grabKey]?.x ?? 0),
         grabDY: p.y - (positions[grabKey]?.y ?? 0),
         moved: false,
+        shiftHeld,
         netIds: netsTouched(group),
         raf: 0,
         pending: null,
@@ -768,6 +785,7 @@ export function InteractiveAnalogSchematic({
       // Shift overrides to full re-route for this gesture; otherwise use the
       // persisted dragMode preference.
       const mode: "surgical" | "full" = shiftRef.current ? "full" : dragMode;
+      setLiveDragMode(mode);
       setWires((prev) => rerouteNets(prev, d.netIds, posNow, undefined, mode, d.keys));
     },
     [store, scopeKey, rerouteNets, dragMode],
@@ -836,6 +854,7 @@ export function InteractiveAnalogSchematic({
       if (!d) return;
       if (d.raf) cancelAnimationFrame(d.raf);
       dragRef.current = null;
+      setLiveDragMode(null);
       svgRef.current?.releasePointerCapture(e.pointerId);
       store.getState().dragEnd();
       // A plain click (no drag) on a device keeps/narrows the selection.
@@ -1366,11 +1385,17 @@ export function InteractiveAnalogSchematic({
 
       {/* Status line */}
       <div style={{ position: "absolute", bottom: 6, left: 6, zIndex: 1, fontSize: 10, color: "var(--ink3)", pointerEvents: "none" }}>
-        {hoverNet != null && namedNets.get(hoverNet)
-          ? `net: ${namedNets.get(hoverNet)}`
-          : blocks && blocks.length > 0
-            ? `${devices.length} devices · ${blocks.length} blocks · right-click a block to open it`
-            : `${devices.length} devices · drag to move · ctrl+wheel to zoom`}
+        {liveDragMode
+          ? (
+            <span style={{ color: liveDragMode === "full" ? "var(--warn)" : "var(--ink2)" }}>
+              {liveDragMode === "full" ? "Full re-route (Shift)" : "Surgical drag"} · hold Shift to toggle
+            </span>
+          )
+          : hoverNet != null && namedNets.get(hoverNet)
+            ? `net: ${namedNets.get(hoverNet)}`
+            : blocks && blocks.length > 0
+              ? `${devices.length} devices · ${blocks.length} blocks · right-click a block to open it`
+              : `${devices.length} devices · drag to move · ${dragMode === "surgical" ? "surgical" : "full"} re-route · hold Shift to toggle · ctrl+wheel to zoom`}
       </div>
 
       {/* Wire net-name tooltip (floats with the cursor) */}
