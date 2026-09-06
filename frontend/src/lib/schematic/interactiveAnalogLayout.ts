@@ -739,7 +739,15 @@ async function elkInteractiveLayout(
   const edges: ElkEdge[] = [];
   const edgeNetId = new Map<string, number>();
   let edgeCounter = 0;
+  const vddName = opts.vdd ?? "VDD";
+  const gndName = opts.gnd ?? "GND";
   for (const [netId, members] of netMembers) {
+    const netName = namedNets.get(netId);
+    // Skip power nets — they're served by local power ports, not ELK
+    // edges. Routing them in ELK creates a "bus" that breaks when any
+    // device on the net is dragged (surgical mode re-routes all edges
+    // touching the moved device, destroying the original ELK bus).
+    if (netName === vddName || netName === gndName) continue;
     const portOf = (deviceKey: string, netId: number): string | undefined => {
       const specs = portsByKey.get(deviceKey) ?? [];
       const spec = specs.find((p) => p.netId === netId);
