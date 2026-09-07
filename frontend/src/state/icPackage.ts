@@ -6,7 +6,7 @@ import type {
   PackagePin,
   WireBond,
 } from "shared";
-import { loadPackageGeom, PACKAGE_PRESETS } from "../lib/ic-package/footprinter";
+import { loadPackageGeom, PACKAGE_PRESETS, getAllPackagePresets } from "../lib/ic-package/footprinter";
 import { DEFAULT_DIE_TRANSFORM } from "../lib/ic-package/transform";
 
 /** Editor tool modes in the IC Package view. */
@@ -62,7 +62,7 @@ export const useIcPackageStore = create<IcPackageState>((set, get) => {
     tool: "pan",
     selectedPinNumber: null,
     hoveredPadId: null,
-    presets: PACKAGE_PRESETS,
+    presets: getAllPackagePresets(),
 
     loadFromAnnotations: (ann) => {
       const cfg = ann?.icPackage;

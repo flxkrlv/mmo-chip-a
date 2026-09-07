@@ -42,6 +42,77 @@ export const PACKAGE_PRESETS = [
   { value: "qfp128", label: "QFP-128" },
 ] as const;
 
+/**
+ * Common pin counts for IC-style families in @tscircuit/footprinter.  Combined
+ * with the family name these become descriptors like "soic8", "qfn32",
+ * "bga256".  Generated once (and validated against the real geometry) into
+ * the full selector list.
+ */
+const IC_FAMILY_PIN_COUNTS: Record<string, number[]> = {
+  soic: [2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 24, 28, 32],
+  sop8: [8], sop16: [16], sop20: [20], sop28: [28], sop32: [32],
+  ssop: [14, 16, 20, 24, 28, 48, 56],
+  tssop: [8, 14, 16, 20, 24, 28, 38, 48, 56],
+  msop: [8, 10, 12, 16],
+  vssop: [8],
+  qfp: [32, 44, 48, 52, 64, 80, 100, 128, 144, 160, 176, 208],
+  lqfp: [32, 44, 48, 64, 80, 100, 128, 144, 160, 176],
+  tqfp: [32, 44, 48, 64, 80, 100, 128, 144],
+  qfn: [8, 12, 16, 20, 24, 28, 32, 36, 40, 44, 48, 52, 56, 64],
+  mlp: [20, 32],
+  vson: [4, 6, 8],
+  wson: [6, 8, 12],
+  son: [4, 6, 8],
+  dfn: [2, 3, 4, 6, 8, 10, 12],
+  lga: [4, 6, 8, 12, 16, 24],
+  bga: [16, 25, 36, 49, 64, 100, 121, 144, 169, 196, 225, 256, 289, 324, 361, 400],
+  dip: [6, 8, 14, 16, 18, 20, 24, 28, 32, 40, 48],
+  quad: [16, 24, 32, 48, 64],
+  sot: [3, 4, 5, 6, 8],
+  sot23: [3], sot23w: [3], sot25: [5], sot89: [4], sot143: [4],
+  sot223: [4], sot323: [3], sot343: [4], sot363: [6], sot457: [5],
+  sot563: [6], sot723: [3], sot886: [8], sot963: [8],
+  ms012: [8], ms013: [16],
+};
+
+/** Turn "soic8" → "SOIC-8", "bga256" → "BGA-256". */
+function autoLabel(descriptor: string): string {
+  const m = descriptor.match(/^([a-z0-9]+?)(\d+)$/);
+  if (m) return `${m[1].toUpperCase()}-${m[2]}`;
+  return descriptor.toUpperCase();
+}
+
+let fullPresetsCache: { value: string; label: string }[] | null = null;
+
+/**
+ * Full selector list: the curated common footprints first, then every
+ * IC-family × pin-count combination that @tscircuit/footprinter can actually
+ * generate (validated against the real geometry).  Cached after first call.
+ */
+export function getAllPackagePresets(): { value: string; label: string }[] {
+  if (fullPresetsCache) return fullPresetsCache;
+  const seen = new Set<string>(PACKAGE_PRESETS.map((p) => p.value));
+  const rest: { value: string; label: string }[] = [];
+  for (const [family, counts] of Object.entries(IC_FAMILY_PIN_COUNTS)) {
+    for (const n of counts) {
+      const value = `${family}${n}`;
+      if (seen.has(value)) continue;
+      try {
+        const geom = loadPackageGeom(value);
+        if (geom.pins.length >= 2) {
+          seen.add(value);
+          rest.push({ value, label: autoLabel(value) });
+        }
+      } catch {
+        // Not a valid descriptor for this pin count — skip.
+      }
+    }
+  }
+  rest.sort((a, b) => a.label.localeCompare(b.label));
+  fullPresetsCache = [...PACKAGE_PRESETS, ...rest];
+  return fullPresetsCache;
+}
+
 export interface PackageGeom {
   pins: PackagePin[];
   /** Bounding box of the package in mm (min/max x/y around pin positions,

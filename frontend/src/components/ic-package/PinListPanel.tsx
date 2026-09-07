@@ -1,8 +1,9 @@
 import { useState } from "react";
+import type { IOPin } from "shared";
 import { useIcPackageStore } from "../../state/icPackage";
 
 /** Right-panel list of package pins with inline name editing. */
-export function PinListPanel() {
+export function PinListPanel({ pads }: { pads: IOPin[] }) {
   const pins = useIcPackageStore((s) => s.pins);
   const bonds = useIcPackageStore((s) => s.bonds);
   const tool = useIcPackageStore((s) => s.tool);
@@ -11,6 +12,9 @@ export function PinListPanel() {
   const removePinName = useIcPackageStore((s) => s.removePinName);
   const selectPin = useIcPackageStore((s) => s.selectPin);
   const removeBond = useIcPackageStore((s) => s.removeBond);
+
+  // Die viewer-style numbering: pad id → "#<pin>".
+  const padNumber = new Map(pads.map((p) => [p.id, p.pin]));
 
   const [editing, setEditing] = useState<number | null>(null);
   const [draft, setDraft] = useState("");
@@ -100,7 +104,7 @@ export function PinListPanel() {
                             }}
                             style={{ cursor: "pointer", color: "var(--accent)" }}
                           >
-                            {b.diePadId.slice(0, 8)} ✕
+                            #{padNumber.get(b.diePadId) ?? b.diePadId.slice(0, 8)} ✕
                           </span>
                         ))}
                       </div>

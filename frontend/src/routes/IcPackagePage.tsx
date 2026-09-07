@@ -297,7 +297,7 @@ function IcPackageView({ dieId }: { dieId: string }) {
       : null;
 
   return (
-    <AppShell meta="IC Package" savedAgo={saveStatus === "saved" ? "saved" : saveStatus === "saving" ? "saving…" : saveStatus === "error" ? "save failed" : undefined}>
+    <AppShell meta="Pin planner" savedAgo={saveStatus === "saved" ? "saved" : saveStatus === "saving" ? "saving…" : saveStatus === "error" ? "save failed" : undefined}>
       <IcPackageToolbar onApplyToDieViewer={applyToDieViewer} applyDisabled={applyDisabled}
         right={<OverlaySelector value={bgOverlayId} onChange={changeBgOverlay} />} />
       <div style={{ flex: "1 1 auto", display: "flex", minHeight: 0 }}>
@@ -395,7 +395,7 @@ function IcPackageView({ dieId }: { dieId: string }) {
             <div style={{ width: 260, flex: "0 0 auto", borderLeft: "1px solid var(--l2)", background: "var(--card)", display: "flex", flexDirection: "column", padding: 8, gap: 8, overflowY: "auto" }}>
               <PackageSelector />
               <DieTransformPanel />
-              <PinListPanel />
+              <PinListPanel pads={scaledPads} />
             </div>
           </>
         )}

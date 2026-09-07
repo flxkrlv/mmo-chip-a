@@ -234,6 +234,12 @@ export function IcPackageCanvas({
 
     const markDirty = () => { dirty = true; };
     canvas.addEventListener("redraw", markDirty);
+    // rAF is throttled/suspended while the tab is hidden; when we come back
+    // the canvas may have been cleared and dirty is false, so nothing
+    // repaints until an interaction. Redraw as soon as the page is visible.
+    const onVisibility = () => { if (document.visibilityState === "visible") markDirty(); };
+    document.addEventListener("visibilitychange", onVisibility);
+    window.addEventListener("focus", markDirty);
 
     const draw = () => {
       rafId = requestAnimationFrame(draw);
@@ -282,6 +288,8 @@ export function IcPackageCanvas({
     return () => {
       cancelAnimationFrame(rafId);
       canvas.removeEventListener("redraw", markDirty);
+      document.removeEventListener("visibilitychange", onVisibility);
+      window.removeEventListener("focus", markDirty);
     };
   }, [dieImage, imgW, imgH, transform, pxPerMm, packageOrigin, geom, pins, pads, bonds, bondedPadIds, hoveredPadId, selectedPinNumber]);
 

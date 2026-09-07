@@ -10,7 +10,7 @@ export function PackageSelector() {
   return (
     <div className="panel" style={{ padding: "8px 10px" }}>
       <div style={{ fontSize: 11, fontWeight: 600, marginBottom: 6 }}>
-        IC Package
+        Package
       </div>
       <select
         value={footprint}

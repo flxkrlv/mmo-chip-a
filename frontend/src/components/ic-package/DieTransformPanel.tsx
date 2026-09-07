@@ -17,7 +17,7 @@ export function DieTransformPanel() {
         {[0, 90, 180, 270].map((deg) => (
           <button
             key={deg}
-            className={`chip${transform.rotationDeg === deg ? " active" : ""}`}
+            className={`chip${transform.rotationDeg === deg ? " on" : ""}`}
             onClick={() => setRotation(deg)}
             style={{ fontSize: 10, padding: "2px 6px" }}
           >
@@ -28,14 +28,14 @@ export function DieTransformPanel() {
       <div style={{ display: "flex", alignItems: "center", gap: 4, marginBottom: 6 }}>
         <span style={{ fontSize: 11, color: "var(--ink3)", width: 36 }}>Mirror</span>
         <button
-          className={`chip${transform.mirrorX ? " active" : ""}`}
+          className={`chip${transform.mirrorX ? " on" : ""}`}
           onClick={toggleMirrorX}
           style={{ fontSize: 10, padding: "2px 6px" }}
         >
           X
         </button>
         <button
-          className={`chip${transform.mirrorY ? " active" : ""}`}
+          className={`chip${transform.mirrorY ? " on" : ""}`}
           onClick={toggleMirrorY}
           style={{ fontSize: 10, padding: "2px 6px" }}
         >
