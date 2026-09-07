@@ -107,7 +107,7 @@ export function IcPackageToolbar({ onApplyToDieViewer, applyDisabled, onExportPn
         style={{ width: 52, fontSize: 11, padding: "2px 4px" }}
         title="Bond wire thickness in µm (default 15)"
       />
-      <span className="u" style={{ fontSize: 10, color: "var(--ink3)" }}>µm</span>
+      <span className="u" style={{ fontSize: 10, color: "var(--ink3)", fontFamily: "var(--font)" }}>µm</span>
       <div style={{ flex: 1 }} />
       {right}
     </div>
