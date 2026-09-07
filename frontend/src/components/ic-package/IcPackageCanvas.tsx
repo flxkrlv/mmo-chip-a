@@ -20,6 +20,8 @@ export interface IcPackageCanvasProps {
   hoveredPadId: string | null;
   selectedPinNumber: number | null;
   tool: "pan" | "name" | "bond";
+  /** Bond wire thickness in µm. */
+  bondWireWidthUm?: number;
   onViewportChange?: (vp: Viewport) => void;
   onPadHover?: (id: string | null) => void;
   onPinClick?: (num: number) => void;
@@ -40,7 +42,7 @@ const PAD_HIT_R = 40;
 export function IcPackageCanvas({
   dieImage, imgW, imgH, transform, pxPerMm, packageOrigin,
   geom, pins, pads, bonds, bondedPadIds, hoveredPadId,
-  selectedPinNumber, tool, onViewportChange, onPadHover, onPinClick, onPadClick,
+  selectedPinNumber, tool, bondWireWidthUm, onViewportChange, onPadHover, onPinClick, onPadClick,
 }: IcPackageCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -281,7 +283,7 @@ export function IcPackageCanvas({
       drawPadMarkers(ctx, pads, imgW, imgH, transform, bondedPadIds, hoveredPadId, vp.zoom * dpr);
 
       // Wire bonds.
-      drawBonds(ctx, bonds, pins, pads, imgW, imgH, transform, pxPerMm, packageOrigin, vp.zoom * dpr);
+      drawBonds(ctx, bonds, pins, pads, imgW, imgH, transform, pxPerMm, packageOrigin, vp.zoom * dpr, bondWireWidthUm);
     };
 
     rafId = requestAnimationFrame(draw);
@@ -291,7 +293,7 @@ export function IcPackageCanvas({
       document.removeEventListener("visibilitychange", onVisibility);
       window.removeEventListener("focus", markDirty);
     };
-  }, [dieImage, imgW, imgH, transform, pxPerMm, packageOrigin, geom, pins, pads, bonds, bondedPadIds, hoveredPadId, selectedPinNumber]);
+  }, [dieImage, imgW, imgH, transform, pxPerMm, packageOrigin, geom, pins, pads, bonds, bondedPadIds, hoveredPadId, selectedPinNumber, bondWireWidthUm]);
 
   return (
     <div ref={containerRef} style={{ flex: "1 1 auto", position: "relative", minWidth: 0, background: BG }}>
@@ -424,13 +426,16 @@ export function drawBonds(
   pins: PackagePin[], pads: IOPin[],
   imgW: number, imgH: number, t: DieTransform,
   pxPerMm: number, origin: { x: number; y: number }, scale: number,
-  light?: boolean,
+  wireWidthUm?: number, light?: boolean,
 ) {
   const pinMap = new Map(pins.map((p) => [p.number, p]));
   const padMap = new Map(pads.map((p) => [p.id, p]));
   ctx.save();
+  ctx.lineCap = "round";
   ctx.strokeStyle = light ? "rgba(0,110,210,0.9)" : "rgba(0,180,220,0.9)";
-  ctx.lineWidth = 1.5 / scale;
+  // Physical wire thickness in world units: µm → mm → world px.
+  const wireWorld = ((wireWidthUm ?? 30) / 1000) * pxPerMm;
+  ctx.lineWidth = Math.max(1.5 / scale, wireWorld);
   for (const b of bonds) {
     const pin = pinMap.get(b.pinNumber);
     const pad = padMap.get(b.diePadId);

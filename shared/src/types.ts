@@ -1702,4 +1702,6 @@ export interface IcPackageConfig {
   pins: PackagePin[];
   bonds: WireBond[];
   transform: DieTransform;
+  /** Bond wire thickness in micrometres (0.03 mm = 30 µm default). */
+  bondWireWidthUm?: number;
 }

@@ -19,6 +19,9 @@ interface IcPackageState {
   bonds: WireBond[];
   transform: DieTransform;
 
+  /** Bond wire thickness in µm (0.03 mm = 30 µm default). */
+  bondWireWidthUm: number;
+
   /** Active editor tool. */
   tool: IcPackageTool;
 
@@ -45,6 +48,7 @@ interface IcPackageState {
   toggleMirrorX: () => void;
   toggleMirrorY: () => void;
   resetTransform: () => void;
+  setBondWireWidthUm: (um: number) => void;
 
   /** Serialise to persist in DieAnnotations.icPackage. */
   toConfig: () => IcPackageConfig;
@@ -63,6 +67,7 @@ export const useIcPackageStore = create<IcPackageState>((set, get) => {
     selectedPinNumber: null,
     hoveredPadId: null,
     presets: getAllPackagePresets(),
+    bondWireWidthUm: 30,
 
     loadFromAnnotations: (ann) => {
       const cfg = ann?.icPackage;
@@ -73,6 +78,7 @@ export const useIcPackageStore = create<IcPackageState>((set, get) => {
           pins: geom.pins,
           bonds: [],
           transform: { ...DEFAULT_DIE_TRANSFORM },
+          bondWireWidthUm: 30,
         });
         return;
       }
@@ -91,6 +97,7 @@ export const useIcPackageStore = create<IcPackageState>((set, get) => {
         pins,
         bonds: cfg.bonds,
         transform: cfg.transform,
+        bondWireWidthUm: cfg.bondWireWidthUm ?? 30,
       });
     },
 
@@ -149,9 +156,14 @@ export const useIcPackageStore = create<IcPackageState>((set, get) => {
 
     resetTransform: () => set({ transform: { ...DEFAULT_DIE_TRANSFORM } }),
 
+    setBondWireWidthUm: (um) => {
+      const clamped = Math.max(5, Math.min(200, Math.round(um)));
+      set({ bondWireWidthUm: clamped });
+    },
+
     toConfig: () => {
-      const { footprint, pins, bonds, transform } = get();
-      return { footprint, pins, bonds, transform };
+      const { footprint, pins, bonds, transform, bondWireWidthUm } = get();
+      return { footprint, pins, bonds, transform, bondWireWidthUm };
     },
   };
 });

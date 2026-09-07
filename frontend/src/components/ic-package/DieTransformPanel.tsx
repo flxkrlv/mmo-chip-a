@@ -6,6 +6,8 @@ export function DieTransformPanel() {
   const toggleMirrorX = useIcPackageStore((s) => s.toggleMirrorX);
   const toggleMirrorY = useIcPackageStore((s) => s.toggleMirrorY);
   const resetTransform = useIcPackageStore((s) => s.resetTransform);
+  const bondWireWidthUm = useIcPackageStore((s) => s.bondWireWidthUm);
+  const setBondWireWidthUm = useIcPackageStore((s) => s.setBondWireWidthUm);
 
   return (
     <div className="panel" style={{ padding: "8px 10px" }}>
@@ -49,6 +51,19 @@ export function DieTransformPanel() {
         >
           ↺
         </button>
+      </div>
+      <div style={{ display: "flex", alignItems: "center", gap: 4, marginTop: 2 }}>
+        <span style={{ fontSize: 11, color: "var(--ink3)" }}>Wire</span>
+        <input
+          type="number"
+          min={5}
+          max={200}
+          value={bondWireWidthUm}
+          onChange={(e) => setBondWireWidthUm(Number(e.target.value))}
+          style={{ width: 56, fontSize: 11, padding: "2px 4px" }}
+          title="Bond wire thickness in µm (0.03 mm = 30 µm default)"
+        />
+        <span style={{ fontSize: 10, color: "var(--ink3)" }}>µm</span>
       </div>
     </div>
   );

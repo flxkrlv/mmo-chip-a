@@ -191,6 +191,7 @@ function IcPackageView({ dieId }: { dieId: string }) {
   const addBond = useIcPackageStore((s) => s.addBond);
   const namePin = useIcPackageStore((s) => s.namePin);
   const removePinName = useIcPackageStore((s) => s.removePinName);
+  const bondWireWidthUm = useIcPackageStore((s) => s.bondWireWidthUm);
 
   const geom = useMemo(() => {
     try { return loadPackageGeom(footprint); } catch { return null; }
@@ -305,8 +306,9 @@ function IcPackageView({ dieId }: { dieId: string }) {
       pads: scaledPads,
       bonds,
       bondedPadIds,
+      bondWireWidthUm,
     });
-  }, [dieImage, dieImageSize.w, dieImageSize.h, transform, pxPerMm, packageOrigin, geom, pins, scaledPads, bonds, bondedPadIds]);
+  }, [dieImage, dieImageSize.w, dieImageSize.h, transform, pxPerMm, packageOrigin, geom, pins, scaledPads, bonds, bondedPadIds, bondWireWidthUm]);
 
   const exportCsv = useCallback(() => {
     exportPinTableCsv(buildPinTable(pins, bonds, annotations?.pins ?? []));
@@ -347,6 +349,7 @@ function IcPackageView({ dieId }: { dieId: string }) {
                 hoveredPadId={hoveredPadId}
                 selectedPinNumber={selectedPinNumber}
                 tool={tool}
+                bondWireWidthUm={bondWireWidthUm}
                 onViewportChange={(vp) => setViewport(vp)}
                 onPadHover={setHoveredPad}
                 onPinClick={(num) => {

@@ -16,6 +16,8 @@ export interface ExportScene {
   pads: IOPin[];
   bonds: WireBond[];
   bondedPadIds: Set<string>;
+  /** Bond wire thickness in µm. */
+  bondWireWidthUm?: number;
   /** Max edge of the export bitmap in px. */
   maxEdge?: number;
 }
@@ -28,6 +30,7 @@ export function exportPinPlannerPng(scene: ExportScene): void {
   const { dieImage, imgW, imgH, transform, pxPerMm, packageOrigin, geom, pins, pads, bonds, bondedPadIds } = scene;
   const maxEdge = scene.maxEdge ?? 1800;
   const light = true;
+  const wireWidthUm = scene.bondWireWidthUm;
 
   // Scene bbox in world coords: rotated image corners + package outline.
   const cx = imgW / 2, cy = imgH / 2;
@@ -86,7 +89,7 @@ export function exportPinPlannerPng(scene: ExportScene): void {
     drawPackageOutline(ctx, geom, pins, packageOrigin, pxPerMm, null, scale, light);
   }
   drawPadMarkers(ctx, pads, imgW, imgH, transform, bondedPadIds, null, scale, light);
-  drawBonds(ctx, bonds, pins, pads, imgW, imgH, transform, pxPerMm, packageOrigin, scale, light);
+  drawBonds(ctx, bonds, pins, pads, imgW, imgH, transform, pxPerMm, packageOrigin, scale, wireWidthUm, light);
 
   const url = canvas.toDataURL("image/png");
   triggerDownload(url, "pin-planner.png");
