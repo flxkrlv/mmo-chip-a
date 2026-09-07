@@ -268,7 +268,7 @@ export function IcPackageCanvas({
 
       // Package outline.
       if (geom) {
-        drawPackageOutline(ctx, geom, packageOrigin, pxPerMm, selectedPinNumber, vp.zoom * dpr);
+        drawPackageOutline(ctx, geom, pins, packageOrigin, pxPerMm, selectedPinNumber, vp.zoom * dpr);
       }
 
       // Die pad markers.
@@ -296,6 +296,7 @@ export function IcPackageCanvas({
 
 function drawPackageOutline(
   ctx: CanvasRenderingContext2D, geom: PackageGeom,
+  pins: PackagePin[],
   origin: { x: number; y: number }, pxPerMm: number,
   selectedPin: number | null, scale: number,
 ) {
@@ -311,7 +312,7 @@ function drawPackageOutline(
   ctx.stroke();
   ctx.restore();
 
-  for (const pin of geom.pins) {
+  for (const pin of pins) {
     const cx = ox + pin.x * pxPerMm;
     const cy = oy + pin.y * pxPerMm;
     const w = pin.w * pxPerMm;
