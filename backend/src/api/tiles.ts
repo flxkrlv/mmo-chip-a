@@ -236,5 +236,24 @@ export function createTilesRouter(config: {
     }
   });
 
+  // Serve the full-resolution original die image for the IC Package view.
+  // Returns the original uploaded file (or the highest-res tile if the
+  // original is not browser-compatible).
+  router.get("/api/dies/:dieId/image", async (request, response, next) => {
+    try {
+      const { dieId } = request.params;
+      assertSafeId(dieId);
+      const originalDir = path.join(config.dataRoot, "dies", dieId, "original");
+      const files = await fs.readdir(originalDir);
+      if (files.length === 0) {
+        response.status(404).json({ error: "Image not found" });
+        return;
+      }
+      response.sendFile(path.join(originalDir, files[0]));
+    } catch (error) {
+      next(error);
+    }
+  });
+
   return router;
 }

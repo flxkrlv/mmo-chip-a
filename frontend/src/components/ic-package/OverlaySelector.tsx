@@ -11,7 +11,10 @@ interface OverlaySelectorProps {
  *  base die, which is the typical case for stacked die-layer photos). */
 export function OverlaySelector({ value, onChange }: OverlaySelectorProps) {
   const layers = useOverlayLayers((s) => s.layers);
-  const loaded = layers.filter((l) => l.loaded);
+  // Show every overlay that can serve an image: tiled sources resolve via the
+  // manifest `/original` route even before tiles are built; legacy ones carry
+  // a decoded HTMLImageElement.
+  const available = layers.filter((l) => (l.source && !l.source.legacy) || l.image);
   return (
     <div
       style={{
@@ -31,7 +34,7 @@ export function OverlaySelector({ value, onChange }: OverlaySelectorProps) {
         title="Background image for the package alignment view"
       >
         <option value="">Base die image</option>
-        {loaded.map((l) => (
+        {available.map((l) => (
           <option key={l.id} value={l.id}>
             {l.name}
           </option>
