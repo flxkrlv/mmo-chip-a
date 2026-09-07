@@ -254,7 +254,7 @@ function IcPackageView({ dieId }: { dieId: string }) {
     const t = window.setTimeout(() => void save(), 600);
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [bonds, transform, footprint, pins.map((p) => p.name).join("|")]);
+  }, [bonds, transform, footprint, bondWireWidthUm, pins.map((p) => p.name).join("|")]);
 
   // ── Apply to Die Viewer pins ────────────────────────────────────
   const applyToDieViewer = useCallback(async () => {

@@ -67,7 +67,7 @@ export const useIcPackageStore = create<IcPackageState>((set, get) => {
     selectedPinNumber: null,
     hoveredPadId: null,
     presets: getAllPackagePresets(),
-    bondWireWidthUm: 30,
+    bondWireWidthUm: 15,
 
     loadFromAnnotations: (ann) => {
       const cfg = ann?.icPackage;
@@ -78,7 +78,7 @@ export const useIcPackageStore = create<IcPackageState>((set, get) => {
           pins: geom.pins,
           bonds: [],
           transform: { ...DEFAULT_DIE_TRANSFORM },
-          bondWireWidthUm: 30,
+          bondWireWidthUm: 15,
         });
         return;
       }
@@ -97,7 +97,7 @@ export const useIcPackageStore = create<IcPackageState>((set, get) => {
         pins,
         bonds: cfg.bonds,
         transform: cfg.transform,
-        bondWireWidthUm: cfg.bondWireWidthUm ?? 30,
+        bondWireWidthUm: cfg.bondWireWidthUm ?? 15,
       });
     },
 
@@ -157,8 +157,7 @@ export const useIcPackageStore = create<IcPackageState>((set, get) => {
     resetTransform: () => set({ transform: { ...DEFAULT_DIE_TRANSFORM } }),
 
     setBondWireWidthUm: (um) => {
-      const clamped = Math.max(5, Math.min(200, Math.round(um)));
-      set({ bondWireWidthUm: clamped });
+      set({ bondWireWidthUm: Number.isFinite(um) && um >= 1 ? Math.round(um) : 15 });
     },
 
     toConfig: () => {

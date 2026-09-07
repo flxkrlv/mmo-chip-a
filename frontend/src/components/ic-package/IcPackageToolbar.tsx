@@ -24,6 +24,8 @@ const TOOLS: Array<{ kind: IcPackageTool; icon: string; label: string }> = [
 export function IcPackageToolbar({ onApplyToDieViewer, applyDisabled, onExportPng, onExportCsv, right }: ToolbarProps) {
   const tool = useIcPackageStore((s) => s.tool);
   const setTool = useIcPackageStore((s) => s.setTool);
+  const bondWireWidthUm = useIcPackageStore((s) => s.bondWireWidthUm);
+  const setBondWireWidthUm = useIcPackageStore((s) => s.setBondWireWidthUm);
   return (
     <div
       style={{
@@ -93,6 +95,19 @@ export function IcPackageToolbar({ onApplyToDieViewer, applyDisabled, onExportPn
       >
         Export pins (CSV)
       </button>
+      <ToolDivider />
+      <label className="u" style={{ fontSize: 10, color: "var(--ink3)", marginLeft: 4 }}>
+        wire
+      </label>
+      <input
+        type="number"
+        min={1}
+        value={bondWireWidthUm}
+        onChange={(e) => setBondWireWidthUm(Number(e.target.value))}
+        style={{ width: 52, fontSize: 11, padding: "2px 4px" }}
+        title="Bond wire thickness in µm (default 15)"
+      />
+      <span className="u" style={{ fontSize: 10, color: "var(--ink3)" }}>µm</span>
       <div style={{ flex: 1 }} />
       {right}
     </div>
