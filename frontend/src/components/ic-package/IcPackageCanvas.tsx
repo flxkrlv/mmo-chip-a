@@ -361,7 +361,10 @@ function drawPackageOutline(
     // thin, e.g. QFP/QFN side pins) get the text rotated to read along the
     // pad instead of spilling sideways.
     if (pin.name) {
-      const nfs = Math.max(2, pin.h * pxPerMm * 0.35);
+      // Base the size on the pad's SHORT axis: for a horizontal pad that is
+      // pin.h, for a tall vertical pad it is pin.w. Using "height" alone
+      // ballooned vertical-pin text because their h is the long dimension.
+      const nfs = Math.max(2, Math.min(pin.w, pin.h) * pxPerMm * 0.35);
       const vertical = pin.h > pin.w;
       ctx.save();
       ctx.translate(cx, cy);
