@@ -48,6 +48,11 @@ function IcPackageView({ dieId }: { dieId: string }) {
   const [viewportVersion, setViewportVersion] = useState(0);
   const [bgOverlayId, setBgOverlayId] = useState<string | null>(null);
   const [imageLoading, setImageLoading] = useState(false);
+  /** Pin being renamed via the inline canvas overlay. */
+  const [editingPinNumber, setEditingPinNumber] = useState<number | null>(null);
+  const [editDraft, setEditDraft] = useState("");
+  /** Latest viewport so the inline input can track a pin's screen position. */
+  const [viewport, setViewport] = useState<{ ox: number; oy: number; zoom: number }>({ ox: 0, oy: 0, zoom: 1 });
 
   // Load die image as a single static image (not tiled).
   const [dieImage, setDieImage] = useState<HTMLImageElement | null>(null);
@@ -263,34 +268,94 @@ function IcPackageView({ dieId }: { dieId: string }) {
           </div>
         ) : (
           <>
-            <IcPackageCanvas
-              dieImage={dieImage}
-              imgW={dieImageSize.w}
-              imgH={dieImageSize.h}
-              transform={transform}
-              pxPerMm={pxPerMm}
-              packageOrigin={packageOrigin}
-              geom={geom}
-              pins={pins}
-              pads={scaledPads}
-              bonds={bonds}
-              bondedPadIds={bondedPadIds}
-              hoveredPadId={hoveredPadId}
-              selectedPinNumber={selectedPinNumber}
-              tool={tool}
-              onViewportChange={() => setViewportVersion((v) => v + 1)}
-              onPadHover={setHoveredPad}
-              onPinClick={(num) => {
-                if (tool === "bond") {
-                  selectPin(selectedPinNumber === num ? null : num);
-                }
-              }}
-              onPadClick={(padId) => {
-                if (tool === "bond" && selectedPinNumber != null) {
-                  addBond(selectedPinNumber, padId);
-                }
-              }}
-            />
+            <div style={{ position: "relative", flex: "1 1 auto", minWidth: 0, display: "flex" }}>
+              <IcPackageCanvas
+                dieImage={dieImage}
+                imgW={dieImageSize.w}
+                imgH={dieImageSize.h}
+                transform={transform}
+                pxPerMm={pxPerMm}
+                packageOrigin={packageOrigin}
+                geom={geom}
+                pins={pins}
+                pads={scaledPads}
+                bonds={bonds}
+                bondedPadIds={bondedPadIds}
+                hoveredPadId={hoveredPadId}
+                selectedPinNumber={selectedPinNumber}
+                tool={tool}
+                onViewportChange={(vp) => {
+                  setViewportVersion((v) => v + 1);
+                  setViewport(vp);
+                }}
+                onPadHover={setHoveredPad}
+                onPinClick={(num) => {
+                  if (tool === "name") {
+                    const pin = pins.find((p) => p.number === num);
+                    setEditDraft(pin?.name ?? "");
+                    setEditingPinNumber(num);
+                  } else if (tool === "bond") {
+                    selectPin(selectedPinNumber === num ? null : num);
+                  }
+                }}
+                onPadClick={(padId) => {
+                  if (tool === "bond" && selectedPinNumber != null) {
+                    addBond(selectedPinNumber, padId);
+                  }
+                }}
+              />
+              {editingPinNumber != null && tool === "name" && (() => {
+                const pin = pins.find((p) => p.number === editingPinNumber);
+                if (!pin) return null;
+                const wx = packageOrigin.x + pin.x * pxPerMm;
+                const wy = packageOrigin.y + pin.y * pxPerMm;
+                const left = (wx - viewport.ox) * viewport.zoom;
+                const top = (wy - viewport.oy) * viewport.zoom;
+                if (left < -160 || top < -40 || left > 2000 || top > 2000) return null;
+                return (
+                  <input
+                    autoFocus
+                    value={editDraft}
+                    onChange={(e) => setEditDraft(e.target.value)}
+                    onFocus={(e) => e.target.select()}
+                    onBlur={() => {
+                      const name = editDraft.trim();
+                      if (name) namePin(pin.number, name);
+                      else removePinName(pin.number);
+                      setEditingPinNumber(null);
+                      setEditDraft("");
+                    }}
+                    onKeyDown={(e) => {
+                      e.stopPropagation();
+                      if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+                      if (e.key === "Escape") {
+                        setEditingPinNumber(null);
+                        setEditDraft("");
+                        (e.target as HTMLInputElement).blur();
+                      }
+                    }}
+                    style={{
+                      position: "absolute",
+                      left: left + 8,
+                      top: top - 20,
+                      zIndex: 20,
+                      minWidth: 96,
+                      fontFamily: "ui-monospace, monospace",
+                      fontSize: 13,
+                      padding: "3px 7px",
+                      background: "var(--card)",
+                      color: "var(--ink)",
+                      border: "1px solid var(--accent)",
+                      borderRadius: 3,
+                      outline: "none",
+                      boxShadow: "0 2px 10px rgba(0,0,0,0.5)",
+                    }}
+                    placeholder={`pin ${pin.number} name`}
+                    title="Enter saves, Esc cancels"
+                  />
+                );
+              })()}
+            </div>
             <div style={{ width: 260, flex: "0 0 auto", borderLeft: "1px solid var(--l2)", background: "var(--card)", display: "flex", flexDirection: "column", padding: 8, gap: 8, overflowY: "auto" }}>
               <PackageSelector />
               <DieTransformPanel />

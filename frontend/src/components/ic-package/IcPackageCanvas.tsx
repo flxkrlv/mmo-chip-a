@@ -20,7 +20,7 @@ export interface IcPackageCanvasProps {
   hoveredPadId: string | null;
   selectedPinNumber: number | null;
   tool: "pan" | "name" | "bond";
-  onViewportChange?: () => void;
+  onViewportChange?: (vp: Viewport) => void;
   onPadHover?: (id: string | null) => void;
   onPinClick?: (num: number) => void;
   onPadClick?: (id: string) => void;
@@ -111,7 +111,7 @@ export function IcPackageCanvas({
     const midX = (minX + maxX) / 2;
     const midY = (minY + maxY) / 2;
     vpRef.current = { ox: midX - cw / 2 / zoom, oy: midY - ch / 2 / zoom, zoom };
-    onViewportChange?.();
+    onViewportChange?.(vpRef.current);
     canvas.dispatchEvent(new Event("redraw"));
   }, [dieImage, imgW, imgH, transform.rotationDeg, geom, pxPerMm, packageOrigin, onViewportChange]);
 
@@ -146,7 +146,7 @@ export function IcPackageCanvas({
       const nmx = ((e.clientX - rect.left) * dpr) / (newZoom * dpr);
       const nmy = ((e.clientY - rect.top) * dpr) / (newZoom * dpr);
       vpRef.current = { ox: wx - nmx, oy: wy - nmy, zoom: newZoom };
-      onViewportChange?.();
+      onViewportChange?.(vpRef.current);
       canvas.dispatchEvent(new Event("redraw"));
     };
 
@@ -170,6 +170,7 @@ export function IcPackageCanvas({
         vpRef.current.ox = dragRef.current.sox - dx;
         vpRef.current.oy = dragRef.current.soy - dy;
         movedAfterDown = true;
+        onViewportChange?.(vpRef.current);
         canvas.dispatchEvent(new Event("redraw"));
         return;
       }
