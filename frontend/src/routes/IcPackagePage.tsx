@@ -46,7 +46,16 @@ function IcPackageView({ dieId }: { dieId: string }) {
   const toast = useToast();
   const [saveStatus, setSaveStatus] = useState<"idle" | "saving" | "saved" | "error">("idle");
   const [viewportVersion, setViewportVersion] = useState(0);
-  const [bgOverlayId, setBgOverlayId] = useState<string | null>(null);
+  const [bgOverlayId, setBgOverlayId] = useState<string | null>(() => {
+    try { return localStorage.getItem(`icPackage-bg-overlay-${dieId}`); } catch { return null; }
+  });
+  const changeBgOverlay = useCallback((id: string | null) => {
+    setBgOverlayId(id);
+    try {
+      if (id) localStorage.setItem(`icPackage-bg-overlay-${dieId}`, id);
+      else localStorage.removeItem(`icPackage-bg-overlay-${dieId}`);
+    } catch { /* ignore */ }
+  }, [dieId]);
   const [imageLoading, setImageLoading] = useState(false);
   /** Pin being renamed via the inline canvas overlay. */
   const [editingPinNumber, setEditingPinNumber] = useState<number | null>(null);
@@ -104,9 +113,19 @@ function IcPackageView({ dieId }: { dieId: string }) {
           c.width = Math.round(w * s);
           c.height = Math.round(h * s);
           c.getContext("2d")!.drawImage(img, 0, 0, c.width, c.height);
-          img.src = c.toDataURL("image/jpeg", 0.92);
-          w = c.width;
-          h = c.height;
+          // Use a FRESH Image for the data URL: assigning img.src would reset
+          // its load state, and drawing it before the data URL decodes renders
+          // nothing (black canvas) with no follow-up redraw.
+          const out = new Image();
+          out.decoding = "async";
+          out.onload = () => {
+            if (dieIdRef.current !== dieId) return;
+            setDieImage(out);
+            setDieImageSize({ w: c.width, h: c.height });
+            setImageLoading(false);
+          };
+          out.src = c.toDataURL("image/jpeg", 0.92);
+          return;
         }
         setDieImage(img);
         setDieImageSize({ w, h });
@@ -260,7 +279,7 @@ function IcPackageView({ dieId }: { dieId: string }) {
   return (
     <AppShell meta="IC Package" savedAgo={saveStatus === "saved" ? "saved" : saveStatus === "saving" ? "saving…" : saveStatus === "error" ? "save failed" : undefined}>
       <IcPackageToolbar onApplyToDieViewer={applyToDieViewer} applyDisabled={applyDisabled}
-        right={<OverlaySelector value={bgOverlayId} onChange={setBgOverlayId} />} />
+        right={<OverlaySelector value={bgOverlayId} onChange={changeBgOverlay} />} />
       <div style={{ flex: "1 1 auto", display: "flex", minHeight: 0 }}>
         {centerMsg ? (
           <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--ink3)", fontSize: 12 }}>
