@@ -346,14 +346,16 @@ function drawPackageOutline(
     ctx.textBaseline = "middle";
     ctx.fillText(numText, chipX + 3 / scale, chipY + chipH / 2);
 
-    // Pin name: large bold text centred on the pad itself.
+    // Pin name: large bold text centred directly on the pad.  Font size is in
+    // world units (80 % of pad width) so it stays proportionally large at any
+    // zoom — the context transform maps it to screen pixels.
     if (pin.name) {
-      const nfs = Math.max(14, 22 / scale);
+      const nfs = Math.max(5, pin.w * pxPerMm * 0.8);
       ctx.font = `bold ${nfs}px ui-monospace, monospace`;
       ctx.textAlign = "center";
       ctx.textBaseline = "middle";
       ctx.strokeStyle = "rgba(0,0,0,1)";
-      ctx.lineWidth = 3.5 / scale;
+      ctx.lineWidth = Math.max(1, nfs * 0.16);
       ctx.lineJoin = "round";
       ctx.strokeText(pin.name, cx, cy);
       ctx.fillStyle = "rgba(255,255,255,1)";
