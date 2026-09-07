@@ -45,14 +45,27 @@ function IcPackageView({ dieId }: { dieId: string }) {
   const queryClient = useQueryClient();
   const toast = useToast();
   const [saveStatus, setSaveStatus] = useState<"idle" | "saving" | "saved" | "error">("idle");
-  const [viewportVersion, setViewportVersion] = useState(0);
-  const [bgOverlayId, setBgOverlayId] = useState<string | null>(() => {
+  const overlayLayers = useOverlayLayers((s) => s.layers);
+  // Persisted value is the STABLE serverFilename (tiled source id / legacy
+  // filename); the runtime `bgOverlayId` is a per-session uuid and would
+  // become stale across reloads.
+  const [bgSource, setBgSource] = useState<string | null>(() => {
     try { return localStorage.getItem(`icPackage-bg-overlay-${dieId}`); } catch { return null; }
   });
+  const [bgOverlayId, setBgOverlayId] = useState<string | null>(null);
+  // Resolve the persisted source to a live layer id once it loads.
+  useEffect(() => {
+    if (!bgSource) { setBgOverlayId(null); return; }
+    const layer = overlayLayers.find((l) => l.serverFilename === bgSource);
+    setBgOverlayId(layer ? layer.id : null);
+  }, [bgSource, overlayLayers]);
   const changeBgOverlay = useCallback((id: string | null) => {
     setBgOverlayId(id);
+    const layer = id ? useOverlayLayers.getState().layers.find((l) => l.id === id) : undefined;
+    const source = layer?.serverFilename ?? null;
+    setBgSource(source);
     try {
-      if (id) localStorage.setItem(`icPackage-bg-overlay-${dieId}`, id);
+      if (source) localStorage.setItem(`icPackage-bg-overlay-${dieId}`, source);
       else localStorage.removeItem(`icPackage-bg-overlay-${dieId}`);
     } catch { /* ignore */ }
   }, [dieId]);
@@ -101,35 +114,42 @@ function IcPackageView({ dieId }: { dieId: string }) {
 
     const loadFrom = (src: string) => {
       const img = new Image();
-      img.decoding = "async";
       img.onload = () => {
         if (dieIdRef.current !== dieId) return;
-        let w = img.naturalWidth;
-        let h = img.naturalHeight;
-        const maxEdge = Math.max(w, h);
-        if (maxEdge > 4096) {
-          const s = 4096 / maxEdge;
-          const c = document.createElement("canvas");
-          c.width = Math.round(w * s);
-          c.height = Math.round(h * s);
-          c.getContext("2d")!.drawImage(img, 0, 0, c.width, c.height);
-          // Use a FRESH Image for the data URL: assigning img.src would reset
-          // its load state, and drawing it before the data URL decodes renders
-          // nothing (black canvas) with no follow-up redraw.
-          const out = new Image();
-          out.decoding = "async";
-          out.onload = () => {
-            if (dieIdRef.current !== dieId) return;
-            setDieImage(out);
-            setDieImageSize({ w: c.width, h: c.height });
-            setImageLoading(false);
-          };
-          out.src = c.toDataURL("image/jpeg", 0.92);
-          return;
-        }
-        setDieImage(img);
-        setDieImageSize({ w, h });
-        setImageLoading(false);
+        // Guarantee the bitmap is fully decoded before handing it to the
+        // canvas; otherwise the first drawImage can paint a blank frame and
+        // nothing ever triggers a repaint (black until pan/zoom/hover).
+        img.decode().then(() => {
+          if (dieIdRef.current !== dieId) return;
+          let w = img.naturalWidth;
+          let h = img.naturalHeight;
+          const maxEdge = Math.max(w, h);
+          if (maxEdge > 4096) {
+            const s = 4096 / maxEdge;
+            const c = document.createElement("canvas");
+            c.width = Math.round(w * s);
+            c.height = Math.round(h * s);
+            c.getContext("2d")!.drawImage(img, 0, 0, c.width, c.height);
+            // Use a FRESH Image for the data URL: assigning img.src would reset
+            // its load state, and drawing it before the data URL decodes renders
+            // nothing (black canvas) with no follow-up redraw.
+            const out = new Image();
+            out.onload = () => {
+              if (dieIdRef.current !== dieId) return;
+              out.decode().then(() => {
+                if (dieIdRef.current !== dieId) return;
+                setDieImage(out);
+                setDieImageSize({ w: c.width, h: c.height });
+                setImageLoading(false);
+              }).catch(() => {});
+            };
+            out.src = c.toDataURL("image/jpeg", 0.92);
+            return;
+          }
+          setDieImage(img);
+          setDieImageSize({ w, h });
+          setImageLoading(false);
+        }).catch(() => {});
       };
       img.onerror = () => {
         if (dieIdRef.current !== dieId) return;
@@ -303,10 +323,7 @@ function IcPackageView({ dieId }: { dieId: string }) {
                 hoveredPadId={hoveredPadId}
                 selectedPinNumber={selectedPinNumber}
                 tool={tool}
-                onViewportChange={(vp) => {
-                  setViewportVersion((v) => v + 1);
-                  setViewport(vp);
-                }}
+                onViewportChange={(vp) => setViewport(vp)}
                 onPadHover={setHoveredPad}
                 onPinClick={(num) => {
                   if (tool === "name") {

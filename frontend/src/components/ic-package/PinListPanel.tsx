@@ -12,12 +12,6 @@ export function PinListPanel() {
   const selectPin = useIcPackageStore((s) => s.selectPin);
   const removeBond = useIcPackageStore((s) => s.removeBond);
 
-  const padIdByPin = new Map<string, string>();
-  // pinNumber -> diePadId (1:1 enforced in store)
-  for (const b of bonds) {
-    padIdByPin.set(String(b.pinNumber), b.diePadId);
-  }
-
   const [editing, setEditing] = useState<number | null>(null);
   const [draft, setDraft] = useState("");
 
@@ -40,7 +34,7 @@ export function PinListPanel() {
           </thead>
           <tbody>
             {pins.map((p) => {
-              const padId = padIdByPin.get(String(p.number));
+              const bondsForPin = bonds.filter((b) => b.pinNumber === p.number);
               const isSel = tool === "bond" && selectedPinNumber === p.number;
               return (
                 <tr
@@ -94,18 +88,22 @@ export function PinListPanel() {
                     )}
                   </td>
                   <td style={{ padding: "2px 6px", color: "var(--ink3)", fontFamily: "ui-monospace, monospace", fontSize: 10 }}>
-                    {padId ? (
-                      <span
-                        title="Remove bond"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          const b = bonds.find((x) => x.pinNumber === p.number);
-                          if (b) removeBond(b.id);
-                        }}
-                        style={{ cursor: "pointer", color: "var(--accent)" }}
-                      >
-                        {padId.slice(0, 8)} ✕
-                      </span>
+                    {bondsForPin.length > 0 ? (
+                      <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+                        {bondsForPin.map((b) => (
+                          <span
+                            key={b.id}
+                            title="Remove bond"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              removeBond(b.id);
+                            }}
+                            style={{ cursor: "pointer", color: "var(--accent)" }}
+                          >
+                            {b.diePadId.slice(0, 8)} ✕
+                          </span>
+                        ))}
+                      </div>
                     ) : (
                       "—"
                     )}

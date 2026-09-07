@@ -116,11 +116,12 @@ export const useIcPackageStore = create<IcPackageState>((set, get) => {
     },
 
     addBond: (pinNumber, diePadId) => {
-      // One pin can only bond to one die pad; one die pad can only bond to
-      // one pin. Replace any existing bond at either end.
+      // A die pad can only bond to one pin, but a package pin may carry many
+      // parallel bonds (e.g. power pads). Replace any existing bond at the
+      // pad, then append the new one.
       const id = `b${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
       const bonds = get().bonds.filter(
-        (b) => b.pinNumber !== pinNumber && b.diePadId !== diePadId
+        (b) => b.diePadId !== diePadId
       );
       bonds.push({ id, pinNumber, diePadId });
       set({ bonds, selectedPinNumber: null, hoveredPadId: null });
