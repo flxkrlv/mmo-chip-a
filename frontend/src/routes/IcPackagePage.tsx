@@ -13,6 +13,7 @@ import {
   findClickedPin,
 } from "../lib/ic-package/transform";
 import { loadPackageGeom } from "../lib/ic-package/footprinter";
+import { exportPinPlannerPng, exportPinTableCsv, buildPinTable } from "../lib/ic-package/export";
 import { IcPackageToolbar } from "../components/ic-package/IcPackageToolbar";
 import { OverlaySelector } from "../components/ic-package/OverlaySelector";
 import { PackageSelector } from "../components/ic-package/PackageSelector";
@@ -289,6 +290,28 @@ function IcPackageView({ dieId }: { dieId: string }) {
     return !bonds.some((b) => namedNums.has(b.pinNumber));
   }, [pins, bonds]);
 
+  // ── Export ──────────────────────────────────────────────────────
+  const exportPng = useCallback(() => {
+    if (!dieImage) return;
+    exportPinPlannerPng({
+      dieImage,
+      imgW: dieImageSize.w,
+      imgH: dieImageSize.h,
+      transform,
+      pxPerMm,
+      packageOrigin,
+      geom,
+      pins,
+      pads: scaledPads,
+      bonds,
+      bondedPadIds,
+    });
+  }, [dieImage, dieImageSize.w, dieImageSize.h, transform, pxPerMm, packageOrigin, geom, pins, scaledPads, bonds, bondedPadIds]);
+
+  const exportCsv = useCallback(() => {
+    exportPinTableCsv(buildPinTable(pins, bonds, annotations?.pins ?? []));
+  }, [pins, bonds, annotations?.pins]);
+
   // ── Render ───────────────────────────────────────────────────────
   const centerMsg = !die
     ? (isLoading ? "loading die…" : error ? `error: ${(error as Error).message}` : "loading…")
@@ -299,6 +322,7 @@ function IcPackageView({ dieId }: { dieId: string }) {
   return (
     <AppShell meta="Pin planner" savedAgo={saveStatus === "saved" ? "saved" : saveStatus === "saving" ? "saving…" : saveStatus === "error" ? "save failed" : undefined}>
       <IcPackageToolbar onApplyToDieViewer={applyToDieViewer} applyDisabled={applyDisabled}
+        onExportPng={exportPng} onExportCsv={exportCsv}
         right={<OverlaySelector value={bgOverlayId} onChange={changeBgOverlay} />} />
       <div style={{ flex: "1 1 auto", display: "flex", minHeight: 0 }}>
         {centerMsg ? (

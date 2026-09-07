@@ -302,17 +302,17 @@ export function IcPackageCanvas({
 
 // ── Drawing helpers ─────────────────────────────────────────────
 
-function drawPackageOutline(
+export function drawPackageOutline(
   ctx: CanvasRenderingContext2D, geom: PackageGeom,
   pins: PackagePin[],
   origin: { x: number; y: number }, pxPerMm: number,
-  selectedPin: number | null, scale: number,
+  selectedPin: number | null, scale: number, light?: boolean,
 ) {
   const { minX, minY, maxX, maxY } = geom.body;
   const ox = origin.x, oy = origin.y;
   ctx.save();
-  ctx.fillStyle = "rgba(200,200,200,0.06)";
-  ctx.strokeStyle = "rgba(160,160,160,0.7)";
+  ctx.fillStyle = light ? "rgba(228,228,228,0.55)" : "rgba(200,200,200,0.06)";
+  ctx.strokeStyle = light ? "rgba(105,105,105,0.9)" : "rgba(160,160,160,0.7)";
   ctx.lineWidth = 2 / scale;
   ctx.beginPath();
   ctx.rect(ox + minX * pxPerMm, oy + minY * pxPerMm, (maxX - minX) * pxPerMm, (maxY - minY) * pxPerMm);
@@ -327,8 +327,12 @@ function drawPackageOutline(
     const h = pin.h * pxPerMm;
     const isSel = pin.number === selectedPin;
     ctx.save();
-    ctx.fillStyle = isSel ? "rgba(0,200,100,0.6)" : "rgba(160,130,60,0.5)";
-    ctx.strokeStyle = isSel ? "rgba(0,200,100,1)" : "rgba(120,100,50,1)";
+    ctx.fillStyle = isSel
+      ? (light ? "rgba(0,180,90,0.6)" : "rgba(0,200,100,0.6)")
+      : (light ? "rgba(150,135,72,0.85)" : "rgba(160,130,60,0.5)");
+    ctx.strokeStyle = isSel
+      ? (light ? "rgba(0,130,60,1)" : "rgba(0,200,100,1)")
+      : (light ? "rgba(95,80,45,1)" : "rgba(120,100,50,1)");
     ctx.lineWidth = 1.5 / scale;
     ctx.fillRect(cx - w / 2, cy - h / 2, w, h);
     ctx.strokeRect(cx - w / 2, cy - h / 2, w, h);
@@ -344,14 +348,14 @@ function drawPackageOutline(
     const chipH = fs + 4 / scale;
     const chipX = cx + w / 2 + 4 / scale;
     const chipY = cy - chipH / 2;
-    ctx.fillStyle = "rgba(40,30,10,0.92)";
-    ctx.strokeStyle = "rgba(255,200,80,0.95)";
+    ctx.fillStyle = light ? "rgba(255,255,255,0.95)" : "rgba(40,30,10,0.92)";
+    ctx.strokeStyle = light ? "rgba(125,125,125,0.95)" : "rgba(255,200,80,0.95)";
     ctx.lineWidth = 1 / scale;
     ctx.beginPath();
     ctx.roundRect(chipX, chipY, chipW, chipH, 3 / scale);
     ctx.fill();
     ctx.stroke();
-    ctx.fillStyle = "rgba(255,230,120,1)";
+    ctx.fillStyle = light ? "rgba(40,40,40,1)" : "rgba(255,230,120,1)";
     ctx.textBaseline = "middle";
     ctx.fillText(numText, chipX + 3 / scale, chipY + chipH / 2);
 
@@ -372,11 +376,11 @@ function drawPackageOutline(
       ctx.font = `bold ${nfs}px ui-monospace, monospace`;
       ctx.textAlign = "center";
       ctx.textBaseline = "middle";
-      ctx.strokeStyle = "rgba(0,0,0,1)";
+      ctx.strokeStyle = light ? "rgba(255,255,255,1)" : "rgba(0,0,0,1)";
       ctx.lineWidth = Math.max(0.8, nfs * 0.14);
       ctx.lineJoin = "round";
       ctx.strokeText(pin.name, 0, 0);
-      ctx.fillStyle = "rgba(255,255,255,1)";
+      ctx.fillStyle = light ? "rgba(0,0,0,1)" : "rgba(255,255,255,1)";
       ctx.fillText(pin.name, 0, 0);
       ctx.restore();
     }
@@ -384,10 +388,11 @@ function drawPackageOutline(
   }
 }
 
-function drawPadMarkers(
+export function drawPadMarkers(
   ctx: CanvasRenderingContext2D, pads: IOPin[],
   imgW: number, imgH: number, t: DieTransform,
   bondedIds: Set<string>, hoveredId: string | null, scale: number,
+  light?: boolean,
 ) {
   const r = PAD_R / scale;
   ctx.save();
@@ -398,24 +403,33 @@ function drawPadMarkers(
     const hov = hoveredId === pad.id;
     ctx.beginPath();
     ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
-    ctx.fillStyle = bonded ? "rgba(0,200,100,0.85)" : hov ? "rgba(255,220,80,0.85)" : "rgba(255,80,80,0.7)";
-    ctx.strokeStyle = bonded ? "rgba(0,60,30,1)" : hov ? "rgba(120,80,0,1)" : "rgba(120,30,30,1)";
+    ctx.fillStyle = bonded
+      ? (light ? "rgba(0,160,70,0.9)" : "rgba(0,200,100,0.85)")
+      : hov
+        ? (light ? "rgba(222,180,40,0.95)" : "rgba(255,220,80,0.85)")
+        : (light ? "rgba(210,70,60,0.9)" : "rgba(255,80,80,0.7)");
+    ctx.strokeStyle = bonded
+      ? (light ? "rgba(0,90,40,1)" : "rgba(0,60,30,1)")
+      : hov
+        ? (light ? "rgba(130,90,0,1)" : "rgba(120,80,0,1)")
+        : (light ? "rgba(140,40,35,1)" : "rgba(120,30,30,1)");
     ctx.fill();
     ctx.stroke();
   }
   ctx.restore();
 }
 
-function drawBonds(
+export function drawBonds(
   ctx: CanvasRenderingContext2D, bonds: WireBond[],
   pins: PackagePin[], pads: IOPin[],
   imgW: number, imgH: number, t: DieTransform,
   pxPerMm: number, origin: { x: number; y: number }, scale: number,
+  light?: boolean,
 ) {
   const pinMap = new Map(pins.map((p) => [p.number, p]));
   const padMap = new Map(pads.map((p) => [p.id, p]));
   ctx.save();
-  ctx.strokeStyle = "rgba(0,180,220,0.9)";
+  ctx.strokeStyle = light ? "rgba(0,110,210,0.9)" : "rgba(0,180,220,0.9)";
   ctx.lineWidth = 1.5 / scale;
   for (const b of bonds) {
     const pin = pinMap.get(b.pinNumber);

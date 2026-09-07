@@ -3,10 +3,14 @@ import { useIcPackageStore, type IcPackageTool } from "../../state/icPackage";
 
 interface ToolbarProps {
   /** Click handler for "Apply to Die Viewer pins" — write package pin names
-   *  back to annotations.pins[]. */
+   * back to annotations.pins[]. */
   onApplyToDieViewer: () => void;
   /** Disable Apply when no named bonds exist. */
   applyDisabled: boolean;
+  /** Export the pin-planner scene as a document-friendly PNG. */
+  onExportPng: () => void;
+  /** Export the pin table as CSV. */
+  onExportCsv: () => void;
   /** Optional right-aligned extra content (status, layer selector). */
   right?: React.ReactNode;
 }
@@ -17,7 +21,7 @@ const TOOLS: Array<{ kind: IcPackageTool; icon: string; label: string }> = [
   { kind: "bond", icon: "↔", label: "Bond — click pin, then click die pad" },
 ];
 
-export function IcPackageToolbar({ onApplyToDieViewer, applyDisabled, right }: ToolbarProps) {
+export function IcPackageToolbar({ onApplyToDieViewer, applyDisabled, onExportPng, onExportCsv, right }: ToolbarProps) {
   const tool = useIcPackageStore((s) => s.tool);
   const setTool = useIcPackageStore((s) => s.setTool);
   return (
@@ -69,6 +73,25 @@ export function IcPackageToolbar({ onApplyToDieViewer, applyDisabled, right }: T
         }}
       >
         Apply to Die Viewer pins
+      </button>
+      <ToolDivider />
+      <button
+        type="button"
+        className="chip"
+        onClick={onExportPng}
+        title="Export pin planner as a white-background PNG for documents"
+        style={{ fontSize: 11, cursor: "pointer" }}
+      >
+        Export PNG
+      </button>
+      <button
+        type="button"
+        className="chip"
+        onClick={onExportCsv}
+        title="Export the pin table as CSV"
+        style={{ fontSize: 11, cursor: "pointer" }}
+      >
+        Export pins (CSV)
       </button>
       <div style={{ flex: 1 }} />
       {right}
