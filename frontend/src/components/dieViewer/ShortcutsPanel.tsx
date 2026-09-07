@@ -112,6 +112,14 @@ const SHORTCUT_GROUPS: ShortcutGroup[] = [
       { key: "Alt+1–4", label: "View: Code / Graph / Schematic / LVS" },
     ],
   },
+  {
+    title: "Pin Planner",
+    items: [
+      { key: "S", label: "Pan / zoom" },
+      { key: "T", label: "Text — name a package pin" },
+      { key: "W", label: "Bond — pin, then die pad" },
+    ],
+  },
 ];
 
 function Kbd({ children }: { children: string }) {

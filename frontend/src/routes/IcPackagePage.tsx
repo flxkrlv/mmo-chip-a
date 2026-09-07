@@ -20,6 +20,9 @@ import { PackageSelector } from "../components/ic-package/PackageSelector";
 import { PinListPanel } from "../components/ic-package/PinListPanel";
 import { DieTransformPanel } from "../components/ic-package/DieTransformPanel";
 import { IcPackageCanvas } from "../components/ic-package/IcPackageCanvas";
+import { ShortcutsPanel } from "../components/dieViewer/ShortcutsPanel";
+import { PIN_PLANNER_HOTKEYS } from "../lib/hotkeys";
+import { isTypingTarget } from "../lib/keyboard";
 import { useToast } from "../components/Toast";
 
 export function IcPackagePage() {
@@ -71,6 +74,7 @@ function IcPackageView({ dieId }: { dieId: string }) {
     } catch { /* ignore */ }
   }, [dieId]);
   const [imageLoading, setImageLoading] = useState(false);
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
   /** Pin being renamed via the inline canvas overlay. */
   const [editingPinNumber, setEditingPinNumber] = useState<number | null>(null);
   const [editDraft, setEditDraft] = useState("");
@@ -184,6 +188,7 @@ function IcPackageView({ dieId }: { dieId: string }) {
   const bonds = useIcPackageStore((s) => s.bonds);
   const transform = useIcPackageStore((s) => s.transform);
   const tool = useIcPackageStore((s) => s.tool);
+  const setTool = useIcPackageStore((s) => s.setTool);
   const selectedPinNumber = useIcPackageStore((s) => s.selectedPinNumber);
   const hoveredPadId = useIcPackageStore((s) => s.hoveredPadId);
   const setHoveredPad = useIcPackageStore((s) => s.setHoveredPad);
@@ -232,6 +237,34 @@ function IcPackageView({ dieId }: { dieId: string }) {
   }, [annotations?.pins, downscale]);
 
   const bondedPadIds = useMemo(() => new Set(bonds.map((b) => b.diePadId)), [bonds]);
+
+  // ── Keyboard shortcuts ─────────────────────────────────────────
+  //   S pan · T text (name) · W bond · Ctrl+/ or ? → help panel
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (isTypingTarget(e.target)) return;
+      const meta = e.metaKey || e.ctrlKey;
+      if (meta && e.key === "/") {
+        e.preventDefault();
+        setShortcutsOpen((v) => !v);
+        return;
+      }
+      if (e.key === "?" && !meta && !e.altKey) {
+        setShortcutsOpen((v) => !v);
+        return;
+      }
+      if (meta || e.altKey) return;
+      const nextTool = PIN_PLANNER_HOTKEYS[e.key.toLowerCase()];
+      if (nextTool) setTool(nextTool);
+    };
+    const onToggle = () => setShortcutsOpen((v) => !v);
+    window.addEventListener("keydown", onKey);
+    window.addEventListener("toggle-shortcuts", onToggle);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      window.removeEventListener("toggle-shortcuts", onToggle);
+    };
+  }, [setTool]);
 
   // ── Save ─────────────────────────────────────────────────────────
   const save = useCallback(async () => {
@@ -427,6 +460,7 @@ function IcPackageView({ dieId }: { dieId: string }) {
           </>
         )}
       </div>
+      <ShortcutsPanel open={shortcutsOpen} onClose={() => setShortcutsOpen(false)} />
     </AppShell>
   );
 }

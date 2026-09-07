@@ -113,6 +113,17 @@ export const MERGE_HOTKEYS: Record<string, MergeModeId> = {
   "Alt+5": "candidate",
 };
 
+// ── Pin Planner (IC Package) tool hotkeys ────────────────────────
+// Bare keys switch the active editor tool. Stored here so the keyboard
+// handler and the ShortcutsPanel helper both read the same mapping.
+export type PinPlannerToolId = "pan" | "name" | "bond";
+
+export const PIN_PLANNER_HOTKEYS: Record<string, PinPlannerToolId> = {
+  "s": "pan",
+  "t": "name",   // text — click a package pin to name it
+  "w": "bond",   // wire/bond — click pin, then die pad
+};
+
 // ── Analog Netlist (Netlist page) hotkeys ───────────────────────
 export type AnalogNetlistAction =
   | "toggleGraph"      // G — switch between Code / Graph views

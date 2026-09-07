@@ -15,10 +15,10 @@ interface ToolbarProps {
   right?: React.ReactNode;
 }
 
-const TOOLS: Array<{ kind: IcPackageTool; icon: string; label: string }> = [
-  { kind: "pan", icon: "✥", label: "Pan / zoom — drag canvas, scroll to zoom" },
-  { kind: "name", icon: "Aa", label: "Name — click a package pin to set its name" },
-  { kind: "bond", icon: "↔", label: "Bond — click pin, then click die pad" },
+const TOOLS: Array<{ kind: IcPackageTool; icon: string; key: string; label: string }> = [
+  { kind: "pan", icon: "✥", key: "S", label: "Pan / zoom — drag canvas, scroll to zoom" },
+  { kind: "name", icon: "Aa", key: "T", label: "Name — click a package pin to set its name" },
+  { kind: "bond", icon: "↔", key: "W", label: "Bond — click pin, then click die pad" },
 ];
 
 export function IcPackageToolbar({ onApplyToDieViewer, applyDisabled, onExportPng, onExportCsv, right }: ToolbarProps) {
@@ -46,7 +46,7 @@ export function IcPackageToolbar({ onApplyToDieViewer, applyDisabled, onExportPn
         <button
           key={t.kind}
           type="button"
-          title={t.label}
+          title={`${t.label} (${t.key.toUpperCase()})`}
           onClick={() => setTool(t.kind)}
           className={"chip" + (tool === t.kind ? " on" : "")}
           style={{
@@ -61,6 +61,10 @@ export function IcPackageToolbar({ onApplyToDieViewer, applyDisabled, onExportPn
           {t.icon}
         </button>
       ))}
+      <ToolDivider />
+      <span className="u" style={{ fontSize: 9, color: "var(--ink3)", marginRight: 4 }}>
+        S pan · T text · W bond
+      </span>
       <ToolDivider />
       <button
         type="button"
