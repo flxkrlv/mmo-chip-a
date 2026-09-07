@@ -3,6 +3,7 @@ import path from "node:path";
 import { Router, type Request } from "express";
 import sharp from "sharp";
 import { resolveOverlayOriginalPath, readManifest } from "./overlayImages.js";
+import { ensurePreviewImage } from "../imagePreview.js";
 import { readAnnotations, readDieRecord } from "../store.js";
 import type { createTileScheduler } from "../tileScheduler.js";
 
@@ -236,9 +237,9 @@ export function createTilesRouter(config: {
     }
   });
 
-  // Serve the full-resolution original die image for the IC Package view.
-  // Returns the original uploaded file (or the highest-res tile if the
-  // original is not browser-compatible).
+  // Serve a downscaled preview of the die image for the IC Package view.
+  // The full original is cached on disk as a JPEG (max 4096px edge) so the
+  // browser never downloads/decodes the full-resolution file.
   router.get("/api/dies/:dieId/image", async (request, response, next) => {
     try {
       const { dieId } = request.params;
@@ -249,7 +250,20 @@ export function createTilesRouter(config: {
         response.status(404).json({ error: "Image not found" });
         return;
       }
-      response.sendFile(path.join(originalDir, files[0]));
+      const sourcePath = path.join(originalDir, files[0]);
+      const previewPath = await ensurePreviewImage({
+        sourcePath,
+        cachePath: path.join(
+          config.dataRoot,
+          "dies",
+          dieId,
+          "previews",
+          `${path.parse(files[0]).name}.4096.jpg`
+        )
+      });
+      response.setHeader("Cache-Control", "public, max-age=86400");
+      response.type("image/jpeg");
+      response.sendFile(previewPath);
     } catch (error) {
       next(error);
     }
