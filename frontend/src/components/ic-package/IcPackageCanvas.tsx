@@ -351,7 +351,7 @@ function drawPackageOutline(
     // HEIGHT (the true pad dimension) so it stays proportional to the real
     // pad instead of ballooning for wide flat pads.
     if (pin.name) {
-      const nfs = Math.max(3, pin.h * pxPerMm * 0.7);
+      const nfs = Math.max(2, pin.h * pxPerMm * 0.35);
       ctx.font = `bold ${nfs}px ui-monospace, monospace`;
       ctx.textAlign = "center";
       ctx.textBaseline = "middle";
