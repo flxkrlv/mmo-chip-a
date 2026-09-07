@@ -357,19 +357,25 @@ function drawPackageOutline(
 
     // Pin name: bold text centred directly on the pad, sized to the pad's
     // HEIGHT (the true pad dimension) so it stays proportional to the real
-    // pad instead of ballooning for wide flat pads.
+    // pad instead of ballooning for wide flat pads. Vertical pads (tall and
+    // thin, e.g. QFP/QFN side pins) get the text rotated to read along the
+    // pad instead of spilling sideways.
     if (pin.name) {
       const nfs = Math.max(2, pin.h * pxPerMm * 0.35);
+      const vertical = pin.h > pin.w;
+      ctx.save();
+      ctx.translate(cx, cy);
+      if (vertical) ctx.rotate(-Math.PI / 2);
       ctx.font = `bold ${nfs}px ui-monospace, monospace`;
       ctx.textAlign = "center";
       ctx.textBaseline = "middle";
       ctx.strokeStyle = "rgba(0,0,0,1)";
       ctx.lineWidth = Math.max(0.8, nfs * 0.14);
       ctx.lineJoin = "round";
-      ctx.strokeText(pin.name, cx, cy);
+      ctx.strokeText(pin.name, 0, 0);
       ctx.fillStyle = "rgba(255,255,255,1)";
-      ctx.fillText(pin.name, cx, cy);
-      ctx.textAlign = "start";
+      ctx.fillText(pin.name, 0, 0);
+      ctx.restore();
     }
     ctx.restore();
   }
