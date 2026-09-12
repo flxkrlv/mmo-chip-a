@@ -187,5 +187,5 @@ export const DIE_VIEWER_MOD_HOTKEYS: Record<string, {
 //   Ctrl+Shift+B    — toggle base image visibility
 //   ]               — cycle to next overlay (toggle on/off)
 //   [               — cycle to previous overlay (toggle on/off)
-//   Ctrl+Shift+1..8 — toggle overlay layer #1..#8 directly
+//   Ctrl+1..8        — toggle overlay layer #1..#8 directly
 // These are handled by the `useOverlayHotkeys()` hook.

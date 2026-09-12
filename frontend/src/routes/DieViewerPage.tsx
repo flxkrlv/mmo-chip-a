@@ -1653,7 +1653,7 @@ function DieViewer({ dieId }: { dieId: string }) {
   // Global ⌘Z/⌘⇧Z — routes to a tool's undo override (e.g. wire draft) when
   // one is registered, else the action dispatcher.
   useUndoRedoHotkeys(dispatcher);
-  // Overlay layer hotkeys (Ctrl+Shift+B, ], [, Ctrl+Shift+1..8).
+  // Overlay layer hotkeys (Ctrl+Shift+B, ], [, Ctrl+1..8).
   useOverlayHotkeys();
 
   // ── Pointer move / leave ────────────────────────────────────────
@@ -2121,9 +2121,24 @@ function DieViewer({ dieId }: { dieId: string }) {
             return handler;
           }
           const { cell: original, cellType } = cellHit;
+          const selectedIdsNow = useDieViewerStore.getState().selectedIds;
+          const movingCells = selectedIdsNow.has(hit.partId)
+            ? (annotationsRef.current?.cells ?? [])
+                .filter((candidate) => selectedIdsNow.has(`cell:${candidate.id}`))
+                .map((candidate) => ({
+                  cell: candidate,
+                  cellType: annotationsRef.current?.cellTypes.find(
+                    (candidateType) => candidateType.id === candidate.cellTypeId
+                  )
+                }))
+                .filter((entry): entry is { cell: typeof original; cellType: typeof cellType } =>
+                  entry.cellType != null
+                )
+            : [{ cell: original, cellType }];
           // Shift locks the move to the dominant axis (re-evaluated live, so
           // tapping Shift mid-drag snaps it straight without restarting).
           const moveCell = (
+            source: typeof original,
             worldPoint: { x: number; y: number },
             startWorld: { x: number; y: number },
             shift: boolean,
@@ -2135,23 +2150,27 @@ function DieViewer({ dieId }: { dieId: string }) {
               if (Math.abs(dx) >= Math.abs(dy)) dy = 0;
               else dx = 0;
             }
-            const x = round ? Math.round(original.x + dx) : original.x + dx;
-            const y = round ? Math.round(original.y + dy) : original.y + dy;
-            return { ...original, x, y };
+            const x = round ? Math.round(source.x + dx) : source.x + dx;
+            const y = round ? Math.round(source.y + dy) : source.y + dy;
+            return { ...source, x, y };
           };
           const handler: DragHandler = {
             onDragStart: () => {
-              useDieViewerStore.getState().select([hit.partId], "replace");
+              if (movingCells.length === 1) {
+                useDieViewerStore.getState().select([hit.partId], "replace");
+              }
             },
             onDragMove: ({ worldPoint, startWorld, modifiers }) => {
-              annotationLayer.update(
-                buildCellAnnotation(
-                  moveCell(worldPoint, startWorld, modifiers.shift, false),
-                  cellType,
-                  getCellC,
-                  getCellShapes
-                )
-              );
+              for (const entry of movingCells) {
+                annotationLayer.update(
+                  buildCellAnnotation(
+                    moveCell(entry.cell, worldPoint, startWorld, modifiers.shift, false),
+                    entry.cellType,
+                    getCellC,
+                    getCellShapes
+                  )
+                );
+              }
             },
             onPointerUp: ({ dragged, worldPoint, startWorld, modifiers }) => {
               if (!dragged) {
@@ -2159,15 +2178,20 @@ function DieViewer({ dieId }: { dieId: string }) {
                 return;
               }
               void dispatcher.dispatch({
-                kind: "upsertCell",
-                cell: moveCell(worldPoint, startWorld, modifiers.shift, true),
-                prevCell: original
+                kind: "batch",
+                actions: movingCells.map((entry) => ({
+                  kind: "upsertCell" as const,
+                  cell: moveCell(entry.cell, worldPoint, startWorld, modifiers.shift, true),
+                  prevCell: entry.cell
+                }))
               });
             },
             onCancel: () => {
-              annotationLayer.update(
-                buildCellAnnotation(original, cellType, getCellC, getCellShapes)
-              );
+              for (const entry of movingCells) {
+                annotationLayer.update(
+                  buildCellAnnotation(entry.cell, entry.cellType, getCellC, getCellShapes)
+                );
+              }
             }
           };
           return handler;

@@ -54,7 +54,7 @@ const SHORTCUT_GROUPS: ShortcutGroup[] = [
       { key: "Ctrl+Shift+B", label: "Toggle base image" },
       { key: "]", label: "Next overlay layer" },
       { key: "[", label: "Previous overlay layer" },
-      { key: "Ctrl+Shift+1–8", label: "Toggle overlay #1–#8" },
+      { key: "Ctrl+1–8", label: "Toggle overlay #1–#8" },
     ],
   },
   {

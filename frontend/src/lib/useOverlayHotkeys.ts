@@ -6,7 +6,7 @@
  *   Ctrl+Shift+B    — toggle base image visibility
  *   ]               — show only the NEXT overlay layer (N+1), hide others
  *   [               — show only the PREVIOUS overlay layer (N-1), hide others
- *   Ctrl+Shift+1..8 — show only overlay layer #1..#8, hide others
+ *   Ctrl+1..8       — show only overlay layer #1..#8, hide others
  */
 
 import { useEffect } from "react";
@@ -30,8 +30,8 @@ export function useOverlayHotkeys(): void {
         return;
       }
 
-      // Ctrl+Shift+1..8 → show only layer N, hide all others
-      if (ctrl && shift && e.code >= "Digit1" && e.code <= "Digit8") {
+      // Ctrl+1..8 → show only layer N, hide all others
+      if (ctrl && !shift && !e.altKey && e.code >= "Digit1" && e.code <= "Digit8") {
         e.preventDefault();
         const digits = ["Digit1","Digit2","Digit3","Digit4","Digit5","Digit6","Digit7","Digit8"];
         const idx = digits.indexOf(e.code);
