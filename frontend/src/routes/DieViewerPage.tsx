@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { useQueryClient } from "@tanstack/react-query";
-import type { AnalogDevice, AnnotationNet, AssistantFinding } from "shared";
+import type { AnalogDevice, AnnotationNet, AssistantFinding, Cell, CellType } from "shared";
 import { annotationKeys, useAnnotations } from "../api/annotations";
 import { useAnnotationsWebSocket } from "../api/annotationsWebSocket";
 import { netChangesToAction, useActionDispatcher } from "../api/actions";
@@ -116,6 +116,7 @@ import { useUndoRedoHotkeys } from "../components/dieViewer/useUndoRedoHotkeys";
 import { useOverlayHotkeys } from "../lib/useOverlayHotkeys";
 import type { AnnotationAction } from "../api/actions";
 import { parseNetPartId, type DrawAnchor } from "../lib/netGraph";
+import { pasteWireClipboard, snapshotWireClipboard, wireSelectionBounds } from "../lib/wireClipboard";
 import {
   normalizeRect,
   distancePointToSegment,
@@ -379,20 +380,32 @@ function DieViewer({ dieId }: { dieId: string }) {
             const ann = annotationsRef.current;
             const sel = useDieViewerStore.getState().selectedIds;
             const cells = ann?.cells?.filter((c) => sel.has(`cell:${c.id}`)) ?? [];
-            if (cells.length === 0) return;
+            if (!ann) return;
+            const wireBounds = wireSelectionBounds(ann.nets, sel);
+            if (cells.length === 0 && !wireBounds) return;
             e.preventDefault();
-            const minX = Math.min(...cells.map((c) => c.x));
-            const minY = Math.min(...cells.map((c) => c.y));
-            useDieViewerStore.getState().copyCells(
-              cells.map((c) => ({
-                cellTypeId: c.cellTypeId,
-                offsetX: c.x - minX,
-                offsetY: c.y - minY,
-                flippedV: c.flippedV,
-                flippedH: c.flippedH,
-                rotation: c.rotation,
-              }))
-            );
+            const minX = Math.min(...cells.map((c) => c.x), wireBounds?.minX ?? Infinity);
+            const minY = Math.min(...cells.map((c) => c.y), wireBounds?.minY ?? Infinity);
+            const viewerStore = useDieViewerStore.getState();
+            if (cells.length > 0) {
+              viewerStore.copyCells(
+                cells.map((c) => ({
+                  cellTypeId: c.cellTypeId,
+                  offsetX: c.x - minX,
+                  offsetY: c.y - minY,
+                  flippedV: c.flippedV,
+                  flippedH: c.flippedH,
+                  rotation: c.rotation,
+                }))
+              );
+            } else {
+              viewerStore.clearCellClipboard();
+            }
+            if (wireBounds) {
+              viewerStore.setWireClipboard(snapshotWireClipboard(ann.nets, sel, { x: minX, y: minY })!);
+            } else {
+              viewerStore.clearWireClipboard();
+            }
             return;
           }
           case "pasteCell": {
@@ -400,14 +413,13 @@ function DieViewer({ dieId }: { dieId: string }) {
             if (!ann) return;
             const store = useDieViewerStore.getState();
             const clips = store.clipboardCells;
-            if (clips.length === 0) return;
+            const wireClipboard = store.clipboardWires;
+            if (clips.length === 0 && !wireClipboard) return;
             e.preventDefault();
             const cursor = cursorLive.get();
             const baseX = Math.round(cursor?.x ?? 0);
             const baseY = Math.round(cursor?.y ?? 0);
-            void dispatcherRef.current.dispatch({
-              kind: "batch",
-              actions: clips.map((clip) => ({
+            const actions: AnnotationAction[] = clips.map((clip) => ({
                 kind: "upsertCell" as const,
                 cell: {
                   id: uuid(), cellTypeId: clip.cellTypeId,
@@ -416,8 +428,15 @@ function DieViewer({ dieId }: { dieId: string }) {
                   rotation: clip.rotation,
                 },
                 prevCell: null,
-              }))
-            });
+              }));
+            if (wireClipboard) {
+              const wireAction = netChangesToAction(
+                pasteWireClipboard(ann.nets, wireClipboard, { x: baseX, y: baseY }),
+              );
+              if (wireAction?.kind === "batch") actions.push(...wireAction.actions);
+              else if (wireAction) actions.push(wireAction);
+            }
+            if (actions.length > 0) void dispatcherRef.current.dispatch({ kind: "batch", actions });
             return;
           }
           case "makeUnique": {
@@ -2069,6 +2088,130 @@ function DieViewer({ dieId }: { dieId: string }) {
       const hit = annotationLayer.hitTest(e.worldPoint, tolerance);
 
       if (hit) {
+        // A mixed cell + wire selection must move as one bundle, regardless
+        // of whether the pointer starts on a cell or on a wire segment.
+        const selectedNow = useDieViewerStore.getState().selectedIds;
+        const mixedCells = (annotationsRef.current?.cells ?? [])
+          .filter((candidate) => selectedNow.has(`cell:${candidate.id}`))
+          .map((candidate) => ({
+            cell: candidate,
+            cellType: annotationsRef.current?.cellTypes.find(
+              (candidateType) => candidateType.id === candidate.cellTypeId
+            )
+          }))
+          .filter((entry): entry is { cell: Cell; cellType: CellType } => entry.cellType != null);
+        const mixedEdges = new Map<string, Set<string>>();
+        for (const id of selectedNow) {
+          const part = parseNetPartId(id);
+          if (!part || part.part === "node") continue;
+          const edges = mixedEdges.get(part.netId) ?? new Set<string>();
+          if (part.part === "net") edges.add("*");
+          else if (part.partId) edges.add(part.partId);
+          mixedEdges.set(part.netId, edges);
+        }
+        const hitNetPart = parseNetPartId(hit.partId);
+        const hitSelectedCell = hit.annotation.kind === "cell" &&
+          selectedNow.has(hit.partId);
+        const hitSelectedWire = hitNetPart != null &&
+          mixedEdges.has(hitNetPart.netId) &&
+          (hitNetPart.part === "net" ||
+            (hitNetPart.partId != null &&
+              (mixedEdges.get(hitNetPart.netId)?.has("*") ||
+                mixedEdges.get(hitNetPart.netId)?.has(hitNetPart.partId))));
+        if (mixedCells.length > 0 && mixedEdges.size > 0 &&
+            (hitSelectedCell || hitSelectedWire)) {
+          const originalNets = new Map(
+            [...mixedEdges.keys()]
+              .map((netId) => wire.netsRef.current.find((net) => net.id === netId))
+              .filter((net): net is AnnotationNet => net != null)
+              .map((net) => [net.id, net] as const)
+          );
+          const movingNodes = new Map<string, Set<string>>();
+          for (const [netId, edgeIds] of mixedEdges) {
+            const net = originalNets.get(netId);
+            if (!net) continue;
+            const nodeIds = new Set<string>();
+            for (const edge of net.edges) {
+              if (!edgeIds.has("*") && !edgeIds.has(edge.id)) continue;
+              nodeIds.add(edge.from);
+              nodeIds.add(edge.to);
+            }
+            movingNodes.set(netId, nodeIds);
+          }
+          const moveBundle = (
+            worldPoint: { x: number; y: number },
+            startWorld: { x: number; y: number },
+            shift: boolean,
+            round: boolean
+          ) => {
+            let dx = worldPoint.x - startWorld.x;
+            let dy = worldPoint.y - startWorld.y;
+            if (shift) {
+              if (Math.abs(dx) >= Math.abs(dy)) dy = 0;
+              else dx = 0;
+            }
+            const nets = [...originalNets.values()].map((net) => ({
+              ...net,
+              nodes: net.nodes.map((node) => {
+                if (!movingNodes.get(net.id)?.has(node.id)) return node;
+                return {
+                  ...node,
+                  x: round ? Math.round(node.x + dx) : node.x + dx,
+                  y: round ? Math.round(node.y + dy) : node.y + dy,
+                };
+              })
+            }));
+            const cells = mixedCells.map(({ cell, cellType }) => ({
+              cell: {
+                ...cell,
+                x: round ? Math.round(cell.x + dx) : cell.x + dx,
+                y: round ? Math.round(cell.y + dy) : cell.y + dy,
+              },
+              cellType,
+            }));
+            return { nets, cells };
+          };
+          const handler: DragHandler = {
+            onDragMove: ({ worldPoint, startWorld, modifiers }) => {
+              const moved = moveBundle(worldPoint, startWorld, modifiers.shift, false);
+              for (const net of moved.nets) {
+                annotationLayer.update(buildNetAnnotation(net, getNetW, getNetC()));
+              }
+              for (const entry of moved.cells) {
+                annotationLayer.update(buildCellAnnotation(entry.cell, entry.cellType, getCellC, getCellShapes));
+              }
+            },
+            onPointerUp: ({ dragged, worldPoint, startWorld, modifiers }) => {
+              if (!dragged) {
+                selectFromHit(hit, modifiers.shift);
+                return;
+              }
+              const moved = moveBundle(worldPoint, startWorld, modifiers.shift, true);
+              const actions: AnnotationAction[] = [];
+              for (const net of moved.nets) {
+                const prev = originalNets.get(net.id);
+                if (prev) actions.push({ kind: "upsertNet", net, prevNet: prev });
+              }
+              for (const entry of moved.cells) {
+                const prev = mixedCells.find(({ cell }) => cell.id === entry.cell.id)?.cell;
+                if (prev) actions.push({ kind: "upsertCell", cell: entry.cell, prevCell: prev });
+              }
+              if (actions.length > 0) {
+                void dispatcher.dispatch({ kind: "batch", actions });
+              }
+            },
+            onCancel: () => {
+              for (const net of originalNets.values()) {
+                annotationLayer.update(buildNetAnnotation(net, getNetW, getNetC()));
+              }
+              for (const entry of mixedCells) {
+                annotationLayer.update(buildCellAnnotation(entry.cell, entry.cellType, getCellC, getCellShapes));
+              }
+            }
+          };
+          return handler;
+        }
+
         // Dragging an existing net vertex moves it. The move is shown live by
         // updating just that one net in the index (no full repopulate); the
         // undoable `upsertNet` is dispatched only on pointer-up.
@@ -2113,6 +2256,102 @@ function DieViewer({ dieId }: { dieId: string }) {
                 );
               }
             }
+          };
+          return handler;
+        }
+
+        // Dragging a selected wire fragment moves all nodes touched by the
+        // selected edges. Shared nodes move once, so adjacent unselected
+        // edges stretch to the new position instead of disconnecting.
+        const edgePart = parseNetPartId(hit.partId);
+        if (edgePart?.part === "edge" && edgePart.partId && annotationLayer) {
+          const selected = useDieViewerStore.getState().selectedIds;
+          const selectedEdgesByNet = new Map<string, Set<string>>();
+          for (const id of selected) {
+            const part = parseNetPartId(id);
+            if (!part) continue;
+            const edges = selectedEdgesByNet.get(part.netId) ?? new Set<string>();
+            if (part.part === "net") edges.add("*");
+            else if (part.part === "edge" && part.partId) edges.add(part.partId);
+            else continue;
+            selectedEdgesByNet.set(part.netId, edges);
+          }
+          const movingEdges = selectedEdgesByNet.has(edgePart.netId)
+            ? selectedEdgesByNet
+            : new Map([[edgePart.netId, new Set([edgePart.partId])]]);
+          const originals = new Map(
+            [...movingEdges.keys()]
+              .map((netId) => wire.netsRef.current.find((net) => net.id === netId))
+              .filter((net): net is AnnotationNet => net != null)
+              .map((net) => [net.id, net] as const)
+          );
+          const movingNodesByNet = new Map<string, Set<string>>();
+          for (const [netId, edgeIds] of movingEdges) {
+            const net = originals.get(netId);
+            if (!net) continue;
+            const nodeIds = new Set<string>();
+            for (const edge of net.edges) {
+              if (!edgeIds.has("*") && !edgeIds.has(edge.id)) continue;
+              nodeIds.add(edge.from);
+              nodeIds.add(edge.to);
+            }
+            movingNodesByNet.set(netId, nodeIds);
+          }
+          const moveFragment = (
+            worldPoint: { x: number; y: number },
+            startWorld: { x: number; y: number },
+            shift: boolean,
+            round: boolean
+          ): AnnotationNet[] => {
+            let dx = worldPoint.x - startWorld.x;
+            let dy = worldPoint.y - startWorld.y;
+            if (shift) {
+              if (Math.abs(dx) >= Math.abs(dy)) dy = 0;
+              else dx = 0;
+            }
+            return [...originals.values()].map((net) => ({
+              ...net,
+              nodes: net.nodes.map((node) => {
+                if (!movingNodesByNet.get(net.id)?.has(node.id)) return node;
+                return {
+                  ...node,
+                  x: round ? Math.round(node.x + dx) : node.x + dx,
+                  y: round ? Math.round(node.y + dy) : node.y + dy,
+                };
+              }),
+            }));
+          };
+          const handler: DragHandler = {
+            onDragStart: () => {
+              if (!selectedEdgesByNet.has(edgePart.netId)) {
+                useDieViewerStore.getState().select([hit.partId], "replace");
+              }
+            },
+            onDragMove: ({ worldPoint, startWorld, modifiers }) => {
+              for (const moved of moveFragment(worldPoint, startWorld, modifiers.shift, false)) {
+                annotationLayer.update(buildNetAnnotation(moved, getNetW, getNetC()));
+              }
+            },
+            onPointerUp: ({ dragged, worldPoint, startWorld, modifiers }) => {
+              if (!dragged) {
+                selectFromHit(hit, modifiers.shift);
+                return;
+              }
+              const moved = moveFragment(worldPoint, startWorld, modifiers.shift, true);
+              const actions: AnnotationAction[] = [];
+              for (const next of moved) {
+                const prev = originals.get(next.id);
+                if (prev) actions.push({ kind: "upsertNet", net: next, prevNet: prev });
+              }
+              if (actions.length > 0) {
+                void dispatcher.dispatch(actions.length === 1 ? actions[0] : { kind: "batch", actions });
+              }
+            },
+            onCancel: () => {
+              for (const originalNet of originals.values()) {
+                annotationLayer.update(buildNetAnnotation(originalNet, getNetW, getNetC()));
+              }
+            },
           };
           return handler;
         }
@@ -2376,11 +2615,13 @@ function DieViewer({ dieId }: { dieId: string }) {
             return;
           }
           const world = rectFromPoints(startWorld, worldPoint);
-          const ids = annotationLayer.queryRect(world).map((a) => a.id);
+          const fullyContained = worldPoint.x >= startWorld.x;
+          const ids = annotationLayer.queryRectParts(world, fullyContained);
           if (!usePreferences.getState().guidesLocked) {
             for (const g of guidesInRect(
               annotationsRef.current?.guides ?? [],
-              world
+              world,
+              fullyContained
             )) {
               ids.push(`guide:${g.id}`);
             }
@@ -2590,6 +2831,7 @@ function DieViewer({ dieId }: { dieId: string }) {
       let hitAnchor: DrawAnchor | null = null;
       let hitLabel = "from this point";
       let hitCellId: string | undefined;
+      let hitPartId: string | undefined;
       let hitRulerId: string | undefined;
       const rulerHit = (annotationsRef.current?.rulers ?? []).find((ruler) =>
         distancePointToSegment(world, { x: ruler.x1, y: ruler.y1 }, { x: ruler.x2, y: ruler.y2 }) <= HIT_TOLERANCE_PX / vp.zoom
@@ -2601,6 +2843,7 @@ function DieViewer({ dieId }: { dieId: string }) {
       const tol = HIT_TOLERANCE_PX / vp.zoom;
       const hit = annotationLayer?.hitTest(world, tol) ?? null;
       if (hit) {
+        hitPartId = hit.partId;
         if (hit.annotation.kind === "cell" && hit.annotation.id.startsWith("cell:")) {
           hitCellId = hit.annotation.id.slice(5);
         }
@@ -2665,6 +2908,7 @@ function DieViewer({ dieId }: { dieId: string }) {
         hitLabel,
         multiPointCount: picks.length,
         hitCellId,
+        hitPartId,
         hitRulerId
       });
     },
@@ -3344,22 +3588,61 @@ function DieViewer({ dieId }: { dieId: string }) {
             const ann = annotationsRef.current;
             if (!ann || !contextMenu.hitCellId) return;
             const selected = useDieViewerStore.getState().selectedIds;
-            const selectedCells = selected.has(`cell:${contextMenu.hitCellId}`)
+            const includeSelection = selected.has(`cell:${contextMenu.hitCellId}`);
+            const selectedCells = includeSelection
               ? ann.cells.filter((c) => selected.has(`cell:${c.id}`))
               : ann.cells.filter((c) => c.id === contextMenu.hitCellId);
             if (selectedCells.length === 0) return;
-            const minX = Math.min(...selectedCells.map((c) => c.x));
-            const minY = Math.min(...selectedCells.map((c) => c.y));
-            useDieViewerStore.getState().copyCells(
+            const wireSelection = includeSelection ? selected : new Set<string>();
+            const wireBounds = wireSelectionBounds(ann.nets, wireSelection);
+            const minX = Math.min(...selectedCells.map((c) => c.x), wireBounds?.minX ?? Infinity);
+            const minY = Math.min(...selectedCells.map((c) => c.y), wireBounds?.minY ?? Infinity);
+            const viewerStore = useDieViewerStore.getState();
+            viewerStore.copyCells(
               selectedCells.map((c) => ({
                 cellTypeId: c.cellTypeId,
-                offsetX: c.x - minX,
-                offsetY: c.y - minY,
+                offsetX: c.x - minX, offsetY: c.y - minY,
                 flippedV: c.flippedV,
                 flippedH: c.flippedH,
                 rotation: c.rotation,
               }))
             );
+            if (wireBounds) {
+              viewerStore.setWireClipboard(snapshotWireClipboard(ann.nets, wireSelection, { x: minX, y: minY })!);
+            } else {
+              viewerStore.clearWireClipboard();
+            }
+          }}
+          onCopyNet={() => {
+            const ann = annotationsRef.current;
+            if (!ann) return;
+            const selected = useDieViewerStore.getState().selectedIds;
+            const includeSelection = [...selected].some((id) => id.startsWith("net:"));
+            const wireSelection = includeSelection
+              ? selected
+              : contextMenu.hitPartId
+                ? new Set([contextMenu.hitPartId])
+                : selected;
+            const wires = snapshotWireClipboard(ann.nets, wireSelection);
+            if (wires && contextMenu.hitPartId) {
+              const selectedCells = includeSelection
+                ? ann.cells.filter((c) => selected.has(`cell:${c.id}`))
+                : [];
+              const wireBounds = wireSelectionBounds(ann.nets, wireSelection);
+              const minX = Math.min(...selectedCells.map((c) => c.x), wireBounds?.minX ?? Infinity);
+              const minY = Math.min(...selectedCells.map((c) => c.y), wireBounds?.minY ?? Infinity);
+              const viewerStore = useDieViewerStore.getState();
+              if (selectedCells.length > 0) {
+                viewerStore.copyCells(selectedCells.map((c) => ({
+                  cellTypeId: c.cellTypeId,
+                  offsetX: c.x - minX, offsetY: c.y - minY,
+                  flippedV: c.flippedV, flippedH: c.flippedH, rotation: c.rotation,
+                })));
+              } else {
+                viewerStore.clearCellClipboard();
+              }
+              viewerStore.setWireClipboard(snapshotWireClipboard(ann.nets, wireSelection, { x: minX, y: minY })!);
+            }
           }}
           onMakeUnique={() => {
             const ann = annotationsRef.current;
@@ -3391,13 +3674,12 @@ function DieViewer({ dieId }: { dieId: string }) {
           onPasteCell={() => {
             const ann = annotationsRef.current;
             if (!ann) return;
-            const clips = useDieViewerStore.getState().clipboardCells;
-            if (clips.length === 0) return;
+            const store = useDieViewerStore.getState();
+            const clips = store.clipboardCells;
+            if (clips.length === 0 && !store.clipboardWires) return;
             const baseX = Math.round(contextMenu.hitPoint.x);
             const baseY = Math.round(contextMenu.hitPoint.y);
-            void dispatcher.dispatch({
-              kind: "batch",
-              actions: clips.map((clip) => ({
+            const actions: AnnotationAction[] = clips.map((clip) => ({
                 kind: "upsertCell" as const,
                 cell: {
                   id: uuid(),
@@ -3409,9 +3691,36 @@ function DieViewer({ dieId }: { dieId: string }) {
                   rotation: clip.rotation,
                 },
                 prevCell: null,
-              }))
-            });
+              }));
+            if (store.clipboardWires) {
+              const wireAction = netChangesToAction(
+                pasteWireClipboard(ann.nets, store.clipboardWires, { x: baseX, y: baseY }),
+              );
+              if (wireAction?.kind === "batch") actions.push(...wireAction.actions);
+              else if (wireAction) actions.push(wireAction);
+            }
+            if (actions.length > 0) void dispatcher.dispatch({ kind: "batch", actions });
           }}
+          onPasteNet={() => {
+            const ann = annotationsRef.current;
+            const store = useDieViewerStore.getState();
+            if (!ann || (!store.clipboardWires && store.clipboardCells.length === 0)) return;
+            const baseX = Math.round(contextMenu.hitPoint.x);
+            const baseY = Math.round(contextMenu.hitPoint.y);
+            const actions: AnnotationAction[] = store.clipboardCells.map((clip) => ({
+              kind: "upsertCell" as const,
+              cell: { id: uuid(), cellTypeId: clip.cellTypeId, x: baseX + clip.offsetX, y: baseY + clip.offsetY, flippedV: clip.flippedV, flippedH: clip.flippedH, rotation: clip.rotation },
+              prevCell: null,
+            }));
+            if (store.clipboardWires) {
+              const wireAction = netChangesToAction(pasteWireClipboard(ann.nets, store.clipboardWires, { x: baseX, y: baseY }));
+              if (wireAction?.kind === "batch") actions.push(...wireAction.actions);
+              else if (wireAction) actions.push(wireAction);
+            }
+            if (actions.length > 0) void dispatcher.dispatch({ kind: "batch", actions });
+          }}
+          hasWireClipboard={useDieViewerStore.getState().clipboardWires !== null}
+          hasCellClipboard={useDieViewerStore.getState().clipboardCells.length > 0}
         />
       )}
       <ShortcutsPanel open={shortcutsOpen} onClose={() => setShortcutsOpen(false)} />
