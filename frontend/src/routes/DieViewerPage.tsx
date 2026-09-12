@@ -381,8 +381,17 @@ function DieViewer({ dieId }: { dieId: string }) {
             const cells = ann?.cells?.filter((c) => sel.has(`cell:${c.id}`)) ?? [];
             if (cells.length === 0) return;
             e.preventDefault();
+            const minX = Math.min(...cells.map((c) => c.x));
+            const minY = Math.min(...cells.map((c) => c.y));
             useDieViewerStore.getState().copyCells(
-              cells.map((c) => ({ cellTypeId: c.cellTypeId, flippedV: c.flippedV, flippedH: c.flippedH, rotation: c.rotation }))
+              cells.map((c) => ({
+                cellTypeId: c.cellTypeId,
+                offsetX: c.x - minX,
+                offsetY: c.y - minY,
+                flippedV: c.flippedV,
+                flippedH: c.flippedH,
+                rotation: c.rotation,
+              }))
             );
             return;
           }
@@ -394,21 +403,21 @@ function DieViewer({ dieId }: { dieId: string }) {
             if (clips.length === 0) return;
             e.preventDefault();
             const cursor = cursorLive.get();
-            const baseX = cursor ? cursor.x : 0;
-            const baseY = cursor ? cursor.y : 0;
-            for (let i = 0; i < clips.length; i++) {
-              const clip = clips[i];
-              void dispatcherRef.current.dispatch({
-                kind: "upsertCell",
+            const baseX = Math.round(cursor?.x ?? 0);
+            const baseY = Math.round(cursor?.y ?? 0);
+            void dispatcherRef.current.dispatch({
+              kind: "batch",
+              actions: clips.map((clip) => ({
+                kind: "upsertCell" as const,
                 cell: {
                   id: uuid(), cellTypeId: clip.cellTypeId,
-                  x: Math.round(baseX + i * 50), y: Math.round(baseY + i * 50),
+                  x: baseX + clip.offsetX, y: baseY + clip.offsetY,
                   flippedV: clip.flippedV, flippedH: clip.flippedH,
                   rotation: clip.rotation,
                 },
                 prevCell: null,
-              });
-            }
+              }))
+            });
             return;
           }
           case "makeUnique": {
@@ -3334,9 +3343,23 @@ function DieViewer({ dieId }: { dieId: string }) {
           onCopyCell={() => {
             const ann = annotationsRef.current;
             if (!ann || !contextMenu.hitCellId) return;
-            const cell = ann.cells?.find((c) => c.id === contextMenu.hitCellId);
-            if (!cell) return;
-            useDieViewerStore.getState().copyCells([{ cellTypeId: cell.cellTypeId, flippedV: cell.flippedV, flippedH: cell.flippedH, rotation: cell.rotation }]);
+            const selected = useDieViewerStore.getState().selectedIds;
+            const selectedCells = selected.has(`cell:${contextMenu.hitCellId}`)
+              ? ann.cells.filter((c) => selected.has(`cell:${c.id}`))
+              : ann.cells.filter((c) => c.id === contextMenu.hitCellId);
+            if (selectedCells.length === 0) return;
+            const minX = Math.min(...selectedCells.map((c) => c.x));
+            const minY = Math.min(...selectedCells.map((c) => c.y));
+            useDieViewerStore.getState().copyCells(
+              selectedCells.map((c) => ({
+                cellTypeId: c.cellTypeId,
+                offsetX: c.x - minX,
+                offsetY: c.y - minY,
+                flippedV: c.flippedV,
+                flippedH: c.flippedH,
+                rotation: c.rotation,
+              }))
+            );
           }}
           onMakeUnique={() => {
             const ann = annotationsRef.current;
@@ -3372,22 +3395,22 @@ function DieViewer({ dieId }: { dieId: string }) {
             if (clips.length === 0) return;
             const baseX = Math.round(contextMenu.hitPoint.x);
             const baseY = Math.round(contextMenu.hitPoint.y);
-            for (let i = 0; i < clips.length; i++) {
-              const clip = clips[i];
-              void dispatcher.dispatch({
-                kind: "upsertCell",
+            void dispatcher.dispatch({
+              kind: "batch",
+              actions: clips.map((clip) => ({
+                kind: "upsertCell" as const,
                 cell: {
                   id: uuid(),
                   cellTypeId: clip.cellTypeId,
-                  x: baseX + i * 50,
-                  y: baseY + i * 50,
+                  x: baseX + clip.offsetX,
+                  y: baseY + clip.offsetY,
                   flippedV: clip.flippedV,
                   flippedH: clip.flippedH,
                   rotation: clip.rotation,
                 },
                 prevCell: null,
-              });
-            }
+              }))
+            });
           }}
         />
       )}
