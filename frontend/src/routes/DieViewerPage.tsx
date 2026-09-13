@@ -515,6 +515,10 @@ function DieViewer({ dieId }: { dieId: string }) {
 
       if (e.metaKey || e.ctrlKey) return; // other ctrl combos → handled by undo/redo
 
+      // Space+digit belongs to the shared overlay shortcuts, not the metal
+      // selector. The Space-pan ref is also the authoritative held-key state.
+      if (spacePanRef.current) return;
+
       const metalStack = useSession.getState().metalStack ?? DEFAULT_METAL_STACK;
 
       // Metal layer hotkeys: bare digits 1..N
@@ -1681,8 +1685,20 @@ function DieViewer({ dieId }: { dieId: string }) {
   // Global ⌘Z/⌘⇧Z — routes to a tool's undo override (e.g. wire draft) when
   // one is registered, else the action dispatcher.
   useUndoRedoHotkeys(dispatcher);
-  // Overlay layer hotkeys (Ctrl+Shift+B, ], [, Ctrl+1..8).
-  useOverlayHotkeys();
+  // Overlay layer hotkeys (Space+B, ], [, Space+1..8).
+  const toggleBaseImageForDie = useCallback(() => {
+    const prefs = usePreferences.getState();
+    const overlays = useOverlayLayers.getState();
+    const hiddenForDie = prefs.baseImageHidden[dieId] === true;
+    const visible = !hiddenForDie && overlays.baseImageVisible;
+    if (visible) {
+      overlays.toggleBaseImage();
+    } else {
+      if (hiddenForDie) prefs.setBaseImageHidden(dieId, false);
+      if (!overlays.baseImageVisible) overlays.toggleBaseImage();
+    }
+  }, [dieId]);
+  useOverlayHotkeys(toggleBaseImageForDie);
 
   // ── Pointer move / leave ────────────────────────────────────────
 
