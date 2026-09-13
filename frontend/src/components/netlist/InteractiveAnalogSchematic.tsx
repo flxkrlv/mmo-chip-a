@@ -95,6 +95,8 @@ interface Props {
   blocks?: HierarchyBlock[];
   /** Double-click on a hierarchy block — drill into that region's schematic. */
   onOpenBlock?: (regionId: string) => void;
+  /** Boundary pins for the currently-open region (shown as labeled pins at edges). */
+  regionPins?: Array<{ netId: number; name: string; direction: "input" | "output" }>;
 }
 
 // ── Constants ────────────────────────────────────────────────────
@@ -136,7 +138,7 @@ interface RenderNode {
 export function InteractiveAnalogSchematic({
   devices, namedNets, ioNetIds, scopeKey, vdd, gnd,
   layoutStrategy = "BRANDES_KOEPF", layoutDirection = "DOWN", compactionLevel = 2,
-  nodeNode, betweenLayers, edgeEdge, edgeNode, favorStraightEdges, dragMode = "surgical", blocks, onOpenBlock,
+  nodeNode, betweenLayers, edgeEdge, edgeNode, favorStraightEdges, dragMode = "surgical", blocks, onOpenBlock, regionPins,
 }: Props) {
   const opts = useMemo(
     () => ({
@@ -147,9 +149,10 @@ export function InteractiveAnalogSchematic({
       compaction: compactionLevel,
       nodeNode, betweenLayers, edgeEdge, edgeNode, favorStraightEdges,
       blocks,
+      blockPins: regionPins,
     }),
     [vdd, gnd, ioNetIds, layoutStrategy, layoutDirection, compactionLevel,
-      nodeNode, betweenLayers, edgeEdge, edgeNode, favorStraightEdges, blocks],
+      nodeNode, betweenLayers, edgeEdge, edgeNode, favorStraightEdges, blocks, regionPins],
   );
   const table = useMemo(() => parseSymbolSkin(), []);
 
@@ -231,9 +234,37 @@ export function InteractiveAnalogSchematic({
     }) as unknown as import("shared").AnalogDevice),
     [ioNets],
   );
+  // Block boundary pin pseudo-devices + lookup (like io pins).
+  const bpDevs = useMemo<import("shared").AnalogDevice[]>(
+    () => (regionPins ?? []).map((bp) => {
+      const isInput = bp.direction === "input";
+      return {
+        id: `bp:${bp.netId}`,
+        kind: "__blockpin",
+        instanceName: `bp:${bp.netId}`,
+        layer: "metal1",
+        bbox: { x: 0, y: 0, width: 1, height: 1 },
+        geometry: {},
+        terminals: [{ name: isInput ? "A" : "Y", netId: bp.netId }],
+      } as unknown as import("shared").AnalogDevice;
+    }),
+    [regionPins],
+  );
+  const bpPinLookup = useMemo(() => {
+    const map = new Map(ioPinLookup);
+    for (const bp of regionPins ?? []) {
+      const isInput = bp.direction === "input";
+      map.set(`bp:${bp.netId}`, (t: string) => {
+        if (isInput && t === "A") return { dx: 0, dy: 10 };
+        if (!isInput && t === "Y") return { dx: 30, dy: 10 };
+        return undefined;
+      });
+    }
+    return map;
+  }, [ioPinLookup, regionPins]);
   const netIndex = useMemo(
-    () => buildNetIndex(devices, opts, [...powers, ...blockDevices(blocks ?? []), ...ioDevs]),
-    [devices, opts, powers, blocks, ioDevs],
+    () => buildNetIndex(devices, opts, [...powers, ...blockDevices(blocks ?? []), ...ioDevs, ...bpDevs]),
+    [devices, opts, powers, blocks, ioDevs, bpDevs],
   );
 
   /** Final render positions: stored/persisted positions win over ELK's. */
@@ -290,6 +321,21 @@ export function InteractiveAnalogSchematic({
         label: io.name,
       });
     }
+    // Block boundary pins (subcircuit external nets).
+    // Input pins use outputExt (arrow pointing into circuit), output pins
+    // use inputExt (arrow pointing out of circuit).
+    for (const bp of regionPins ?? []) {
+      const key = `bp:${bp.netId}`;
+      if (positions[key] == null) continue;
+      const isInput = bp.direction === "input";
+      out.push({
+        key,
+        kind: "io",
+        template: table.byKey.get(isInput ? "outputExt" : "inputExt"),
+        size: elkResult.sizes[key] ?? { w: 30, h: 20 },
+        label: bp.name,
+      });
+    }
 
     // Hierarchy blocks (floorplan regions collapsed into subcircuit
     // rectangles). Rendered as block art + side port labels.
@@ -333,7 +379,7 @@ export function InteractiveAnalogSchematic({
   /** Compute the world-space anchor of a device terminal. */
   const computeAnchor = useCallback(
     (deviceKey: string, terminal: string, pos: Record<string, Point>): Point | undefined => {
-      const pin = ioPinLookup.get(deviceKey);
+      const pin = bpPinLookup.get(deviceKey);
       const p = pos[deviceKey];
       const off = pin?.(terminal);
       if (!p || !off) return undefined;
@@ -341,7 +387,7 @@ export function InteractiveAnalogSchematic({
       const t = transformPin({ dx: off.dx, dy: off.dy }, size.w, size.h, orientations[deviceKey]);
       return { x: p.x + t.dx, y: p.y + t.dy };
     },
-    [ioPinLookup, elkResult, orientations],
+    [bpPinLookup, elkResult, orientations],
   );
 
   /** Re-route specific nets against current positions.
