@@ -21,6 +21,7 @@ import type { LvsLibrary, LvsLibraryCell } from "./lvsLibrary.js";
 import { dedupeCells } from "./lvsDedup.js";
 import { matchSubcircuit } from "./lvsMatch.js";
 import { executeVisionTool } from "./visionTool.js";
+import { SPICE_SIM_TOOL, executeSpiceSimTool, type SpiceSimToolArgs, type SpiceSimToolResult } from "./spiceSimTool.js";
 import { isClientAbortError, streamWithRetries } from "./llmStream.js";
 
 /**
@@ -1097,6 +1098,7 @@ export async function discussFindingWithLlm(
     const tools: unknown[] = [CARD_UPDATE_TOOL];
     if (useLvs) tools.push(LVS_TOOL);
     if (useVision) tools.push(VISION_TOOL);
+    tools.push(SPICE_SIM_TOOL);
     return { tools, tool_choice: "auto" };
   };
 
@@ -1161,6 +1163,7 @@ export async function discussFindingWithLlm(
     const { content, toolCalls } = await callLlm(useTools);
     const lvsCall = toolCalls.find((tc) => tc.name === "mmochip_lvs_check");
     const visionCall = toolCalls.find((tc) => tc.name === "mmochip_vision");
+    const spiceSimCall = toolCalls.find((tc) => tc.name === "mmochip_spice_sim");
     const cardUpdateCall = toolCalls.find((tc) => tc.name === "mmochip_card_update");
 
     // Terminal: card_update brings the final reply + cardUpdate. Use its args.
@@ -1175,7 +1178,7 @@ export async function discussFindingWithLlm(
       break;
     }
 
-    if ((!lvsCall && !visionCall) || toolIterations >= MAX_TOOL_ITERS) {
+    if ((!lvsCall && !visionCall && !spiceSimCall) || toolIterations >= MAX_TOOL_ITERS) {
       lastContent = content;
       break;
     }
@@ -1235,6 +1238,22 @@ export async function discussFindingWithLlm(
           chatMessages.push({ role: "tool", tool_call_id: visionCall.id, content: JSON.stringify({ error: errMsg }) });
           onEvent?.({ type: "tool_result", tool: "mmochip_vision", ok: false });
         }
+      }
+    }
+
+    // Execute SPICE simulation tool
+    if (spiceSimCall) {
+      const args = JSON.parse(spiceSimCall.arguments || "{}") as SpiceSimToolArgs;
+      onEvent?.({ type: "tool_start", tool: "mmochip_spice_sim", args });
+      try {
+        const { text: toolResult } = await executeSpiceSimTool(args);
+        chatMessages.push({ role: "tool", tool_call_id: spiceSimCall.id, content: toolResult });
+        onEvent?.({ type: "tool_result", tool: "mmochip_spice_sim", ok: true });
+      } catch (err) {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        console.error(`[assistant/discuss] spice_sim tool failed: ${errMsg}`);
+        chatMessages.push({ role: "tool", tool_call_id: spiceSimCall.id, content: JSON.stringify({ error: errMsg }) });
+        onEvent?.({ type: "tool_result", tool: "mmochip_spice_sim", ok: false });
       }
     }
 

@@ -123,6 +123,9 @@ export interface AnalogLayoutOptions {
   /** Hierarchy blocks (floorplan regions) collapsed into subcircuit
    *  rectangles. When present they are laid out as `kind:"block"` nodes. */
   blocks?: HierarchyBlock[];
+  /** Block boundary pins (external nets of the currently-open region).
+   *  Rendered as inputExt/outputExt pseudo-devices at the layout edges. */
+  blockPins?: Array<{ netId: number; name: string; direction: "input" | "output" }>;
 }
 
 /**
@@ -616,6 +619,35 @@ async function elkInteractiveLayout(
     ]);
   }
 
+  // Block boundary pin nodes (inputExt / outputExt)
+  // When a subcircuit region is open, these represent the block's external nets
+  // as pin symbols at the layout edges — same pattern as die I/O pins.
+  // Only include pins for nets that have at least one real device member —
+  // otherwise the pin would create a self-loop edge (two pins, no device)
+  // which crashes ELK's scanline layout.
+  const realDeviceNets = new Set<number>();
+  for (const d of devices) for (const t of d.terminals) if (t.netId >= 0) realDeviceNets.add(t.netId);
+  const blockPins = (opts.blockPins ?? []).filter((bp) => realDeviceNets.has(bp.netId));
+  for (const bp of blockPins) {
+    const key = `bp:${bp.netId}`;
+    const isInput = bp.direction === "input";
+    sizes[key] = POWER_TEMPLATE_SIZE.io; // 30x20
+    // input pin (outputExt): port A at (0, 10) on WEST
+    // output pin (inputExt): port Y at (30, 10) on EAST
+    portsByKey.set(key, [{
+      pid: isInput ? "A" : "Y",
+      x: isInput ? 0 : 30,
+      y: 10,
+      side: isInput ? "WEST" : "EAST",
+      netId: bp.netId,
+      terminal: isInput ? "A" : "Y",
+    }]);
+    netMembers.set(bp.netId, [
+      ...(netMembers.get(bp.netId) ?? []),
+      { deviceKey: key, device: { kind: "__blockpin" } as unknown as AnalogDevice, terminal: isInput ? "A" : "Y" },
+    ]);
+  }
+
   // ELK children — locked devices (excludeKeys) are NOT laid out by
   // ELK (elkjs cannot pin individual nodes); they stay at stored
   // positions and their nets re-route locally.
@@ -658,6 +690,33 @@ async function elkInteractiveLayout(
       layoutOptions: {
         portConstraints: "FIXED_POS",
         "layered.layering.layerConstraint": "FIRST",
+      },
+    });
+  }
+  // Block boundary pin nodes — same sizing as IO, placed at layout edges.
+  // Input pins (outputExt, port WEST) get WEST ports; output pins
+  // (inputExt, port EAST) get EAST ports.  No layerConstraint — ELK
+  // positions them naturally via port sides, avoiding scanline crashes
+  // on small graphs (1–2 devices).
+  for (const bp of blockPins) {
+    const key = `bp:${bp.netId}`;
+    const isInput = bp.direction === "input";
+    const portId = isInput ? "A" : "Y";
+    const portX = isInput ? 0 : 30;
+    children.push({
+      id: key,
+      width: sizes[key].w,
+      height: sizes[key].h,
+      ports: [{
+        id: `${key}:${portId}:0`,
+        x: portX,
+        y: 10,
+        width: 0,
+        height: 0,
+        layoutOptions: { "port.side": isInput ? "WEST" : "EAST" },
+      }],
+      layoutOptions: {
+        portConstraints: "FIXED_POS",
       },
     });
   }
@@ -707,6 +766,11 @@ async function elkInteractiveLayout(
         return isGnd ? "input" : "output";
       }
       if (isIoNet && m.deviceKey === `io:${netId}`) return "input"; // inputExt
+      // Block boundary pin: outputExt (input pin, terminal A) = consumer,
+      // inputExt (output pin, terminal Y) = driver.
+      if (m.deviceKey.startsWith("bp:")) {
+        return m.terminal === "A" ? "input" : "output";
+      }
       // Hierarchy block: in_* is a consumer, out_* is a driver.
       if (isBlockDevice(m.device)) {
         return m.terminal.startsWith("in_") ? "input" : "output";
@@ -900,7 +964,23 @@ export function gridFallback(
 ): InteractiveLayoutResult {
   const powers = powerDevices(devices, namedNets, opts);
   const blockDevs = blockDevices(opts.blocks ?? []);
-  const all = [...powers, ...blockDevs, ...devices];
+  // Block pin pseudo-devices (same filtering as elkInteractiveLayout)
+  const realDeviceNets = new Set<number>();
+  for (const d of devices) for (const t of d.terminals) if (t.netId >= 0) realDeviceNets.add(t.netId);
+  const blockPins = (opts.blockPins ?? []).filter((bp) => realDeviceNets.has(bp.netId));
+  const bpDevs: AnalogDevice[] = blockPins.map((bp) => {
+    const isInput = bp.direction === "input";
+    return {
+      id: `bp:${bp.netId}`,
+      kind: "__blockpin",
+      instanceName: `bp:${bp.netId}`,
+      layer: "metal1",
+      bbox: { x: 0, y: 0, width: 1, height: 1 },
+      geometry: {},
+      terminals: [{ name: isInput ? "A" : "Y", netId: bp.netId }],
+    } as unknown as AnalogDevice;
+  });
+  const all = [...powers, ...blockDevs, ...bpDevs, ...devices];
   const positions: Record<string, Point> = {};
   const sizes: Record<string, { w: number; h: number }> = {};
   let maxW = 40;
@@ -930,7 +1010,9 @@ export function gridFallback(
       ? blockSize((opts.blocks ?? []).find((b) => b.regionId === d.id.slice("blk:".length)) ?? { regionId: d.id, name: d.id, nets: [] })
       : (d.kind as string) === "power"
         ? ((d.instanceName ?? "").startsWith(opts.gnd ?? "GND") ? POWER_TEMPLATE_SIZE.gnd : POWER_TEMPLATE_SIZE.vcc)
-        : t ? { w: t.width, h: t.height } : { w: 30, h: 40 };
+        : (d.kind as string) === "__blockpin" || (d.kind as string) === "__io"
+          ? POWER_TEMPLATE_SIZE.io
+          : t ? { w: t.width, h: t.height } : { w: 30, h: 40 };
   });
 
   // Local routing for all nets.
@@ -944,6 +1026,14 @@ export function gridFallback(
       if (!list) netIndex.set(t.netId, (list = []));
       list.push({ deviceKey: deviceKey(bd), terminal: t.name });
     }
+  }
+  // Add block pin members into the net index.
+  for (const bp of blockPins) {
+    const key = `bp:${bp.netId}`;
+    const isInput = bp.direction === "input";
+    let list = netIndex.get(bp.netId);
+    if (!list) netIndex.set(bp.netId, (list = []));
+    list.push({ deviceKey: key, terminal: isInput ? "A" : "Y" });
   }
   const obstacles: Obstacle[] = Object.entries(positions).map(([key, p]) =>
     deviceObstacle(p, sizes[key] ?? { w: 30, h: 40 }),
@@ -960,6 +1050,16 @@ export function gridFallback(
     lookups.set(key, (terminal: string) => {
       const pin = bp.find((p) => p.pid === terminal);
       return pin ? { dx: pin.x, dy: pin.y } : undefined;
+    });
+  }
+  // Block pin lookups (same pin offsets as ELK path).
+  for (const bp of blockPins) {
+    const key = `bp:${bp.netId}`;
+    const isInput = bp.direction === "input";
+    lookups.set(key, (terminal: string) => {
+      if (isInput && terminal === "A") return { dx: 0, dy: 10 };
+      if (!isInput && terminal === "Y") return { dx: 30, dy: 10 };
+      return undefined;
     });
   }
   for (const [netId, members] of netIndex) {
