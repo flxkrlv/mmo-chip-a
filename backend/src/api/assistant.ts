@@ -8,6 +8,7 @@ import { loadLibrary, listLibraries, addSpiceCell, DEFAULT_LIBRARY_ID, type LvsL
 import { matchSubcircuit } from "../assistant/lvsMatch.js";
 import { dedupeCells } from "../assistant/lvsDedup.js";
 import { pendingVisionRequests } from "../assistant/visionTool.js";
+import { executeSpiceSimTool, type SpiceSimToolArgs } from "../assistant/spiceSimTool.js";
 
 /**
  * The assistant router is intentionally read-only. It validates the current
@@ -462,6 +463,23 @@ VDD VDD 0 DC 3.3
       const reason = error instanceof Error ? error.message : "Unknown LLM error";
       console.error(`[assistant/spice-chat] failed: ${reason}`);
       response.status(502).json({ ok: false, error: `Spice chat failed: ${reason}` });
+    }
+  });
+
+  // ── Server-side ngspice run endpoint ───────────────────────
+  router.post("/api/ngspice/run", async (request, response) => {
+    try {
+      const body = (request.body ?? {}) as SpiceSimToolArgs;
+      if (!body.netlist && !body.subcircuit && !body.directives) {
+        response.status(400).json({ ok: false, error: "Provide netlist, or subcircuit + directives." });
+        return;
+      }
+      const { result, rawData, varTypes, dataColumns } = await executeSpiceSimTool(body);
+      response.json({ ok: result.success, ...result, rawData, varTypes, dataColumns });
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : "Unknown error";
+      console.error(`[ngspice/run] failed: ${reason}`);
+      response.status(500).json({ ok: false, error: reason });
     }
   });
 

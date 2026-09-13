@@ -19,10 +19,10 @@ export function formatSI(value: number): string {
   return `${formatted}${bestPrefix}`;
 }
 
-export function formatTime(seconds: number): string { return `${formatSI(seconds)}s`; }
-export function formatFrequency(hz: number): string { return `${formatSI(hz)}Hz`; }
-export function formatVoltage(volts: number): string { return `${formatSI(volts)}V`; }
-export function formatCurrent(amps: number): string { return `${formatSI(amps)}A`; }
+export function formatTime(seconds: number): string { return formatSI(seconds); }
+export function formatFrequency(hz: number): string { return formatSI(hz); }
+export function formatVoltage(volts: number): string { return formatSI(volts); }
+export function formatCurrent(amps: number): string { return formatSI(amps); }
 
 export function formatDB(db: number): string {
   const rounded = Math.round(db * 10) / 10;

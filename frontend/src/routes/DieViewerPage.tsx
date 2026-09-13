@@ -1271,6 +1271,10 @@ function DieViewer({ dieId }: { dieId: string }) {
   const setAssistantDataFlags = usePreferences((s) => s.setAssistantDataFlags);
   const assistantMaxHypotheses = usePreferences((s) => s.assistantMaxHypotheses);
   const setAssistantMaxHypotheses = usePreferences((s) => s.setAssistantMaxHypotheses);
+  const ngspiceMode = usePreferences((s) => s.ngspiceMode);
+  const setNgspiceMode = usePreferences((s) => s.setNgspiceMode);
+  const ngspicePath = usePreferences((s) => s.ngspicePath);
+  const setNgspicePath = usePreferences((s) => s.setNgspicePath);
   const showCellRelations = usePreferences((s) => s.showCellRelations);
   const setShowCellRelations = usePreferences((s) => s.setShowCellRelations);
   const [selectedDevice, setSelectedDevice] = useState<AnalogDevice | null>(null);
@@ -3763,6 +3767,10 @@ function DieViewer({ dieId }: { dieId: string }) {
         setAssistantDataFlags={setAssistantDataFlags}
         assistantMaxHypotheses={assistantMaxHypotheses}
         setAssistantMaxHypotheses={setAssistantMaxHypotheses}
+        ngspiceMode={ngspiceMode}
+        setNgspiceMode={setNgspiceMode}
+        ngspicePath={ngspicePath}
+        setNgspicePath={setNgspicePath}
       />
     </AppShell>
   );

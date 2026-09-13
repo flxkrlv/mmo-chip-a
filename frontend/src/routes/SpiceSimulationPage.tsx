@@ -15,7 +15,8 @@ import { SubcircuitPicker, parseSubcircuits, filterTopLevel, type SubcircuitEntr
 import { DirectiveEditor, DEFAULT_DIRECTIVES } from "../components/simulation/DirectiveEditor";
 import { CollapsibleSection } from "../components/simulation/CollapsibleSection";
 import { SpiceChatPanel } from "../components/simulation/SpiceChatPanel";
-import { initSpice, runFullSimulation, terminateSpice } from "../lib/simulation/spiceService";
+import { SettingsPanel } from "../components/dieViewer/SettingsPanel";
+import { initSpice, runWithStepSupport, terminateSpice } from "../lib/simulation/spiceService";
 import { spectreToNgspice, extractModelCards } from "../lib/simulation/spectreToNgspice";
 import { findingsToSubcircuits } from "../lib/simulation/findingsToSubcircuits";
 import { useModelFile, useDirectives } from "../lib/simulation/useSpicePersistence";
@@ -125,6 +126,9 @@ function SpiceSimulator({ dieId }: { dieId: string }) {
   const [error, setError] = useState<string | null>(null);
   const [rightView, setRightView] = useState<"waveforms" | "schematic" | "netlist">("waveforms");
 
+  // .step progress state
+  const [stepProgress, setStepProgress] = useState<{ current: number; total: number; params: Record<string, string> } | null>(null);
+
   // Ref for waveform viewer imperative handle
   const waveformRef = useRef<WaveformViewerHandle | null>(null);
 
@@ -132,13 +136,31 @@ function SpiceSimulator({ dieId }: { dieId: string }) {
   const [modelFile, setModelFile] = useModelFile(dieId, DEFAULT_MODEL_FILE);
   const [directives, setDirectives] = useDirectives(dieId, selectedSubcircuit, DEFAULT_DIRECTIVES);
 
-  // Init ngspice WASM
+  const ngspiceMode = usePreferences((s) => s.ngspiceMode);
+  const setNgspiceMode = usePreferences((s) => s.setNgspiceMode);
+  const ngspicePath = usePreferences((s) => s.ngspicePath);
+  const setNgspicePath = usePreferences((s) => s.setNgspicePath);
+  const llmProvider = usePreferences((s) => s.llmProvider);
+  const setLlmProvider = usePreferences((s) => s.setLlmProvider);
+  const assistantDataFlags = usePreferences((s) => s.assistantDataFlags);
+  const setAssistantDataFlags = usePreferences((s) => s.setAssistantDataFlags);
+  const assistantMaxHypotheses = usePreferences((s) => s.assistantMaxHypotheses);
+  const setAssistantMaxHypotheses = usePreferences((s) => s.setAssistantMaxHypotheses);
+
+  // Settings panel state
+  const [settingsOpen, setSettingsOpen] = useState(false);
+
+  // Init ngspice WASM (only needed in wasm mode)
   useEffect(() => {
+    if (ngspiceMode !== "wasm") {
+      setEngineReady(true);
+      return;
+    }
     let cancelled = false;
     initSpice().then(() => { if (!cancelled) setEngineReady(true); })
       .catch((err) => { if (!cancelled) setError(`ngspice init: ${err instanceof Error ? err.message : String(err)}`); });
     return () => { cancelled = true; };
-  }, []);
+  }, [ngspiceMode]);
   useEffect(() => () => terminateSpice(), []);
 
   const selectedSubckt = useMemo(() => {
@@ -163,18 +185,28 @@ function SpiceSimulator({ dieId }: { dieId: string }) {
 
   const runSimulation = useCallback(async () => {
     if (!engineReady || running) return;
-    setRunning(true); setError(null); setOutput(null);
-    try { const r = await runFullSimulation(simulationNetlist); setOutput(r); }
-    catch (err) { setError(err instanceof Error ? err.message : String(err)); }
-    finally { setRunning(false); }
-  }, [engineReady, running, simulationNetlist]);
+    setRunning(true); setError(null); setOutput(null); setStepProgress(null);
+    try {
+      const result = await runWithStepSupport(simulationNetlist, ngspiceMode, ngspicePath, (index, total, params) => {
+        setStepProgress({ current: index + 1, total, params });
+      });
+      setOutput(result);
+    } catch (err) { setError(err instanceof Error ? err.message : String(err)); }
+    finally { setRunning(false); setStepProgress(null); }
+  }, [engineReady, running, simulationNetlist, ngspiceMode, ngspicePath]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key === "Enter") { e.preventDefault(); runSimulation(); }
+      if ((e.metaKey || e.ctrlKey) && e.key === ",") { e.preventDefault(); setSettingsOpen((v) => !v); }
     };
+    const onToggleSettings = () => setSettingsOpen((v) => !v);
     window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    window.addEventListener("toggle-settings", onToggleSettings);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      window.removeEventListener("toggle-settings", onToggleSettings);
+    };
   }, [runSimulation]);
 
   const dutInfo = useMemo(() => {
@@ -186,7 +218,9 @@ function SpiceSimulator({ dieId }: { dieId: string }) {
     <AppShell breadcrumb="SPICE Simulation" meta={die?.name}>
       <SubBar>
         <span style={{ fontSize: 11, color: "var(--ink3)" }}>
-          {engineReady ? "ngspice WASM ready" : "Loading ngspice..."}
+          {ngspiceMode === "server"
+            ? (engineReady ? "ngspice server-side ready" : "Connecting to server...")
+            : (engineReady ? "ngspice WASM ready" : "Loading ngspice...")}
         </span>
         <div style={{ flex: 1 }} />
         {(["waveforms", "schematic", "netlist"] as const).map((v) => (
@@ -231,6 +265,14 @@ function SpiceSimulator({ dieId }: { dieId: string }) {
 
           {/* Status */}
           <div style={{ padding: "6px 10px", fontSize: 10, color: "var(--ink3)", borderTop: "1px solid var(--l2)" }}>
+            {stepProgress && (
+              <div style={{ color: "var(--accent, #60a5fa)", marginBottom: 2 }}>
+                Step {stepProgress.current}/{stepProgress.total}
+                {Object.keys(stepProgress.params).length > 0 && (
+                  <span> ({Object.entries(stepProgress.params).map(([k, v]) => `${k}=${v}`).join(", ")})</span>
+                )}
+              </div>
+            )}
             {output && <span>{output.durationMs.toFixed(0)}ms / {output.raw.numVariables}v / {output.raw.numPoints}pts</span>}
             {error && <span style={{ color: "var(--bad)" }}> {error}</span>}
           </div>
@@ -322,6 +364,35 @@ function SpiceSimulator({ dieId }: { dieId: string }) {
           )}
         </div>
       </div>
+
+      <SettingsPanel
+        open={settingsOpen}
+        onClose={() => setSettingsOpen(false)}
+        deviceOverlayOn={false}
+        setDeviceOverlayOn={() => {}}
+        cellsLocked={false}
+        setCellsLocked={() => {}}
+        showTermNetIds={false}
+        setShowTermNetIds={() => {}}
+        showCellRelations={false}
+        setShowCellRelations={() => {}}
+        viaLabelsVisible={false}
+        setViaLabelsVisible={() => {}}
+        floorplanOverlayOn={false}
+        setFloorplanOverlayOn={() => {}}
+        showFloorplanIO={false}
+        setShowFloorplanIO={() => {}}
+        llmProvider={llmProvider}
+        setLlmProvider={setLlmProvider}
+        assistantDataFlags={assistantDataFlags}
+        setAssistantDataFlags={setAssistantDataFlags}
+        assistantMaxHypotheses={assistantMaxHypotheses}
+        setAssistantMaxHypotheses={setAssistantMaxHypotheses}
+        ngspiceMode={ngspiceMode}
+        setNgspiceMode={setNgspiceMode}
+        ngspicePath={ngspicePath}
+        setNgspicePath={setNgspicePath}
+      />
     </AppShell>
   );
 }

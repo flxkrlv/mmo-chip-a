@@ -210,6 +210,10 @@ interface PreferencesState {
    *  moved device (default); "full" re-routes the whole net (old behavior).
    *  Shift during drag overrides to full for that gesture. */
   netlistDragMode: "surgical" | "full";
+  /** ngspice execution mode: "wasm" (in-browser) or "server" (backend API). */
+  ngspiceMode: "wasm" | "server";
+  /** Path to ngspice binary (only used in server mode). */
+  ngspicePath: string;
 }
 
 interface PreferencesActions {
@@ -312,6 +316,8 @@ interface PreferencesActions {
   setNetlistShowHierarchy: (v: boolean) => void;
   setNetlistShowLegacyStatic: (v: boolean) => void;
   setNetlistDragMode: (v: "surgical" | "full") => void;
+  setNgspiceMode: (v: "wasm" | "server") => void;
+  setNgspicePath: (v: string) => void;
 }
 
 const DEFAULT_EXPANDED_SECTIONS: AnnotationKind[] = ["net", "via", "roi"];
@@ -391,6 +397,10 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
         netlistShowHierarchy: true,
         netlistShowLegacyStatic: false,
         netlistDragMode: "surgical",
+        ngspiceMode: "wasm",
+        ngspicePath: typeof navigator !== "undefined" && navigator.platform?.includes("Win")
+          ? "C:\\Program Files\\Spice64\\bin\\ngspice.exe"
+          : "ngspice",
 
         setNetWidth: (width) => set({ netWidth: width }),
         setNetColor: (color) => set({ netColor: color }),
@@ -583,6 +593,8 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
         setNetlistShowHierarchy: (v) => set({ netlistShowHierarchy: v }),
         setNetlistShowLegacyStatic: (v) => set({ netlistShowLegacyStatic: v }),
         setNetlistDragMode: (v) => set({ netlistDragMode: v }),
+        setNgspiceMode: (v) => set({ ngspiceMode: v }),
+        setNgspicePath: (v) => set({ ngspicePath: v }),
       }),
       {
         name: "mmo-chip-preferences",
@@ -658,6 +670,8 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
           netlistShowHierarchy: state.netlistShowHierarchy,
           netlistShowLegacyStatic: state.netlistShowLegacyStatic,
           netlistDragMode: state.netlistDragMode,
+          ngspiceMode: state.ngspiceMode,
+          ngspicePath: state.ngspicePath,
         })
       }
     )

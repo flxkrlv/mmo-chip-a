@@ -442,7 +442,7 @@ export class TransientRenderer {
     const y = this.margin.top + plotHeight;
 
     ctx.fillStyle = this.theme.textMuted;
-    ctx.font = `${this.theme.fontSize}px ${this.theme.font}`;
+    ctx.font = `${this.theme.fontSize + 1}px ${this.theme.font}`;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'top';
 
@@ -457,7 +457,7 @@ export class TransientRenderer {
     const { left, top } = this.margin;
 
     ctx.fillStyle = this.theme.textMuted;
-    ctx.font = `${this.theme.fontSize}px ${this.theme.font}`;
+    ctx.font = `${this.theme.fontSize + 1}px ${this.theme.font}`;
     ctx.textAlign = 'right';
     ctx.textBaseline = 'middle';
 

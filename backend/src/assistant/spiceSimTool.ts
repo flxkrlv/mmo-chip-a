@@ -9,7 +9,7 @@
  * Falls back gracefully if not available.
  */
 
-import { writeFile, unlink, readFile } from "node:fs/promises";
+import { writeFile, unlink, readFile, mkdir } from "node:fs/promises";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { join } from "node:path";
@@ -30,6 +30,8 @@ export interface SpiceSimToolArgs {
   directives?: string;
   /** Analysis type hint for output parsing. */
   analysis?: "tran" | "dc" | "ac";
+  /** Path to ngspice binary (overrides env NGSPICE_BIN). */
+  binPath?: string;
 }
 
 export interface SpiceSimToolResult {
@@ -113,7 +115,7 @@ function parseRawOutput(raw: string): { variables: string[]; numPoints: number; 
 /**
  * Execute a SPICE simulation via ngspice subprocess.
  */
-export async function executeSpiceSimTool(args: SpiceSimToolArgs): Promise<{ text: string; result: SpiceSimToolResult }> {
+export async function executeSpiceSimTool(args: SpiceSimToolArgs): Promise<{ text: string; result: SpiceSimToolResult; rawData?: string; rawColumns?: number; varTypes?: string[]; dataColumns?: Record<string, number[]> }> {
   const netlist = buildNetlist(args);
 
   if (!netlist.trim()) {
@@ -123,76 +125,186 @@ export async function executeSpiceSimTool(args: SpiceSimToolArgs): Promise<{ tex
     };
   }
 
-  // Write netlist to temp file
-  const id = randomBytes(8).toString("hex");
-  const tmpDir = tmpdir();
-  const cirFile = join(tmpDir, `mmochip_spice_${id}.cir`);
-  const rawFile = join(tmpDir, `mmochip_spice_${id}.raw`);
+  // Extract variable names from .print directives before modifying the netlist
+  const printVars = extractPrintVariables(netlist);
 
-  // Ensure .control block exists for batch mode
+  const id = randomBytes(8).toString("hex");
+  const runDir = join(tmpdir(), `mmochip_spice_${id}`);
+  await mkdir(runDir, { recursive: true });
+  const cirFile = join(runDir, "sim.cir");
+  const rawFile = join(runDir, "sim.raw");
+
+  // Insert .control block BEFORE .end
+  // Use "set filetype=ascii" + "write" to output rawfile format with headers
   let fullNetlist = netlist;
-  if (!fullNetlist.toLowerCase().includes(".control")) {
-    fullNetlist += `\n.control\nrun\nwrdata ${rawFile} all\nquit\n.endc`;
+  const endIdx = fullNetlist.toLowerCase().lastIndexOf(".end");
+  const controlBlock = `.control\nrun\nset filetype=ascii\nwrite sim.raw\nquit\n.endc`;
+
+  if (endIdx >= 0) {
+    fullNetlist = fullNetlist.slice(0, endIdx) + controlBlock + "\n" + fullNetlist.slice(endIdx);
+  } else {
+    fullNetlist += "\n" + controlBlock + "\n.end";
   }
 
   try {
     await writeFile(cirFile, fullNetlist, "utf-8");
 
     const { stdout, stderr } = await execFileAsync(
-      SPICE_BIN,
-      ["-b", cirFile],
-      { timeout: TIMEOUT_MS, maxBuffer: 10 * 1024 * 1024 },
+      args.binPath ?? SPICE_BIN,
+      ["-b", "sim.cir"],
+      { timeout: TIMEOUT_MS, maxBuffer: 10 * 1024 * 1024, cwd: runDir },
     );
 
     const combined = [stdout, stderr].filter(Boolean).join("\n");
 
-    // Try to read the raw output file
-    let parsed = { variables: [] as string[], numPoints: 0, measurements: {} as Record<string, number> };
+    // Read and parse rawfile ASCII format
+    let rawData = "";
+    let variables: string[] = [];
+    let varTypes: string[] = [];
+    let numPoints = 0;
+    const dataMap = new Map<string, number[]>();
+
     try {
-      const rawContent = await readFile(rawFile, "utf-8");
-      parsed = parseRawOutput(rawContent);
-    } catch {
-      // Raw file may not exist if simulation didn't produce one — parse stdout
-      parsed = parseRawOutput(combined);
+      rawData = await readFile(rawFile, "utf-8");
+      const rawLines = rawData.split("\n");
+
+      // Log structure for debugging
+      console.log("[ngspice] raw lines:", rawLines.length);
+      console.log("[ngspice] first 15 lines:");
+      for (let i = 0; i < Math.min(15, rawLines.length); i++) {
+        console.log(`  [${i}] "${rawLines[i]?.slice(0, 120)}"`);
+      }
+
+      // Parse rawfile ASCII format
+      let section: "variables" | "values" | null = null;
+      let dataStartIdx = 0;
+
+      for (let i = 0; i < rawLines.length; i++) {
+        const trimmed = rawLines[i].trim();
+        if (trimmed.toLowerCase().startsWith("no. points:")) {
+          numPoints = parseInt(trimmed.split(":")[1]?.trim() ?? "0", 10);
+        } else if (trimmed.toLowerCase() === "variables:") {
+          section = "variables";
+        } else if (trimmed.toLowerCase() === "values:" || trimmed.toLowerCase() === "binary:") {
+          section = "values";
+          dataStartIdx = i + 1;
+        } else if (section === "variables" && trimmed.match(/^\d+\s+/)) {
+          const parts = trimmed.split(/\s+/);
+          if (parts.length >= 3) {
+            variables.push(parts[1]);
+            varTypes.push(parts[2]);
+          }
+        }
+      }
+
+      // Parse data lines
+      // Format: groups of numVars lines per point
+      // First line of group: " 0  0.000e+00" (pointIndex + value)
+      // Remaining lines: "    1.000e+00" (just value, no index)
+      const dataLines = rawLines.slice(dataStartIdx).filter((l: string) => l.trim());
+      const numVars = variables.length;
+      const numPts = Math.floor(dataLines.length / numVars);
+
+      console.log("[ngspice] data lines:", dataLines.length, "vars:", numVars, "points:", numPts);
+      console.log("[ngspice] first data line:", JSON.stringify(dataLines[0]?.trim()));
+      console.log("[ngspice] second data line:", JSON.stringify(dataLines[1]?.trim()));
+
+      // Initialize data arrays
+      for (const v of variables) {
+        dataMap.set(v, []);
+      }
+
+      // Parse: each group of numVars lines = one data point
+      for (let pt = 0; pt < numPts; pt++) {
+        for (let v = 0; v < numVars; v++) {
+          const lineIdx = pt * numVars + v;
+          const line = dataLines[lineIdx]?.trim() ?? "";
+          // Split by whitespace and get the last number (the value)
+          const parts = line.split(/\s+/).filter(Boolean);
+          const value = parseFloat(parts[parts.length - 1] ?? "0");
+          dataMap.get(variables[v])!.push(value);
+        }
+      }
+    } catch (e) {
+      console.log("[ngspice] raw file error:", e);
     }
+
+    const numPointsActual = dataMap.size > 0 ? (dataMap.values().next().value?.length ?? 0) : 0;
 
     const result: SpiceSimToolResult = {
       success: true,
-      variables: parsed.variables,
-      numPoints: parsed.numPoints,
-      measurements: Object.keys(parsed.measurements).length > 0 ? parsed.measurements : undefined,
-      output: combined.slice(0, 2000), // cap for LLM context
+      variables,
+      numPoints: numPointsActual,
+      output: combined.slice(0, 2000),
       simulatedNetlist: netlist.slice(0, 1000),
     };
 
     return {
-      text: JSON.stringify({
-        success: true,
-        variables: parsed.variables,
-        numPoints: parsed.numPoints,
-        measurements: parsed.measurements,
-        outputSnippet: combined.slice(0, 500),
-      }),
+      text: JSON.stringify({ success: true, variables, numPoints: numPointsActual }),
       result,
+      rawData,
+      rawColumns: variables.length,
+      varTypes,
+      dataColumns: Object.fromEntries(dataMap),
     };
   } catch (err: any) {
     const errMsg = err instanceof Error ? err.message : String(err);
-    const result: SpiceSimToolResult = {
-      success: false,
-      error: errMsg,
-      output: err.stdout ?? err.stderr ?? "",
-      simulatedNetlist: netlist.slice(0, 1000),
-    };
-
     return {
       text: JSON.stringify({ success: false, error: errMsg }),
-      result,
+      result: { success: false, error: errMsg, output: err.stdout ?? err.stderr ?? "" },
     };
   } finally {
-    // Cleanup temp files
     try { await unlink(cirFile); } catch { /* ok */ }
     try { await unlink(rawFile); } catch { /* ok */ }
+    try { const { rmdir } = await import("node:fs/promises"); await rmdir(runDir); } catch { /* ok */ }
   }
+}
+
+/**
+ * Extract variable names from .print directives.
+ * ".print dc V(OUT)" → ["v(out)"]
+ */
+function extractPrintVariables(netlist: string): string[] {
+  const vars: string[] = [];
+  for (const line of netlist.split("\n")) {
+    const m = line.trim().match(/^\.print\s+\w+\s+(.+)/i);
+    if (m) {
+      for (const p of m[1].split(/\s+/).filter(Boolean)) {
+        vars.push(p.toLowerCase());
+      }
+    }
+  }
+  return vars;
+}
+
+/**
+ * Parse ngspice stdout/stderr output for variable names, point counts, and measurements.
+ */
+function parseNgspiceOutput(output: string): { variables: string[]; numPoints: number; measurements: Record<string, number> } {
+  const variables: string[] = [];
+  let numPoints = 0;
+  const measurements: Record<string, number> = {};
+  const lines = output.split("\n");
+  let inVariables = false;
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (trimmed.toLowerCase().startsWith("no. points:")) {
+      const m = trimmed.match(/No\. Points:\s+(\d+)/i);
+      if (m) numPoints = parseInt(m[1], 10);
+    }
+    if (trimmed.toLowerCase() === "variables:") { inVariables = true; continue; }
+    if (trimmed.toLowerCase() === "values:" || trimmed.toLowerCase() === "binary:") { inVariables = false; continue; }
+    if (inVariables && trimmed.match(/^\d+\s+/)) {
+      const parts = trimmed.split(/\s+/);
+      if (parts.length >= 2) variables.push(parts[1]);
+    }
+    const measureMatch = trimmed.match(/^(\w[\w.]*)\s*=\s*([+-]?[\d.eE+]+)/i);
+    if (measureMatch && !trimmed.toLowerCase().startsWith("no.")) {
+      measurements[measureMatch[1]] = parseFloat(measureMatch[2]);
+    }
+  }
+  return { variables, numPoints, measurements };
 }
 
 /**
