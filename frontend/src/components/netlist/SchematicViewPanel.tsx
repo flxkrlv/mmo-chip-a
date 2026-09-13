@@ -419,8 +419,11 @@ useEffect(() => {
   // - Subcircuit view: no die I/O pins (only block I/O pins via regionPins)
   const interactiveIoNetIds = useMemo(() => {
     if (selectedDeviceNames.length > 0) return undefined;
+    // When a region is selected (subcircuit view), hide die IO pins —
+    // block boundary pins (regionPins) already represent the same nets.
+    if (activeRegion && !showHierarchy) return undefined;
     return showIoPins ? n2sData.ioNetIds : undefined;
-  }, [showIoPins, selectedDeviceNames, n2sData.ioNetIds]);
+  }, [showIoPins, selectedDeviceNames, activeRegion, showHierarchy, n2sData.ioNetIds]);
 
   // When hierarchy is shown (and no subcircuit is selected), the interactive
   // canvas lays out ONLY the top-level (unassigned) devices — region contents
