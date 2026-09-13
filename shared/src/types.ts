@@ -1595,6 +1595,10 @@ export interface AssistantToolFlags {
   lvs?: boolean;
   /** Allow the model to call mmochip_vision (crop/inspect a device image). */
   vision?: boolean;
+  /** Allow the model to call mmochip_spice_sim (run ngspice simulation). */
+  spice?: boolean;
+  /** Path to ngspice binary (used by spice tool). */
+  ngspicePath?: string;
 }
 
 export interface AssistantLvsCheckRequest {

@@ -231,6 +231,25 @@ export async function executeSpiceSimTool(args: SpiceSimToolArgs): Promise<{ tex
 
     const numPointsActual = dataMap.size > 0 ? (dataMap.values().next().value?.length ?? 0) : 0;
 
+    // Build a summary with sample data for the LLM
+    const sampleData: Record<string, { first: number; last: number; min: number; max: number }> = {};
+    for (const [name, values] of dataMap) {
+      if (values.length === 0) continue;
+      let min = Infinity, max = -Infinity;
+      for (const v of values) {
+        if (Number.isFinite(v)) {
+          if (v < min) min = v;
+          if (v > max) max = v;
+        }
+      }
+      sampleData[name] = {
+        first: values[0],
+        last: values[values.length - 1],
+        min: Number.isFinite(min) ? min : 0,
+        max: Number.isFinite(max) ? max : 0,
+      };
+    }
+
     const result: SpiceSimToolResult = {
       success: true,
       variables,
@@ -239,8 +258,17 @@ export async function executeSpiceSimTool(args: SpiceSimToolArgs): Promise<{ tex
       simulatedNetlist: netlist.slice(0, 1000),
     };
 
+    // Rich text for LLM: includes variable names, point count, and sample data
+    const textForLlm = JSON.stringify({
+      success: true,
+      variables,
+      numPoints: numPointsActual,
+      sampleData,
+      ngspiceOutput: combined.slice(0, 1000),
+    });
+
     return {
-      text: JSON.stringify({ success: true, variables, numPoints: numPointsActual }),
+      text: textForLlm,
       result,
       rawData,
       rawColumns: variables.length,
@@ -329,12 +357,16 @@ export const SPICE_SIM_TOOL = {
         },
         directives: {
           type: "string",
-          description: "ngspice directives: source definitions (VDD, VIN), analysis commands (.tran, .dc, .ac), load caps, .control blocks, etc.",
+          description: "ngspice directives: source definitions (VDD, VIN), analysis commands (.tran, .dc, .ac), load caps, .control blocks, .meas commands, etc.",
         },
         analysis: {
           type: "string",
           enum: ["tran", "dc", "ac"],
           description: "Hint for the type of analysis being performed (for output parsing guidance).",
+        },
+        binPath: {
+          type: "string",
+          description: "Path to ngspice binary (e.g. 'C:\\Program Files\\Spice64\\bin\\ngspice.exe' on Windows, or 'ngspice' if in PATH).",
         },
       },
     },
