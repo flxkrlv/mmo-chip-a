@@ -8,7 +8,7 @@
  * Each plot has its own zoom/pan state and legend.
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, forwardRef, useImperativeHandle } from "react";
 import type { WaveformTrace } from "../../lib/simulation/types";
 import { TransientRenderer } from "../../lib/simulation/waveform/renderer";
 import { InteractionHandler } from "../../lib/simulation/waveform/interaction";
@@ -19,10 +19,118 @@ import { CursorTooltip } from "../../lib/simulation/waveform/CursorTooltip";
 import { Legend, type LegendSignal } from "../../lib/simulation/waveform/Legend";
 import { useCanvas } from "../../lib/simulation/waveform/use-renderer";
 
+/** White-background theme for export. */
+const EXPORT_THEME: ThemeConfig = {
+  background: "#ffffff",
+  surface: "#ffffff",
+  border: "#cccccc",
+  grid: "#e5e5e5",
+  text: "#1a1a1a",
+  textMuted: "#666666",
+  cursor: "#999999",
+  tooltipBg: "#ffffff",
+  tooltipBorder: "#cccccc",
+  font: "'Inter', -apple-system, BlinkMacSystemFont, sans-serif",
+  fontSize: 11,
+};
+
+/** Export composite canvas to PNG with white background. */
+function exportToPng(
+  renderers: (TransientRenderer | null)[],
+  labels: string[],
+): void {
+  const dpr = window.devicePixelRatio || 1;
+  const padding = 24 * dpr;
+  const labelHeight = 20 * dpr;
+  const gap = 8 * dpr;
+
+  // Collect valid renderers
+  const entries: { renderer: TransientRenderer; label: string }[] = [];
+  for (let i = 0; i < renderers.length; i++) {
+    const r = renderers[i];
+    if (r && labels[i]) {
+      entries.push({ renderer: r, label: labels[i] });
+    }
+  }
+  if (entries.length === 0) return;
+
+  // Save original themes, switch to white, re-render
+  const originalThemes: ThemeConfig[] = [];
+  for (const e of entries) {
+    originalThemes.push((e.renderer as any).theme);
+    e.renderer.setTheme(EXPORT_THEME);
+    e.renderer.render();
+  }
+
+  // Compute total height
+  const totalWidth = Math.max(...entries.map((e) => e.renderer.getCanvas().width)) + padding * 2;
+  let totalHeight = padding;
+  for (const e of entries) {
+    totalHeight += labelHeight + e.renderer.getCanvas().height + gap;
+  }
+  totalHeight += padding;
+
+  // Draw onto offscreen canvas
+  const offscreen = document.createElement("canvas");
+  offscreen.width = totalWidth;
+  offscreen.height = totalHeight;
+  const ctx = offscreen.getContext("2d");
+  if (!ctx) {
+    // Restore themes
+    for (let i = 0; i < entries.length; i++) {
+      entries[i].renderer.setTheme(originalThemes[i]);
+      entries[i].renderer.render();
+    }
+    return;
+  }
+
+  // White background
+  ctx.fillStyle = "#ffffff";
+  ctx.fillRect(0, 0, totalWidth, totalHeight);
+
+  let y = padding;
+  for (const e of entries) {
+    // Label
+    ctx.fillStyle = "#333333";
+    ctx.font = `bold ${12 * dpr}px -apple-system, BlinkMacSystemFont, sans-serif`;
+    ctx.textAlign = "left";
+    ctx.textBaseline = "top";
+    ctx.fillText(e.label, padding, y);
+    y += labelHeight;
+
+    // Canvas
+    ctx.drawImage(e.renderer.getCanvas(), padding, y);
+    y += e.renderer.getCanvas().height + gap;
+  }
+
+  // Restore original themes
+  for (let i = 0; i < entries.length; i++) {
+    entries[i].renderer.setTheme(originalThemes[i]);
+    entries[i].renderer.render();
+  }
+
+  // Download
+  offscreen.toBlob((blob) => {
+    if (!blob) return;
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "waveforms.png";
+    a.click();
+    URL.revokeObjectURL(url);
+  }, "image/png");
+}
+
 type Props = {
   traces: WaveformTrace[];
   height?: number;
 };
+
+/** Imperative handle exposed via ref for external toolbar buttons. */
+export interface WaveformViewerHandle {
+  fitToData: () => void;
+  exportPng: () => void;
+}
 
 // ── Single plot panel (reused for voltage and current) ─────────────
 
@@ -33,7 +141,6 @@ interface PlotPanelProps {
   theme: ThemeConfig;
   rendererRef: React.MutableRefObject<TransientRenderer | null>;
   interactionRef: React.MutableRefObject<InteractionHandler | null>;
-  onFit?: () => void;
 }
 
 function PlotPanel({
@@ -43,7 +150,6 @@ function PlotPanel({
   theme,
   rendererRef,
   interactionRef,
-  onFit,
 }: PlotPanelProps) {
   const [cursor, setCursor] = useState<CursorState | null>(null);
   const [allSignals, setAllSignals] = useState<LegendSignal[]>([]);
@@ -175,16 +281,6 @@ function PlotPanel({
         >
           {label}
         </div>
-        {onFit && (
-          <button
-            onClick={onFit}
-            className="btn ghost"
-            style={{ fontSize: 9, padding: "0 4px" }}
-            title="Zoom to fit"
-          >
-            &#9634;
-          </button>
-        )}
         {allSignals.length > 0 && (
           <Legend signals={allSignals} onToggle={handleToggle} style={{ padding: 0, gap: 8 }} />
         )}
@@ -212,7 +308,10 @@ function PlotPanel({
 
 // ── Main viewer ──────────────────────────────────────────────────────
 
-export function WaveformViewer({ traces, height = 120 }: Props) {
+export const WaveformViewer = forwardRef<WaveformViewerHandle, Props>(function WaveformViewer(
+  { traces, height = 120 },
+  ref,
+) {
   const theme: ThemeConfig = resolveTheme("dark");
 
   // Separate voltage and current traces
@@ -245,6 +344,20 @@ export function WaveformViewer({ traces, height = 120 }: Props) {
     currentRendererRef.current?.render();
   }, []);
 
+  // Export to PNG with white background
+  const handleExportPng = useCallback(() => {
+    exportToPng(
+      [voltageRendererRef.current, currentRendererRef.current],
+      ["Voltages", "Currents"],
+    );
+  }, []);
+
+  // Expose methods to parent via ref
+  useImperativeHandle(ref, () => ({
+    fitToData,
+    exportPng: handleExportPng,
+  }), [fitToData, handleExportPng]);
+
   if (traces.length === 0) {
     return (
       <div
@@ -274,7 +387,6 @@ export function WaveformViewer({ traces, height = 120 }: Props) {
         theme={theme}
         rendererRef={voltageRendererRef}
         interactionRef={voltageInteractionRef}
-        onFit={fitToData}
       />
 
       {/* Current plot */}
@@ -285,8 +397,7 @@ export function WaveformViewer({ traces, height = 120 }: Props) {
         theme={theme}
         rendererRef={currentRendererRef}
         interactionRef={currentInteractionRef}
-        onFit={fitToData}
       />
     </div>
   );
-}
+});

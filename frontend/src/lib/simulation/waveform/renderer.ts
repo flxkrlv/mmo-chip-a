@@ -270,6 +270,11 @@ export class TransientRenderer {
     this.listeners = {};
   }
 
+  /** Get the underlying canvas element (for export). */
+  getCanvas(): HTMLCanvasElement {
+    return this.canvas;
+  }
+
   // --- Private helpers ---
 
   private emit<K extends keyof RendererEvents>(event: K, ...args: Parameters<RendererEvents[K]>): void {
