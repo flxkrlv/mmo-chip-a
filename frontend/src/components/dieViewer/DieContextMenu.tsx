@@ -25,6 +25,8 @@ export interface DieContextMenuState {
   hitCellId?: string;
   /** Annotation part id under the cursor, e.g. `net:id/edge:edgeId`. */
   hitPartId?: string;
+  /** Whether the clicked net vertex can be split into exactly two nets. */
+  canSplitNetAtNode?: boolean;
   /** If the right-click landed on a ruler, its id. */
   hitRulerId?: string;
 }
@@ -43,6 +45,7 @@ interface Props {
   onMakeUnique?: () => void;
   onDeleteRuler?: () => void;
   onSetScaleFromRuler?: () => void;
+  onSplitNetAtNode?: () => void;
 }
 
 /** Right-click menu on the die-viewer canvas. Items today: start a single
@@ -61,7 +64,8 @@ export function DieContextMenu({
   hasCellClipboard,
   onMakeUnique,
   onDeleteRuler,
-  onSetScaleFromRuler
+  onSetScaleFromRuler,
+  onSplitNetAtNode
 }: Props) {
   const ref = useRef<HTMLDivElement | null>(null);
 
@@ -147,6 +151,23 @@ export function DieContextMenu({
           <div className="menu-sep" />
           <button className="menu-item" onClick={() => { onCopyNet(); onClose(); }}>
             Copy Wire <span style={{ marginLeft: "auto", color: "var(--ink3)" }}>Ctrl+C</span>
+          </button>
+        </>
+      )}
+      {!menu.hitCellId && menu.hitAnchor && onSplitNetAtNode && (
+        <>
+          <div className="menu-sep" />
+          <button
+            className="menu-item"
+            disabled={!menu.canSplitNetAtNode}
+            title={menu.canSplitNetAtNode ? undefined : "Only a degree-two net vertex can split into two nets"}
+            onClick={() => {
+              if (!menu.canSplitNetAtNode) return;
+              onSplitNetAtNode();
+              onClose();
+            }}
+          >
+            Split net here
           </button>
         </>
       )}

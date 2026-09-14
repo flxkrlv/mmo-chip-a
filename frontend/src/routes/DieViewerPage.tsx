@@ -115,7 +115,7 @@ import { useSelectionDelete } from "../components/dieViewer/useSelectionDelete";
 import { useUndoRedoHotkeys } from "../components/dieViewer/useUndoRedoHotkeys";
 import { useOverlayHotkeys } from "../lib/useOverlayHotkeys";
 import type { AnnotationAction } from "../api/actions";
-import { parseNetPartId, type DrawAnchor } from "../lib/netGraph";
+import { parseNetPartId, splitNetAtNode, type DrawAnchor } from "../lib/netGraph";
 import { pasteWireClipboard, snapshotWireClipboard, wireSelectionBounds } from "../lib/wireClipboard";
 import {
   normalizeRect,
@@ -2854,6 +2854,7 @@ function DieViewer({ dieId }: { dieId: string }) {
       let hitLabel = "from this point";
       let hitCellId: string | undefined;
       let hitPartId: string | undefined;
+      let canSplitNetAtNode = false;
       let hitRulerId: string | undefined;
       const rulerHit = (annotationsRef.current?.rulers ?? []).find((ruler) =>
         distancePointToSegment(world, { x: ruler.x1, y: ruler.y1 }, { x: ruler.x2, y: ruler.y2 }) <= HIT_TOLERANCE_PX / vp.zoom
@@ -2874,6 +2875,8 @@ function DieViewer({ dieId }: { dieId: string }) {
           hitPoint = { x: node.x, y: node.y };
           hitAnchor = { netId: node.netId, nodeId: node.nodeId };
           hitLabel = "from net vertex";
+          const hitNet = annotationsRef.current?.nets.find((net) => net.id === node.netId);
+          canSplitNetAtNode = hitNet?.edges.filter((edge) => edge.from === node.nodeId || edge.to === node.nodeId).length === 2;
         } else if (
           hit.annotation.kind === "via" &&
           hit.annotation.id.startsWith("anno:")
@@ -2931,6 +2934,7 @@ function DieViewer({ dieId }: { dieId: string }) {
         multiPointCount: picks.length,
         hitCellId,
         hitPartId,
+        canSplitNetAtNode,
         hitRulerId
       });
     },
@@ -3665,6 +3669,14 @@ function DieViewer({ dieId }: { dieId: string }) {
               }
               viewerStore.setWireClipboard(snapshotWireClipboard(ann.nets, wireSelection, { x: minX, y: minY })!);
             }
+          }}
+          onSplitNetAtNode={() => {
+            const ann = annotationsRef.current;
+            const anchor = contextMenu.hitAnchor;
+            if (!ann || !anchor || !contextMenu.canSplitNetAtNode) return;
+            const changes = splitNetAtNode(ann.nets, anchor.netId, anchor.nodeId);
+            const action = changes ? netChangesToAction(changes) : null;
+            if (action) void dispatcher.dispatch(action);
           }}
           onMakeUnique={() => {
             const ann = annotationsRef.current;

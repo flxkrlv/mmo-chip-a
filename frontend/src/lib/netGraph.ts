@@ -259,6 +259,75 @@ export function splitEdgeAtPoint(
   };
 }
 
+/**
+ * Split a net at a degree-two node. The node is duplicated as an endpoint in
+ * both resulting nets, so the two traces can still be edited independently.
+ * Returns null when the node is not a true two-sided cut (for example, a loop
+ * reconnects the two incident edges elsewhere).
+ */
+export function splitNetAtNode(
+  nets: AnnotationNet[],
+  netId: string,
+  nodeId: string
+): NetChange[] | null {
+  const net = nets.find((candidate) => candidate.id === netId);
+  const node = net?.nodes.find((candidate) => candidate.id === nodeId);
+  if (!net || !node) return null;
+
+  const incident = net.edges.filter((edge) => edge.from === nodeId || edge.to === nodeId);
+  if (incident.length !== 2) return null;
+
+  const withoutNodeEdges = net.edges.filter((edge) => !incident.includes(edge));
+  const adjacency = new Map<string, string[]>();
+  for (const edge of withoutNodeEdges) {
+    const from = adjacency.get(edge.from) ?? [];
+    const to = adjacency.get(edge.to) ?? [];
+    from.push(edge.to);
+    to.push(edge.from);
+    adjacency.set(edge.from, from);
+    adjacency.set(edge.to, to);
+  }
+
+  const neighborId = (edge: AnnotationNetEdge): string =>
+    edge.from === nodeId ? edge.to : edge.from;
+  const componentOf = (start: string): Set<string> => {
+    const seen = new Set<string>([start]);
+    const pending = [start];
+    while (pending.length) {
+      const current = pending.pop()!;
+      for (const next of adjacency.get(current) ?? []) {
+        if (!seen.has(next)) {
+          seen.add(next);
+          pending.push(next);
+        }
+      }
+    }
+    return seen;
+  };
+
+  const firstComponent = componentOf(neighborId(incident[0]));
+  if (firstComponent.has(neighborId(incident[1]))) return null;
+
+  const makePart = (edge: AnnotationNetEdge, component: Set<string>): AnnotationNet => {
+    const nodeIds = new Set(component);
+    nodeIds.add(nodeId);
+    return {
+      ...net,
+      nodes: net.nodes.filter((candidate) => nodeIds.has(candidate.id)),
+      edges: net.edges.filter((candidate) => {
+        if (candidate === edge) return true;
+        return nodeIds.has(candidate.from) && nodeIds.has(candidate.to);
+      })
+    };
+  };
+
+  const secondComponent = componentOf(neighborId(incident[1]));
+  return [
+    { prev: net, next: makePart(incident[0], firstComponent) },
+    { prev: null, next: { ...makePart(incident[1], secondComponent), id: newId(), name: nextNetName(nets) } }
+  ];
+}
+
 /** What the user has selected, grouped per net. */
 export interface NetSelection {
   /** Whole nets to delete outright. */
