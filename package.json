@@ -19,11 +19,18 @@
     "concurrently": "^9.1.2"
   },
   "dependencies": {
+    "@panzoom/panzoom": "^4.5.1",
     "adm-zip": "^0.5.17",
     "archiver": "^8.0.0",
     "bcryptjs": "^3.0.3",
     "elkjs": "^0.11.1",
     "jsonwebtoken": "^9.0.3",
-    "@panzoom/panzoom": "^4.5.1"
+    "present": "^1.0.0",
+    "scripts": "^0.1.0"
+  },
+  "allowScripts": {
+    "esbuild@0.27.4": true,
+    "esbuild@0.25.12": true,
+    "sharp@0.34.5": true
   }
 }
