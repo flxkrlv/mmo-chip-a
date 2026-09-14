@@ -741,6 +741,8 @@ function DieViewer({ dieId }: { dieId: string }) {
         usePreferences.getState().netNodeVisible
           ? usePreferences.getState().netNodeSize
           : 0,
+      netNodeJunctionsOnly: () =>
+        usePreferences.getState().netNodeJunctionsOnly,
       isSibling: (cellId: string) => {
         if (!annotations) return false;
         const sel = useDieViewerStore.getState().selectedIds;
@@ -773,7 +775,7 @@ function DieViewer({ dieId }: { dieId: string }) {
   useEffect(() => {
     const unsubs = (
       ["netWidth", "netColor", "cellColor", "cellShowShapes", "viaSize",
-       "viaColor", "wireLayerColors", "viaLayerColors", "netNodeSize", "netNodeVisible"] as const
+      "viaColor", "wireLayerColors", "viaLayerColors", "netNodeSize", "netNodeVisible", "netNodeJunctionsOnly"] as const
     ).map((key) =>
       usePreferences.subscribe(
         (s) => s[key],

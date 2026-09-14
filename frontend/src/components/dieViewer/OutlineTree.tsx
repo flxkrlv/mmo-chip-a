@@ -900,6 +900,8 @@ function NetSettingsButton() {
   const setNetNodeSize = usePreferences((s) => s.setNetNodeSize);
   const netNodeVisible = usePreferences((s) => s.netNodeVisible);
   const setNetNodeVisible = usePreferences((s) => s.setNetNodeVisible);
+  const netNodeJunctionsOnly = usePreferences((s) => s.netNodeJunctionsOnly);
+  const setNetNodeJunctionsOnly = usePreferences((s) => s.setNetNodeJunctionsOnly);
   const metalStack = useSession((s) => s.metalStack ?? DEFAULT_METAL_STACK);
 
   return (
@@ -998,6 +1000,14 @@ function NetSettingsButton() {
           onChange={(e) => setNetNodeVisible(e.target.checked)}
         />
         Show dots at wire turns
+      </label>
+      <label className="check" style={{ marginBottom: 8 }}>
+        <input
+          type="checkbox"
+          checked={netNodeJunctionsOnly}
+          onChange={(e) => setNetNodeJunctionsOnly(e.target.checked)}
+        />
+        Show only connection points
       </label>
       <div className="row" style={{ gap: 10 }}>
         <input

@@ -45,6 +45,14 @@ export function buildNetAnnotation(
   /** Optional: node radius multiplier (relative to net width). 0 = hide
    *  junction dots entirely. Default = `NET_NODE_RADIUS_MULT`. */
   getNodeRadiusMult?: () => number,
+  /** Optional: junction-only drawing mode. When it returns true, a dot is
+   *  drawn only where the net graph actually branches — vertices whose degree
+   *  is 1 (a dangling wire end) or ≥ 3 (a real junction). Plain bends
+   *  (degree 2) get no dot, matching the "dots only at connections" look of a
+   *  hand-drawn schematic. When false, a dot is drawn on EVERY vertex (legacy
+   *  behaviour). Drawing only — vertices stay grabbable in both modes.
+   *  Default: false. */
+  getJunctionsOnly?: () => boolean,
 ): Annotation {
   // Compute bbox from all nodes.
   let minX = Infinity,
@@ -160,7 +168,7 @@ export function buildNetAnnotation(
       // scaled by the user-configurable node radius multiplier.
       const nodeMult = getNodeRadiusMult?.() ?? NET_NODE_RADIUS_MULT;
       const showNodes = nodeMult > 0;
-      const nodeRadius = mlMode
+          const nodeRadius = mlMode
         ? worldWidth / 2
         : (screenWidth * nodeMult) / bounds.zoom;
       // Node colour: use highest-layer connected edge's colour so dots on
@@ -187,9 +195,28 @@ export function buildNetAnnotation(
         }
       }
 
+      // Junction-only mode: precompute each vertex's graph degree (number of
+      // edges touching it). We then draw a dot only at degree 1 (dangling end)
+      // and degree ≥ 3 (a real branch) — plain bends (degree 2) stay clean.
+      const junctionsOnly = getJunctionsOnly?.() ?? false;
+      let nodeDegree: Map<string, number> | null = null;
+      if (junctionsOnly) {
+        nodeDegree = new Map<string, number>();
+        for (const e of net.edges) {
+          nodeDegree.set(e.from, (nodeDegree.get(e.from) ?? 0) + 1);
+          nodeDegree.set(e.to, (nodeDegree.get(e.to) ?? 0) + 1);
+        }
+      }
+      const nodeWantsDot = (id: string) => {
+        if (!nodeDegree) return true; // legacy: every vertex
+        const d = nodeDegree.get(id) ?? 0;
+        return d === 1 || d >= 3;
+      };
+
       if (showNodes) {
         for (const n of net.nodes) {
           if (nodeSel(n)) continue;
+          if (!nodeWantsDot(n.id)) continue;
           ctx.fillStyle = nodeColor.get(n.id) ?? baseColor;
           ctx.beginPath();
           ctx.arc(n.x, n.y, nodeRadius, 0, Math.PI * 2);
