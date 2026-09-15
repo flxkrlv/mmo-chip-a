@@ -11,6 +11,7 @@ import {
   readDieRecord
 } from "../store.js";
 import type { createTileScheduler } from "../tileScheduler.js";
+import { resolveProjectDir } from "../projectLayout.js";
 import type { DieRecord } from "../types.js";
 import type { DieTileInfo, OverlayTileProgress, ProjectStorageUsage } from "shared";
 import { toPublicImportJob } from "./jobs.js";
@@ -33,13 +34,15 @@ export function createDiesRouter(config: {
     try {
       const records = await listDieRecords(config.dataRoot);
       response.json(
-        await Promise.all(records.map(async (record) =>
-          toSummary(
+        await Promise.all(records.map(async (record) => {
+          const resolved = await resolveProjectDir(config.dataRoot, record.id);
+          return toSummary(
             record,
             config.tileScheduler.getProgress(record.id),
-            await getOverlayTileProgress(config.dataRoot, record.id)
-          )
-        ))
+            await getOverlayTileProgress(config.dataRoot, record.id),
+            { available: resolved.available, folderPath: resolved.kind === "folder" ? resolved.dir : undefined }
+          );
+        }))
       );
     } catch (error) {
       next(error);
@@ -69,11 +72,13 @@ export function createDiesRouter(config: {
   router.get("/api/dies/:dieId", async (request, response, next) => {
     try {
       const record = await readDieRecord(config.dataRoot, request.params.dieId);
+      const resolved = await resolveProjectDir(config.dataRoot, record.id);
       response.json(
         toPublicRecord(
           record,
           config.tileScheduler.getProgress(record.id),
-          await getOverlayTileProgress(config.dataRoot, record.id)
+          await getOverlayTileProgress(config.dataRoot, record.id),
+          { available: resolved.available, folderPath: resolved.kind === "folder" ? resolved.dir : undefined }
         )
       );
     } catch (error) {
@@ -161,10 +166,11 @@ async function withOverlaySourceStorage(
   dieId: string,
   progress: OverlayTileProgress
 ): Promise<OverlayTileProgress> {
+  const { overlayDir } = await resolveProjectDir(dataRoot, dieId);
   return {
     ...progress,
     sources: await Promise.all(progress.sources.map(async (source) => {
-      const root = path.join(dataRoot, "overlay-images", dieId, source.id);
+      const root = path.join(overlayDir, source.id);
       return {
         ...source,
         originalBytes: await measureTreeBytes(root, (file) => /[\\/]original\.(?:png|jpe?g|webp)$/i.test(file)),
@@ -177,8 +183,7 @@ async function withOverlaySourceStorage(
 }
 
 async function measureProjectStorage(dataRoot: string, dieId: string): Promise<ProjectStorageUsage> {
-  const dieRoot = path.join(dataRoot, "dies", dieId);
-  const overlayRoot = path.join(dataRoot, "overlay-images", dieId);
+  const { dir: dieRoot, overlayDir: overlayRoot } = await resolveProjectDir(dataRoot, dieId);
   const baseTileBytes = await measureTreeBytes(path.join(dieRoot, "tiles"));
   const overlayTileBytes = await measureTreeBytes(overlayRoot, (file) =>
     /[\\/]tiles[\\/]\d+[\\/]\d+_\d+\.(?:jpg|png)$/i.test(file)
@@ -222,11 +227,15 @@ async function measureTreeBytes(
 function toSummary(
   record: DieRecord,
   tileProgress: ReturnType<ReturnType<typeof createTileScheduler>["getProgress"]>,
-  overlayTileProgress: Awaited<ReturnType<typeof getOverlayTileProgress>>
+  overlayTileProgress: Awaited<ReturnType<typeof getOverlayTileProgress>>,
+  location?: { available: boolean; folderPath?: string }
 ) {
   const { originalPath, levels, tileFormat, ...summary } = record;
   return {
     ...summary,
+    location: record.location ?? "managed",
+    available: location?.available ?? true,
+    ...(location?.folderPath ? { folderPath: location.folderPath } : {}),
     ...(tileProgress ? { tileProgress } : {}),
     ...(overlayTileProgress.totalTiles > 0 ? { overlayTileProgress } : {})
   };
@@ -235,11 +244,15 @@ function toSummary(
 function toPublicRecord(
   record: DieRecord,
   tileProgress: ReturnType<ReturnType<typeof createTileScheduler>["getProgress"]>,
-  overlayTileProgress: Awaited<ReturnType<typeof getOverlayTileProgress>>
+  overlayTileProgress: Awaited<ReturnType<typeof getOverlayTileProgress>>,
+  location?: { available: boolean; folderPath?: string }
 ) {
   const { originalPath, ...publicRecord } = record;
   return {
     ...publicRecord,
+    location: record.location ?? "managed",
+    available: location?.available ?? true,
+    ...(location?.folderPath ? { folderPath: location.folderPath } : {}),
     ...(tileProgress ? { tileProgress } : {}),
     ...(overlayTileProgress.totalTiles > 0 ? { overlayTileProgress } : {})
   };

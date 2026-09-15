@@ -1,7 +1,8 @@
 import { useState } from "react";
 import type { DieSummary, DieTileInfo, ImportJob, MLInferenceJob } from "shared";
 import type { UseQueryResult } from "@tanstack/react-query";
-import { useDeleteDie, useDieTileInfo, useExportProject, useRenameDie, useTilePrebuildControl } from "../../api/dies";
+import { useDeleteDie, useDieTileInfo, useExportProject, useRelocateProject, useRenameDie, useTilePrebuildControl } from "../../api/dies";
+import { FolderPicker } from "./FolderPicker";
 import { Menu, type MenuItemDef } from "../Menu";
 import { formatBytes, formatPercent, formatPixels, formatTileProgress } from "../../lib/format";
 import { formatTileEta } from "../../lib/tileEta";
@@ -89,6 +90,9 @@ export function ThumbCard(props: Props) {
             ? formatPixels(props.die.width, props.die.height)
             : "preparing import…"}
         </div>
+        {props.kind === "die" && (
+          <ProjectLocationBadge die={props.die} />
+        )}
         {props.kind === "die" && totalTiles > 0 && (
           <div className="m" style={{ fontSize: 10, color: "var(--ink3)", marginTop: 2 }}>
             {formatTileProgress(completedTiles, totalTiles)} · {formatPercent(combinedPercentage)}
@@ -369,6 +373,63 @@ function TileInfoPanel({
 
 function StorageRow({ label, value }: { label: string; value: string }) {
   return <tr><td style={{ padding: "5px 4px", color: "var(--ink3)" }}>{label}</td><td className="m" style={{ padding: "5px 4px", textAlign: "right" }}>{value}</td></tr>;
+}
+
+function ProjectLocationBadge({ die }: { die: DieSummary }) {
+  const relocate = useRelocateProject();
+  const toast = useToast();
+  const [pickerOpen, setPickerOpen] = useState(false);
+
+  const isFolder = die.location === "folder";
+  const missing = die.available === false;
+
+  if (!isFolder) return null;
+
+  async function handleRelocate(path: string) {
+    try {
+      await relocate.mutateAsync({ dieId: die.id, path });
+      setPickerOpen(false);
+      toast.success("Project relinked", die.name);
+    } catch (err) {
+      const apiErr = err as { status?: number; body?: { error?: string } };
+      if (apiErr?.status === 409) {
+        toast.error("Wrong folder", "That folder belongs to a different project");
+      } else {
+        toast.error("Could not relink project", (err as Error).message);
+      }
+    }
+  }
+
+  return (
+    <>
+      <div className="m" style={{ fontSize: 10, marginTop: 3, display: "flex", alignItems: "center", gap: 6 }}>
+        {missing ? (
+          <>
+            <span style={{ color: "var(--err, #e66)" }} title={die.folderPath}>folder missing</span>
+            <button
+              type="button"
+              className="btn"
+              style={{ padding: "1px 6px", fontSize: 10 }}
+              onClick={(event) => { event.stopPropagation(); setPickerOpen(true); }}
+            >
+              Relocate…
+            </button>
+          </>
+        ) : (
+          <span style={{ color: "var(--ink3)" }} title={die.folderPath}>folder project</span>
+        )}
+      </div>
+      {pickerOpen && (
+        <FolderPicker
+          title="Locate project folder"
+          confirmLabel="Relink"
+          initialPath={die.folderPath}
+          onConfirm={handleRelocate}
+          onClose={() => setPickerOpen(false)}
+        />
+      )}
+    </>
+  );
 }
 
 function JobStatusChip({ status }: { status: ImportJob["status"] }) {

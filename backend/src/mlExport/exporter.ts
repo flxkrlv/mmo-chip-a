@@ -2,6 +2,7 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import sharp from "sharp";
 import { readAnnotations, readDieRecord } from "../store.js";
+import { resolveProjectDir } from "../projectLayout.js";
 
 // Output JPG side length. Each ROI is cropped from the source image and
 // resized to this resolution.
@@ -74,7 +75,7 @@ export async function runMLExport(params: {
   let sourceHeight: number;
 
   if (overlayFilename) {
-    const overlayDir = path.join(dataRoot, "overlay-images", dieId);
+    const { overlayDir } = await resolveProjectDir(dataRoot, dieId);
     sourcePath = path.join(overlayDir, overlayFilename);
     sourceFilename = overlayFilename;
     const meta = await sharp(sourcePath, { limitInputPixels: false }).metadata();

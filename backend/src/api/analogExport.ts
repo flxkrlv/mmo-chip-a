@@ -17,12 +17,14 @@ import path from "node:path";
 import { Router } from "express";
 import type { SpiceConfig } from "shared";
 import { readDieRecord } from "../store.js";
+import { resolveProjectDir } from "../projectLayout.js";
 
 // ── SpiceConfig I/O ────────────────────────────────────────────────
 
 async function loadSpiceConfig(dataRoot: string, dieId: string): Promise<SpiceConfig | null> {
   try {
-    const p = path.join(dataRoot, "dies", dieId, "spice_config.json");
+    const { dir } = await resolveProjectDir(dataRoot, dieId);
+    const p = path.join(dir, "spice_config.json");
     const raw = await fs.readFile(p, "utf8");
     return JSON.parse(raw) as SpiceConfig;
   } catch {
@@ -35,7 +37,7 @@ async function saveSpiceConfig(
   dieId: string,
   config: SpiceConfig,
 ): Promise<void> {
-  const dir = path.join(dataRoot, "dies", dieId);
+  const { dir } = await resolveProjectDir(dataRoot, dieId);
   await fs.mkdir(dir, { recursive: true });
   await fs.writeFile(
     path.join(dir, "spice_config.json"),
@@ -82,7 +84,8 @@ export function createAnalogExportRouter(config: { dataRoot: string }) {
       }
 
       // Write output file
-      const exportDir = path.join(config.dataRoot, "dies", dieId, "export");
+      const { dir: projectDir } = await resolveProjectDir(config.dataRoot, dieId);
+      const exportDir = path.join(projectDir, "export");
       await fs.mkdir(exportDir, { recursive: true });
       const ext = dialect === "spectre" ? "scs" : "cdl";
       const netlistPath = path.join(exportDir, `${moduleName}.${ext}`);

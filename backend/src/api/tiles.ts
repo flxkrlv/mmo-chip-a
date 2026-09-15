@@ -5,6 +5,7 @@ import sharp from "sharp";
 import { resolveOverlayOriginalPath, readManifest } from "./overlayImages.js";
 import { ensurePreviewImage } from "../imagePreview.js";
 import { readAnnotations, readDieRecord } from "../store.js";
+import { resolveProjectDir } from "../projectLayout.js";
 import type { createTileScheduler } from "../tileScheduler.js";
 
 const SAFE_ID = /^[a-zA-Z0-9_-]+$/;
@@ -33,21 +34,19 @@ async function resolveCropOriginalPath(params: {
     });
   }
 
-  const originalDir = path.join(params.dataRoot, "dies", params.dieId, "original");
+  const { dir } = await resolveProjectDir(params.dataRoot, params.dieId);
+  const originalDir = path.join(dir, "original");
   const files = await fs.readdir(originalDir);
   return files.length > 0 ? path.join(originalDir, files[0]) : null;
 }
 
 function cropCachePath(params: {
-  dataRoot: string;
-  dieId: string;
+  projectDir: string;
   overlaySourceId: string | undefined;
   basename: string;
 }): string {
   const cacheDir = path.join(
-    params.dataRoot,
-    "dies",
-    params.dieId,
+    params.projectDir,
     "cell-crops"
   );
   const sourcePrefix = params.overlaySourceId
@@ -82,9 +81,9 @@ export function createTilesRouter(config: {
       const rawOverlaySourceId = request.query.overlaySourceId;
       const overlaySourceId =
         typeof rawOverlaySourceId === "string" ? rawOverlaySourceId : undefined;
+      const { dir: projectDir } = await resolveProjectDir(config.dataRoot, dieId);
       const cachePath = cropCachePath({
-        dataRoot: config.dataRoot,
-        dieId,
+        projectDir,
         overlaySourceId,
         basename: `${cellId}-${left}-${top}.jpg`
       });
@@ -96,7 +95,7 @@ export function createTilesRouter(config: {
       } catch { /* cache miss */ }
 
       // Always resolve the base image (die photo)
-      const originalDir = path.join(config.dataRoot, "dies", dieId, "original");
+      const originalDir = path.join(projectDir, "original");
       const originalFiles = await fs.readdir(originalDir);
       const basePath = originalFiles.length > 0 ? path.join(originalDir, originalFiles[0]) : null;
       if (!basePath) {
@@ -163,9 +162,9 @@ export function createTilesRouter(config: {
       const rawOverlaySourceId = request.query.overlaySourceId;
       const overlaySourceId =
         typeof rawOverlaySourceId === "string" ? rawOverlaySourceId : undefined;
+      const { dir: projectDir } = await resolveProjectDir(config.dataRoot, dieId);
       const cachePath = cropCachePath({
-        dataRoot: config.dataRoot,
-        dieId,
+        projectDir,
         overlaySourceId,
         basename: `ct-${cellTypeId}.jpg`
       });
@@ -244,7 +243,8 @@ export function createTilesRouter(config: {
     try {
       const { dieId } = request.params;
       assertSafeId(dieId);
-      const originalDir = path.join(config.dataRoot, "dies", dieId, "original");
+      const { dir: projectDir } = await resolveProjectDir(config.dataRoot, dieId);
+      const originalDir = path.join(projectDir, "original");
       const files = await fs.readdir(originalDir);
       if (files.length === 0) {
         response.status(404).json({ error: "Image not found" });
@@ -254,9 +254,7 @@ export function createTilesRouter(config: {
       const previewPath = await ensurePreviewImage({
         sourcePath,
         cachePath: path.join(
-          config.dataRoot,
-          "dies",
-          dieId,
+          projectDir,
           "previews",
           `${path.parse(files[0]).name}.4096.jpg`
         )

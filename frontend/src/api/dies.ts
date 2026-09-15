@@ -4,7 +4,16 @@ import {
   useQueryClient,
   type UseQueryOptions
 } from "@tanstack/react-query";
-import type { DieMetadata, DieSummary, DieTileInfo, DieTileProgress, ImportJob, OverlayTileProgress } from "shared";
+import type {
+  DieMetadata,
+  DieSummary,
+  DieTileInfo,
+  DieTileProgress,
+  FsBrowseResponse,
+  ImportJob,
+  OpenFolderResponse,
+  OverlayTileProgress
+} from "shared";
 import { ApiError, apiDelete, apiGet, apiPost, apiPut, apiUpload, authHeaders } from "./client";
 import { useProjectTransfer } from "../state/projectTransfer";
 import { importJobKeys } from "./importJobs";
@@ -134,6 +143,53 @@ export function useRenameDie() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: ({ dieId, name }: { dieId: string; name: string }) => renameDie(dieId, name),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: dieKeys.list() });
+    }
+  });
+}
+
+// ─── Folder projects ────────────────────────────────────────────────
+
+/** Browse the server's filesystem (roots when path is omitted). */
+export function browseFs(path: string | undefined, signal?: AbortSignal): Promise<FsBrowseResponse> {
+  const query = path ? `?path=${encodeURIComponent(path)}` : "";
+  return apiGet<FsBrowseResponse>(`/api/fs/browse${query}`, signal);
+}
+
+export function useFsBrowse(path: string | null, enabled: boolean) {
+  return useQuery({
+    queryKey: ["fs-browse", path ?? "__roots__"],
+    queryFn: ({ signal }) => browseFs(path ?? undefined, signal),
+    enabled,
+    staleTime: 5_000
+  });
+}
+
+/** Register (or create) a project inside an existing folder. */
+export function openProjectFolder(path: string, name?: string): Promise<OpenFolderResponse> {
+  return apiPost<OpenFolderResponse>("/api/dies/open-folder", { path, name });
+}
+
+export function useOpenProjectFolder() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ path, name }: { path: string; name?: string }) => openProjectFolder(path, name),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: dieKeys.list() });
+    }
+  });
+}
+
+/** Point an existing folder project at its new location after a move. */
+export function relocateProject(dieId: string, path: string): Promise<{ ok: true; dieId: string; path: string }> {
+  return apiPost<{ ok: true; dieId: string; path: string }>(`/api/dies/${dieId}/relocate`, { path });
+}
+
+export function useRelocateProject() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ dieId, path }: { dieId: string; path: string }) => relocateProject(dieId, path),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: dieKeys.list() });
     }

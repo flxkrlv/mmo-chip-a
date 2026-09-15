@@ -1,6 +1,7 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { ensureTileForRecord } from "./dieImport/importer.js";
+import { resolveProjectDirSync } from "./projectLayout.js";
 import type { DieRecord } from "./types.js";
 
 // Build the full tile pyramid after import so every area is fast on its first
@@ -54,6 +55,21 @@ export function createTileScheduler(config: {
   // avoid saturating CPU/disk while working through thousands of native tiles.
   const maxBackgroundWorkers = Math.max(1, Math.min(2, Math.max(1, config.concurrency - 1)));
 
+  /**
+   * Resolve the directory tiles belong to. Records carry their location, so
+   * this stays synchronous on the hot tile-serving path. A managed record
+   * (or one created before folder projects existed) falls back to the
+   * in-dataRoot layout, preserving all previous behaviour.
+   */
+  function projectDirFor(record: DieRecord): string {
+    return resolveProjectDirSync(
+      config.dataRoot,
+      record.id,
+      record.location ?? "managed",
+      record.folderPath
+    ).dir;
+  }
+
   function ensureProgressState(record: DieRecord) {
     let progress = progressByDie.get(record.id);
     if (!progress) {
@@ -78,7 +94,8 @@ export function createTileScheduler(config: {
       throw new Error("Die has been deleted.");
     }
 
-    const tilePath = buildTilePath(config.dataRoot, record.id, z, x, y);
+    const projectDir = projectDirFor(record);
+    const tilePath = buildTilePath(projectDir, z, x, y);
     try {
       await fs.access(tilePath);
       return tilePath;
@@ -255,14 +272,16 @@ export function createTileScheduler(config: {
 
   async function runTask(task: TileTask) {
     try {
-      const expectedTilePath = buildTilePath(config.dataRoot, task.record.id, task.z, task.x, task.y);
+      const projectDir = projectDirFor(task.record);
+      const expectedTilePath = buildTilePath(projectDir, task.z, task.x, task.y);
       const wasCached = await isTilePresent(expectedTilePath);
       const tilePath = await ensureTileForRecord({
         dataRoot: config.dataRoot,
         record: task.record,
         z: task.z,
         x: task.x,
-        y: task.y
+        y: task.y,
+        projectDir
       });
 
       if (deletedDies.has(task.record.id)) {
@@ -405,6 +424,6 @@ async function isTilePresent(tilePath: string) {
   }
 }
 
-function buildTilePath(dataRoot: string, dieId: string, z: number, x: number, y: number) {
-  return path.join(dataRoot, "dies", dieId, "tiles", String(z), `${x}_${y}.jpg`);
+function buildTilePath(projectDir: string, z: number, x: number, y: number) {
+  return path.join(projectDir, "tiles", String(z), `${x}_${y}.jpg`);
 }

@@ -14,6 +14,7 @@ import { createDebugRouter } from "./api/debug.js";
 import { createAuthRouter } from "./api/auth.js";
 import { createMetalStackRouter } from "./api/metalStack.js";
 import { createProjectIORouter } from "./api/projectIO.js";
+import { createFsRouter } from "./api/fs.js";
 import { createAssistantRouter } from "./api/assistant.js";
 import { createTilesRouter } from "./api/tiles.js";
 import { enqueueOverlayPrebuilds } from "./api/overlayImages.js";
@@ -100,6 +101,7 @@ export function createApp(config: {
   }));
   app.use(createMetalStackRouter({ dataRoot: config.dataRoot }));
   app.use(createProjectIORouter({ dataRoot: config.dataRoot, tileScheduler }));
+  app.use(createFsRouter({ dataRoot: config.dataRoot }));
   app.use(createAssistantRouter({ dataRoot: config.dataRoot }));
   app.use(createDebugRouter({ dataRoot: config.dataRoot }));
 

@@ -163,6 +163,8 @@ export async function ensureTileForRecord(params: {
   z: number;
   x: number;
   y: number;
+  /** Override the project directory (folder projects live outside dataRoot). */
+  projectDir?: string;
 }) {
   const level = params.record.levels[params.z];
   if (!level) {
@@ -178,10 +180,9 @@ export async function ensureTileForRecord(params: {
     throw new Error("Tile coordinates out of range.");
   }
 
+  const projectDir = params.projectDir ?? path.join(params.dataRoot, "dies", params.record.id);
   const tilePath = path.join(
-    params.dataRoot,
-    "dies",
-    params.record.id,
+    projectDir,
     "tiles",
     String(params.z),
     `${params.x}_${params.y}.jpg`

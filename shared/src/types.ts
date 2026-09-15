@@ -74,11 +74,90 @@ export interface DieSummary {
   updatedAt: string;
   tileProgress?: DieTileProgress;
   overlayTileProgress?: OverlayTileProgress;
+  /** Where the project's source data lives. Absent ⇒ "managed" (legacy records). */
+  location?: ProjectLocationKind;
+  /** False when a folder project's directory is missing or unreadable on this machine. */
+  available?: boolean;
+  /** Absolute directory for folder projects; undefined for managed projects. */
+  folderPath?: string;
 }
 
 export interface DieMetadata extends DieSummary {
   tileFormat: "jpg" | "png";
   levels: DieLevelMetadata[];
+}
+
+// ── Project location ──────────────────────────────────────────────
+
+/**
+ * How a project's source data is stored.
+ *  - managed: inside the application data root, at `<dataRoot>/dies/<dieId>`.
+ *             Default (legacy) mode; portable via ZIP export / import.
+ *  - folder:  a self-contained directory the user picked, living outside the
+ *             application. The folder is the single source of truth, so it can
+ *             be copied to a USB stick or synced (Dropbox / OneDrive) and
+ *             opened on another machine without any export step.
+ */
+export type ProjectLocationKind = "managed" | "folder";
+
+/**
+ * Marker file (`project.json`) written at the root of every folder project.
+ * Its presence is what turns an arbitrary directory into an openable project.
+ */
+export interface ProjectManifest {
+  /** Layout version; bumped only on an incompatible change. */
+  version: 1;
+  /** Stable project id. A copied folder keeps this id; on collision the copy
+   *  is registered under a fresh id with a "chip (2)" style name. */
+  id: string;
+  name: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface OpenFolderRequest {
+  /** Absolute path of the project directory to open. */
+  path: string;
+  /** Optional name for the project when creating a new one in an empty folder. */
+  name?: string;
+  /** Source image path when creating a brand-new project inside the folder. */
+  importImagePath?: string;
+}
+
+export interface OpenFolderResponse {
+  ok: true;
+  dieId: string;
+  /** Final (possibly suffixed) project name after de-duplication. */
+  name: string;
+  /** True when a name/id clash forced a "chip (2)" style suffix. */
+  renamed: boolean;
+  /** True when the folder already contained a project.json and was registered. */
+  existing: boolean;
+}
+
+export interface RelocateProjectRequest {
+  dieId: string;
+  /** New absolute path of the (moved) project directory. */
+  path: string;
+}
+
+/** One directory entry in the server-side folder picker. */
+export interface FsEntry {
+  name: string;
+  path: string;
+  /** True when the directory carries a project.json marker. */
+  isProject: boolean;
+}
+
+export interface FsBrowseResponse {
+  /** Absolute path of the listed directory, or null for the roots listing. */
+  path: string | null;
+  parent: string | null;
+  /** Explicit roots (drives / home) returned when `path` is null. */
+  roots?: FsEntry[];
+  directories: FsEntry[];
+  /** Set when the directory exists but could not be read (permissions). */
+  error?: string;
 }
 
 // ── Annotations ───────────────────────────────────────────────────

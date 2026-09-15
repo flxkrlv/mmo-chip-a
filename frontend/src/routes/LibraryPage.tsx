@@ -1,6 +1,7 @@
 import { useCallback, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { useImportDie, useImportProject } from "../api/dies";
+import { useImportDie, useImportProject, useOpenProjectFolder } from "../api/dies";
+import { FolderPicker } from "../components/library/FolderPicker";
 import { useLibraryItems, type LibraryItem } from "../api/library";
 import { AppShell } from "../components/shell/AppShell";
 import { StatusBar } from "../components/shell/StatusBar";
@@ -16,6 +17,8 @@ export function LibraryPage() {
   usePageStatus(null);
   const importMutation = useImportDie();
   const importProjectMutation = useImportProject();
+  const openFolderMutation = useOpenProjectFolder();
+  const [folderPickerOpen, setFolderPickerOpen] = useState(false);
   const toast = useToast();
   const dialog = useDialog();
   const navigate = useNavigate();
@@ -87,6 +90,25 @@ export function LibraryPage() {
     [importProjectMutation, navigate]
   );
 
+  const handleOpenFolder = useCallback(
+    async (path: string) => {
+      try {
+        const result = await openFolderMutation.mutateAsync({ path });
+        setFolderPickerOpen(false);
+        if (result.renamed) {
+          const detail = result.existing
+            ? 'Opened "' + result.name + '" (id renamed to avoid a clash)'
+            : 'Created "' + result.name + '"';
+          toast.success("Project opened", detail);
+        }
+        navigate('/die/' + result.dieId);
+      } catch (err) {
+        toast.error("Could not open folder", (err as Error).message);
+      }
+    },
+    [openFolderMutation, navigate, toast]
+  );
+
   return (
     <AppShell>
       <div style={{ padding: "24px 24px 0", display: "flex", alignItems: "center", gap: 10 }}>
@@ -127,6 +149,13 @@ export function LibraryPage() {
           style={{ display: "none" }}
           onChange={handleFileChange}
         />
+        <button
+          className="btn"
+          onClick={() => setFolderPickerOpen(true)}
+          disabled={openFolderMutation.isPending}
+        >
+          {Ic.folderOpen} {openFolderMutation.isPending ? "opening…" : "Open folder"}
+        </button>
         <button
           className="btn"
           onClick={() => projectFileInputRef.current?.click()}
@@ -176,6 +205,14 @@ export function LibraryPage() {
       </div>
 
       <StatusBar items={buildStatusItems(totals, importMutation.error?.message, transfer)} />
+      {folderPickerOpen && (
+        <FolderPicker
+          title="Open project folder"
+          confirmLabel="Open"
+          onConfirm={handleOpenFolder}
+          onClose={() => setFolderPickerOpen(false)}
+        />
+      )}
     </AppShell>
   );
 }

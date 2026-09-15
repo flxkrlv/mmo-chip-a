@@ -47,6 +47,10 @@ export interface DieRecord {
   createdAt: string;
   updatedAt: string;
   config?: import("shared").DieConfig;
+  /** "managed" (absent) = inside <dataRoot>/dies; "folder" = external directory. */
+  location?: import("shared").ProjectLocationKind;
+  /** Absolute external directory for folder projects. */
+  folderPath?: string;
 }
 
 export interface DieIndex {

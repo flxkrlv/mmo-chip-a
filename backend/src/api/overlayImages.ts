@@ -18,6 +18,7 @@ import sharp from "sharp";
 import { ensurePreviewImage } from "../imagePreview.js";
 import type { OverlayTileProgress, OverlayTileSourceProgress } from "shared";
 import { buildLevels } from "../dieImport/importer.js";
+import { resolveProjectDir } from "../projectLayout.js";
 
 const DEFAULT_TILE_SIZE = 512;
 const SUPPORTED_MIME_TYPES = new Set([
@@ -55,18 +56,18 @@ function assertSafeId(value: string): void {
   if (!SAFE_ID.test(value)) throw new Error("Invalid overlay image id");
 }
 
-function dieOverlayDir(dataRoot: string, dieId: string): string {
+async function dieOverlayDir(dataRoot: string, dieId: string): Promise<string> {
   assertSafeId(dieId);
-  return path.join(dataRoot, "overlay-images", dieId);
+  return (await resolveProjectDir(dataRoot, dieId)).overlayDir;
 }
 
-function sourceDir(dataRoot: string, dieId: string, id: string): string {
+async function sourceDir(dataRoot: string, dieId: string, id: string): Promise<string> {
   assertSafeId(id);
-  return path.join(dieOverlayDir(dataRoot, dieId), id);
+  return path.join(await dieOverlayDir(dataRoot, dieId), id);
 }
 
-function manifestPath(dataRoot: string, dieId: string, id: string): string {
-  return path.join(sourceDir(dataRoot, dieId, id), "manifest.json");
+async function manifestPath(dataRoot: string, dieId: string, id: string): Promise<string> {
+  return path.join(await sourceDir(dataRoot, dieId, id), "manifest.json");
 }
 
 export async function readManifest(
@@ -75,7 +76,7 @@ export async function readManifest(
   id: string
 ): Promise<OverlayImageManifest | null> {
   try {
-    const raw = await fs.readFile(manifestPath(dataRoot, dieId, id), "utf8");
+    const raw = await fs.readFile(await manifestPath(dataRoot, dieId, id), "utf8");
     const value = JSON.parse(raw) as OverlayImageManifest;
     if (!value || value.id !== id || !value.originalPath) return null;
     return value;
@@ -94,7 +95,7 @@ async function listFullManifests(
   dataRoot: string,
   dieId: string
 ): Promise<OverlayImageManifest[]> {
-  const dir = dieOverlayDir(dataRoot, dieId);
+  const dir = await dieOverlayDir(dataRoot, dieId);
   try {
     const entries = await fs.readdir(dir, { withFileTypes: true });
     const manifests = await Promise.all(
@@ -120,7 +121,7 @@ async function listManifests(
 
 async function listLegacyFiles(dataRoot: string, dieId: string): Promise<OverlayImageListItem[]> {
   try {
-    const dir = dieOverlayDir(dataRoot, dieId);
+    const dir = await dieOverlayDir(dataRoot, dieId);
     const entries = await fs.readdir(dir, { withFileTypes: true });
     const images = await Promise.all(
       entries
@@ -286,7 +287,7 @@ async function ensureTile(params: {
   priority: number;
 }): Promise<TileGenerationResult> {
   const target = path.join(
-    sourceDir(params.dataRoot, params.dieId, params.manifest.id),
+    await sourceDir(params.dataRoot, params.dieId, params.manifest.id),
     "tiles",
     String(params.z),
     `${params.x}_${params.y}.${params.manifest.tileFormat}`
@@ -338,7 +339,7 @@ async function ensureTileImpl(params: {
   }
   const ext = manifest.tileFormat;
   const target = path.join(
-    sourceDir(params.dataRoot, params.dieId, manifest.id),
+    await sourceDir(params.dataRoot, params.dieId, manifest.id),
     "tiles",
     String(z),
     `${x}_${y}.${ext}`
@@ -465,7 +466,7 @@ export function preGenerateFullPyramid(params: {
     isHuge,
     true,
     async () => {
-      const root = sourceDir(params.dataRoot, params.dieId, params.manifest.id);
+      const root = await sourceDir(params.dataRoot, params.dieId, params.manifest.id);
       const targetTiles = path.join(root, "tiles");
       const existingTiles = await countTileFiles(targetTiles, params.manifest.tileFormat);
       state.completedTiles = Math.min(totalTiles, existingTiles);
@@ -556,7 +557,7 @@ export async function getOverlayTileProgress(
     if (!state.diskScanned) {
       state.completedTiles = Math.min(
         totalTiles,
-        await countTileFiles(path.join(sourceDir(dataRoot, dieId, manifest.id), "tiles"), manifest.tileFormat)
+        await countTileFiles(path.join(await sourceDir(dataRoot, dieId, manifest.id), "tiles"), manifest.tileFormat)
       );
       state.diskScanned = true;
       if (state.completedTiles >= totalTiles) state.status = "completed";
@@ -712,7 +713,7 @@ export function createOverlayImagesRouter(config: { dataRoot: string }) {
           return;
         }
         const id = crypto.randomUUID().replace(/-/g, "");
-        const dir = sourceDir(config.dataRoot, dieId, id);
+        const dir = await sourceDir(config.dataRoot, dieId, id);
         await fs.mkdir(dir, { recursive: true });
         const extension = path.extname(tempFile.originalname).toLowerCase() || ".img";
         const originalPath = path.join(dir, `original${extension}`);
@@ -819,12 +820,11 @@ export function createOverlayImagesRouter(config: { dataRoot: string }) {
       // Serve a downscaled cached JPEG; the IC Package view only ever shows
       // the overlay as a ≤4096px background, so the full original (which can
       // be tens of thousands of pixels) never has to reach the browser.
+      const { dir: projectDir } = await resolveProjectDir(config.dataRoot, request.params.dieId);
       const previewPath = await ensurePreviewImage({
         sourcePath: originalPath,
         cachePath: path.join(
-          config.dataRoot,
-          "dies",
-          request.params.dieId,
+          projectDir,
           "previews",
           `overlay-${request.params.id}.4096.jpg`
         )
@@ -847,7 +847,7 @@ export function createOverlayImagesRouter(config: { dataRoot: string }) {
         response.status(400).json({ error: "Invalid filename" });
         return;
       }
-      const filePath = path.join(dieOverlayDir(config.dataRoot, dieId), safeName);
+      const filePath = path.join(await dieOverlayDir(config.dataRoot, dieId), safeName);
       await fs.access(filePath);
       response.sendFile(filePath);
     } catch (error) {

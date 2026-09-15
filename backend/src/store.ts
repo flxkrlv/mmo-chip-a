@@ -2,6 +2,12 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import type { MLInferenceJob } from "shared";
 import type { DieAnnotations, DieIndex, DieRecord, ImportJobIndex, ImportJobRecord, UserRecord } from "./types.js";
+import {
+  resolveProjectDir,
+  registerFolderShortcut,
+  unregisterFolderShortcut,
+  listFolderShortcuts
+} from "./projectLayout.js";
 
 const EMPTY_DIE_INDEX: DieIndex = { dies: [] };
 const EMPTY_JOB_INDEX: ImportJobIndex = { jobs: [] };
@@ -44,23 +50,53 @@ export async function listDieRecords(dataRoot: string): Promise<DieRecord[]> {
   await ensureDataStore(dataRoot);
   const indexPath = path.join(dataRoot, "index.json");
   const index = await readJson<DieIndex>(indexPath, EMPTY_DIE_INDEX);
-  const records = await Promise.all(index.dies.map((dieId) => readDieRecord(dataRoot, dieId)));
 
-  return records.sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+    // Managed records come from the index; folder records are remembered as
+  // local shortcuts. A folder project whose directory was moved/deleted on
+  // disk must not break the whole list, so it is skipped — managed records keep
+  // their original behaviour (an unreadable managed record still throws).
+  const managedIds = new Set(index.dies);
+  const shortcuts = await listFolderShortcuts(dataRoot);
+  const folderIds = shortcuts.map((s) => s.dieId);
+  const allIds = Array.from(new Set([...index.dies, ...folderIds]));
+
+  const records = await Promise.all(
+    allIds.map(async (dieId) => {
+      if (managedIds.has(dieId)) {
+        return readDieRecord(dataRoot, dieId);
+      }
+      try {
+        return await readDieRecord(dataRoot, dieId);
+      } catch {
+        return null;
+      }
+    })
+  );
+
+  return records
+    .filter((record): record is DieRecord => record !== null)
+    .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
 }
 
 export async function readDieRecord(dataRoot: string, dieId: string): Promise<DieRecord> {
-  return readJson<DieRecord>(path.join(dataRoot, "dies", dieId, "metadata.json"));
+  const { dir } = await resolveProjectDir(dataRoot, dieId);
+  return readJson<DieRecord>(path.join(dir, "metadata.json"));
 }
 
 export async function writeDieRecord(dataRoot: string, record: DieRecord) {
-  const dieDir = path.join(dataRoot, "dies", record.id);
-  await fs.mkdir(dieDir, { recursive: true });
+  const resolved = await resolveProjectDir(dataRoot, record.id);
+  await fs.mkdir(resolved.dir, { recursive: true });
   await fs.writeFile(
-    path.join(dieDir, "metadata.json"),
+    path.join(resolved.dir, "metadata.json"),
     `${JSON.stringify(record, null, 2)}\n`,
     "utf8"
   );
+
+  if (resolved.kind === "folder") {
+    // Folder projects are tracked by a local shortcut, not the managed index.
+    await registerFolderShortcut(dataRoot, record.id, resolved.dir);
+    return;
+  }
 
   const indexPath = path.join(dataRoot, "index.json");
   const index = await readJson<DieIndex>(indexPath, EMPTY_DIE_INDEX);
@@ -71,8 +107,17 @@ export async function writeDieRecord(dataRoot: string, record: DieRecord) {
 }
 
 export async function deleteDieRecord(dataRoot: string, dieId: string) {
-  const dieDir = path.join(dataRoot, "dies", dieId);
-  await fs.rm(dieDir, { recursive: true, force: true });
+    const resolved = await resolveProjectDir(dataRoot, dieId);
+
+  // Managed projects: remove the die directory — exactly what the legacy code
+  // did (overlay-images were never removed here and still are not).
+  // Folder projects: only forget the shortcut — the user's folder is theirs and
+  // must never be deleted implicitly.
+  if (resolved.kind === "managed") {
+    await fs.rm(resolved.dir, { recursive: true, force: true });
+  } else {
+    await unregisterFolderShortcut(dataRoot, dieId);
+  }
 
   const indexPath = path.join(dataRoot, "index.json");
   const index = await readJson<DieIndex>(indexPath, EMPTY_DIE_INDEX);
@@ -200,7 +245,8 @@ const EMPTY_ANNOTATIONS: DieAnnotations = {
 };
 
 export async function readAnnotations(dataRoot: string, dieId: string): Promise<DieAnnotations> {
-  const filePath = path.join(dataRoot, "dies", dieId, "annotations.json");
+  const { dir } = await resolveProjectDir(dataRoot, dieId);
+  const filePath = path.join(dir, "annotations.json");
   const data = await readJson<DieAnnotations>(filePath, EMPTY_ANNOTATIONS);
   return { ...EMPTY_ANNOTATIONS, ...data };
 }
@@ -217,7 +263,9 @@ export async function writeAnnotations(
 ): Promise<number> {
   const nextRev = (annotations.rev ?? 0) + 1;
   const stamped: DieAnnotations = { ...annotations, rev: nextRev };
-  const filePath = path.join(dataRoot, "dies", dieId, "annotations.json");
+  const { dir } = await resolveProjectDir(dataRoot, dieId);
+  await fs.mkdir(dir, { recursive: true });
+  const filePath = path.join(dir, "annotations.json");
   await fs.writeFile(filePath, `${JSON.stringify(stamped, null, 2)}\n`, "utf8");
   return nextRev;
 }
