@@ -6,6 +6,7 @@ import test, { afterEach } from "node:test";
 import express from "express";
 import request from "supertest";
 import { createFsRouter } from "./fs.js";
+import { createTileScheduler } from "../tileScheduler.js";
 import { ensureDataStore, readAnnotations, writeAnnotations, writeDieRecord } from "../store.js";
 import {
   PROJECT_MANIFEST_FILE,
@@ -30,7 +31,12 @@ async function createRoot(prefix: string): Promise<string> {
 function fsApp(dataRoot: string) {
   const app = express();
   app.use(express.json());
-  app.use(createFsRouter({ dataRoot }));
+  app.use(
+    createFsRouter({
+      dataRoot,
+      tileScheduler: createTileScheduler({ dataRoot, concurrency: 2 })
+    })
+  );
   app.use(
     (
       error: Error & { status?: number },

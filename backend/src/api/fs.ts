@@ -31,6 +31,7 @@ import {
   writeProjectManifest
 } from "../projectLayout.js";
 import type { DieRecord } from "../types.js";
+import type { createTileScheduler } from "../tileScheduler.js";
 
 function deriveId(name: string): string {
   const hash = crypto
@@ -123,6 +124,7 @@ async function listDirectories(dirPath: string): Promise<FsBrowseResponse> {
  */
 async function openFolder(
   dataRoot: string,
+  tileScheduler: ReturnType<typeof createTileScheduler>,
   folderPath: string,
   requestedName?: string
 ): Promise<OpenFolderResponse> {
@@ -181,6 +183,10 @@ async function openFolder(
 
   await registerFolderShortcut(dataRoot, dieId, resolved);
 
+  // This id may have been tombstoned by an earlier delete; re-opening the
+  // folder revives it so the scheduler serves its tiles again.
+  tileScheduler.reviveDie(dieId);
+
   // Materialise a metadata.json if the folder came without one, so the record
   // is readable immediately. Remember the folder location on the record.
   const hasMetadata = await fs
@@ -199,7 +205,10 @@ async function openFolder(
   return { ok: true, dieId, name, renamed, existing };
 }
 
-export function createFsRouter(config: { dataRoot: string }) {
+export function createFsRouter(config: {
+  dataRoot: string;
+  tileScheduler: ReturnType<typeof createTileScheduler>;
+}) {
   const router = Router();
 
   router.get("/api/fs/browse", async (request, response, next) => {
@@ -231,6 +240,7 @@ export function createFsRouter(config: { dataRoot: string }) {
       }
       const result = await openFolder(
         config.dataRoot,
+        config.tileScheduler,
         folderPath,
         typeof body.name === "string" ? body.name : undefined
       );
@@ -270,6 +280,7 @@ export function createFsRouter(config: { dataRoot: string }) {
       }
 
       await relocateFolderShortcut(config.dataRoot, dieId, resolved);
+      config.tileScheduler.reviveDie(dieId);
 
       const hasMetadata = await fs
         .access(path.join(resolved, "metadata.json"))

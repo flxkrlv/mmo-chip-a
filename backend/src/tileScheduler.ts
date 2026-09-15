@@ -369,6 +369,22 @@ export function createTileScheduler(config: {
     await Promise.allSettled(pendingCompletions);
   }
 
+  /**
+   * Clear the deletion tombstone for a die id that is alive again.
+   *
+   * `removeDie` records the id in `deletedDies` so in-flight tasks abort —
+   * correct for managed projects, whose id never returns. A FOLDER project
+   * keeps its id in `project.json`, so deleting then re-opening it through
+   * "Open folder" resurrects the very same id: without this the scheduler
+   * would keep rejecting its tiles with "Die has been deleted." and the
+   * card's thumbnail would 500 forever. Call this whenever a die is
+   * (re)registered from a folder — see api/fs.ts.
+   */
+  function reviveDie(dieId: string) {
+    deletedDies.delete(dieId);
+    progressByDie.delete(dieId);
+  }
+
   function getProgress(dieId: string) {
     const state = progressByDie.get(dieId);
     if (!state) return null;
@@ -410,6 +426,7 @@ export function createTileScheduler(config: {
     resumeBackground,
     requestTile,
     removeDie,
+    reviveDie,
     getProgress
   };
 }

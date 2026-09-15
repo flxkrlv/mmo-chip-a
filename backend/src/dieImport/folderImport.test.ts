@@ -8,7 +8,7 @@ import sharp from "sharp";
 import request from "supertest";
 import { createApp } from "../app.js";
 import { ensureDataStore } from "../store.js";
-import { readProjectManifest } from "../projectLayout.js";
+import { PROJECT_MANIFEST_FILE, readProjectManifest } from "../projectLayout.js";
 
 const tempRoots: string[] = [];
 const tempServers: Array<import("node:http").Server> = [];
@@ -157,6 +157,67 @@ test("import image into a non-empty folder fails with 409", async () => {
   // The pre-existing file is left untouched (no partial import happened).
   const entries = await fs.readdir(target);
   assert.deepEqual(entries, ["notes.txt"]);
+});
+
+test("deleting a folder project only unregisters it; reopening it still works", async () => {
+  const { app } = await createHarness();
+  const target = await createFolder("chip-delete-");
+
+  const imp = await request(app)
+    .post("/api/dies/import")
+    .field("targetFolder", target)
+    .attach("file", await pngBuffer(), { filename: "chip.png", contentType: "image/png" });
+  assert.equal(imp.status, 202);
+  const job = await waitForCompletedJob(app, imp.body.id);
+  assert.equal(job.status, "completed");
+  const dieId = job.dieId as string;
+
+  // The tile is served before deletion.
+  assert.equal((await request(app).get(`/api/dies/${dieId}/tiles/0/0/0`)).status, 200);
+
+  // Delete removes the library entry only.
+  assert.equal((await request(app).delete(`/api/dies/${dieId}`)).status, 200);
+  assert.ok(
+    await fs.access(path.join(target, PROJECT_MANIFEST_FILE)).then(() => true, () => false),
+    "the user folder (and its project.json) must survive a delete"
+  );
+
+  // Reopening the same folder must resurrect a working project — the
+  // scheduler tombstone from the delete must not reject its tiles.
+  const reopened = await request(app).post("/api/dies/open-folder").send({ path: target });
+  assert.equal(reopened.status, 200);
+  assert.equal(reopened.body.dieId, dieId);
+  assert.equal((await request(app).get(`/api/dies/${dieId}/tiles/0/0/0`)).status, 200);
+});
+
+test("a moved folder project stays listed as unavailable and recovers via relocate", async () => {
+  const { app } = await createHarness();
+  const target = await createFolder("chip-move-");
+
+  const imp = await request(app)
+    .post("/api/dies/import")
+    .field("targetFolder", target)
+    .attach("file", await pngBuffer(), { filename: "chip.png", contentType: "image/png" });
+  const job = await waitForCompletedJob(app, imp.body.id);
+  const dieId = job.dieId as string;
+
+  // Simulate the user moving the whole folder to a new location.
+  const moved = target + "-moved";
+  tempRoots.push(moved);
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  await fs.cp(target, moved, { recursive: true });
+  await fs.rm(target, { recursive: true, force: true });
+
+  // It must still be visible (as unavailable), not silently dropped.
+  const list = await request(app).get("/api/dies");
+  const entry = (list.body as Array<{ id: string; available?: boolean }>).find((d) => d.id === dieId);
+  assert.ok(entry, "the moved project must stay in the library list");
+  assert.equal(entry!.available, false);
+
+  // Relocating to the new path brings it back online.
+  const relocated = await request(app).post(`/api/dies/${dieId}/relocate`).send({ path: moved });
+  assert.equal(relocated.status, 200);
+  assert.equal((await request(app).get(`/api/dies/${dieId}/tiles/0/0/0`)).status, 200);
 });
 
 test("import image into a non-existent folder fails with 400", async () => {

@@ -68,7 +68,11 @@ export async function listDieRecords(dataRoot: string): Promise<DieRecord[]> {
       try {
         return await readDieRecord(dataRoot, dieId);
       } catch {
-        return null;
+        // The folder is gone/unreadable. If we have a snapshot, still list
+        // the project as an unavailable folder project so the user can see
+        // it and relocate it; otherwise drop it silently.
+        const shortcut = shortcuts.find((s) => s.dieId === dieId);
+        return shortcut?.snapshot ? snapshotRecord(dieId, shortcut.folderPath, shortcut.snapshot) : null;
       }
     })
   );
@@ -94,7 +98,15 @@ export async function writeDieRecord(dataRoot: string, record: DieRecord) {
 
   if (resolved.kind === "folder") {
     // Folder projects are tracked by a local shortcut, not the managed index.
-    await registerFolderShortcut(dataRoot, record.id, resolved.dir);
+    // Snapshot the display fields so the project can still be listed
+    // (as "folder missing") if its directory is moved/deleted later.
+    await registerFolderShortcut(dataRoot, record.id, resolved.dir, {
+      name: record.name,
+      width: record.width,
+      height: record.height,
+      originalFilename: record.originalFilename,
+      createdAt: record.createdAt
+    });
     return;
   }
 
@@ -295,6 +307,31 @@ export async function withDieLock<T>(dieId: string, fn: () => Promise<T>): Promi
       dieLocks.delete(dieId);
     }
   }
+}
+
+/** Build a degraded DieRecord for a folder project whose directory is
+ *  missing, from the last-known snapshot stored on its shortcut. */
+function snapshotRecord(
+  dieId: string,
+  folderPath: string,
+  snapshot: { name: string; width: number; height: number; originalFilename: string; createdAt: string }
+): DieRecord {
+  return {
+    id: dieId,
+    name: snapshot.name,
+    originalFilename: snapshot.originalFilename,
+    originalPath: "",
+    width: snapshot.width,
+    height: snapshot.height,
+    tileSize: 0,
+    tileFormat: "jpg",
+    maxZoomLevel: 0,
+    levels: [],
+    createdAt: snapshot.createdAt,
+    updatedAt: snapshot.createdAt,
+    location: "folder",
+    folderPath
+  };
 }
 
 async function readJson<T>(filePath: string, fallback?: T): Promise<T> {

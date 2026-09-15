@@ -41,10 +41,25 @@ export interface ResolvedProjectDir {
   available: boolean;
 }
 
+/**
+ * Last-known display fields of a folder project, captured whenever its
+ * metadata is written. Used to render a degraded "folder missing" card
+ * (and offer Relocate) when the project directory is unavailable.
+ */
+interface FolderShortcutSnapshot {
+  name: string;
+  width: number;
+  height: number;
+  originalFilename: string;
+  createdAt: string;
+}
+
 /** A folder-project shortcut remembered on this machine. */
 interface FolderShortcut {
   dieId: string;
   folderPath: string;
+  /** Optional; present once the project has written metadata at least once. */
+  snapshot?: FolderShortcutSnapshot;
 }
 
 /**
@@ -55,26 +70,32 @@ interface FolderShortcut {
  */
 const SHORTCUTS_FILE = "folder-projects.json";
 
-let shortcutCache: FolderShortcut[] | null = null;
+// Keyed by dataRoot: a single process may serve several data roots (tests,
+// embedding), and a shared cache leaked shortcuts between them.
+const shortcutCache = new Map<string, FolderShortcut[]>();
 
 function shortcutsPath(dataRoot: string): string {
   return path.join(dataRoot, SHORTCUTS_FILE);
 }
 
 async function readShortcuts(dataRoot: string): Promise<FolderShortcut[]> {
-  if (shortcutCache) return shortcutCache;
+  const key = path.resolve(dataRoot);
+  const cached = shortcutCache.get(key);
+  if (cached) return cached;
+  let list: FolderShortcut[];
   try {
     const raw = await fs.readFile(shortcutsPath(dataRoot), "utf8");
     const parsed = JSON.parse(raw) as FolderShortcut[];
-    shortcutCache = Array.isArray(parsed) ? parsed : [];
+    list = Array.isArray(parsed) ? parsed : [];
   } catch {
-    shortcutCache = [];
+    list = [];
   }
-  return shortcutCache;
+  shortcutCache.set(key, list);
+  return list;
 }
 
 async function writeShortcuts(dataRoot: string, list: FolderShortcut[]): Promise<void> {
-  shortcutCache = list;
+  shortcutCache.set(path.resolve(dataRoot), list);
   await fs.mkdir(dataRoot, { recursive: true });
   await fs.writeFile(
     shortcutsPath(dataRoot),
@@ -87,10 +108,17 @@ async function writeShortcuts(dataRoot: string, list: FolderShortcut[]): Promise
 export async function registerFolderShortcut(
   dataRoot: string,
   dieId: string,
-  folderPath: string
+  folderPath: string,
+  snapshot?: FolderShortcutSnapshot
 ): Promise<void> {
+  const existing = (await readShortcuts(dataRoot)).find((s) => s.dieId === dieId);
   const list = (await readShortcuts(dataRoot)).filter((s) => s.dieId !== dieId);
-  list.push({ dieId, folderPath: path.resolve(folderPath) });
+  list.push({
+    dieId,
+    folderPath: path.resolve(folderPath),
+    // Keep the previous snapshot unless a fresh one is supplied.
+    ...(snapshot ? { snapshot } : existing?.snapshot ? { snapshot: existing.snapshot } : {})
+  });
   await writeShortcuts(dataRoot, list);
 }
 
@@ -107,9 +135,10 @@ export async function unregisterFolderShortcut(
 export async function relocateFolderShortcut(
   dataRoot: string,
   dieId: string,
-  folderPath: string
+  folderPath: string,
+  snapshot?: FolderShortcutSnapshot
 ): Promise<void> {
-  await registerFolderShortcut(dataRoot, dieId, folderPath);
+  await registerFolderShortcut(dataRoot, dieId, folderPath, snapshot);
 }
 
 /** All remembered folder shortcuts on this machine. */

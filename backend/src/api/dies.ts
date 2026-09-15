@@ -130,11 +130,23 @@ export function createDiesRouter(config: {
   });
 
   router.delete("/api/dies/:dieId", async (request, response, next) => {
+    const dieId = request.params.dieId;
     try {
-      const record = await readDieRecord(config.dataRoot, request.params.dieId);
-      await config.tileScheduler.removeDie(record.id);
-      await deleteDieRecord(config.dataRoot, record.id);
-      await deleteImportJobsForDie(config.dataRoot, record.id);
+      // A folder project whose directory was moved/deleted on disk can no
+      // longer be read (metadata.json is gone). Deleting it must still work:
+      // it only forgets the shortcut, never touches the user's folder. Fall
+      // back to the raw id when the record is unreadable so the card can
+      // always be removed from the library.
+      let resolvedId = dieId;
+      try {
+        const record = await readDieRecord(config.dataRoot, dieId);
+        resolvedId = record.id;
+      } catch (readError) {
+        if ((readError as NodeJS.ErrnoException).code !== "ENOENT") throw readError;
+      }
+      await config.tileScheduler.removeDie(resolvedId);
+      await deleteDieRecord(config.dataRoot, resolvedId);
+      await deleteImportJobsForDie(config.dataRoot, resolvedId);
       response.json({ ok: true });
     } catch (error) {
       next(error);

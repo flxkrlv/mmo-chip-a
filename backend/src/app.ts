@@ -101,7 +101,7 @@ export function createApp(config: {
   }));
   app.use(createMetalStackRouter({ dataRoot: config.dataRoot }));
   app.use(createProjectIORouter({ dataRoot: config.dataRoot, tileScheduler }));
-  app.use(createFsRouter({ dataRoot: config.dataRoot }));
+  app.use(createFsRouter({ dataRoot: config.dataRoot, tileScheduler }));
   app.use(createAssistantRouter({ dataRoot: config.dataRoot }));
   app.use(createDebugRouter({ dataRoot: config.dataRoot }));
 

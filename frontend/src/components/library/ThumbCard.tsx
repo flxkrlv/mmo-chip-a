@@ -35,6 +35,7 @@ export function ThumbCard(props: Props) {
   const hasPendingTiles = totalTiles > completedTiles;
   const isPaused = Boolean(tileProgress?.isPaused || overlayTileProgress?.isPaused);
   const [showTileInfo, setShowTileInfo] = useState(false);
+  const [showRelocate, setShowRelocate] = useState(false);
   const tileInfo = useDieTileInfo(props.kind === "die" ? props.die.id : undefined, showTileInfo);
 
   const inner = (
@@ -115,6 +116,12 @@ export function ThumbCard(props: Props) {
         style={{ position: "relative" }}
         onClick={(event) => {
           if ((event.target as HTMLElement).closest(".thumb-card-actions")) return;
+          // A folder project whose directory is missing cannot be opened;
+          // send the user to the relocate flow instead of a dead /die link.
+          if (props.die.location === "folder" && props.die.available === false) {
+            setShowRelocate(true);
+            return;
+          }
           window.location.assign(`/die/${encodeURIComponent(props.die.id)}`);
         }}
       >
@@ -126,6 +133,9 @@ export function ThumbCard(props: Props) {
             query={tileInfo}
             onClose={() => setShowTileInfo(false)}
           />
+        )}
+        {showRelocate && props.die.location === "folder" && (
+          <RelocatePicker die={props.die} onClose={() => setShowRelocate(false)} />
         )}
         <a
           href={`/die/${encodeURIComponent(props.die.id)}`}
@@ -246,7 +256,13 @@ function DieCardActions({ die, onShowTileInfo }: { die: DieSummary; onShowTileIn
       danger: true,
       disabled: isBusy,
       onSelect: async () => {
-        if (!await dialog.confirm(`Delete "${die.name}"? This cannot be undone.`)) return;
+        // Folder projects are not deleted — only the library entry is
+        // removed; the user's folder stays on disk and re-opens via
+        // "Open folder". Say so instead of the scary managed-project text.
+        const message = die.location === "folder"
+          ? `Remove "${die.name}" from the library?\n\nThe project folder stays on disk and can be reopened with "Open folder".`
+          : `Delete "${die.name}"? This cannot be undone.`;
+        if (!await dialog.confirm(message)) return;
         setPending("deleting…");
         deleteMutation.mutate(die.id, {
           onSettled: () => setPending(null)
@@ -386,20 +402,15 @@ function StorageRow({ label, value }: { label: string; value: string }) {
   return <tr><td style={{ padding: "5px 4px", color: "var(--ink3)" }}>{label}</td><td className="m" style={{ padding: "5px 4px", textAlign: "right" }}>{value}</td></tr>;
 }
 
-function ProjectLocationBadge({ die }: { die: DieSummary }) {
+/** Relocate a folder project to a new path (folder was moved/renamed). */
+function RelocatePicker({ die, onClose }: { die: DieSummary; onClose: () => void }) {
   const relocate = useRelocateProject();
   const toast = useToast();
-  const [pickerOpen, setPickerOpen] = useState(false);
-
-  const isFolder = die.location === "folder";
-  const missing = die.available === false;
-
-  if (!isFolder) return null;
 
   async function handleRelocate(path: string) {
     try {
       await relocate.mutateAsync({ dieId: die.id, path });
-      setPickerOpen(false);
+      onClose();
       toast.success("Project relinked", die.name);
     } catch (err) {
       const apiErr = err as { status?: number; body?: { error?: string } };
@@ -410,6 +421,25 @@ function ProjectLocationBadge({ die }: { die: DieSummary }) {
       }
     }
   }
+
+  return (
+    <FolderPicker
+      title="Locate project folder"
+      confirmLabel="Relink"
+      initialPath={die.folderPath}
+      onConfirm={handleRelocate}
+      onClose={onClose}
+    />
+  );
+}
+
+function ProjectLocationBadge({ die }: { die: DieSummary }) {
+  const [pickerOpen, setPickerOpen] = useState(false);
+
+  const isFolder = die.location === "folder";
+  const missing = die.available === false;
+
+  if (!isFolder) return null;
 
   return (
     <>
@@ -430,15 +460,7 @@ function ProjectLocationBadge({ die }: { die: DieSummary }) {
           <span style={{ color: "var(--ink3)" }} title={die.folderPath}>folder project</span>
         )}
       </div>
-      {pickerOpen && (
-        <FolderPicker
-          title="Locate project folder"
-          confirmLabel="Relink"
-          initialPath={die.folderPath}
-          onConfirm={handleRelocate}
-          onClose={() => setPickerOpen(false)}
-        />
-      )}
+      {pickerOpen && <RelocatePicker die={die} onClose={() => setPickerOpen(false)} />}
     </>
   );
 }
