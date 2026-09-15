@@ -468,11 +468,11 @@ async function handleImport(
       }
       dieMoved = true;
     } else {
-      await fs.rename(stagedDieDir, dieDir);
+      await moveEntry(stagedDieDir, dieDir);
       dieMoved = true;
       if (importedOverlays.size > 0) {
         await ensureDir(path.join(dataRoot, "overlay-images"));
-        await fs.rename(stagedOverlayDir, overlayDir);
+        await moveEntry(stagedOverlayDir, overlayDir);
         overlayMoved = true;
       }
     }
@@ -538,6 +538,23 @@ async function syncFolderManifest(dieDir: string, record: DieRecord): Promise<vo
   );
 }
 
+/**
+ * Move a single path, falling back to copy+remove when the rename crosses
+ * volumes (EXDEV). The application's data root and a user's project folder can
+ * live on different drives (e.g. C: staging vs D: project), where rename fails.
+ */
+async function moveEntry(source: string, target: string): Promise<void> {
+  try {
+    await fs.rename(source, target);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EXDEV") throw error;
+    // fs.cp preserves nested structure (files + directories).
+    await fs.mkdir(path.dirname(target), { recursive: true });
+    await fs.cp(source, target, { recursive: true });
+    await fs.rm(source, { recursive: true, force: true });
+  }
+}
+
 /** Move every top-level entry of `from` into the existing directory `to`. */
 async function moveDirectoryContents(from: string, to: string): Promise<void> {
   await ensureDir(to);
@@ -550,7 +567,7 @@ async function moveDirectoryContents(from: string, to: string): Promise<void> {
     if (await fileExists(target)) {
       throw new ProjectIOError(409, `Target already contains ${entry.name}`);
     }
-    await fs.rename(source, target);
+    await moveEntry(source, target);
   }
 }
 
