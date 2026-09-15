@@ -139,6 +139,26 @@ test("import image into a folder that is already a project fails with 409", asyn
   assert.equal(second.body.error, "project_exists");
 });
 
+test("import image into a non-empty folder fails with 409", async () => {
+  const { app } = await createHarness();
+  const target = await createFolder("chip-nonempty-");
+
+  // A single unrelated file is enough to make the folder ineligible.
+  await fs.writeFile(path.join(target, "notes.txt"), "not a project");
+
+  const response = await request(app)
+    .post("/api/dies/import")
+    .field("targetFolder", target)
+    .attach("file", await pngBuffer(), { filename: "chip.png", contentType: "image/png" });
+
+  assert.equal(response.status, 409);
+  assert.equal(response.body.error, "folder_not_empty");
+
+  // The pre-existing file is left untouched (no partial import happened).
+  const entries = await fs.readdir(target);
+  assert.deepEqual(entries, ["notes.txt"]);
+});
+
 test("import image into a non-existent folder fails with 400", async () => {
   const { app } = await createHarness();
   const missing = path.join(os.tmpdir(), `definitely-missing-${Date.now()}`);

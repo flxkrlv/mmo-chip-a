@@ -190,14 +190,14 @@ export interface PreparedFolderProject {
  * Turn an existing directory into a brand-new folder project.
  *
  * Used by the import flows when the user chooses to create the project in an
- * independent folder ("save to folder"). The directory must be empty of any
- * project artefacts - we never overwrite a folder that is already a project
- * (that would silently destroy data).
+ * independent folder ("save to folder"). The directory must be completely
+ * empty - we never write into a folder that already holds anything (a project
+ * we would clobber, or unrelated user files we would mix into the project).
  *
  * Throws an error carrying a `status` for the caller to surface:
  *   - 400 folder_missing    - the path is not an existing directory
  *   - 409 project_exists    - a project.json is already present
- *   - 409 folder_not_empty  - metadata.json / tiles / original already present
+ *   - 409 folder_not_empty  - the folder contains any other entry at all
  */
 export async function prepareFolderProject(
   dataRoot: string,
@@ -229,18 +229,18 @@ export async function prepareFolderProject(
     });
   }
 
-  // Guard against clobbering a folder that holds loose project artefacts but no
-  // marker (e.g. a hand-copied managed directory).
-  for (const artefact of ["metadata.json", "tiles", "original", "annotations.json"]) {
-    try {
-      await fs.access(path.join(dir, artefact));
-      throw Object.assign(new Error(`Folder already contains ${artefact}`), {
+  // The destination folder must be completely empty. We never create a project
+  // alongside pre-existing content: that would either clobber a project copied
+  // without its marker, or silently mix unrelated user files into the project.
+  const existing = await fs.readdir(dir);
+  if (existing.length > 0) {
+    throw Object.assign(
+      new Error("Folder is not empty (must be completely empty)"),
+      {
         status: 409,
         code: "folder_not_empty"
-      });
-    } catch (error) {
-      if ((error as { code?: string }).code !== "ENOENT") throw error;
-    }
+      }
+    );
   }
 
   const id =
