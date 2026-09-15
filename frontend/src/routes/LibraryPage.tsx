@@ -186,34 +186,13 @@ export function LibraryPage() {
             onChange={(e) => setFilter(e.target.value)}
           />
         </label>
+        {/* <!--- library-button-order ---> */}
         <button
           className="btn accent"
           onClick={handleImportClick}
           disabled={importMutation.isPending}
         >
-          {Ic.plus} {importMutation.isPending ? "uploading…" : "import image"}
-        </button>
-        <button
-          className="btn accent"
-          onClick={() => startFolderImport("image")}
-          disabled={importMutation.isPending}
-          title="Import an image and create a project in a folder you choose"
-        >
-          {Ic.plus} {"import image → folder"}
-        </button>
-        <input
-          ref={fileInputRef}
-          type="file"
-          accept="image/png,image/jpeg"
-          style={{ display: "none" }}
-          onChange={handleFileChange}
-        />
-        <button
-          className="btn"
-          onClick={() => setFolderPickerOpen(true)}
-          disabled={openFolderMutation.isPending}
-        >
-          {Ic.folderOpen} {openFolderMutation.isPending ? "opening…" : "Open folder"}
+          {Ic.plus} {importMutation.isPending ? "uploading…" : "Import image"}
         </button>
         <button
           className="btn"
@@ -223,6 +202,14 @@ export function LibraryPage() {
           {importProjectMutation.isPending ? "importing…" : "Import Project"}
         </button>
         <button
+          className="btn accent"
+          onClick={() => startFolderImport("image")}
+          disabled={importMutation.isPending}
+          title="Import an image and create a project in a folder you choose"
+        >
+          {Ic.plus} {"Import image → folder"}
+        </button>
+        <button
           className="btn"
           onClick={() => startFolderImport("project")}
           disabled={importProjectMutation.isPending}
@@ -230,6 +217,20 @@ export function LibraryPage() {
         >
           {"Import Project → folder"}
         </button>
+        <button
+          className="btn"
+          onClick={() => setFolderPickerOpen(true)}
+          disabled={openFolderMutation.isPending}
+        >
+          {Ic.folderOpen} {openFolderMutation.isPending ? "opening…" : "Open folder"}
+        </button>
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept="image/png,image/jpeg"
+          style={{ display: "none" }}
+          onChange={handleFileChange}
+        />
         <input
           ref={projectFileInputRef}
           type="file"

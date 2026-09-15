@@ -122,6 +122,7 @@ export function ThumbCard(props: Props) {
         {showTileInfo && (
           <TileInfoPanel
             dieName={props.die.name}
+            die={props.die}
             query={tileInfo}
             onClose={() => setShowTileInfo(false)}
           />
@@ -284,14 +285,17 @@ function DieCardActions({ die, onShowTileInfo }: { die: DieSummary; onShowTileIn
 
 function TileInfoPanel({
   dieName,
+  die,
   query,
   onClose
 }: {
   dieName: string;
+  die: DieSummary;
   query: UseQueryResult<DieTileInfo, Error>;
   onClose: () => void;
 }) {
   const info = query.data;
+  const isFolder = die.location === "folder";
   return (
     <div
       role="presentation"
@@ -337,6 +341,13 @@ function TileInfoPanel({
             <div className="m" style={{ fontSize: 11, color: "var(--ink3)", marginBottom: 8 }}>
               Full project on disk: <strong style={{ color: "var(--ink)" }}>{formatBytes(info.storage.totalBytes)}</strong>
             </div>
+            {/* <!--- tile-info-folder-path ---> */}
+            {isFolder && die.folderPath && (
+              <div className="m" style={{ fontSize: 11, color: "var(--ink3)", marginBottom: 8, wordBreak: "break-all" }}>
+                Project folder: <strong style={{ color: "var(--ink)" }}>{die.folderPath}</strong>
+              </div>
+            )}
+
             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11, marginBottom: 16 }}>
               <tbody>
                 <StorageRow label="Base image and metadata" value={formatBytes(info.storage.otherProjectBytes)} />
