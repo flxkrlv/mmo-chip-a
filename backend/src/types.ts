@@ -71,6 +71,10 @@ export interface ImportJobRecord {
   startedAt: string | null;
   finishedAt: string | null;
   progress: import("shared").ImportJobProgress;
+  /** Folder project destination (null for managed imports). */
+  targetDir?: string | null;
+  /** Folder project id used for targetDir imports. */
+  targetId?: string | null;
 }
 
 export interface ImportJobIndex {

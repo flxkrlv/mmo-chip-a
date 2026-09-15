@@ -61,9 +61,10 @@ export function useDieTileInfo(dieId: string | undefined, enabled: boolean) {
   });
 }
 
-export function importDie(file: File): Promise<ImportJob> {
+export function importDie(file: File, targetFolder?: string): Promise<ImportJob> {
   const form = new FormData();
   form.append("file", file);
+  if (targetFolder) form.append("targetFolder", targetFolder);
   return apiUpload<ImportJob>("/api/dies/import", form);
 }
 
@@ -98,10 +99,12 @@ export function useDies(options?: DiesQueryOptions) {
   });
 }
 
+// useImportDie patched: takes a File or { file, targetFolder }
 export function useImportDie() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: importDie,
+    mutationFn: (input: File | { file: File; targetFolder?: string }) =>
+      input instanceof File ? importDie(input) : importDie(input.file, input.targetFolder),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: dieKeys.list() });
       void qc.invalidateQueries({ queryKey: importJobKeys.list() });
@@ -283,13 +286,17 @@ export interface ImportProjectResult {
  */
 export async function importProject(
   file: File,
-  renameTo?: string
+  renameTo?: string,
+  targetFolder?: string
 ): Promise<ImportProjectResult> {
   const form = new FormData();
   form.append("file", file);
 
-  let url = "/api/dies/import-project";
-  if (renameTo) url += `?name=${encodeURIComponent(renameTo)}`;
+  const params = new URLSearchParams();
+  if (renameTo) params.set("name", renameTo);
+  if (targetFolder) params.set("folder", targetFolder);
+  const query = params.toString();
+  let url = "/api/dies/import-project" + (query ? `?${query}` : "");
 
   const transfer = useProjectTransfer.getState();
   transfer.start("import", "Загрузка ZIP-архива…", file.size);
@@ -378,12 +385,14 @@ export function useImportProject() {
   return useMutation({
     mutationFn: async ({
       file,
-      renameTo
+      renameTo,
+      targetFolder
     }: {
       file: File;
       renameTo?: string;
+      targetFolder?: string;
     }) => {
-      return importProject(file, renameTo);
+      return importProject(file, renameTo, targetFolder);
     },
     onSuccess: (result) => {
       void qc.invalidateQueries({ queryKey: dieKeys.list() });

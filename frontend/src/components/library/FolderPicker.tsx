@@ -15,6 +15,7 @@ export function FolderPicker({
   title,
   confirmLabel,
   initialPath,
+  mode = "open",
   onConfirm,
   onClose
 }: {
@@ -22,6 +23,11 @@ export function FolderPicker({
   confirmLabel: string;
   /** Optional starting directory (e.g. the current location when relocating). */
   initialPath?: string;
+  /**
+   * "open"   — pick an existing folder (may or may not already be a project).
+   * "create" — pick an EMPTY folder to host a brand-new project.
+   */
+  mode?: "open" | "create";
   onConfirm: (path: string) => void | Promise<void>;
   onClose: () => void;
 }) {
@@ -36,11 +42,20 @@ export function FolderPicker({
     if (browse.data?.path) setManualPath(browse.data.path);
   }, [browse.data?.path]);
 
-  const entries: FsEntry[] = useMemo(() => {
+    const entries: FsEntry[] = useMemo(() => {
     if (!browse.data) return [];
     if (browse.data.roots) return browse.data.roots;
     return browse.data.directories;
   }, [browse.data]);
+
+  const pickerMode: "open" | "create" = mode;
+  const selectedIsProject = useMemo(() => {
+    const currentPath = browse.data?.path;
+    if (pickerMode !== "create" || !currentPath) return false;
+    return entries.some(
+      (entry) => pathEquals(entry.path, currentPath) && entry.isProject
+    );
+  }, [pickerMode, entries, browse.data?.path]);
 
   async function confirm(path: string) {
     if (busy || !path.trim()) return;
@@ -172,6 +187,14 @@ export function FolderPicker({
           {browse.data?.path ?? "Select a drive or type a path"}
         </div>
 
+        {pickerMode === "create" && (
+          <div className="m" style={{ fontSize: 10.5, color: selectedIsProject ? "var(--err, #e66)" : "var(--ink3)" }}>
+            {selectedIsProject
+              ? "This folder is already a project — choosing it will fail. Pick an empty folder."
+              : "The project will be created inside this folder. Choose an empty folder."}
+          </div>
+        )}
+
         <div className="dialog-actions">
           <button className="btn" onClick={onClose} disabled={busy}>
             Cancel
@@ -189,4 +212,10 @@ export function FolderPicker({
     </div>,
     document.body
   );
+}
+
+function pathEquals(left: string, right: string): boolean {
+  const normalize = (value: string) =>
+    value.replace(/[\\/]+$/, "").replace(/\\/g, "/").toLowerCase();
+  return normalize(left) === normalize(right);
 }

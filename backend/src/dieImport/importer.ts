@@ -28,6 +28,10 @@ export async function importDieShot(params: {
   tileSize: number;
   limitInputPixels: number | false;
   tileConcurrency: number;
+  /** Import straight into this existing directory (creates a folder project). */
+  targetDir?: string;
+  /** Project id to use when targeting a folder (already registered as a shortcut). */
+  targetId?: string;
   onProgress?: (update: ImportProgressUpdate) => Promise<void> | void;
   logger?: (message: string) => void;
 }): Promise<DieRecord> {
@@ -45,9 +49,9 @@ export async function importDieShot(params: {
 
   params.logger?.(`analyzed ${params.originalFilename} at ${metadata.width}x${metadata.height}`);
 
-  const id = crypto.randomUUID();
+  const id = params.targetDir ? params.targetId ?? crypto.randomUUID() : crypto.randomUUID();
   const extension = params.mimeType === "image/png" ? "png" : "jpg";
-  const dieDir = path.join(params.dataRoot, "dies", id);
+  const dieDir = params.targetDir ? path.resolve(params.targetDir) : path.join(params.dataRoot, "dies", id);
   const originalDir = path.join(dieDir, "original");
   const tilesDir = path.join(dieDir, "tiles");
   await fs.mkdir(originalDir, { recursive: true });
@@ -89,7 +93,10 @@ export async function importDieShot(params: {
     maxZoomLevel,
     levels,
     createdAt: timestamp,
-    updatedAt: timestamp
+    updatedAt: timestamp,
+    ...(params.targetDir
+      ? { location: "folder" as const, folderPath: dieDir }
+      : {})
   };
 
   await params.onProgress?.({

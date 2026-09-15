@@ -147,11 +147,24 @@ export function createDiesRouter(config: {
       return;
     }
 
+    const targetFolder =
+      typeof request.body?.targetFolder === "string" && request.body.targetFolder.trim()
+        ? request.body.targetFolder.trim()
+        : undefined;
+
     try {
       await ensureDataStore(config.dataRoot);
-      const job = await config.importJobManager.enqueueImportJob(request.file);
+      const job = await config.importJobManager.enqueueImportJob(request.file, targetFolder);
       response.status(202).json(toPublicImportJob(job));
     } catch (error) {
+      const status = (error as { status?: number }).status;
+      if (status === 400 || status === 409) {
+        response.status(status).json({
+          error: (error as { code?: string }).code ?? "folder_error",
+          message: (error as Error).message
+        });
+        return;
+      }
       next(error);
     } finally {
       await fs.rm(request.file.path, { force: true });

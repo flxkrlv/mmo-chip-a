@@ -19,11 +19,18 @@ export function LibraryPage() {
   const importProjectMutation = useImportProject();
   const openFolderMutation = useOpenProjectFolder();
   const [folderPickerOpen, setFolderPickerOpen] = useState(false);
+  // When set, the folder picker is choosing a destination for an import.
+  const [importIntoFolder, setImportIntoFolder] = useState<
+    "image" | "project" | null
+  >(null);
+  const pendingFolderRef = useRef<string | null>(null);
   const toast = useToast();
   const dialog = useDialog();
   const navigate = useNavigate();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const projectFileInputRef = useRef<HTMLInputElement>(null);
+  const folderImageInputRef = useRef<HTMLInputElement>(null);
+  const folderProjectInputRef = useRef<HTMLInputElement>(null);
   const [filter, setFilter] = useState("");
   const transfer = useProjectTransfer((state) => state.transfer);
 
@@ -42,6 +49,50 @@ export function LibraryPage() {
   function handleImportClick() {
     fileInputRef.current?.click();
   }
+
+  function startFolderImport(purpose: "image" | "project") {
+    setImportIntoFolder(purpose);
+    setFolderPickerOpen(true);
+  }
+
+  const handleFolderPickedForImport = useCallback((path: string) => {
+    pendingFolderRef.current = path;
+    setFolderPickerOpen(false);
+    const purpose = importIntoFolder;
+    setImportIntoFolder(null);
+    if (purpose === "project") folderProjectInputRef.current?.click();
+    else folderImageInputRef.current?.click();
+  }, [importIntoFolder]);
+
+  async function handleFolderImageChange(event: React.ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    const folder = pendingFolderRef.current;
+    pendingFolderRef.current = null;
+    if (!file || !folder) return;
+    try {
+      await importMutation.mutateAsync({ file, targetFolder: folder });
+    } catch (err) {
+      toast.error("Import failed", (err as Error).message);
+    }
+  }
+
+  const handleFolderProjectChange = useCallback(
+    async (event: React.ChangeEvent<HTMLInputElement>) => {
+      const file = event.target.files?.[0];
+      event.target.value = "";
+      const folder = pendingFolderRef.current;
+      pendingFolderRef.current = null;
+      if (!file || !folder) return;
+      try {
+        const result = await importProjectMutation.mutateAsync({ file, targetFolder: folder });
+        navigate(`/die/${result.dieId}`);
+      } catch (err: unknown) {
+        toast.error("Import failed", (err as Error).message);
+      }
+    },
+    [importProjectMutation, navigate, toast]
+  );
 
   async function handleFileChange(event: React.ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
@@ -142,6 +193,14 @@ export function LibraryPage() {
         >
           {Ic.plus} {importMutation.isPending ? "uploading…" : "import image"}
         </button>
+        <button
+          className="btn accent"
+          onClick={() => startFolderImport("image")}
+          disabled={importMutation.isPending}
+          title="Import an image and create a project in a folder you choose"
+        >
+          {Ic.plus} {"import image → folder"}
+        </button>
         <input
           ref={fileInputRef}
           type="file"
@@ -163,12 +222,34 @@ export function LibraryPage() {
         >
           {importProjectMutation.isPending ? "importing…" : "Import Project"}
         </button>
+        <button
+          className="btn"
+          onClick={() => startFolderImport("project")}
+          disabled={importProjectMutation.isPending}
+          title="Import a project ZIP into a folder you choose"
+        >
+          {"Import Project → folder"}
+        </button>
         <input
           ref={projectFileInputRef}
           type="file"
           accept=".zip"
           style={{ display: "none" }}
           onChange={handleProjectFileChange}
+        />
+        <input
+          ref={folderImageInputRef}
+          type="file"
+          accept="image/png,image/jpeg"
+          style={{ display: "none" }}
+          onChange={handleFolderImageChange}
+        />
+        <input
+          ref={folderProjectInputRef}
+          type="file"
+          accept=".zip"
+          style={{ display: "none" }}
+          onChange={handleFolderProjectChange}
         />
       </div>
 
@@ -206,12 +287,25 @@ export function LibraryPage() {
 
       <StatusBar items={buildStatusItems(totals, importMutation.error?.message, transfer)} />
       {folderPickerOpen && (
-        <FolderPicker
-          title="Open project folder"
-          confirmLabel="Open"
-          onConfirm={handleOpenFolder}
-          onClose={() => setFolderPickerOpen(false)}
-        />
+        importIntoFolder ? (
+          <FolderPicker
+            title="Choose a folder for the new project"
+            confirmLabel="Use this folder"
+            mode="create"
+            onConfirm={handleFolderPickedForImport}
+            onClose={() => {
+              setFolderPickerOpen(false);
+              setImportIntoFolder(null);
+            }}
+          />
+        ) : (
+          <FolderPicker
+            title="Open project folder"
+            confirmLabel="Open"
+            onConfirm={handleOpenFolder}
+            onClose={() => setFolderPickerOpen(false)}
+          />
+        )
       )}
     </AppShell>
   );
