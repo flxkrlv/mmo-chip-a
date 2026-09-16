@@ -35,7 +35,15 @@ import { runChunked, type ChunkedRunnerOptions } from "../lib/extraction/chunked
 import { applyOrientation, polygonBounds } from "../lib/geometry";
 import { isClipperLoaded } from "../lib/extraction/clipper";
 import { generateSpiceNetlist } from "../lib/export/spice";
-import { matchOrCreateDevice, reconcileWithLiveDevices, compactFingerprints, setLegacyOverrides, getLegacyOverrides, clearLegacyOverrides, getLiveRecords, getDeviceRecord, setDeviceInstanceName } from "../state/deviceRegistry";
+import { matchOrCreateDevice, reconcileWithLiveDevices, compactFingerprints, setLegacyOverrides, getLegacyOverrides, clearLegacyOverrides, getDeviceRecord } from "../state/deviceRegistry";
+import {
+  getActiveProjectDieId,
+  getAnalogNamesVersion,
+  getProjectDeviceNames,
+  isProjectNamesLoaded,
+  setProjectDeviceName,
+  validateProjectDeviceName,
+} from "../state/analogDeviceNames";
 
 // ═════════════════════════════════════════════════════════════════
 // Wire-to-terminal matching
@@ -189,6 +197,11 @@ export function extractAnalogDevicesFromCellType(
     const legacy = legacyOverrides?.[cellType.id]?.[fingerprint];
     const { uuid: templateUuid } = matchOrCreateDevice(fingerprint, legacy);
     (d as any)._templateUuid = templateUuid;
+    // Deterministic template identity, derived from the cell type's layer shape
+    // ids (marker / well+diffusion+gate). Stable across re-extraction, ZIP
+    // round-trips and layer nudges — unlike the position-based fingerprint.
+    const deviceAnchor = (d as any)._deviceAnchor as string | undefined;
+    (d as any)._templateId = deviceAnchor ?? fingerprint;
   }
 
   return all;
@@ -378,6 +391,12 @@ function _computeResultKey(
     pc: ann.pins?.length ?? 0,
     u: umPerPx,
     s: spiceKey,
+    // The active project owns the name store; two projects with identical
+    // annotations (e.g. copies) must never share a cached named result.
+    proj: getActiveProjectDieId(),
+    // Names change independently of annotations (load / rename / auto-assign),
+    // so the version is part of the key.
+    nv: getAnalogNamesVersion(),
   });
   const bytes = new TextEncoder().encode(data);
   return fnv1a64(bytes);
@@ -590,6 +609,7 @@ function _processOneCellType(
       });
 
       const templateUuid = (dev as any)._templateUuid as string | undefined;
+      const templateId = (dev as any)._templateId as string | undefined;
       const cellLevelKey = (dev as any)._cellLevelKey as string ?? "unknown:0:0";
       const instanceFingerprint = `${cellLevelKey}:${instCell.id}`;
       const dieLevelKey = `${instCell.id}:${cellLevelKey}`;
@@ -597,12 +617,16 @@ function _processOneCellType(
       const seedOverride = templateRecord?.overrides;
       const result = matchOrCreateDevice(instanceFingerprint, seedOverride);
       const devUuid = result.uuid;
+      // Deterministic per-instance identity: the cell-level anchor plus the
+      // stable cell-instance id. Used to key the per-project name store.
+      const instanceId = templateId ? `${templateId}@${instCell.id}` : undefined;
 
       allDevices.push({
         ...dev, instanceName: instName, terminals: matchedTerms, bbox: worldBbox,
         _termPoints: termPoints, _cellId: instCell.id, _cellBbox: dev.bbox,
         _cellLevelKey: cellLevelKey, _dieLevelKey: dieLevelKey,
         _templateUuid: templateUuid, _uuid: devUuid,
+        _templateId: templateId, _instanceId: instanceId,
       } as any);
     }
   }
@@ -719,24 +743,8 @@ export async function collectDieWideChunked(
   return result;
 }
 
-// ── Stable instance naming using position-based keys + localStorage ──
+// ── Stable instance naming using deterministic ids + per-project store ──
 // Lives here so ALL consumers (DieViewer, AnalogNetlistPage) get stable names.
-
-const NAMEMAP_KEY = "mmo-chip-analog-names";
-const ACTIVE_KEYS_KEY = NAMEMAP_KEY + "-active";
-
-function _loadNameMap(): Record<string, string> {
-  try { return JSON.parse(localStorage.getItem(NAMEMAP_KEY) ?? "{}"); } catch { return {}; }
-}
-function _saveNameMap(map: Record<string, string>): void {
-  try { localStorage.setItem(NAMEMAP_KEY, JSON.stringify(map)); } catch {}
-}
-function _loadActiveKeys(): string[] {
-  try { return JSON.parse(localStorage.getItem(ACTIVE_KEYS_KEY) ?? "[]"); } catch { return []; }
-}
-function _saveActiveKeys(keys: string[]): void {
-  try { localStorage.setItem(ACTIVE_KEYS_KEY, JSON.stringify(keys)); } catch {}
-}
 
 const INSTANCE_PREFIXES: Record<string, string> = {
   mos: "M", bjt_npn: "Q", bjt_pnp: "Q", jfet_n: "J", jfet_p: "J",
@@ -745,80 +753,56 @@ const INSTANCE_PREFIXES: Record<string, string> = {
 };
 
 /**
- * Assign stable instance names using the per-device UUID from the registry.
- * Each device's UUID is the canonical identity — its instance name lives
- * on the DeviceRecord. For brand-new devices (no registry entry yet) the
- * nameMap legacy store is used as a transitional fallback; the registry
- * absorbs the auto-generated name on the next run.
+ * Assign stable instance names from the current project's name store.
  *
- * Counter is built from ALL live records (including deleted ones) so the
- * auto-counter never dips below the highest ever assigned.
+ * Each device's `_instanceId` is a deterministic id (`<cellAnchor>@<cellId>`)
+ * derived from the cell type's layer shape ids, so the name is bound to the
+ * device — not to a browser-global registry. Names are looked up in the
+ * per-project `analog-devices.json` store; brand-new devices are auto-named
+ * and persisted (only once the store is loaded, so a slow load can never
+ * overwrite user-assigned names).
+ *
+ * The legacy `deviceRegistry` is still reconciled below purely so device
+ * *override* records keep their soft-delete behaviour.
  */
 function assignStableInstanceNames(devices: AnalogDevice[]): void {
-  const nameMap = _loadNameMap();
-  // Build counter from ALL known names in registry (live + deleted) so
-  // the auto-counter never dips below the highest ever assigned.
-  const liveRecords = getLiveRecords();
+  const projectNames = getProjectDeviceNames();
+  const loaded = isProjectNamesLoaded();
+
+  // Seed counters from existing project names so auto-assign never reuses one.
   const counters: Record<string, number> = {};
-  const collectCounters = (name: string | null | undefined) => {
-    if (!name) return;
+  for (const name of Object.values(projectNames)) {
     const m = name.match(/^([A-Za-z]+)(\d+)$/);
     if (m) counters[m[1]] = Math.max(counters[m[1]] ?? 0, parseInt(m[2], 10));
-  };
-  for (const rec of liveRecords) collectCounters(rec.instanceName);
-  // Also collect from legacy nameMap (transitional)
-  for (const n of Object.values(nameMap)) collectCounters(n);
+  }
 
-  const activeKeys = new Set<string>();
+  // Keep override records reconciled (soft-delete devices no longer live).
   const liveFingerprints = new Set<string>();
   const liveUuids = new Set<string>();
+  for (const d of devices) {
+    const fp = (d as any)._cellLevelKey as string | undefined;
+    const uu = (d as any)._uuid as string | undefined;
+    if (fp) liveFingerprints.add(fp);
+    if (uu) liveUuids.add(uu);
+  }
+  reconcileWithLiveDevices(liveFingerprints, liveUuids);
 
   for (const d of devices) {
-    const devUuid = (d as any)._uuid as string | undefined;
-    const fingerprint = (d as any)._cellLevelKey as string | undefined;
-    const dieKey = (d as any)._dieLevelKey as string | undefined;
-    if (!devUuid || !fingerprint) continue;
-    if (dieKey) activeKeys.add(dieKey);
-    liveFingerprints.add(fingerprint);
-    liveUuids.add(devUuid);
-
-    // 1) Registry has the canonical name
-    const rec = getDeviceRecord(devUuid);
-    if (rec?.instanceName) {
-      d.instanceName = rec.instanceName;
-      continue;
-    }
-    // 2) Fallback to legacy nameMap by die-level key (transitional)
-    if (dieKey && nameMap[dieKey]) {
-      d.instanceName = nameMap[dieKey];
-      continue;
-    }
-    // 3) Auto-assign new name
+    const instanceId = (d as any)._instanceId as string | undefined;
+    if (!instanceId) continue;
     const prefix = INSTANCE_PREFIXES[d.kind] || "X";
+    const stored = projectNames[instanceId];
+    if (stored) {
+      d.instanceName = stored;
+      continue;
+    }
     const next = (counters[prefix] ?? 0) + 1;
     const newName = `${prefix}${next}`;
     counters[prefix] = next;
     d.instanceName = newName;
-    // Persist into the registry (canonical)
-    if (rec) {
-      setDeviceInstanceName(devUuid, newName);
-    } else if (dieKey) {
-      // No registry record yet (shouldn't happen if cell-level ran) —
-      // fall back to legacy nameMap so we don't lose the name on reload.
-      nameMap[dieKey] = newName;
-    }
+    if (loaded) setProjectDeviceName(instanceId, newName);
   }
 
-  // Reconcile: anything not seen in this extraction is soft-deleted
-  reconcileWithLiveDevices(liveFingerprints, liveUuids);
-
-  // Save active keys for rename validation (stale names are blocked from
-  // auto-assign by the counter, but allowed for manual rename).
-  _saveActiveKeys([...activeKeys]);
-  // Persist legacy nameMap in case we wrote any fallbacks
-  if (Object.keys(nameMap).length > 0) _saveNameMap(nameMap);
-
-  // Clean up: drop fingerprints not used by any record
   compactFingerprints();
 }
 
@@ -829,41 +813,15 @@ let _renameVersion = 0;
 function bumpRenameVersion(): void { _renameVersion++; }
 export function getRenameVersion(): number { return _renameVersion; }
 
-export function renameDeviceInstance(devUuid: string, newName: string): void {
+export function renameDeviceInstance(instanceId: string, newName: string): void {
   bumpRenameVersion();
-  if (!devUuid) { return; }
-  setDeviceInstanceName(devUuid, newName);
-  // Mirror into legacy nameMap by _dieLevelKey so callers that still look
-  // up by die-level key (e.g. validateDeviceName) see the rename.
-  // The die-level key is unstable across re-extractions so this is best-
-  // effort: the registry is the canonical source.
-  const rec = getDeviceRecord(devUuid);
-  if (rec) {
-    const nameMap = _loadNameMap();
-    // We don't know the current _dieLevelKey from here (the device may not
-    // be in the current extraction), so just record the name in a special
-    // "_byUUID" entry under the nameMap for cross-reference.
-    nameMap[`uuid:${devUuid}`] = newName;
-    _saveNameMap(nameMap);
-  }
+  if (!instanceId) { return; }
+  setProjectDeviceName(instanceId, newName);
 }
 
-/** Validate name against the registry. */
-export function validateDeviceName(devUuid: string, newName: string): string | null {
-  const s = newName.trim();
-  if (!s) return "Name is empty";
-  if (!/^[A-Za-z][A-Za-z0-9_]*$/.test(s))
-    return "Must start with letter, only letters/digits/underscores";
-  if (s.length > 48) return "Too long (max 48 chars)";
-  // Block any name used by a different live (non-deleted) device.
-  const live = getLiveRecords();
-  for (const rec of live) {
-    if (rec.uuid === devUuid) continue;
-    if (rec.instanceName === s) {
-      return `"${s}" is already assigned to another device`;
-    }
-  }
-  return null;
+/** Validate a rename against the current project's name store. */
+export function validateDeviceName(instanceId: string, newName: string): string | null {
+  return validateProjectDeviceName(instanceId, newName);
 }
 
 // ═════════════════════════════════════════════════════════════════

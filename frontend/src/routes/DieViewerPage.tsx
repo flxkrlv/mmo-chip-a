@@ -62,6 +62,7 @@ import { SubcircuitHighlightsOverlay } from "../components/dieViewer/SubcircuitH
 import { DeviceInspector } from "../components/dieViewer/DeviceInspector";
 import { DeviceInstancePanel } from "../components/dieViewer/DeviceInstancePanel";
 import { useDieExtraction } from "../hooks/useDieExtraction";
+import { setActiveProject, flushProjectDeviceNames } from "../state/analogDeviceNames";
 import { useExtractionProgress } from "../state/extractionProgress";
 import { loadClipper } from "../lib/extraction";
 import { useMLJob, useMLStatus } from "../api/ml";
@@ -182,6 +183,14 @@ function DieViewer({ dieId }: { dieId: string }) {
   const toast = useToast();
   const dialog = useDialog();
   useAnnotationsWebSocket(dieId);
+
+  // Scope the per-project analog device name store to this die.
+  useEffect(() => {
+    setActiveProject(dieId);
+    return () => {
+      flushProjectDeviceNames();
+    };
+  }, [dieId]);
   // Always-fresh annotations for the (stable) pointer router's shape editing.
   const annotationsRef = useRef(annotations);
   annotationsRef.current = annotations;

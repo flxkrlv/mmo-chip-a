@@ -23,6 +23,7 @@ import { formatDevicesAsNetlist2Svg } from "../../lib/schematic/netlist2svgForma
 import { generateBlockDiagram } from "../../lib/schematic/blockDiagramFormat";
 import { NetlistSettingsPanel } from "./NetlistSettingsPanel";
 import { collectDieWideAnalogDevices, getRenameVersion } from "../../api/dieWideAnalog";
+import { useAnalogNamesVersion } from "../../state/analogDeviceNames";
 import { matchGeometry } from "../../lib/export/matching";
 import { regionExternalNets, type HierarchyBlock } from "../../lib/schematic/interactiveAnalogLayout";
 import { InteractiveAnalogSchematic } from "./InteractiveAnalogSchematic";
@@ -103,9 +104,10 @@ export function SchematicViewPanel({
   }, [selectedDeviceNames, showHierarchy]);
 
   // ══ Generate spice-ts views ═══════════════════════════════════
+  const namesVer = useAnalogNamesVersion((s) => s.v);
   const views = useMemo(
     () => generateSpiceTSViews(annotations, moduleName, spiceConfig, hierarchical ? floorplanRegions : undefined),
-    [annotations, moduleName, spiceConfig, hierarchical, floorplanRegions],
+    [annotations, moduleName, spiceConfig, hierarchical, floorplanRegions, namesVer],
   );
 
   // ══ Generate netlist2svg views ════════════════════════════════
@@ -161,7 +163,7 @@ export function SchematicViewPanel({
     );
 
     return { flatJson: flat, floorplanDevices, namedNets, ioNetIds, devices: named as import("shared").AnalogDevice[] };
-  }, [annotations, moduleName, spiceConfig, hierarchical, floorplanRegions, getRenameVersion()]);
+  }, [annotations, moduleName, spiceConfig, hierarchical, floorplanRegions, getRenameVersion(), namesVer]);
 
   // ══ Functional block diagram ═════════════════════════════════
   const blockDiagramJson = useMemo(() => {

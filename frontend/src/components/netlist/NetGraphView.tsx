@@ -11,6 +11,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import cytoscape, { type Core, type ElementDefinition } from "cytoscape";
 import type { DieAnnotations } from "shared";
 import { collectDieWideAnalogDevices, getRenameVersion } from "../../api/dieWideAnalog";
+import { useAnalogNamesVersion } from "../../state/analogDeviceNames";
 import { useNavigate } from "react-router-dom";
 import { useSession } from "../../state/session";
 
@@ -362,10 +363,11 @@ export function NetGraphView({ annotations, onDeviceClick, vddNet, gndNet, highl
   const [selectedNet, setSelectedNet] = useState<number | null>(null);
 
   // Collected data
+  const namesVer = useAnalogNamesVersion((s) => s.v);
   const collected = useMemo(() => {
     if (!annotations) return null;
     return collectDieWideAnalogDevices(annotations, annotations?.umPerPx ?? 1);
-  }, [annotations, getRenameVersion()]);
+  }, [annotations, getRenameVersion(), namesVer]);
 
   const collAnn = useMemo(() => annotations, [annotations]);
 

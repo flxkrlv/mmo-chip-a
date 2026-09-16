@@ -5,6 +5,7 @@ import { applyAnalogOverrides } from "../api/analogNetlist";
 import { CellTypeDeviceCache } from "../lib/extraction/deviceCache";
 import { useExtractionProgress } from "../state/extractionProgress";
 import { useRegistryVersion } from "../state/deviceRegistry";
+import { useAnalogNamesVersion } from "../state/analogDeviceNames";
 import { useSession, DEFAULT_METAL_STACK } from "../state/session";
 
 interface DieExtractionResult {
@@ -32,6 +33,7 @@ export function useDieExtraction(
   }
 
   const regVer = useRegistryVersion((s) => s.v);
+  const namesVer = useAnalogNamesVersion((s) => s.v);
   const { setProgress, setLastExtraction, reset } = useExtractionProgress();
   const [result, setResult] = useState<DieExtractionResult>(emptyResult);
   const runIdRef = useRef(0);
@@ -84,7 +86,7 @@ export function useDieExtraction(
     return () => {
       ctrl.abort();
     };
-  }, [annotations, regVer, setProgress, setLastExtraction, reset]);
+  }, [annotations, regVer, namesVer, setProgress, setLastExtraction, reset]);
 
   return result;
 }

@@ -191,6 +191,12 @@ async function queueExport(
     if (await fileExists(p)) archive.file(p, { name: "spice_config.json" });
   });
 
+  // 3b. analog-devices.json (optional) — per-project analog device names
+  await measure("analog-devices.json", async () => {
+    const p = path.join(dieDir, "analog-devices.json");
+    if (await fileExists(p)) archive.file(p, { name: "analog-devices.json" });
+  });
+
   // 4. export/ netlists (optional)
   await measure("export/ netlists", async () => {
     const d = path.join(dieDir, "export");
@@ -348,6 +354,7 @@ async function handleImport(
       if (
         entry.entryName === "annotations.json" ||
         entry.entryName === "spice_config.json" ||
+        entry.entryName === "analog-devices.json" ||
         entry.entryName === "preferences.json" ||
         entry.entryName === "device-registry.json" ||
         entry.entryName === "analog-names.json"
@@ -357,7 +364,9 @@ async function handleImport(
         }
         seenSingleEntries.add(entry.entryName);
         const target =
-          entry.entryName === "annotations.json" || entry.entryName === "spice_config.json"
+          entry.entryName === "annotations.json" ||
+          entry.entryName === "spice_config.json" ||
+          entry.entryName === "analog-devices.json"
             ? path.join(stagedDieDir, entry.entryName)
             : path.join(stagedExtrasDir, entry.entryName);
         await archive.extractEntry(entry, target);
@@ -573,7 +582,7 @@ async function moveDirectoryContents(from: string, to: string): Promise<void> {
 
 /** Remove the loose project artefacts we may have moved into a user folder. */
 async function pruneProjectArtefacts(dieDir: string): Promise<void> {
-  for (const artefact of ["metadata.json", "annotations.json", "spice_config.json"]) {
+  for (const artefact of ["metadata.json", "annotations.json", "spice_config.json", "analog-devices.json"]) {
     await fs.rm(path.join(dieDir, artefact), { force: true }).catch(() => {});
   }
   for (const dir of ["original", "tiles", "export", "overlay-images"]) {

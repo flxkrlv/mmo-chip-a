@@ -1024,6 +1024,25 @@ export interface AnalogDevice {
   comment?: string;
 }
 
+/**
+ * Per-project store of analog device instance names.
+ *
+ * Lives as `analog-devices.json` inside a project (the external folder for a
+ * folder project, or `<dataRoot>/dies/<dieId>/` for a managed project), so
+ * names are scoped to the project and survive ZIP round-trips instead of
+ * living in a browser-global registry.
+ *
+ * Keys are deterministic device-instance ids derived from the cell type's
+ * layer shape ids (see `_deviceAnchor` / `_instanceId` in the frontend
+ * extraction pipeline), so a name stays bound to its device even when layers
+ * are nudged or the project is re-opened.
+ */
+export interface AnalogDevicesFile {
+  version: 1;
+  /** instanceId → instance name (e.g. "M1", "Q3"). */
+  devices: Record<string, string>;
+}
+
 // ── SPICE configuration ─────────────────────────────────────────
 
 export interface SpiceConfig {

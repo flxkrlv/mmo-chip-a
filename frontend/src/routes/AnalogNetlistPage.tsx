@@ -30,6 +30,7 @@ import {
   saveSpiceConfigToBackend,
 } from "../api/analogNetlist";
 import { renameDeviceInstance, validateDeviceName } from "../api/dieWideAnalog";
+import { setActiveProject, flushProjectDeviceNames } from "../state/analogDeviceNames";
 import { loadClipper } from "../lib/extraction";
 import { ANALOG_NETLIST_HOTKEYS, ANALOG_NETLIST_ALT_HOTKEYS } from "../lib/hotkeys";
 import { isTypingTarget } from "../lib/keyboard";
@@ -84,6 +85,14 @@ function AnalogNetlist({ dieId }: { dieId: string }) {
   const annotationsQ = useAnnotations(dieId);
   useAnnotationsWebSocket(dieId);
   const annotations = annotationsQ.data;
+
+  // Scope the per-project analog device name store to this die.
+  useEffect(() => {
+    setActiveProject(dieId);
+    return () => {
+      flushProjectDeviceNames();
+    };
+  }, [dieId]);
 
   // Dialect picker state
   const [dialect, setDialect] = useState<SpiceDialect>("spectre");
@@ -845,7 +854,7 @@ function InstanceOutline({
                                 value={renameDraft}
                                 onChange={(e: any) => { setRenameDraft(e.target.value); setRenameErr(""); }}
                                 onKeyDown={(e: any) => {
-                                  if (e.key === "Enter" && leaf.uuid) commitRename(leaf.uuid, leaf.label, renameDraft);
+                                  if (e.key === "Enter" && leaf.instanceId) commitRename(leaf.instanceId, leaf.label, renameDraft);
                                   if (e.key === "Escape") { setRenamingLeaf(null); setRenameErr(""); }
                                 }}
                                 autoFocus
@@ -855,8 +864,8 @@ function InstanceOutline({
                                   borderRadius: 3, color: "var(--ink0)", padding: "0 4px",
                                 }}
                               />
-                              {leaf.uuid && (
-                                <span onClick={() => commitRename(leaf.uuid as string, leaf.label, renameDraft)} style={{ cursor: "pointer", fontSize: 11, color: "var(--accent)" }}>✓</span>
+                              {leaf.instanceId && (
+                                <span onClick={() => commitRename(leaf.instanceId as string, leaf.label, renameDraft)} style={{ cursor: "pointer", fontSize: 11, color: "var(--accent)" }}>✓</span>
                               )}
                               <span onClick={() => { setRenamingLeaf(null); setRenameErr(""); }} style={{ cursor: "pointer", fontSize: 11, color: "var(--ink3)" }}>✕</span>
                             </div>
@@ -876,7 +885,7 @@ function InstanceOutline({
                                 onDoubleClick={() => onSelectDevice(leaf.label, leaf.cellId, leaf.line)}
                               />
                             </div>
-                            {leaf.uuid && (
+                            {leaf.instanceId && (
                               <span
                                 onClick={() => { setRenamingLeaf(leaf.id); setRenameDraft(leaf.label); setRenameErr(""); }}
                                 style={{ cursor: "pointer", fontSize: 9, color: "var(--ink3, #666)", padding: "0 6px" }}

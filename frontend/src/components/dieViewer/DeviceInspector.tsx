@@ -58,7 +58,7 @@ function Section({ children }: { children: React.ReactNode }) {
 
 export function DeviceInspector({ device, onClose, cellTypeCounts, cellTypeByCellId }: Props) {
   const g = device.geometry;
-  const uuid = (device as any)._uuid as string | undefined;
+  const instanceId = (device as any)._instanceId as string | undefined;
 
   const instanceLabel = device.instanceName ?? device.id;
   const kindLabel = device.kind.replace("_", " ").toUpperCase();
@@ -69,19 +69,19 @@ export function DeviceInspector({ device, onClose, cellTypeCounts, cellTypeByCel
   const [err, setErr] = useState("");
 
   const handleRename = useCallback(() => {
-    if (!uuid) return;
+    if (!instanceId) return;
     const s = draft.trim();
     if (!s || s === instanceLabel) { setEditing(false); setErr(""); return; }
 
-    const validationErr = validateDeviceName(uuid, s);
+    const validationErr = validateDeviceName(instanceId, s);
     if (validationErr) { setErr(validationErr); return; }
 
-    renameDeviceInstance(uuid, s);
+    renameDeviceInstance(instanceId, s);
     // Immediate visual feedback — mutate the device object directly
     (device as any).instanceName = s;
     setEditing(false);
     setErr("");
-  }, [uuid, draft, instanceLabel, device]);
+  }, [instanceId, draft, instanceLabel, device]);
 
   const handleCancel = useCallback(() => {
     setEditing(false);
@@ -142,7 +142,7 @@ export function DeviceInspector({ device, onClose, cellTypeCounts, cellTypeByCel
             >
               {instanceLabel}
             </span>
-            {uuid && (
+            {instanceId && (
               <span
                 onClick={() => { setDraft(instanceLabel); setEditing(true); setErr(""); }}
                 style={{ cursor: "pointer", fontSize: 10, color: "var(--ink3, #666)", padding: "0 2px" }}

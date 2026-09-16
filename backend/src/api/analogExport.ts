@@ -15,9 +15,11 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { Router } from "express";
-import type { SpiceConfig } from "shared";
+import type { AnalogDevicesFile, SpiceConfig } from "shared";
 import { readDieRecord } from "../store.js";
 import { resolveProjectDir } from "../projectLayout.js";
+
+const ANALOG_DEVICES_FILE = "analog-devices.json";
 
 // ── SpiceConfig I/O ────────────────────────────────────────────────
 
@@ -42,6 +44,42 @@ async function saveSpiceConfig(
   await fs.writeFile(
     path.join(dir, "spice_config.json"),
     JSON.stringify(config, null, 2),
+    "utf8",
+  );
+}
+
+// ── Analog device name store I/O ────────────────────────────────────
+// The names of detected analog devices are stored per-project in
+// `analog-devices.json` (inside the project folder / die dir) so they stay
+// bound to the project across ZIP round-trips and folder moves.
+
+async function loadAnalogDevices(
+  dataRoot: string,
+  dieId: string,
+): Promise<AnalogDevicesFile | null> {
+  try {
+    const { dir } = await resolveProjectDir(dataRoot, dieId);
+    const raw = await fs.readFile(path.join(dir, ANALOG_DEVICES_FILE), "utf8");
+    const parsed = JSON.parse(raw) as AnalogDevicesFile;
+    if (!parsed || typeof parsed !== "object" || typeof parsed.devices !== "object") {
+      return null;
+    }
+    return { version: 1, devices: parsed.devices };
+  } catch {
+    return null;
+  }
+}
+
+async function saveAnalogDevices(
+  dataRoot: string,
+  dieId: string,
+  data: AnalogDevicesFile,
+): Promise<void> {
+  const { dir } = await resolveProjectDir(dataRoot, dieId);
+  await fs.mkdir(dir, { recursive: true });
+  await fs.writeFile(
+    path.join(dir, ANALOG_DEVICES_FILE),
+    `${JSON.stringify({ version: 1, devices: data.devices ?? {} }, null, 2)}\n`,
     "utf8",
   );
 }
@@ -125,6 +163,41 @@ export function createAnalogExportRouter(config: { dataRoot: string }) {
       await readDieRecord(config.dataRoot, dieId);
       const sc = await loadSpiceConfig(config.dataRoot, dieId);
       response.json(sc ?? {});
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  /**
+   * GET /api/dies/:dieId/analog-devices
+   *
+   * Load the per-project analog device name store.
+   */
+  router.get("/api/dies/:dieId/analog-devices", async (request, response, next) => {
+    const { dieId } = request.params;
+    try {
+      await readDieRecord(config.dataRoot, dieId);
+      const data = await loadAnalogDevices(config.dataRoot, dieId);
+      response.json(data ?? { version: 1, devices: {} });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  /**
+   * POST /api/dies/:dieId/analog-devices
+   *
+   * Save the per-project analog device name store.
+   */
+  router.post("/api/dies/:dieId/analog-devices", async (request, response, next) => {
+    const { dieId } = request.params;
+    try {
+      await readDieRecord(config.dataRoot, dieId);
+      const body = (request.body ?? {}) as Partial<AnalogDevicesFile>;
+      const devices =
+        body.devices && typeof body.devices === "object" ? body.devices : {};
+      await saveAnalogDevices(config.dataRoot, dieId, { version: 1, devices });
+      response.json({ ok: true });
     } catch (error) {
       next(error);
     }

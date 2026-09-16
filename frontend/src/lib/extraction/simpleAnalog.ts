@@ -261,7 +261,7 @@ export function extractMarkedDevices(
               { name: "MINUS", netId: terminalNet(emitters), shapeIds: emitters.map(s => s.id) },
             ],
             bbox: marker.bbox,
-            ...(marker.id ? { _markerShapeId: marker.id } : {}),
+            ...(marker.id ? { _markerShapeId: marker.id, _deviceAnchor: `marker:${marker.id}` } : {}),
           });
           break; // done — don't fall through to BJT
         }
@@ -325,7 +325,7 @@ export function extractMarkedDevices(
             { name: "E", netId: terminalNet(emitters), shapeIds: emitters.map(s => s.id) },
           ],
           bbox: marker.bbox,
-          ...(marker.id ? { _markerShapeId: marker.id } : {}),
+          ...(marker.id ? { _markerShapeId: marker.id, _deviceAnchor: `marker:${marker.id}` } : {}),
         });
         break;
       }
@@ -498,7 +498,7 @@ export function extractMarkedDevices(
             { name: "MINUS", netId: minusContactIds.length > 0 ? nextNet() : -1, shapeIds: minusContactIds },
           ],
           bbox: marker.bbox,
-          ...(marker.id ? { _markerShapeId: marker.id } : {}),
+          ...(marker.id ? { _markerShapeId: marker.id, _deviceAnchor: `marker:${marker.id}` } : {}),
         });
         
         break;
@@ -527,7 +527,7 @@ export function extractMarkedDevices(
             { name: "MINUS", netId: nextNet(), shapeIds: capContactIds },
           ],
           bbox: marker.bbox,
-          ...(marker.id ? { _markerShapeId: marker.id } : {}),
+          ...(marker.id ? { _markerShapeId: marker.id, _deviceAnchor: `marker:${marker.id}` } : {}),
         });
         
         break;
@@ -557,7 +557,7 @@ export function extractMarkedDevices(
             { name: "MINUS", netId: nextNet(), shapeIds: diodeContactIds },
           ],
           bbox: marker.bbox,
-          ...(marker.id ? { _markerShapeId: marker.id } : {}),
+          ...(marker.id ? { _markerShapeId: marker.id, _deviceAnchor: `marker:${marker.id}` } : {}),
         });
         break;
       }
@@ -780,6 +780,11 @@ export function extractMarkedDevices(
       const devId = `analog_resistor_geo_${counter}`;
       const resistorType = bl.type;
       const shape = lineSegs.length > 0 ? "meander" : "straight";
+      const geoResAnchor = `geores:${[...allBodyIds].sort().join(",")}:${[
+        ...new Set([...plusContactIds, ...minusContactIds]),
+      ]
+        .sort()
+        .join(",")}`;
       devices.push({
         id: devId,
         kind: "resistor",
@@ -798,6 +803,7 @@ export function extractMarkedDevices(
           { name: "MINUS", netId: nextNet(), shapeIds: minusTermIds },
         ],
         bbox: gBbox,
+        ...{ _deviceAnchor: geoResAnchor },
       });
 
     }
@@ -1400,6 +1406,12 @@ export function detectMOSFromLayers(
               terminals,
               bbox: bodyBox,
               ...(gateAnchor ? { _gateAnchor: gateAnchor } : {}),
+              ...{
+                _wellShapeId: well.id,
+                _diffusionShapeId: body.id,
+                _gateShapeId: gate.id,
+                _deviceAnchor: `mos:${well.id}:${body.id}:${gate.id}`,
+              },
             } as unknown as AnalogDevice);
             
           }
