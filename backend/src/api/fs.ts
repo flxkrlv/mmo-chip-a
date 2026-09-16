@@ -25,6 +25,7 @@ import { listDieRecords, readDieRecord, writeDieRecord } from "../store.js";
 import {
   PROJECT_MANIFEST_FILE,
   PROJECT_MANIFEST_VERSION,
+  listFolderShortcuts,
   readProjectManifest,
   registerFolderShortcut,
   relocateFolderShortcut,
@@ -48,6 +49,14 @@ async function isDirectory(target: string): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+/** Compare two folder paths, case-insensitively on Windows. */
+function sameFolder(left: string, right: string): boolean {
+  const a = path.resolve(left);
+  const b = path.resolve(right);
+  if (process.platform === "win32") return a.toLowerCase() === b.toLowerCase();
+  return a === b;
 }
 
 async function hasProjectMarker(target: string): Promise<boolean> {
@@ -134,9 +143,30 @@ async function openFolder(
   }
 
   const manifest = await readProjectManifest(resolved);
+  const shortcuts = await listFolderShortcuts(dataRoot);
+
+  // Re-opening the exact same folder is idempotent: return its existing
+  // identity instead of minting a duplicate shortcut. Otherwise two tiles
+  // would point at one folder, and deleting either would orphan the other.
+  const samePath = shortcuts.find((s) => sameFolder(s.folderPath, resolved));
+  if (samePath) {
+    tileScheduler.reviveDie(samePath.dieId);
+    const name =
+      requestedName?.trim() ||
+      manifest?.name ||
+      path.basename(resolved) ||
+      "project";
+    return { ok: true, dieId: samePath.dieId, name, renamed: false, existing: true };
+  }
+
   const records = await listDieRecords(dataRoot);
   const namesInUse = new Set(records.map((r) => r.name));
-  const idsInUse = new Set(records.map((r) => r.id));
+  // A folder shortcut whose directory is missing/unreadable still owns its id;
+  // include those ids so a copy never silently steals an identity from it.
+  const idsInUse = new Set<string>([
+    ...records.map((r) => r.id),
+    ...shortcuts.map((s) => s.dieId)
+  ]);
 
   const now = new Date().toISOString();
   let dieId: string;
@@ -187,19 +217,43 @@ async function openFolder(
   // folder revives it so the scheduler serves its tiles again.
   tileScheduler.reviveDie(dieId);
 
-  // Materialise a metadata.json if the folder came without one, so the record
-  // is readable immediately. Remember the folder location on the record.
-  const hasMetadata = await fs
-    .access(path.join(resolved, "metadata.json"))
-    .then(() => true, () => false);
-  if (hasMetadata) {
-    const record = await readDieRecord(dataRoot, dieId);
-    await writeDieRecord(dataRoot, {
-      ...record,
-      location: "folder",
-      folderPath: resolved,
-      updatedAt: now
-    });
+  // Re-id the folder's metadata.json in place so its `id` matches the shortcut
+  // key. Previously this rewrote the record via `writeDieRecord`, which resolves
+  // the target directory from the record's *old* id — so a copied folder ended
+  // up writing into the original folder and both tiles collapsed onto one path.
+  const metadataPath = path.join(resolved, "metadata.json");
+  const metadataRaw = await fs.readFile(metadataPath, "utf8").catch(() => null);
+  if (metadataRaw !== null) {
+    try {
+      const record = JSON.parse(metadataRaw) as DieRecord;
+      if (record && typeof record.id === "string") {
+        const patched: DieRecord = {
+          ...record,
+          id: dieId,
+          // A freshly-registered copy gets its de-duplicated name so the two
+          // tiles are distinguishable; a plain re-open keeps the user's name.
+          ...(renamed ? { name } : {}),
+          location: "folder",
+          folderPath: resolved,
+          updatedAt: now
+        };
+        await fs.writeFile(
+          metadataPath,
+          `${JSON.stringify(patched, null, 2)}\n`,
+          "utf8"
+        );
+        await registerFolderShortcut(dataRoot, dieId, resolved, {
+          name: patched.name,
+          width: patched.width,
+          height: patched.height,
+          originalFilename: patched.originalFilename,
+          createdAt: patched.createdAt
+        });
+      }
+    } catch {
+      // Unreadable/corrupt metadata is left as-is; the marker still registers
+      // the folder so it can be opened and repaired.
+    }
   }
 
   return { ok: true, dieId, name, renamed, existing };

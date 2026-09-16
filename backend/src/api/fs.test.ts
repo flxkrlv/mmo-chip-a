@@ -7,7 +7,7 @@ import express from "express";
 import request from "supertest";
 import { createFsRouter } from "./fs.js";
 import { createTileScheduler } from "../tileScheduler.js";
-import { ensureDataStore, readAnnotations, writeAnnotations, writeDieRecord } from "../store.js";
+import { ensureDataStore, listDieRecords, readAnnotations, writeAnnotations, writeDieRecord } from "../store.js";
 import {
   PROJECT_MANIFEST_FILE,
   readProjectManifest,
@@ -128,6 +128,77 @@ test("open-folder re-opens an existing project folder without a new id", async (
   assert.equal(second.status, 200);
   assert.equal(second.body.existing, true);
   assert.equal(second.body.dieId, dieId);
+});
+
+test("opening two copies of a folder project keeps them as separate tiles", async () => {
+  const dataRoot = await createRoot("chip-fs-root-");
+  const folderA = await createRoot("chip-fs-copyA-");
+  const folderB = await createRoot("chip-fs-copyB-");
+  await ensureDataStore(dataRoot);
+
+  const sharedId = "folder-shared-copy";
+  const now = new Date().toISOString();
+
+  for (const folder of [folderA, folderB]) {
+    await fs.writeFile(
+      path.join(folder, PROJECT_MANIFEST_FILE),
+      JSON.stringify({ version: 1, id: sharedId, name: "Copy", createdAt: now, updatedAt: now })
+    );
+    await fs.writeFile(
+      path.join(folder, "metadata.json"),
+      JSON.stringify({ ...minimalRecord(sharedId, "Copy"), location: "folder", folderPath: folder })
+    );
+  }
+
+  const first = await request(fsApp(dataRoot)).post("/api/dies/open-folder").send({ path: folderA });
+  assert.equal(first.status, 200);
+  const second = await request(fsApp(dataRoot)).post("/api/dies/open-folder").send({ path: folderB });
+  assert.equal(second.status, 200);
+
+  const idA = first.body.dieId as string;
+  const idB = second.body.dieId as string;
+  assert.notEqual(idB, idA);
+  assert.equal(second.body.renamed, true);
+
+  // Each folder keeps its own identity — the copy must not be re-pointed at the
+  // original, and its metadata.json must carry the fresh id.
+  assert.equal((await readProjectManifest(folderB))!.id, idB);
+  const metaB = JSON.parse(await fs.readFile(path.join(folderB, "metadata.json"), "utf8")) as DieRecord;
+  assert.equal(metaB.id, idB);
+  const metaA = JSON.parse(await fs.readFile(path.join(folderA, "metadata.json"), "utf8")) as DieRecord;
+  assert.equal(metaA.id, idA);
+
+  assert.equal((await resolveProjectDir(dataRoot, idA)).dir, path.resolve(folderA));
+  assert.equal((await resolveProjectDir(dataRoot, idB)).dir, path.resolve(folderB));
+
+  const records = await listDieRecords(dataRoot);
+  assert.deepEqual(records.map((r) => r.id).sort(), [idA, idB].sort());
+});
+
+test("re-opening the same fully-formed folder returns its existing id", async () => {
+  const dataRoot = await createRoot("chip-fs-root-");
+  const projectFolder = await createRoot("chip-fs-proj-");
+  await ensureDataStore(dataRoot);
+
+  const first = await request(fsApp(dataRoot))
+    .post("/api/dies/open-folder")
+    .send({ path: projectFolder, name: "Same Chip" });
+  assert.equal(first.status, 200);
+  const dieId = first.body.dieId as string;
+
+  await fs.writeFile(
+    path.join(projectFolder, "metadata.json"),
+    JSON.stringify({ ...minimalRecord(dieId, "Same Chip"), location: "folder", folderPath: projectFolder })
+  );
+
+  const second = await request(fsApp(dataRoot)).post("/api/dies/open-folder").send({ path: projectFolder });
+  assert.equal(second.status, 200);
+  assert.equal(second.body.dieId, dieId);
+  assert.equal(second.body.renamed, false);
+
+  // Only one shortcut/record may exist — no duplicate tile pointing at the folder.
+  const records = await listDieRecords(dataRoot);
+  assert.equal(records.filter((r) => r.id === dieId).length, 1);
 });
 
 test("relocate points a folder project at a moved directory", async () => {
