@@ -53,6 +53,11 @@ export function buildNetAnnotation(
    *  behaviour). Drawing only — vertices stay grabbable in both modes.
    *  Default: false. */
   getJunctionsOnly?: () => boolean,
+  /** Optional: returns true when (x, y) is a connection point to an analog
+   *  device electrode **on this net**. In junction-only mode such a mid-net
+   *  vertex (graph degree 2) is still drawn — it is a real connection even
+   *  though the net graph does not branch there. */
+  getConnectionPoint?: (netId: string, x: number, y: number) => boolean,
 ): Annotation {
   // Compute bbox from all nodes.
   let minX = Infinity,
@@ -210,7 +215,15 @@ export function buildNetAnnotation(
       const nodeWantsDot = (id: string) => {
         if (!nodeDegree) return true; // legacy: every vertex
         const d = nodeDegree.get(id) ?? 0;
-        return d === 1 || d >= 3;
+        if (d === 1 || d >= 3) return true;
+        // A mid-net vertex (degree 2) that is a device-electrode connection
+        // point on THIS net is a real connection, so it must still be shown
+        // even though the net graph does not branch there.
+        if (getConnectionPoint) {
+          const n = nodeIndex.get(id);
+          if (n && getConnectionPoint(net.id, n.x, n.y)) return true;
+        }
+        return false;
       };
 
       if (showNodes) {

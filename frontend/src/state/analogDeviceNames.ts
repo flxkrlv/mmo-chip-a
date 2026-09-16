@@ -33,6 +33,8 @@ let names: Record<string, string> = {};
 let loaded = false;
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
 let pendingSave = false;
+/** Manual edits made before the backend load finished — never clobbered by it. */
+let pendingEdits: Record<string, string> = {};
 
 // ── Reactivity ────────────────────────────────────────────────────
 
@@ -66,6 +68,7 @@ export function setActiveProject(dieId: string | null): void {
   if (dieId === activeDieId) return;
   activeDieId = dieId;
   names = {};
+  pendingEdits = {};
   loaded = false;
   flushSave();
   bump();
@@ -78,11 +81,17 @@ async function loadFromBackend(dieId: string): Promise<void> {
       `/api/dies/${encodeURIComponent(dieId)}/analog-devices`,
     );
     if (activeDieId !== dieId) return; // a newer project was opened meanwhile
-    names = data?.devices ?? {};
+    // Merge over anything renamed while the request was in flight, so a slow
+    // load can never overwrite a user's manual rename.
+    names = { ...(data?.devices ?? {}), ...pendingEdits };
+    const hadEdits = Object.keys(pendingEdits).length > 0;
+    pendingEdits = {};
     loaded = true;
     bump();
+    if (hadEdits || pendingSave) scheduleSave();
   } catch {
     if (activeDieId !== dieId) return;
+    pendingEdits = {};
     loaded = true;
   }
 }
@@ -94,6 +103,7 @@ export function setProjectDeviceName(instanceId: string, name: string): void {
   if (!instanceId) return;
   if (names[instanceId] === name) return;
   names[instanceId] = name;
+  if (!loaded) pendingEdits[instanceId] = name;
   bump();
   scheduleSave();
 }

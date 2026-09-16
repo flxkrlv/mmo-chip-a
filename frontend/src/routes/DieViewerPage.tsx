@@ -148,6 +148,11 @@ import { uuid } from "../lib/uuid";
 /** Stable empty points array so the overlay effect doesn't churn when idle. */
 const NO_DRAFT_POINTS: Point[] = [];
 
+/** Quantisation (px) of the analog-device terminal grid used to flag net
+ *  vertices that are real device-electrode connections. Kept tight so a node
+ *  merely *near* a terminal is not mistaken for a connection. */
+const DEVICE_CONN_GRID_PX = 1;
+
 export function DieViewerPage() {
   const { dieId } = useParams<{ dieId: string }>();
 
@@ -702,6 +707,25 @@ function DieViewer({ dieId }: { dieId: string }) {
     mlViasLayer?.clearCache();
   }, [mlCheckpointHash, mlViasLayer]);
 
+  // Analog-device terminal points that are genuinely connected to a net,
+  // grouped per net (annotation net UUID) and quantised into a grid. The net
+  // renderer reads this live so a mid-net vertex that sits on a device
+  // electrode of THAT net is still drawn in "only connection points" mode —
+  // while a node merely near some unrelated/disconnected terminal is not.
+  const deviceConnPointsByNetRef = useRef<Map<string, Set<string>>>(new Map());
+  const isDeviceConnectionPoint = useCallback((netId: string, x: number, y: number) => {
+    const grid = deviceConnPointsByNetRef.current.get(netId);
+    if (!grid || grid.size === 0) return false;
+    const gx = Math.floor(x / DEVICE_CONN_GRID_PX);
+    const gy = Math.floor(y / DEVICE_CONN_GRID_PX);
+    for (let dx = -1; dx <= 1; dx += 1) {
+      for (let dy = -1; dy <= 1; dy += 1) {
+        if (grid.has(`${gx + dx},${gy + dy}`)) return true;
+      }
+    }
+    return false;
+  }, []);
+
   const annotationLayer = useMemo(
     () => (die ? new AnnotationLayer("die-annotations") : null),
     [die]
@@ -752,6 +776,7 @@ function DieViewer({ dieId }: { dieId: string }) {
           : 0,
       netNodeJunctionsOnly: () =>
         usePreferences.getState().netNodeJunctionsOnly,
+      netNodeConnectionPoint: isDeviceConnectionPoint,
       isSibling: (cellId: string) => {
         if (!annotations) return false;
         const sel = useDieViewerStore.getState().selectedIds;
@@ -1308,6 +1333,37 @@ function DieViewer({ dieId }: { dieId: string }) {
     netIdMap,
   } = useDieExtraction(annotations as any);
   const { progress: extractionProgress, isRunning: extractionRunning, lastTimeMs, lastCached } = useExtractionProgress();
+
+  // Rebuild the per-net device-electrode connection grid from the extracted
+  // devices. Only terminals whose resolved netId maps to a real annotation net
+  // count — an unconnected terminal (netId >= 2000) never marks a node, so
+  // removing a connection stops its dot from appearing.
+  useEffect(() => {
+    const byNet = new Map<string, Set<string>>();
+    const uuidByNumeric = new Map<number, string>();
+    for (const [uuid, num] of netIdMap) uuidByNumeric.set(num, uuid);
+    for (const d of analogDevices) {
+      const pts = (d as { _termPoints?: Array<{ x: number; y: number; name: string }> })._termPoints;
+      if (!pts || pts.length === 0) continue;
+      const terms = (d as { terminals?: Array<{ name: string; netId: number }> }).terminals ?? [];
+      for (const p of pts) {
+        const term = terms.find((t) => t.name === p.name);
+        if (!term) continue;
+        const uuid = uuidByNumeric.get(term.netId);
+        if (!uuid) continue; // unconnected or synthetic net
+        let grid = byNet.get(uuid);
+        if (!grid) {
+          grid = new Set();
+          byNet.set(uuid, grid);
+        }
+        grid.add(
+          `${Math.floor(p.x / DEVICE_CONN_GRID_PX)},${Math.floor(p.y / DEVICE_CONN_GRID_PX)}`
+        );
+      }
+    }
+    deviceConnPointsByNetRef.current = byNet;
+    canvasHandle.current?.invalidate();
+  }, [analogDevices, netIdMap]);
 
   // Reverse map: numeric netId → annotation net UUID (for zoom)
   const netIdToUuid = useMemo(() => {

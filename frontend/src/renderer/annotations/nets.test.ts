@@ -32,3 +32,56 @@ describe("net marquee parts", () => {
     ]);
   });
 });
+
+describe("junction-only node drawing", () => {
+  const midNet: AnnotationNet = {
+    id: "n2",
+    name: "Net 2",
+    nodes: [
+      { id: "a", x: 0, y: 0 },
+      { id: "b", x: 50, y: 0 },
+      { id: "c", x: 100, y: 0 },
+    ],
+    edges: [
+      { id: "ab", from: "a", to: "b" },
+      { id: "bc", from: "b", to: "c" },
+    ],
+  };
+
+  function drawnNodeKeys(annotation: ReturnType<typeof buildNetAnnotation>): string[] {
+    const arcs: string[] = [];
+    const ctx = {
+      lineCap: "", lineJoin: "", lineWidth: 0, strokeStyle: "", fillStyle: "",
+      beginPath() {}, moveTo() {}, lineTo() {}, stroke() {}, fill() {},
+      arc(x: number, y: number) { arcs.push(`${x},${y}`); },
+    } as unknown as CanvasRenderingContext2D;
+    annotation.draw(ctx, { zoom: 1 } as never, { selected: false, isSelected: () => false } as never);
+    return arcs.sort();
+  }
+
+  it("hides a plain mid-net bend (degree 2)", () => {
+    const annotation = buildNetAnnotation(
+      midNet, () => 2, () => "#fff", () => false, undefined, undefined,
+      () => 1, () => true,
+    );
+    expect(drawnNodeKeys(annotation)).toEqual(["0,0", "100,0"]);
+  });
+
+  it("shows a mid-net vertex that is a device-electrode connection point", () => {
+    const annotation = buildNetAnnotation(
+      midNet, () => 2, () => "#fff", () => false, undefined, undefined,
+      () => 1, () => true,
+      (netId, x, y) => netId === "n2" && x === 50 && y === 0,
+    );
+    expect(drawnNodeKeys(annotation)).toEqual(["0,0", "100,0", "50,0"]);
+  });
+
+  it("ignores a connection point belonging to another net", () => {
+    const annotation = buildNetAnnotation(
+      midNet, () => 2, () => "#fff", () => false, undefined, undefined,
+      () => 1, () => true,
+      (netId, x, y) => netId === "other" && x === 50 && y === 0,
+    );
+    expect(drawnNodeKeys(annotation)).toEqual(["0,0", "100,0"]);
+  });
+});

@@ -113,6 +113,11 @@ export interface PopulateOptions {
    *  Drawing only — vertices stay grabbable. Default false (dots on every
    *  vertex). */
   netNodeJunctionsOnly?: () => boolean;
+  /** Live getter: returns true when (x, y) is a connection point to an analog
+   *  device electrode on the given net (netId = annotation net UUID). In
+   *  junction-only mode a mid-net vertex (degree 2) at such a point is still
+   *  drawn. Default: none. */
+  netNodeConnectionPoint?: (netId: string, x: number, y: number) => boolean;
   /** Called at draw time for each cell: true → draw a glow outline
    *  (sibling cells sharing a cellTypeId with the selection). */
   isSibling?: (cellId: string) => boolean;
@@ -145,6 +150,7 @@ export function populateAnnotationLayer(
   const getLayerColor = options.wireLayerColor;
   const getNodeRadiusMult = options.netNodeRadiusMult;
   const getJunctionsOnly = options.netNodeJunctionsOnly;
+  const getConnectionPoint = options.netNodeConnectionPoint;
 
   const cellTypeMap = new Map(annotations.cellTypes.map((ct) => [ct.id, ct]));
 
@@ -190,7 +196,8 @@ export function populateAnnotationLayer(
     layer.add(
           buildNetAnnotation(
         net, getNetWidth, getNetColor, getNetNodeMatchesWidth,
-        getNetOverrideColor, getLayerColor, getNodeRadiusMult, getJunctionsOnly
+        getNetOverrideColor, getLayerColor, getNodeRadiusMult, getJunctionsOnly,
+        getConnectionPoint
       )
     );
   }
