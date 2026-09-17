@@ -16,6 +16,7 @@ import { isTypingTarget } from "../../lib/keyboard";
 import type { LiveValue } from "../../lib/liveValue";
 import {
   commitDraft,
+  connectToEdgeBody,
   connectToNode,
   parseNetPartId,
   splitEdgeAtPoint,
@@ -561,6 +562,27 @@ export function useWireTool(opts: {
     []
   );
 
+  /** Commit the draft by connecting its endpoint onto the *body* of another
+   *  net's edge (splitting that edge into a junction). Composes with a
+   *  start-edge split so the whole edit is a single undo step. Returns null
+   *  when the target edge vanished, so the caller can fall back to free
+   *  placement. */
+  const buildEdgeConnectAction = useCallback(
+    (d: WireDraft, target: EdgeSplitTarget, layer: SegLayer) => {
+      const changes = connectToEdgeBody(
+        netsRef.current,
+        d.points,
+        d.anchor,
+        d.startSplit ?? null,
+        target,
+        d.segLayers,
+        layer
+      );
+      return changes.length > 0 ? netChangesToAction(changes) : null;
+    },
+    []
+  );
+
   const clearDraft = useCallback(() => {
     draftRedoRef.current = [];
     wirePreviewLive.set(null);
@@ -770,6 +792,20 @@ export function useWireTool(opts: {
         }
       }
 
+      // Endpoint lands on the body of another net's edge → split that edge and
+      // connect into it, mirroring the "start on a wire body" behaviour.
+      // Without this the endpoint would just sit on top of the trace without
+      // joining the net.
+      const endSplit = edgeSplitFromHit(hit, world);
+      if (endSplit) {
+        const action = buildEdgeConnectAction(d, endSplit, layer);
+        if (action) {
+          void dispatcher.dispatch(action);
+          clearDraft();
+          return;
+        }
+      }
+
       const point = shift
         ? world
         : via
@@ -789,6 +825,7 @@ export function useWireTool(opts: {
       clearDraft,
       edgeSplitFromHit,
       buildAction,
+      buildEdgeConnectAction,
       viewportLive,
       viaSnap,
       viaOnProjection,
@@ -880,31 +917,44 @@ export function useWireTool(opts: {
       } else if (shiftKey) {
         preview = { ...world, onNode: false };
       } else {
-        // Cell terminal: before via so the orange terminal halo appears in
-        // preference to the blue via halo — the terminal is a deliberate
-        // connection target.
-        const terminal = resolveTerminalSnap(world, zoom);
-        if (terminal) {
+        // Endpoint over another net's wire body → it will be split and the
+        // draft connected into it (dashed virtual-vertex marker).
+        const hit = annotationLayer.hitTest(world, HIT_TOLERANCE_PX / zoom);
+        const endSplit = edgeSplitFromHit(hit, world);
+        if (endSplit) {
           preview = {
-            x: terminal.x,
-            y: terminal.y,
+            x: endSplit.at.x,
+            y: endSplit.at.y,
             onNode: false,
-            onTerminal: terminal
-          };
-        } else if (via) {
-          preview = {
-            x: Math.round(via.x),
-            y: Math.round(via.y),
-            onNode: false,
-            onVia: true
+            onEdgeSplit: true
           };
         } else {
-          preview = { ...snapped45, onNode: false };
+          // Cell terminal: before via so the orange terminal halo appears in
+          // preference to the blue via halo — the terminal is a deliberate
+          // connection target.
+          const terminal = resolveTerminalSnap(world, zoom);
+          if (terminal) {
+            preview = {
+              x: terminal.x,
+              y: terminal.y,
+              onNode: false,
+              onTerminal: terminal
+            };
+          } else if (via) {
+            preview = {
+              x: Math.round(via.x),
+              y: Math.round(via.y),
+              onNode: false,
+              onVia: true
+            };
+          } else {
+            preview = { ...snapped45, onNode: false };
+          }
         }
       }
       wirePreviewLive.set(preview);
     },
-    [annotationLayer, wirePreviewLive, viaSnap, viaOnProjection, snapNode, resolveTerminalSnap]
+    [annotationLayer, wirePreviewLive, viaSnap, viaOnProjection, snapNode, resolveTerminalSnap, edgeSplitFromHit]
   );
 
   /**

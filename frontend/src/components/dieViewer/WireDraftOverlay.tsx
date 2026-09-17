@@ -27,6 +27,10 @@ export type WirePreview = {
   /** Terminal snap target (orange halo + cross-hair). When present the wire
    *  will place a node at this cell-instance terminal centre. */
   onTerminal?: TerminalSnapTarget;
+  /** Endpoint lands on another net's wire body → the edge will be split and
+   *  the draft connected into it. Drawn with the dashed virtual-vertex marker
+   *  (same as starting on a wire body). */
+  onEdgeSplit?: boolean;
   elbow?: Point;
 };
 
@@ -166,6 +170,7 @@ export function WireDraftOverlay({
         drawTerminalHalo(ctx, s.x, s.y, ringR);
       if (anchored) ring(toScreen(points[0]));
       if (preview?.onNode || preview?.onVia) ring(toScreen(preview));
+      if (preview?.onEdgeSplit) drawVirtualVertex(ctx, toScreen(preview).x, toScreen(preview).y, ringR);
       if (preview?.onTerminal) orangeRing(toScreen(preview));
     };
 

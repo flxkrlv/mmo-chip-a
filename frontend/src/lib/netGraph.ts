@@ -259,6 +259,71 @@ export function splitEdgeAtPoint(
   };
 }
 
+/** A to-be-created junction on the body of an edge (an `EdgeSplitTarget`). */
+export interface EdgeBodyTarget {
+  netId: string;
+  edgeId: string;
+  at: Point;
+}
+
+/**
+ * Commit a draft whose endpoint lands on the *body* of another net's edge:
+ * split that edge at `target.at` (creating a junction node) and connect the
+ * draft into it. The draft's start-edge split (`startSplit`) is applied first
+ * when present, so the whole edit is a single net change (one undo step).
+ *
+ * The draft's own points are chained; the final bridge segment (into the
+ * junction node) uses `connectLayer`. Returns [] when either edge is gone, so
+ * the caller can fall back to a free placement.
+ */
+export function connectToEdgeBody(
+  nets: AnnotationNet[],
+  rawPoints: Point[],
+  anchor: DrawAnchor | null,
+  startSplit: EdgeBodyTarget | null,
+  target: EdgeBodyTarget,
+  rawSegLayers: SegLayer[] = [],
+  connectLayer: SegLayer = null
+): NetChange[] {
+  const originals = new Map(nets.map((n) => [n.id, n]));
+  let working = nets;
+  let effAnchor = anchor;
+
+  if (startSplit) {
+    const orig = working.find((n) => n.id === startSplit.netId);
+    const done = orig && splitEdgeAtPoint(orig, startSplit.edgeId, startSplit.at);
+    if (orig && done) {
+      working = working.map((n) => (n.id === orig.id ? done.net : n));
+      effAnchor = { netId: orig.id, nodeId: done.nodeId };
+    }
+  }
+
+  const targetNet = working.find((n) => n.id === target.netId);
+  const endDone = targetNet && splitEdgeAtPoint(targetNet, target.edgeId, target.at);
+  if (!targetNet || !endDone) return [];
+
+  const afterEnd = working.map((n) =>
+    n.id === targetNet.id ? endDone.net : n
+  );
+  const changes = connectToNode(
+    afterEnd,
+    rawPoints,
+    effAnchor,
+    targetNet.id,
+    endDone.nodeId,
+    rawSegLayers,
+    connectLayer
+  );
+
+  // Fold the pre-split nets back in as `prev` so a single undo restores the
+  // original (un-split) graph.
+  return changes.map((c) =>
+    c.prev && originals.has(c.prev.id)
+      ? { ...c, prev: originals.get(c.prev.id)! }
+      : c
+  );
+}
+
 /**
  * Split a net at a degree-two node. The node is duplicated as an endpoint in
  * both resulting nets, so the two traces can still be edited independently.

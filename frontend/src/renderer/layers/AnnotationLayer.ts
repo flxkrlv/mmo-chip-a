@@ -217,17 +217,26 @@ export class AnnotationLayer implements Layer {
   }
 
   /**
-   * Point pick. Broad-phase via rbush with `worldTolerance` slop, narrow-phase
+   * Point pick. Broad-phase via rbush with `broadTolerance` slop, narrow-phase
    * via each annotation's `hitTest` (falls back to bbox containment). Visibility
    * filter is respected. Returns the smallest-bbox candidate so small things on
    * top of large things (e.g. a via on a cell) win.
+   *
+   * `broadTolerance` (defaults to `worldTolerance`) widens only the broad-phase
+   * search. Annotations whose pickable area extends past their bbox — e.g. a
+   * net vertex dot drawn wider than the node bbox — would otherwise be culled
+   * before their `hitTest` ever runs, so the caller passes the dot radius here.
    */
-  hitTest(worldPoint: { x: number; y: number }, worldTolerance: number): AnnotationHit | null {
+  hitTest(
+    worldPoint: { x: number; y: number },
+    worldTolerance: number,
+    broadTolerance: number = worldTolerance
+  ): AnnotationHit | null {
     const candidates = this.index.search({
-      minX: worldPoint.x - worldTolerance,
-      minY: worldPoint.y - worldTolerance,
-      maxX: worldPoint.x + worldTolerance,
-      maxY: worldPoint.y + worldTolerance
+      minX: worldPoint.x - broadTolerance,
+      minY: worldPoint.y - broadTolerance,
+      maxX: worldPoint.x + broadTolerance,
+      maxY: worldPoint.y + broadTolerance
     });
     const visible = this.visibleKinds;
     let best: AnnotationHit | null = null;

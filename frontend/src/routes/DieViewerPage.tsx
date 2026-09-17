@@ -130,7 +130,7 @@ import {
   type Point,
   type Rect
 } from "../lib/geometry";
-import { viaSnapTolerance } from "../renderer/annotations/style";
+import { netNodeWorldRadius, viaSnapTolerance } from "../renderer/annotations/style";
 import type { Layer, Viewport } from "../renderer/types";
 import { formatPercent } from "../lib/format";
 import { isTypingTarget } from "../lib/keyboard";
@@ -152,6 +152,21 @@ const NO_DRAFT_POINTS: Point[] = [];
  *  vertices that are real device-electrode connections. Kept tight so a node
  *  merely *near* a terminal is not mistaken for a connection. */
 const DEVICE_CONN_GRID_PX = 1;
+
+/** Broad-phase pick radius (world units) covering the rendered net-vertex
+ *  dots. A vertex dot is drawn wider than the net's node bbox (screen-clamped),
+ *  so a click anywhere on a visible dot must widen the spatial search or the
+ *  annotation is culled before its precise `hitTest` runs — leaving only the
+ *  dot's centre grabbable. */
+function netNodePickWorldRadius(zoom: number): number {
+  const prefs = usePreferences.getState();
+  return netNodeWorldRadius(
+    zoom,
+    prefs.netWidth,
+    prefs.netNodeVisible ? prefs.netNodeSize : 0,
+    prefs.inspectorTab === "ml"
+  );
+}
 
 export function DieViewerPage() {
   const { dieId } = useParams<{ dieId: string }>();
@@ -2172,7 +2187,11 @@ function DieViewer({ dieId }: { dieId: string }) {
       const vp = viewportLive.get();
       if (!vp || !annotationLayer) return "pan";
       const tolerance = HIT_TOLERANCE_PX / vp.zoom;
-      const hit = annotationLayer.hitTest(e.worldPoint, tolerance);
+      const hit = annotationLayer.hitTest(
+        e.worldPoint,
+        tolerance,
+        Math.max(tolerance, netNodePickWorldRadius(vp.zoom))
+      );
 
       if (hit) {
         // A mixed cell + wire selection must move as one bundle, regardless
@@ -2929,7 +2948,7 @@ function DieViewer({ dieId }: { dieId: string }) {
         setSelectedRulerIds(new Set([rulerHit.id]));
       }
       const tol = HIT_TOLERANCE_PX / vp.zoom;
-      const hit = annotationLayer?.hitTest(world, tol) ?? null;
+      const hit = annotationLayer?.hitTest(world, tol, Math.max(tol, netNodePickWorldRadius(vp.zoom))) ?? null;
       if (hit) {
         hitPartId = hit.partId;
         if (hit.annotation.kind === "cell" && hit.annotation.id.startsWith("cell:")) {
@@ -3096,7 +3115,7 @@ function DieViewer({ dieId }: { dieId: string }) {
       // Manual via first (annotation layer paints on top + has the tighter
       // pickable region), then ML via as the fallback.
       const tol = HIT_TOLERANCE_PX / vp.zoom;
-      const hit = annotationLayer?.hitTest(world, tol) ?? null;
+      const hit = annotationLayer?.hitTest(world, tol, Math.max(tol, netNodePickWorldRadius(vp.zoom))) ?? null;
       if (hit && hit.annotation.kind === "via") {
         const annoId = hit.annotation.id.startsWith("anno:")
           ? hit.annotation.id.slice(5)
@@ -3148,7 +3167,7 @@ function DieViewer({ dieId }: { dieId: string }) {
       }
       if (!cellId && anns) {
         // Check annotation layer for cell hits (covers manually drawn cells)
-        const cellHit = annotationLayer?.hitTest(world, tol) ?? null;
+        const cellHit = annotationLayer?.hitTest(world, tol, Math.max(tol, netNodePickWorldRadius(vp.zoom))) ?? null;
         if (cellHit && cellHit.annotation.id.startsWith("cell:")) {
           const cid = cellHit.annotation.id.slice(5);
           const cell = (anns as any).cells?.find((c: any) => c.id === cid);
