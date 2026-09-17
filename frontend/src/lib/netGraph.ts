@@ -324,6 +324,78 @@ export function connectToEdgeBody(
   );
 }
 
+/** Merge `src`'s graph into `dstAfter`, welding `srcNodeId` onto `dstNodeId`:
+ *  every src edge that touched `srcNodeId` now touches `dstNodeId`, and the src
+ *  node is dropped. `dstOrig` is the pre-split destination net, recorded as the
+ *  undo `prev`. Pure. */
+function weldNets(
+  src: AnnotationNet,
+  srcNodeId: string,
+  dstOrig: AnnotationNet,
+  dstAfter: AnnotationNet,
+  dstNodeId: string
+): NetChange[] {
+  const srcEdges = src.edges.map((e) =>
+    e.from === srcNodeId
+      ? { ...e, from: dstNodeId }
+      : e.to === srcNodeId
+        ? { ...e, to: dstNodeId }
+        : e
+  );
+  const srcNodes = src.nodes.filter((n) => n.id !== srcNodeId);
+  const merged: AnnotationNet = {
+    ...dstAfter,
+    nodes: [...dstAfter.nodes, ...srcNodes],
+    edges: [...dstAfter.edges, ...srcEdges]
+  };
+  return [
+    { prev: dstOrig, next: merged },
+    { prev: src, next: null }
+  ];
+}
+
+/**
+ * Weld a source net's endpoint onto a destination net's existing node, merging
+ * the two nets into one (the source is removed). Used when dragging the end of
+ * a net onto another net's vertex. Single-undo batch. Pure.
+ */
+export function weldNetAtNode(
+  nets: AnnotationNet[],
+  srcNetId: string,
+  srcNodeId: string,
+  dstNetId: string,
+  dstNodeId: string
+): NetChange[] {
+  if (srcNetId === dstNetId) return [];
+  const src = nets.find((n) => n.id === srcNetId);
+  const dst = nets.find((n) => n.id === dstNetId);
+  if (!src || !dst) return [];
+  return weldNets(src, srcNodeId, dst, dst, dstNodeId);
+}
+
+/**
+ * Weld a source net's endpoint onto the *body* of a destination edge: split the
+ * edge at `at` and merge the source net into the new junction. Used when
+ * dragging the end of a net onto another net's segment. Single-undo batch.
+ * Pure.
+ */
+export function weldNetAtEdge(
+  nets: AnnotationNet[],
+  srcNetId: string,
+  srcNodeId: string,
+  dstNetId: string,
+  dstEdgeId: string,
+  at: Point
+): NetChange[] {
+  if (srcNetId === dstNetId) return [];
+  const src = nets.find((n) => n.id === srcNetId);
+  const dstOrig = nets.find((n) => n.id === dstNetId);
+  if (!src || !dstOrig) return [];
+  const split = splitEdgeAtPoint(dstOrig, dstEdgeId, at);
+  if (!split) return [];
+  return weldNets(src, srcNodeId, dstOrig, split.net, split.nodeId);
+}
+
 /**
  * Split a net at a degree-two node. The node is duplicated as an endpoint in
  * both resulting nets, so the two traces can still be edited independently.

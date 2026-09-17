@@ -100,6 +100,10 @@ export function buildNetAnnotation(
   // Radius the node discs were last painted at (world units). Cached so
   // hit-testing matches the on-screen disc; see `draw`.
   let lastNodeWorldRadius = 0;
+  // Node ids whose dot was actually painted on the last draw. Only these get
+  // the enlarged (dot-sized) grab area; vertices filtered out by the
+  // junction-only mode keep just the small click slop.
+  let lastVisibleNodes: Set<string> = new Set();
   return {
     id: netId,
     kind: "net",
@@ -237,11 +241,13 @@ export function buildNetAnnotation(
       // can match the visible disc (it is screen-clamped, so it differs from
       // the raw width × multiplier at extreme zooms).
       lastNodeWorldRadius = showNodes ? nodeRadius : 0;
+      const visibleNodes = new Set<string>();
 
       if (showNodes) {
         for (const n of net.nodes) {
           if (nodeSel(n)) continue;
           if (!nodeWantsDot(n.id)) continue;
+          visibleNodes.add(n.id);
           const dotColor = nodeColor.get(n.id) ?? baseColor;
           ctx.fillStyle = dotColor;
           ctx.beginPath();
@@ -268,6 +274,7 @@ export function buildNetAnnotation(
         ctx.lineWidth = SELECT_OUTLINE_PX / bounds.zoom;
         for (const n of net.nodes) {
           if (!nodeSel(n)) continue;
+          visibleNodes.add(n.id);
           ctx.beginPath();
           ctx.arc(n.x, n.y, selRadius, 0, Math.PI * 2);
           ctx.fill();
@@ -276,16 +283,17 @@ export function buildNetAnnotation(
           ctx.stroke();
         }
       }
+      lastVisibleNodes = visibleNodes;
     },
     hitTest(p, tol) {
-      // Vertices win over segments — they're the smaller, on-top target. Use
-      // the radius the disc was actually painted at (cached in `draw`) so the
-      // click area coincides with the visible dot at every zoom.
-      const nodeR = lastNodeWorldRadius + tol;
+      // Vertices win over segments — they're the smaller, on-top target. Only
+      // a vertex whose dot was actually painted gets the enlarged (dot-sized)
+      // grab area; a filtered-out vertex keeps just the small click slop.
       let bestNode: { id: string; d: number } | null = null;
       for (const n of net.nodes) {
+        const r = (lastVisibleNodes.has(n.id) ? lastNodeWorldRadius : 0) + tol;
         const d = Math.hypot(p.x - n.x, p.y - n.y);
-        if (d <= nodeR && (!bestNode || d < bestNode.d)) {
+        if (d <= r && (!bestNode || d < bestNode.d)) {
           bestNode = { id: n.id, d };
         }
       }

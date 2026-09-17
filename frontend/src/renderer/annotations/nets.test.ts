@@ -177,6 +177,52 @@ describe("node hitbox matches the drawn dot", () => {
   });
 });
 
+describe("only visible dots get the enlarged grab area", () => {
+  const midNet: AnnotationNet = {
+    id: "n6",
+    name: "Net 6",
+    nodes: [
+      { id: "a", x: 0, y: 0 },
+      { id: "b", x: 50, y: 0 },
+      { id: "c", x: 100, y: 0 },
+    ],
+    edges: [
+      { id: "ab", from: "a", to: "b" },
+      { id: "bc", from: "b", to: "c" },
+    ],
+  };
+
+  function drawAt(annotation: ReturnType<typeof buildNetAnnotation>, zoom: number): void {
+    const ctx = {
+      lineCap: "", lineJoin: "", lineWidth: 0, strokeStyle: "", fillStyle: "",
+      beginPath() {}, moveTo() {}, lineTo() {}, fill() {}, stroke() {}, arc() {},
+    } as unknown as CanvasRenderingContext2D;
+    annotation.draw(ctx, { zoom } as never, { selected: false, isSelected: () => false } as never);
+  }
+
+  it("enlarges only the drawn dots in junction-only mode", () => {
+    const annotation = buildNetAnnotation(
+      midNet, () => 10, () => "#fff", () => false, undefined, undefined,
+      () => 1.6, () => true,
+    );
+    drawAt(annotation, 1);
+    // a is a visible end (degree 1) → grabbable 12 units out (radius 16).
+    expect(annotation.hitTest?.({ x: 0, y: 12 }, 0.01)).toBe("net:n6/node:a");
+    // b is a filtered-out mid bend (degree 2) → no dot → only the tiny slop.
+    expect(annotation.hitTest?.({ x: 50, y: 12 }, 0.01)).toBeNull();
+  });
+
+  it("enlarges a mid bend once it is a visible connection point", () => {
+    const annotation = buildNetAnnotation(
+      midNet, () => 10, () => "#fff", () => false, undefined, undefined,
+      () => 1.6, () => true,
+      (_netId, x, y) => x === 50 && y === 0,
+    );
+    drawAt(annotation, 1);
+    expect(annotation.hitTest?.({ x: 50, y: 12 }, 0.01)).toBe("net:n6/node:b");
+  });
+});
+
 describe("contrastColor", () => {
   it("picks black on bright dots and white on dark ones", () => {
     expect(contrastColor("#2dd4bf")).toBe("#000000");

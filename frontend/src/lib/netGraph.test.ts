@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { AnnotationNet } from "shared";
-import { connectToEdgeBody } from "./netGraph";
+import { connectToEdgeBody, weldNetAtEdge, weldNetAtNode } from "./netGraph";
 
 function net(
   id: string,
@@ -100,5 +100,54 @@ describe("connectToEdgeBody", () => {
       "metal1"
     );
     expect(changes).toEqual([]);
+  });
+});
+
+describe("weldNetAtNode", () => {
+  it("merges two nets, welding the source endpoint onto the target vertex", () => {
+    const a = net("A", [["a1", 0, 0], ["a2", 100, 0]], [["ea", "a1", "a2", "metal1"]]);
+    const b = net("B", [["b1", 100, 0], ["b2", 100, 100]], [["eb", "b1", "b2", "metal1"]]);
+
+    const changes = weldNetAtNode([a, b], "A", "a2", "B", "b1");
+
+    expect(changes).toHaveLength(2);
+    const removed = changes.find((c) => c.next === null);
+    expect(removed?.prev?.id).toBe("A");
+    const merged = changes.find((c) => c.next?.id === "B");
+    expect(merged?.prev?.id).toBe("B");
+    // b1, b2 + a1 (a2 was welded away).
+    expect(merged!.next!.nodes.map((n) => n.id).sort()).toEqual(["a1", "b1", "b2"]);
+    // eb + the source edge re-pointed onto b1.
+    const srcEdge = merged!.next!.edges.find((e) => e.id === "ea");
+    expect(srcEdge?.from === "b1" || srcEdge?.to === "b1").toBe(true);
+  });
+
+  it("refuses to weld a net to itself", () => {
+    const a = net("A", [["a1", 0, 0], ["a2", 100, 0]], [["ea", "a1", "a2", "metal1"]]);
+    expect(weldNetAtNode([a], "A", "a2", "A", "a1")).toEqual([]);
+  });
+});
+
+describe("weldNetAtEdge", () => {
+  it("splits the target edge and welds the source endpoint into the junction", () => {
+    const a = net("A", [["a1", 0, 0], ["a2", 100, 0]], [["ea", "a1", "a2", "metal1"]]);
+    const b = net("B", [["b1", 50, -50], ["b2", 50, 50]], [["eb", "b1", "b2", "metal1"]]);
+
+    const changes = weldNetAtEdge([a, b], "A", "a2", "B", "eb", { x: 50, y: 0 });
+
+    expect(changes).toHaveLength(2);
+    const removed = changes.find((c) => c.next === null);
+    expect(removed?.prev?.id).toBe("A");
+    const merged = changes.find((c) => c.next?.id === "B");
+    // Undo `prev` is the original (unsplit) B.
+    expect(merged?.prev).toEqual(b);
+    // b1, b2, junction + a1.
+    expect(merged!.next!.nodes).toHaveLength(4);
+    // two split edges + the source edge welded to the junction.
+    expect(merged!.next!.edges).toHaveLength(3);
+    const junction = merged!.next!.nodes.find((n) => n.x === 50 && n.y === 0);
+    expect(junction).toBeTruthy();
+    const srcEdge = merged!.next!.edges.find((e) => e.id === "ea");
+    expect(srcEdge?.from === junction!.id || srcEdge?.to === junction!.id).toBe(true);
   });
 });

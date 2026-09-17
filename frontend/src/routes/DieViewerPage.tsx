@@ -116,9 +116,10 @@ import { useSelectionDelete } from "../components/dieViewer/useSelectionDelete";
 import { useUndoRedoHotkeys } from "../components/dieViewer/useUndoRedoHotkeys";
 import { useOverlayHotkeys } from "../lib/useOverlayHotkeys";
 import type { AnnotationAction } from "../api/actions";
-import { parseNetPartId, splitNetAtNode, type DrawAnchor } from "../lib/netGraph";
+import { parseNetPartId, splitNetAtNode, weldNetAtEdge, weldNetAtNode, type DrawAnchor } from "../lib/netGraph";
 import { pasteWireClipboard, snapshotWireClipboard, wireSelectionBounds } from "../lib/wireClipboard";
 import {
+  closestPointOnSegment,
   normalizeRect,
   distancePointToSegment,
   pointInRect,
@@ -166,6 +167,58 @@ function netNodePickWorldRadius(zoom: number): number {
     prefs.netNodeVisible ? prefs.netNodeSize : 0,
     prefs.inspectorTab === "ml"
   );
+}
+
+type DragSnap =
+  | { kind: "vertex"; netId: string; nodeId: string; x: number; y: number }
+  | { kind: "edge"; netId: string; edgeId: string; at: Point };
+
+/** Snap a dragged net endpoint onto ANOTHER net — nearest vertex first, then
+ *  nearest edge body. Mirrors the wire tool's drawing snap so a moved end joins
+ *  a foreign net the same way a freshly drawn one does. The dragged net itself
+ *  is excluded so it never snaps to its own graph. */
+function resolveDragSnap(
+  nets: AnnotationNet[],
+  excludeNetId: string,
+  world: Point,
+  vertexTol: number,
+  edgeTol: number
+): DragSnap | null {
+  let bestV: { netId: string; nodeId: string; x: number; y: number } | null = null;
+  let bestVD = vertexTol;
+  for (const net of nets) {
+    if (net.id === excludeNetId) continue;
+    for (const nd of net.nodes) {
+      const d = Math.hypot(nd.x - world.x, nd.y - world.y);
+      if (d <= bestVD) {
+        bestVD = d;
+        bestV = { netId: net.id, nodeId: nd.id, x: nd.x, y: nd.y };
+      }
+    }
+  }
+  if (bestV) return { kind: "vertex", ...bestV };
+
+  let bestE: { netId: string; edgeId: string; at: Point } | null = null;
+  let bestED = edgeTol;
+  for (const net of nets) {
+    if (net.id === excludeNetId) continue;
+    for (const edge of net.edges) {
+      const a = net.nodes.find((n) => n.id === edge.from);
+      const b = net.nodes.find((n) => n.id === edge.to);
+      if (!a || !b) continue;
+      const c = closestPointOnSegment(world, a, b);
+      const d = Math.hypot(c.x - world.x, c.y - world.y);
+      if (d <= bestED) {
+        bestED = d;
+        bestE = {
+          netId: net.id,
+          edgeId: edge.id,
+          at: { x: Math.round(c.x), y: Math.round(c.y) }
+        };
+      }
+    }
+  }
+  return bestE ? { kind: "edge", ...bestE } : null;
 }
 
 export function DieViewerPage() {
@@ -2321,10 +2374,38 @@ function DieViewer({ dieId }: { dieId: string }) {
         // Dragging an existing net vertex moves it. The move is shown live by
         // updating just that one net in the index (no full repopulate); the
         // undoable `upsertNet` is dispatched only on pointer-up.
+        //
+        // Dragging the END of a net (degree-1 vertex) also snaps onto another
+        // net: a vertex welds the two nets into one, an edge body splits it and
+        // welds — matching the wire tool's drawing snap.
         const node = wire.nodeFromHit(hit);
         if (node && annotationLayer) {
           const original =
             wire.netsRef.current.find((n) => n.id === node.netId) ?? null;
+          const isEndpoint = original
+            ? original.edges.filter(
+                (e) => e.from === node.nodeId || e.to === node.nodeId
+              ).length === 1
+            : false;
+          const resolveSnap = (
+            worldPoint: { x: number; y: number }
+          ): DragSnap | null => {
+            if (!isEndpoint) return null;
+            const zoom = viewportLive.get()?.zoom ?? 1;
+            const prefs = usePreferences.getState();
+            const vertexTol = Math.max(
+              HIT_TOLERANCE_PX / zoom,
+              netNodePickWorldRadius(zoom)
+            );
+            const edgeTol = Math.max(HIT_TOLERANCE_PX / zoom, prefs.netWidth / 2);
+            return resolveDragSnap(
+              wire.netsRef.current,
+              node.netId,
+              worldPoint,
+              vertexTol,
+              edgeTol
+            );
+          };
           const moveNode = (worldPoint: { x: number; y: number }): AnnotationNet | null =>
             original
               ? {
@@ -2341,17 +2422,46 @@ function DieViewer({ dieId }: { dieId: string }) {
               useDieViewerStore.getState().select([hit.partId], "replace");
             },
             onDragMove: ({ worldPoint }) => {
-              const moved = moveNode(worldPoint);
+              const snap = resolveSnap(worldPoint);
+              const target = snap
+                ? snap.kind === "vertex"
+                  ? { x: snap.x, y: snap.y }
+                  : snap.at
+                : worldPoint;
+              const moved = moveNode(target);
               if (moved) {
                 annotationLayer.update(buildNetAnnotation(moved, getNetW, getNetC()));
               }
             },
             onPointerUp: ({ dragged, worldPoint, modifiers }) => {
-              const moved = dragged ? moveNode(worldPoint) : null;
-              if (!moved || !original) {
+              if (!dragged || !original) {
                 selectFromHit(hit, modifiers.shift);
                 return;
               }
+              const snap = resolveSnap(worldPoint);
+              if (snap) {
+                const changes =
+                  snap.kind === "vertex"
+                    ? weldNetAtNode(
+                        wire.netsRef.current,
+                        node.netId,
+                        node.nodeId,
+                        snap.netId,
+                        snap.nodeId
+                      )
+                    : weldNetAtEdge(
+                        wire.netsRef.current,
+                        node.netId,
+                        node.nodeId,
+                        snap.netId,
+                        snap.edgeId,
+                        snap.at
+                      );
+                const action = netChangesToAction(changes);
+                if (action) void dispatcher.dispatch(action);
+                return;
+              }
+              const moved = moveNode(worldPoint);
               const action = netChangesToAction([{ prev: original, next: moved }]);
               if (action) void dispatcher.dispatch(action);
             },
