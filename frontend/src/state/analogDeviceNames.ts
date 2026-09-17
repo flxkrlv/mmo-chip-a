@@ -62,6 +62,52 @@ export function isProjectNamesLoaded(): boolean {
   return loaded;
 }
 
+/**
+ * Reconcile the store with the set of device instances that currently exist
+ * on the die.
+ *
+ * Names of devices that are gone are dropped, so a deleted device's name is
+ * freed and can be re-assigned (automatically or manually) to another device.
+ * Names of devices that still exist are never touched. No-op until the
+ * backend load has finished, so a slow load can never erase stored names.
+ */
+export function syncLiveProjectDevices(
+  liveInstanceIds: ReadonlySet<string>,
+): Readonly<Record<string, string>> {
+  if (!loaded) return names;
+  let changed = false;
+  for (const id of Object.keys(names)) {
+    if (!liveInstanceIds.has(id)) {
+      delete names[id];
+      changed = true;
+    }
+  }
+  if (changed) {
+    bump();
+    scheduleSave();
+  }
+  return names;
+}
+
+/** Collect the numbers already used per name prefix (M1, R2, ...). */
+export function collectUsedNameNumbers(
+  source: Readonly<Record<string, string>>,
+): Record<string, Set<number>> {
+  const used: Record<string, Set<number>> = {};
+  for (const name of Object.values(source)) {
+    const m = name.match(/^([A-Za-z]+)(\d+)$/);
+    if (m) (used[m[1]] ??= new Set<number>()).add(parseInt(m[2], 10));
+  }
+  return used;
+}
+
+/** Smallest unused `<prefix><n>` (n >= 1) for the given used-number set. */
+export function nextFreeInstanceName(prefix: string, used: Set<number>): string {
+  let n = 1;
+  while (used.has(n)) n += 1;
+  return `${prefix}${n}`;
+}
+
 // ── Active project lifecycle ──────────────────────────────────────
 
 export function setActiveProject(dieId: string | null): void {
@@ -75,7 +121,10 @@ export function setActiveProject(dieId: string | null): void {
   if (dieId) void loadFromBackend(dieId);
 }
 
-async function loadFromBackend(dieId: string): Promise<void> {
+const LOAD_MAX_ATTEMPTS = 4;
+const LOAD_RETRY_BASE_MS = 1000;
+
+async function loadFromBackend(dieId: string, attempt = 0): Promise<void> {
   try {
     const data = await apiGet<AnalogDevicesPayload>(
       `/api/dies/${encodeURIComponent(dieId)}/analog-devices`,
@@ -91,8 +140,16 @@ async function loadFromBackend(dieId: string): Promise<void> {
     if (hadEdits || pendingSave) scheduleSave();
   } catch {
     if (activeDieId !== dieId) return;
-    pendingEdits = {};
-    loaded = true;
+    // A failed read must NEVER be treated as "loaded with no names": that
+    // would let the pipeline auto-name every device and persist it, wiping
+    // the names already stored for the project. Keep `loaded` false (which
+    // also disables saving) and retry the read a few times.
+    if (attempt < LOAD_MAX_ATTEMPTS - 1) {
+      const delay = LOAD_RETRY_BASE_MS * (attempt + 1);
+      setTimeout(() => {
+        if (activeDieId === dieId) void loadFromBackend(dieId, attempt + 1);
+      }, delay);
+    }
   }
 }
 

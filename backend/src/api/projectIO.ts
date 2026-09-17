@@ -27,7 +27,7 @@ import {
   type OverlayImageManifest
 } from "./overlayImages.js";
 import { listDieRecords, readDieRecord, writeDieRecord } from "../store.js";
-import { prepareFolderProject, unregisterFolderShortcut } from "../projectLayout.js";
+import { prepareFolderProject, resolveProjectDir, unregisterFolderShortcut } from "../projectLayout.js";
 import type { createTileScheduler } from "../tileScheduler.js";
 import type { DieRecord } from "../types.js";
 
@@ -102,10 +102,8 @@ function archiveTarget(root: string, relative: string): string {
 
 async function appendCompactOverlayImages(
   archive: Archiver,
-  dataRoot: string,
-  dieId: string
+  overlayDir: string
 ): Promise<void> {
-  const overlayDir = path.join(dataRoot, "overlay-images", dieId);
   let entries: import("node:fs").Dirent[];
   try {
     entries = await fs.readdir(overlayDir, { withFileTypes: true });
@@ -165,7 +163,9 @@ async function queueExport(
   const mode = body.mode === "full" ? "full" : "light";
 
   const archive: Archiver = new ZipArchive({ zlib: { level: 0 } }); // store — images already compressed
-  const dieDir = path.join(dataRoot, "dies", dieId);
+  // Folder projects live outside <dataRoot>; resolve so export reads the
+  // actual project folder (metadata/annotations/names/original/overlays).
+  const { dir: dieDir, overlayDir } = await resolveProjectDir(dataRoot, dieId);
   const dieName = sanitizeName(record.name) || "project";
   const filename = `mmochip-${dieName}-${mode}.zip`;
 
@@ -231,7 +231,7 @@ async function queueExport(
     });
 
     await measure("overlay-images/", async () => {
-      await appendCompactOverlayImages(archive, dataRoot, dieId);
+      await appendCompactOverlayImages(archive, overlayDir);
     });
   }
 

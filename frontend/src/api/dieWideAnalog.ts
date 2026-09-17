@@ -37,11 +37,13 @@ import { isClipperLoaded } from "../lib/extraction/clipper";
 import { generateSpiceNetlist } from "../lib/export/spice";
 import { matchOrCreateDevice, reconcileWithLiveDevices, compactFingerprints, setLegacyOverrides, getLegacyOverrides, clearLegacyOverrides, getDeviceRecord } from "../state/deviceRegistry";
 import {
+  collectUsedNameNumbers,
   getActiveProjectDieId,
   getAnalogNamesVersion,
-  getProjectDeviceNames,
   isProjectNamesLoaded,
+  nextFreeInstanceName,
   setProjectDeviceName,
+  syncLiveProjectDevices,
   validateProjectDeviceName,
 } from "../state/analogDeviceNames";
 
@@ -760,21 +762,29 @@ const INSTANCE_PREFIXES: Record<string, string> = {
  * device — not to a browser-global registry. Names are looked up in the
  * per-project `analog-devices.json` store; brand-new devices are auto-named
  * and persisted (only once the store is loaded, so a slow load can never
- * overwrite user-assigned names).
+ * overwrite user-assigned names). Names of devices that no longer exist are
+ * dropped from the store, freeing them for re-use.
  *
  * The legacy `deviceRegistry` is still reconciled below purely so device
  * *override* records keep their soft-delete behaviour.
  */
-function assignStableInstanceNames(devices: AnalogDevice[]): void {
-  const projectNames = getProjectDeviceNames();
+export function assignStableInstanceNames(devices: AnalogDevice[]): void {
   const loaded = isProjectNamesLoaded();
 
-  // Seed counters from existing project names so auto-assign never reuses one.
-  const counters: Record<string, number> = {};
-  for (const name of Object.values(projectNames)) {
-    const m = name.match(/^([A-Za-z]+)(\d+)$/);
-    if (m) counters[m[1]] = Math.max(counters[m[1]] ?? 0, parseInt(m[2], 10));
+  // Deterministic set of device instances present in the current extraction.
+  const liveInstanceIds = new Set<string>();
+  for (const d of devices) {
+    const instanceId = (d as any)._instanceId as string | undefined;
+    if (instanceId) liveInstanceIds.add(instanceId);
   }
+
+  // Drop names of devices that no longer exist so a deleted device's name is
+  // freed for re-use; live devices keep their stored names.
+  const projectNames = syncLiveProjectDevices(liveInstanceIds);
+
+  // Seed per-prefix used numbers from LIVE names only, so a freed number can
+  // be reused by a new device while no live name is ever duplicated.
+  const usedNumbers = collectUsedNameNumbers(projectNames);
 
   // Keep override records reconciled (soft-delete devices no longer live).
   const liveFingerprints = new Set<string>();
@@ -796,9 +806,9 @@ function assignStableInstanceNames(devices: AnalogDevice[]): void {
       d.instanceName = stored;
       continue;
     }
-    const next = (counters[prefix] ?? 0) + 1;
-    const newName = `${prefix}${next}`;
-    counters[prefix] = next;
+    const used = usedNumbers[prefix] ?? (usedNumbers[prefix] = new Set<number>());
+    const newName = nextFreeInstanceName(prefix, used);
+    used.add(parseInt(newName.slice(prefix.length), 10));
     d.instanceName = newName;
     if (loaded) setProjectDeviceName(instanceId, newName);
   }
