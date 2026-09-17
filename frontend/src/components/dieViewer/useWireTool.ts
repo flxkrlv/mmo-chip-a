@@ -9,6 +9,7 @@ import {
 } from "../../lib/geometry";
 import {
   VIA_DEFAULT_SIZE,
+  netNodeWorldRadius,
   viaSnapTolerance
 } from "../../renderer/annotations/style";
 import { isTypingTarget } from "../../lib/keyboard";
@@ -29,6 +30,7 @@ import type {
 import type { Viewport } from "../../renderer/types";
 import { useDieViewerStore, type ToolKind } from "../../state/dieViewer";
 import { useSession, DEFAULT_METAL_STACK } from "../../state/session";
+import { usePreferences } from "../../state/preferences";
 import type { WirePreview } from "./WireDraftOverlay";
 import type { WireLayer, MetalStack } from "shared";
 import { uuid } from "../../lib/uuid";
@@ -379,6 +381,21 @@ export function useWireTool(opts: {
     []
   );
 
+  /** World-unit radius of the visible vertex dot at `zoom` (0 when hidden).
+   *  The snap area grows to this so clicking anywhere inside the disc lands
+   *  on the vertex. */
+  const dotRadiusAt = useCallback((zoom: number): number => {
+    const prefs = usePreferences.getState();
+    const nodeMult = prefs.netNodeVisible ? prefs.netNodeSize : 0;
+    if (nodeMult <= 0) return 0;
+    return netNodeWorldRadius(
+      zoom,
+      prefs.netWidth,
+      nodeMult,
+      prefs.inspectorTab === "ml",
+    );
+  }, []);
+
   /** Resolve an existing net vertex to snap to, enforcing "vertex beats via":
    *  when via snapping is on, the vertex search radius is widened to the via
    *  tolerance, and a vertex sitting under `via` (even one larger than the
@@ -398,7 +415,10 @@ export function useWireTool(opts: {
       zoom: number,
       widen: boolean
     ): (ResolvedNode & { autoViaId?: string }) | null => {
-      const hitTol = HIT_TOLERANCE_PX / zoom;
+      // The snap area matches the rendered vertex disc (the fixed screen-px
+      // slop is only a floor), so a click anywhere inside the visible dot
+      // snaps to it.
+      const hitTol = Math.max(HIT_TOLERANCE_PX / zoom, dotRadiusAt(zoom));
       if (!widen) return nearestNode(cursor, hitTol);
       const { snapToViasEnabled, getViaSizeWorld, findViaAnnotation, autoViaEnabled } = snapRef.current;
       const viaTol = snapToViasEnabled?.()
@@ -409,7 +429,7 @@ export function useWireTool(opts: {
       if (byCursor) return byCursor;
       return via ? nearestNode(via, viaTol) : null;
     },
-    [nearestNode]
+    [nearestNode, dotRadiusAt]
   );
 
   /** Check layer compatibility between the current wire metal and a vertex.

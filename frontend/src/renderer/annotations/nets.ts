@@ -15,6 +15,8 @@ import {
   SELECT_RING,
   SELECT_WIDTH_MULT,
   WIRE_LAYER_COLOR,
+  contrastColor,
+  netNodeWorldRadius,
   netScreenWidth
 } from "./style";
 
@@ -95,6 +97,9 @@ export function buildNetAnnotation(
   }
   const drawOrder =
     maxZ >= 0 ? (minZ + 1) * 100 + (maxZ + 1) : 0;
+  // Radius the node discs were last painted at (world units). Cached so
+  // hit-testing matches the on-screen disc; see `draw`.
+  let lastNodeWorldRadius = 0;
   return {
     id: netId,
     kind: "net",
@@ -173,9 +178,12 @@ export function buildNetAnnotation(
       // scaled by the user-configurable node radius multiplier.
       const nodeMult = getNodeRadiusMult?.() ?? NET_NODE_RADIUS_MULT;
       const showNodes = nodeMult > 0;
-          const nodeRadius = mlMode
-        ? worldWidth / 2
-        : (screenWidth * nodeMult) / bounds.zoom;
+      const nodeRadius = netNodeWorldRadius(
+        bounds.zoom,
+        getWidth(),
+        nodeMult,
+        mlMode
+      );
       // Node colour: use highest-layer connected edge's colour so dots on
       // metal1 turns match teal, dots on metal2 turn violet, etc.
       const nodeColor = new Map<string, string>();
@@ -200,20 +208,19 @@ export function buildNetAnnotation(
         }
       }
 
-      // Junction-only mode: precompute each vertex's graph degree (number of
-      // edges touching it). We then draw a dot only at degree 1 (dangling end)
-      // and degree ≥ 3 (a real branch) — plain bends (degree 2) stay clean.
-      const junctionsOnly = getJunctionsOnly?.() ?? false;
-      let nodeDegree: Map<string, number> | null = null;
-      if (junctionsOnly) {
-        nodeDegree = new Map<string, number>();
-        for (const e of net.edges) {
-          nodeDegree.set(e.from, (nodeDegree.get(e.from) ?? 0) + 1);
-          nodeDegree.set(e.to, (nodeDegree.get(e.to) ?? 0) + 1);
-        }
+      // Precompute each vertex's graph degree (number of edges touching it).
+      // Used both by the junction-only dot filter and by the junction cross:
+      // degree ≥ 3 is a real branch (several segments meet); degree 1 is a
+      // dangling end and degree 2 a plain bend / cell contact — neither is
+      // marked.
+      const nodeDegree = new Map<string, number>();
+      for (const e of net.edges) {
+        nodeDegree.set(e.from, (nodeDegree.get(e.from) ?? 0) + 1);
+        nodeDegree.set(e.to, (nodeDegree.get(e.to) ?? 0) + 1);
       }
+      const junctionsOnly = getJunctionsOnly?.() ?? false;
       const nodeWantsDot = (id: string) => {
-        if (!nodeDegree) return true; // legacy: every vertex
+        if (!junctionsOnly) return true; // legacy: every vertex
         const d = nodeDegree.get(id) ?? 0;
         if (d === 1 || d >= 3) return true;
         // A mid-net vertex (degree 2) that is a device-electrode connection
@@ -226,14 +233,34 @@ export function buildNetAnnotation(
         return false;
       };
 
+      // Remember the radius the dots are actually painted at so hit-testing
+      // can match the visible disc (it is screen-clamped, so it differs from
+      // the raw width × multiplier at extreme zooms).
+      lastNodeWorldRadius = showNodes ? nodeRadius : 0;
+
       if (showNodes) {
         for (const n of net.nodes) {
           if (nodeSel(n)) continue;
           if (!nodeWantsDot(n.id)) continue;
-          ctx.fillStyle = nodeColor.get(n.id) ?? baseColor;
+          const dotColor = nodeColor.get(n.id) ?? baseColor;
+          ctx.fillStyle = dotColor;
           ctx.beginPath();
           ctx.arc(n.x, n.y, nodeRadius, 0, Math.PI * 2);
           ctx.fill();
+          // A junction (several segments of this net meet here) gets a
+          // contrasting cross inside the dot, so it reads differently from a
+          // dangling end or a plain cell contact.
+          if ((nodeDegree.get(n.id) ?? 0) >= 3) {
+            const h = nodeRadius * 0.62;
+            ctx.strokeStyle = contrastColor(dotColor);
+            ctx.lineWidth = Math.max(nodeRadius * 0.3, 1.5 / bounds.zoom);
+            ctx.beginPath();
+            ctx.moveTo(n.x - h, n.y - h);
+            ctx.lineTo(n.x + h, n.y + h);
+            ctx.moveTo(n.x + h, n.y - h);
+            ctx.lineTo(n.x - h, n.y + h);
+            ctx.stroke();
+          }
         }
         const selRadius = nodeRadius * SELECT_NODE_MULT;
         ctx.fillStyle = SELECT_COLOR;
@@ -251,9 +278,10 @@ export function buildNetAnnotation(
       }
     },
     hitTest(p, tol) {
-      // Vertices win over segments — they're the smaller, on-top target.
-      const nodeMult = getNodeRadiusMult?.() ?? NET_NODE_RADIUS_MULT;
-      const nodeR = getWidth() * nodeMult + tol;
+      // Vertices win over segments — they're the smaller, on-top target. Use
+      // the radius the disc was actually painted at (cached in `draw`) so the
+      // click area coincides with the visible dot at every zoom.
+      const nodeR = lastNodeWorldRadius + tol;
       let bestNode: { id: string; d: number } | null = null;
       for (const n of net.nodes) {
         const d = Math.hypot(p.x - n.x, p.y - n.y);
