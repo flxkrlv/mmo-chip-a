@@ -83,8 +83,17 @@ export async function listDieRecords(dataRoot: string): Promise<DieRecord[]> {
 }
 
 export async function readDieRecord(dataRoot: string, dieId: string): Promise<DieRecord> {
-  const { dir } = await resolveProjectDir(dataRoot, dieId);
-  return readJson<DieRecord>(path.join(dir, "metadata.json"));
+  const resolved = await resolveProjectDir(dataRoot, dieId);
+  const record = await readJson<DieRecord>(path.join(resolved.dir, "metadata.json"));
+  // The local shortcut is the source of truth for a folder project's location;
+  // metadata's `folderPath` can go stale after the folder is moved or copied
+  // (e.g. opened from another machine). Correcting it here keeps every consumer
+  // — the tile scheduler's synchronous resolver, ML, crops — pointed at the
+  // folder that actually exists on this machine.
+  if (resolved.kind === "folder") {
+    return { ...record, location: "folder", folderPath: resolved.dir };
+  }
+  return record;
 }
 
 export async function writeDieRecord(dataRoot: string, record: DieRecord) {

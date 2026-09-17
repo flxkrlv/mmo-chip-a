@@ -164,6 +164,27 @@ export function buildLevels(
   });
 }
 
+/**
+ * Resolve the base die image for a project. The original always lives in the
+ * project directory (`<projectDir>/original/`), so that copy wins over the
+ * absolute `record.originalPath` — which can go stale when a folder project is
+ * moved, renamed or copied between machines.
+ */
+async function resolveBaseOriginalPath(record: DieRecord, projectDir: string): Promise<string> {
+  const originalDir = path.join(projectDir, "original");
+  try {
+    const files = await fs.readdir(originalDir);
+    if (files.length > 0) {
+      const wanted = record.originalPath ? path.basename(record.originalPath) : null;
+      const pick = wanted && files.includes(wanted) ? wanted : files[0];
+      return path.join(originalDir, pick);
+    }
+  } catch {
+    /* no original/ directory — fall back to the recorded path */
+  }
+  return record.originalPath;
+}
+
 export async function ensureTileForRecord(params: {
   dataRoot: string;
   record: DieRecord;
@@ -216,8 +237,10 @@ export async function ensureTileForRecord(params: {
   const sourceWidth = Math.min(params.record.width - sourceLeft, width * level.scale);
   const sourceHeight = Math.min(params.record.height - sourceTop, height * level.scale);
 
+  const sourcePath = await resolveBaseOriginalPath(params.record, projectDir);
+
   await pipelineToFileAtomic(
-    sharp(params.record.originalPath, {
+    sharp(sourcePath, {
       limitInputPixels: false,
       sequentialRead: true
     })

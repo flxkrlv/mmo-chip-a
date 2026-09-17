@@ -59,6 +59,53 @@ function sameFolder(left: string, right: string): boolean {
   return a === b;
 }
 
+/**
+ * Repair a folder project's metadata so its recorded location and base-image
+ * path point at this machine's copy. Absolute paths go stale when a folder
+ * project is moved, renamed or copied between machines; the folder itself is
+ * the source of truth.
+ */
+async function repairFolderMetadata(folderPath: string): Promise<void> {
+  const resolved = path.resolve(folderPath);
+  const metadataPath = path.join(resolved, "metadata.json");
+  const raw = await fs.readFile(metadataPath, "utf8").catch(() => null);
+  if (raw === null) return;
+  let record: DieRecord;
+  try {
+    record = JSON.parse(raw) as DieRecord;
+  } catch {
+    return;
+  }
+  let correctedOriginal = record.originalPath;
+  const originalDir = path.join(resolved, "original");
+  try {
+    const files = await fs.readdir(originalDir);
+    if (files.length > 0) {
+      const wanted = record.originalPath ? path.basename(record.originalPath) : null;
+      const pick = wanted && files.includes(wanted) ? wanted : files[0];
+      correctedOriginal = path.join(originalDir, pick);
+    }
+  } catch {
+    /* no original/ directory — keep the recorded path */
+  }
+  if (
+    record.location === "folder" &&
+    record.folderPath === resolved &&
+    record.originalPath === correctedOriginal
+  ) {
+    return;
+  }
+  await fs.writeFile(
+    metadataPath,
+    `${JSON.stringify(
+      { ...record, location: "folder", folderPath: resolved, originalPath: correctedOriginal },
+      null,
+      2
+    )}\n`,
+    "utf8"
+  );
+}
+
 async function hasProjectMarker(target: string): Promise<boolean> {
   return (await readProjectManifest(target)) !== null;
 }
@@ -151,6 +198,7 @@ async function openFolder(
   const samePath = shortcuts.find((s) => sameFolder(s.folderPath, resolved));
   if (samePath) {
     tileScheduler.reviveDie(samePath.dieId);
+    await repairFolderMetadata(resolved);
     const name =
       requestedName?.trim() ||
       manifest?.name ||
@@ -255,6 +303,8 @@ async function openFolder(
       // the folder so it can be opened and repaired.
     }
   }
+
+  await repairFolderMetadata(resolved);
 
   return { ok: true, dieId, name, renamed, existing };
 }

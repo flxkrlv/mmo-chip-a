@@ -7,7 +7,7 @@ import express from "express";
 import request from "supertest";
 import { createFsRouter } from "./fs.js";
 import { createTileScheduler } from "../tileScheduler.js";
-import { ensureDataStore, listDieRecords, readAnnotations, writeAnnotations, writeDieRecord } from "../store.js";
+import { ensureDataStore, listDieRecords, readAnnotations, readDieRecord, writeAnnotations, writeDieRecord } from "../store.js";
 import {
   PROJECT_MANIFEST_FILE,
   readProjectManifest,
@@ -199,6 +199,61 @@ test("re-opening the same fully-formed folder returns its existing id", async ()
   // Only one shortcut/record may exist — no duplicate tile pointing at the folder.
   const records = await listDieRecords(dataRoot);
   assert.equal(records.filter((r) => r.id === dieId).length, 1);
+});
+
+test("open-folder repairs a stale originalPath to the folder copy", async () => {
+  const dataRoot = await createRoot("chip-fs-root-");
+  const projectFolder = await createRoot("chip-fs-proj-");
+  await ensureDataStore(dataRoot);
+
+  await fs.mkdir(path.join(projectFolder, "original"), { recursive: true });
+  await fs.writeFile(path.join(projectFolder, "original", "die.png"), "img");
+  await fs.writeFile(
+    path.join(projectFolder, PROJECT_MANIFEST_FILE),
+    JSON.stringify({ version: 1, id: "folder-stale-orig", name: "Stale orig", createdAt: "", updatedAt: "" })
+  );
+  await fs.writeFile(
+    path.join(projectFolder, "metadata.json"),
+    JSON.stringify({
+      ...minimalRecord("folder-stale-orig", "Stale orig"),
+      location: "folder",
+      originalPath: path.join("Z:", "gone", "original", "die.png")
+    })
+  );
+
+  const response = await request(fsApp(dataRoot)).post("/api/dies/open-folder").send({ path: projectFolder });
+  assert.equal(response.status, 200);
+
+  const meta = JSON.parse(
+    await fs.readFile(path.join(projectFolder, "metadata.json"), "utf8")
+  ) as DieRecord;
+  assert.equal(meta.originalPath, path.join(projectFolder, "original", "die.png"));
+});
+
+test("readDieRecord returns the shortcut folder path over a stale metadata folderPath", async () => {
+  const dataRoot = await createRoot("chip-fs-root-");
+  const projectFolder = await createRoot("chip-fs-proj-");
+  await ensureDataStore(dataRoot);
+
+  const opened = await request(fsApp(dataRoot))
+    .post("/api/dies/open-folder")
+    .send({ path: projectFolder, name: "Path fix" });
+  const dieId = opened.body.dieId as string;
+
+  // Simulate a stale absolute folderPath recorded in metadata (e.g. the folder
+  // was moved/copied from another machine).
+  await fs.writeFile(
+    path.join(projectFolder, "metadata.json"),
+    JSON.stringify({
+      ...minimalRecord(dieId, "Path fix"),
+      location: "folder",
+      folderPath: path.join("C:", "old", "gone"),
+      originalPath: ""
+    })
+  );
+
+  const record = await readDieRecord(dataRoot, dieId);
+  assert.equal(record.folderPath, path.resolve(projectFolder));
 });
 
 test("relocate points a folder project at a moved directory", async () => {
