@@ -28,6 +28,7 @@ import {
   shapeHandles,
   shapeHit,
   shapeIntersectsRect,
+  shapeInRect,
   translateShape
 } from "../../lib/cellLayers";
 import {
@@ -586,14 +587,20 @@ export const CellRECanvas = forwardRef<CellRECanvasHandle, Props>(function CellR
       if (hit) {
         const key = shapeKey(hit.layer, hit.shape.id);
         //
+        const current = propsRef.current.selectedShapeIds;
         let sel: Set<string>;
         if (e.shiftKey) {
-          sel = new Set(propsRef.current.selectedShapeIds);
+          sel = new Set(current);
           if (sel.has(key)) sel.delete(key); else sel.add(key);
         } else if (hit.shape.kind === "line") {
           // Line shape: select ALL connected segments in this layer.
           sel = getConnectedLines(propsRef.current.cellType, hit.layer, hit.shape);
           //
+        } else if (current.has(key)) {
+          // Clicking a shape that is already part of the multi-selection keeps
+          // the selection, so the whole group can be dragged from any member
+          // (matches the die viewer).
+          sel = new Set(current);
         } else {
           sel = new Set([key]);
         }
@@ -844,6 +851,9 @@ export const CellRECanvas = forwardRef<CellRECanvasHandle, Props>(function CellR
         return;
       }
       const r = normalizeRect(m);
+      // Die-viewer semantics: dragging left→right selects only fully-enclosed
+      // shapes; right→left also picks up partial overlaps.
+      const fullyContained = m.width >= 0;
       const next = new Set(
         e.shiftKey ? propsRef.current.selectedShapeIds : new Set<string>()
       );
@@ -853,7 +863,9 @@ export const CellRECanvas = forwardRef<CellRECanvasHandle, Props>(function CellR
         const shapes = cellType.layers?.[layer];
         if (!shapes) continue;
         for (const s of shapes) {
-          if (shapeIntersectsRect(s, r)) next.add(shapeKey(layer, s.id));
+          if (fullyContained ? shapeInRect(s, r) : shapeIntersectsRect(s, r)) {
+            next.add(shapeKey(layer, s.id));
+          }
         }
       }
       propsRef.current.onSelect(next);

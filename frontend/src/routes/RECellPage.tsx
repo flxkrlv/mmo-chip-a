@@ -45,6 +45,7 @@ import {
   buildSetShapeForcedTypesAction,
   buildSetShapeLabelsAction,
   buildToggleForceSourceAction,
+  shapeBounds,
   translateShape
 } from "../lib/cellLayers";
 import {
@@ -413,15 +414,33 @@ function RE({ dieId }: { dieId: string }) {
     if (!cellType || clipboard.length === 0) return;
     // Default to pasting all into the active layer if it's a sensible target
     // (i.e. the active layer matches the source layer of every item), else
-    // each item lands back in its original layer. Either way new ids and an
-    // offset so the duplicates are obviously distinct from anything below.
+    // each item lands back in its original layer. Either way new ids.
     const uniformLayer =
       clipboard.every((c) => c.layer === activeLayer) ? activeLayer : null;
+    // Anchor at the cursor (die-viewer behaviour): translate so the clipboard's
+    // top-left lands under the pointer. Fall back to a fixed offset when the
+    // cursor is unknown (e.g. pasting from the context menu).
+    const cursor = canvasRef.current?.getCursor() ?? null;
+    let dx = PASTE_OFFSET;
+    let dy = PASTE_OFFSET;
+    if (cursor) {
+      let minX = Infinity;
+      let minY = Infinity;
+      for (const item of clipboard) {
+        const b = shapeBounds(item.shape);
+        if (b.x < minX) minX = b.x;
+        if (b.y < minY) minY = b.y;
+      }
+      if (Number.isFinite(minX) && Number.isFinite(minY)) {
+        dx = Math.round(cursor.x) - minX;
+        dy = Math.round(cursor.y) - minY;
+      }
+    }
     // Group by destination layer.
     const byLayer = new Map<LayerType, LayerShape[]>();
     for (const item of clipboard) {
       const layer = uniformLayer ?? item.layer;
-      const shape = translateShape(item.shape, PASTE_OFFSET, PASTE_OFFSET);
+      const shape = translateShape(item.shape, dx, dy);
       let arr = byLayer.get(layer);
       if (!arr) {
         arr = [];
