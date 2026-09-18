@@ -1837,7 +1837,10 @@ function DieViewer({ dieId }: { dieId: string }) {
       if (!overlays.baseImageVisible) overlays.toggleBaseImage();
     }
   }, [dieId]);
-  useOverlayHotkeys(toggleBaseImageForDie);
+  const toggleKindForDie = useCallback((kind: "cell" | "net") => {
+    usePreferences.getState().toggleKindVisibility(kind);
+  }, []);
+  useOverlayHotkeys(toggleBaseImageForDie, toggleKindForDie);
 
   // ── Pointer move / leave ────────────────────────────────────────
 

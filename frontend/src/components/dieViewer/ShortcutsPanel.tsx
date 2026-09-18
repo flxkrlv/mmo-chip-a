@@ -44,6 +44,8 @@ const SHORTCUT_GROUPS: ShortcutGroup[] = [
     items: [
       { key: "1–6", label: "Select metal ME1–ME6" },
       { key: "Alt+1–5", label: "Select via VIA12–VIA56" },
+      { key: "Space+C", label: "Toggle cells visibility" },
+      { key: "Space+N", label: "Toggle nets visibility" },
       { key: "E", label: "Via up (wire-end preview)" },
       { key: "Q", label: "Via down (wire-end preview)" },
     ],

@@ -239,8 +239,6 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
 
   // Annotation ids per category, for double-click "frame in viewport". Cheap
   // to recompute; double-click is rare.
-  const netIdsAll = annotations.nets.map((n) => `net:${n.id}`);
-  const cellIdsAll = annotations.cells.map((c) => `cell:${c.id}`);
   const anns = annotations.annotations ?? [];
   const pointViaIds = anns
     .filter((a) => a.class === "point_via")
@@ -319,7 +317,6 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
         visibility={visibilityFor("net")}
         onToggleExpand={() => toggleSection("net")}
         onSelect={() => toggleSection("net")}
-        onDoubleClick={() => focus(netIdsAll)}
       />
       {isOpen("net") &&
         filteredNets.map((net) => {
@@ -356,7 +353,6 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
         visibility={visibilityFor("cell")}
         onToggleExpand={() => toggleSection("cell")}
         onSelect={() => toggleSection("cell")}
-        onDoubleClick={() => focus(cellIdsAll)}
       />
       {isOpen("cell") &&
         filteredCellsByType.map((group) => {
