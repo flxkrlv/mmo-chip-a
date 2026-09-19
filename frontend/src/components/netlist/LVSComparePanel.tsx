@@ -3,7 +3,37 @@ import type { SpiceDialect, LvsRawResult, LvsEngine, LvsCombinedResult, VygesEve
 import type { LvsEngineResult } from "shared";
 import { compareNetlists, saveLvsSnapshot } from "../../api/lvs";
 import { Ic } from "../../icons";
-import ResizableSection from "./ResizableSection";
+
+// ── localStorage helpers (split position / active tab) ────────
+
+const LS_SPLIT = "lvs.split.topPct";
+const LS_TAB = "lvs.nb.tab";
+
+function readLS(key: string): string | null {
+  try {
+    return window.localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+function writeLS(key: string, value: string): void {
+  try {
+    window.localStorage.setItem(key, value);
+  } catch {
+    /* storage unavailable */
+  }
+}
+
+type NbTab = "device" | "property" | "nets" | "report";
+
+function emptyHint(text: string): React.ReactNode {
+  return (
+    <div style={{ fontSize: 11, color: "var(--ink3)", fontStyle: "italic", padding: "8px 2px" }}>
+      {text}
+    </div>
+  );
+}
 
 // ── Styles ────────────────────────────────────────────────────
 
@@ -353,6 +383,44 @@ export default function LVSComparePanel({ dieId, layoutNetlist, dialect, moduleN
   const reportRef = useRef<HTMLDivElement>(null);
   const layoutScrollRef = useRef<HTMLDivElement>(null);
 
+  // Vertical split between the netlists (top) and the results (bottom).
+  const [topPct, setTopPct] = useState<number>(() => {
+    const v = parseFloat(readLS(LS_SPLIT) ?? "");
+    return Number.isFinite(v) && v >= 15 && v <= 85 ? v : 40;
+  });
+  const topPctRef = useRef(topPct);
+  topPctRef.current = topPct;
+  const splitRef = useRef<HTMLDivElement>(null);
+
+  const onSplitDown = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    const onMove = (ev: MouseEvent) => {
+      const el = splitRef.current;
+      if (!el) return;
+      const rect = el.getBoundingClientRect();
+      if (rect.height <= 0) return;
+      const pct = ((ev.clientY - rect.top) / rect.height) * 100;
+      setTopPct(Math.min(85, Math.max(15, pct)));
+    };
+    const onUp = () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+      writeLS(LS_SPLIT, String(topPctRef.current));
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  }, []);
+
+  // Active results tab (name-based engine only).
+  const [nbTab, setNbTab] = useState<NbTab>(() => {
+    const v = readLS(LS_TAB);
+    return v === "device" || v === "property" || v === "nets" || v === "report" ? v : "device";
+  });
+  const selectTab = useCallback((tab: NbTab) => {
+    setNbTab(tab);
+    writeLS(LS_TAB, tab);
+  }, []);
+
   const displayLayout = layoutNetlistOverride ?? layoutNetlist;
 
   const handleCompare = useCallback(async () => {
@@ -433,12 +501,6 @@ export default function LVSComparePanel({ dieId, layoutNetlist, dialect, moduleN
   }, [deviceToHighlight, engine, layoutLocked, displayLayout]);
 
   const canCompare = schematicNetlist.trim().length > 0 && !!displayLayout && state.phase !== "loading";
-
-  const sbStyles: React.CSSProperties = state.phase === "done" ? {
-    borderTop: "1px solid var(--l2)", display: "flex", flexDirection: "column", flex: "1 1 auto", minHeight: 0,
-  } : {
-    overflow: "auto", flex: "1 1 auto",
-  };
 
   // ── Render sections ────────────────────────────────────────
 
@@ -593,8 +655,8 @@ export default function LVSComparePanel({ dieId, layoutNetlist, dialect, moduleN
 
     return (
       <div style={{
-        display: "flex", gap: 8, padding: "6px 10px", flex: "0 0 40%", minHeight: 0,
-        borderBottom: "1px solid var(--l2)", position: "relative",
+        display: "flex", gap: 8, padding: "6px 10px", flex: "1 1 auto", minHeight: 0,
+        overflow: "hidden", position: "relative",
       }}>
         {dialectMismatch && (
           <div style={{
@@ -713,15 +775,12 @@ export default function LVSComparePanel({ dieId, layoutNetlist, dialect, moduleN
     );
   };
 
-  const renderPropertyTable = () => {
+  const propertyTableBody = (): React.ReactNode => {
     if (state.phase !== "done") return null;
-    const curEngine = state.data.engine;
     const pd = state.data.json.property_diffs;
-    if (!pd || !pd.length) return null;
-    const engLabel = ` (${ENGINE_LABELS[curEngine] ?? curEngine})`;
+    if (!pd || !pd.length) return emptyHint("No property diffs.");
     return (
-      <ResizableSection id="lvs-property" title={`Property Diffs${engLabel}`} count={pd.length}>
-        <table style={tableSm}>
+      <table style={tableSm}>
           <thead>
             <tr style={{ color: "var(--ink3)", textAlign: "left" }}>
               <th style={{ padding: "2px 6px" }}>Kind</th>
@@ -758,7 +817,20 @@ export default function LVSComparePanel({ dieId, layoutNetlist, dialect, moduleN
             })}
           </tbody>
         </table>
-      </ResizableSection>
+    );
+  };
+
+  const renderPropertyTable = () => {
+    if (state.phase !== "done") return null;
+    const pd = state.data.json.property_diffs;
+    if (!pd || !pd.length) return null;
+    const curEngine = state.data.engine;
+    const engLabel = ` (${ENGINE_LABELS[curEngine] ?? curEngine})`;
+    return (
+      <div style={{ margin: "0 10px 8px" }}>
+        <div style={sectionTitle}>Property Diffs{engLabel} ({pd.length})</div>
+        {propertyTableBody()}
+      </div>
     );
   };
 
@@ -840,10 +912,10 @@ export default function LVSComparePanel({ dieId, layoutNetlist, dialect, moduleN
     );
   };
 
-  const renderDeviceDiffs = () => {
+  const deviceDiffsBody = (): React.ReactNode => {
     if (state.phase !== "done") return null;
     const { devices } = state.data;
-    if (!devices.length) return null;
+    if (!devices.length) return emptyHint("No device diffs.");
 
     const lOnly = devices.filter((d) => d.category === "l-only");
     const sOnly = devices.filter((d) => d.category === "s-only");
@@ -879,13 +951,12 @@ export default function LVSComparePanel({ dieId, layoutNetlist, dialect, moduleN
     };
 
     const curEngine = state.data.engine;
-    const engLabel = ` (${ENGINE_LABELS[curEngine] ?? curEngine})`;
     // Cascade warning only for vyges-lvs — name-based engine matches by name, no cascade issue
     const hasCascadeNoise = curEngine !== "name-based" && lOnly.length > 0 && sOnly.length > 0;
     // High iterations warning: 1-WL may struggle on complex graphs
     const highIters = curEngine !== "name-based" && state.data.json.iterations > 4;
     return (
-      <ResizableSection id="lvs-device" title={`Device Diffs${engLabel}`} count={devices.length}>
+      <>
         {hasCascadeNoise && (
           <div style={{ fontSize: 9, color: "#fd0", marginBottom: 6, lineHeight: 1.4 }}>
             ⚠ For circuits with renamed devices/nets, some diffs below may be cascade noise from the 1-WL algorithm, not real errors. Compare with the report for details.
@@ -901,68 +972,56 @@ export default function LVSComparePanel({ dieId, layoutNetlist, dialect, moduleN
         {catBlock("Device Type Mismatch", typeMism, "#f0f", "different model type (e.g. npn vs pnp)")}
         {catBlock("Param Changed", paramOnly, "#fd0", "same topology, different W/L/R/m")}
         {catBlock("Connection Mismatch", connMism, "#f80", "different terminal connections")}
-      </ResizableSection>
+      </>
     );
   };
 
-  /** New window: unbalanced nets with per-net device/electrode connectivity. */
+  /**
+   * Unbalanced nets with per-net device/electrode connectivity.
+   * All layout nets first, then all schematic nets (no per-class "(none)" rows).
+   */
   const renderUnbalancedNetsNameBased = () => {
-    if (state.phase !== "done" || state.data.engine !== "name-based") return null;
+    if (state.phase !== "done") return null;
     const classes = state.data.json.unbalanced.filter((c) => c.what === "net");
-    if (!classes.length) return null;
-
+    if (!classes.length) return emptyHint("No unbalanced nets.");
     const conn = state.data.json.net_connectivity;
 
-    const renderSide = (side: "layout" | "schematic", nets: string[]) => {
-      const label = side === "layout" ? "Layout" : "Schematic";
-      const color = side === "layout" ? "#f55" : "#48f";
-      const map = conn?.[side];
-      return (
-        <div style={{ marginBottom: 6 }}>
-          <div style={{ fontSize: 10, fontWeight: 600, color, marginBottom: 2 }}>{label}:</div>
-          {nets.length === 0 && (
-            <div style={{ fontSize: 10, color: "var(--ink3)", fontFamily: "var(--mono)" }}>(none)</div>
-          )}
-          {nets.map((net, i) => {
-            const list = map?.[net];
-            return (
-              <div key={i} style={{ ...panelBase, marginTop: i > 0 ? 2 : 0 }}>
-                <div style={{ fontWeight: 600, color: "var(--ink0)" }}>{stripSide(net)}</div>
-                {!list || list.length === 0 ? (
-                  <div style={{ fontSize: 10, color: "var(--ink3)", fontFamily: "var(--mono)" }}>(no connectivity data)</div>
-                ) : (
-                  <table style={{ width: "100%", fontSize: 11, borderCollapse: "collapse" }}>
-                    <tbody>
-                      {list.map((c, j) => (
-                        <tr key={j}>
-                          <td style={{ color: "var(--ink2)", fontFamily: "var(--mono)", paddingRight: 8, whiteSpace: "nowrap" }}>{c.device}</td>
-                          <td style={{ color: "var(--ink2)", fontFamily: "var(--mono)" }}>
-                            {c.electrodes.join(" ")}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                )}
-              </div>
-            );
-          })}
-        </div>
-      );
+    const collect = (side: "layout" | "schematic"): string[] => {
+      const names = new Set<string>();
+      for (const cls of classes) {
+        for (const net of (side === "layout" ? cls.a : cls.b)) names.add(net);
+      }
+      return [...names].sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
     };
 
-    return (
-      <ResizableSection id="lvs-unbalanced-nets" title="Unbalanced Nets" count={classes.length}>
-        {classes.map((cls, i) => (
-          <div key={i} style={{ marginBottom: i < classes.length - 1 ? 8 : 0 }}>
-            <div style={{ fontSize: 10, fontWeight: 600, color: "var(--ink2)", marginBottom: 3 }}>
-              Class {i + 1}: L {cls.a_count} net{cls.a_count !== 1 ? "s" : ""} : S {cls.b_count} net{cls.b_count !== 1 ? "s" : ""}
+    const renderNets = (side: "layout" | "schematic", nets: string[]) => (
+      <>
+        {nets.map((net, i) => {
+          const list = conn?.[side]?.[net] ?? [];
+          return (
+            <div key={net} style={{ ...panelBase, marginTop: i > 0 ? 2 : 0 }}>
+              <div style={{ fontWeight: 600, color: "var(--ink0)" }}>{stripSide(net)}</div>
+              {list.map((c, j) => (
+                <div key={j} style={{ fontFamily: "var(--mono)", color: "var(--ink2)" }}>
+                  {c.device}{c.electrodes.length ? ` ${c.electrodes.join(" ")}` : ""}
+                </div>
+              ))}
             </div>
-            {renderSide("layout", cls.a)}
-            {renderSide("schematic", cls.b)}
-          </div>
-        ))}
-      </ResizableSection>
+          );
+        })}
+      </>
+    );
+
+    const layoutNets = collect("layout");
+    const schematicNets = collect("schematic");
+
+    return (
+      <div>
+        <div style={{ ...sectionTitle, color: "#f55" }}>Layout ({layoutNets.length})</div>
+        {renderNets("layout", layoutNets)}
+        <div style={{ ...sectionTitle, color: "#48f", marginTop: 10 }}>Schematic ({schematicNets.length})</div>
+        {renderNets("schematic", schematicNets)}
+      </div>
     );
   };
 
@@ -1092,14 +1151,93 @@ export default function LVSComparePanel({ dieId, layoutNetlist, dialect, moduleN
     );
   };
 
+  /** vyges-lvs results: two columns (unchanged layout). */
+  const renderVygesResults = () => (
+    <div style={{ display: "flex", gap: 10, flex: "1 1 auto", minHeight: 0, overflow: "hidden", padding: "6px 10px 0" }}>
+      <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "auto", minWidth: 0 }}>
+        {renderJsonNote()}
+        {renderPortChips()}
+        {renderPropertyTable()}
+        {renderReportInline()}
+      </div>
+      <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "auto", minWidth: 0 }}>
+        {renderUnbalancedVyges()}
+        {renderEvents()}
+      </div>
+    </div>
+  );
+
+  /** name-based results: one tab per result type. */
+  const renderNameBasedResults = () => {
+    if (state.phase !== "done") return null;
+    const tabs: { id: NbTab; label: string; count: number | null }[] = [
+      { id: "device", label: "Device Diffs", count: state.data.devices.length },
+      { id: "property", label: "Property Diffs", count: state.data.json.property_diffs.length },
+      { id: "nets", label: "Unbalanced Nets", count: state.data.json.unbalanced.filter((c) => c.what === "net").length },
+      { id: "report", label: "Report", count: null },
+    ];
+    return (
+      <div style={{ display: "flex", flexDirection: "column", flex: "1 1 auto", minHeight: 0, overflow: "hidden" }}>
+        {renderJsonNote()}
+        <div style={{ display: "flex", gap: 2, padding: "4px 10px 0", borderBottom: "1px solid var(--l2)", flex: "0 0 auto" }}>
+          {tabs.map((t) => {
+            const active = nbTab === t.id;
+            return (
+              <button
+                key={t.id}
+                type="button"
+                onClick={() => selectTab(t.id)}
+                style={{
+                  fontSize: 11, fontWeight: active ? 600 : 400,
+                  padding: "4px 10px", cursor: "pointer",
+                  border: "1px solid var(--l2)", borderBottom: active ? "1px solid var(--card)" : "1px solid var(--l2)",
+                  borderTopLeftRadius: 4, borderTopRightRadius: 4, marginBottom: -1,
+                  background: active ? "var(--card)" : "var(--l1)",
+                  color: active ? "var(--ink0)" : "var(--ink2)",
+                }}
+              >
+                {t.label}{t.count != null ? ` (${t.count})` : ""}
+              </button>
+            );
+          })}
+        </div>
+        <div style={{ flex: "1 1 auto", minHeight: 0, overflow: "auto", padding: "6px 10px", display: "flex", flexDirection: "column" }}>
+          {nbTab === "device" && deviceDiffsBody()}
+          {nbTab === "property" && propertyTableBody()}
+          {nbTab === "nets" && renderUnbalancedNetsNameBased()}
+          {nbTab === "report" && renderReportInline()}
+        </div>
+      </div>
+    );
+  };
+
   // ── Render ────────────────────────────────────────────────
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%", background: "var(--card)" }}>
       {renderSummary()}
-      {renderSideBySide()}
 
-      <div ref={reportRef} style={sbStyles}>
+      <div ref={splitRef} style={{ flex: "1 1 auto", minHeight: 0, display: "flex", flexDirection: "column" }}>
+        {/* Top: layout + schematic netlists */}
+        <div style={{ flex: `0 0 ${topPct}%`, minHeight: 60, display: "flex", flexDirection: "column", overflow: "hidden" }}>
+          {renderSideBySide()}
+        </div>
+
+        {/* Draggable divider */}
+        <div
+          onMouseDown={onSplitDown}
+          title="Drag to resize"
+          style={{
+            flex: "0 0 auto", height: 6, cursor: "row-resize",
+            background: "var(--l2)", display: "flex", alignItems: "center", justifyContent: "center",
+            userSelect: "none",
+          }}
+        >
+          <div style={{ width: 36, height: 2, borderRadius: 2, background: "var(--ink3)", opacity: 0.6 }} />
+        </div>
+
+        {/* Bottom: comparison results */}
+        <div ref={reportRef} style={{ flex: "1 1 auto", minHeight: 0, display: "flex", flexDirection: "column", overflow: "hidden" }}>
         {state.phase === "loading" && (
           <div className="m" style={{ padding: 20, fontSize: 11, color: "var(--ink3)", textAlign: "center" }}>
             running {ENGINE_LABELS[engine] ?? engine}...
@@ -1107,27 +1245,7 @@ export default function LVSComparePanel({ dieId, layoutNetlist, dialect, moduleN
         )}
 
         {state.phase === "done" && (
-          <>
-            <div style={{ display: "flex", gap: 10, flex: "1 1 auto", minHeight: 0, overflow: "hidden", padding: "6px 10px 0" }}>
-              <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "auto", minWidth: 0 }}>
-                {renderJsonNote()}
-                {renderPortChips()}
-                {renderPropertyTable()}
-                {renderReportInline()}
-              </div>
-              <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "auto", minWidth: 0 }}>
-                {engine === "vyges-lvs" ? (
-                  <>{renderUnbalancedVyges()}</>
-                ) : (
-                  <>
-                    {renderDeviceDiffs()}
-                    {renderUnbalancedNetsNameBased()}
-                  </>
-                )}
-                {renderEvents()}
-              </div>
-            </div>
-          </>
+          engine === "name-based" ? renderNameBasedResults() : renderVygesResults()
         )}
 
         {state.phase === "error" && (
@@ -1148,6 +1266,7 @@ export default function LVSComparePanel({ dieId, layoutNetlist, dialect, moduleN
             Paste a reference netlist above and press Compare.
           </div>
         )}
+        </div>
       </div>
     </div>
   );
