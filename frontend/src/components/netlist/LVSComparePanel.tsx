@@ -8,6 +8,8 @@ import { Ic } from "../../icons";
 
 const LS_SPLIT = "lvs.split.topPct";
 const LS_TAB = "lvs.nb.tab";
+const LS_ENGINE = "lvs.engine";
+const LS_SCHEMATIC = "lvs.schematicNetlist";
 
 function readLS(key: string): string | null {
   try {
@@ -373,11 +375,11 @@ const ENGINE_LABELS: Record<string, string> = {
 };
 
 export default function LVSComparePanel({ dieId, layoutNetlist, dialect, moduleName, deviceToHighlight }: Props) {
-  const [schematicNetlist, setSchematicNetlist] = useState("");
+  const [schematicNetlist, setSchematicNetlist] = useState<string>(() => readLS(LS_SCHEMATIC) ?? "");
   const [layoutNetlistOverride, setLayoutNetlistOverride] = useState<string | null>(null);
   const [layoutLocked, setLayoutLocked] = useState(true);
   const [state, setState] = useState<PanelPhase>({ phase: "idle" });
-  const [engine, setEngine] = useState<LvsEngine>("vyges-lvs");
+  const [engine, setEngine] = useState<LvsEngine>(() => (readLS(LS_ENGINE) === "name-based" ? "name-based" : "vyges-lvs"));
   const [highlightedLine, setHighlightedLine] = useState<number | null>(null);
   const [highlightedSchematicLine, setHighlightedSchematicLine] = useState<number | null>(null);
   const reportRef = useRef<HTMLDivElement>(null);
@@ -420,6 +422,14 @@ export default function LVSComparePanel({ dieId, layoutNetlist, dialect, moduleN
     setNbTab(tab);
     writeLS(LS_TAB, tab);
   }, []);
+
+  // Persist engine + externally pasted netlist program-wide.
+  useEffect(() => {
+    writeLS(LS_ENGINE, engine);
+  }, [engine]);
+  useEffect(() => {
+    writeLS(LS_SCHEMATIC, schematicNetlist);
+  }, [schematicNetlist]);
 
   const displayLayout = layoutNetlistOverride ?? layoutNetlist;
 
@@ -1214,7 +1224,7 @@ export default function LVSComparePanel({ dieId, layoutNetlist, dialect, moduleN
   // ── Render ────────────────────────────────────────────────
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", height: "100%", background: "var(--card)" }}>
+    <div style={{ display: "flex", flexDirection: "column", flex: "1 1 auto", minHeight: 0, background: "var(--card)" }}>
       {renderSummary()}
 
       <div ref={splitRef} style={{ flex: "1 1 auto", minHeight: 0, display: "flex", flexDirection: "column" }}>

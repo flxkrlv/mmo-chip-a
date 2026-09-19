@@ -38,6 +38,28 @@ import { isTypingTarget } from "../lib/keyboard";
 import { Ic } from "../icons";
 import { exportLayout, renderLayoutCsv } from "../lib/export/layoutExport";
 
+// ── Global (program-wide) view persistence ───────────────────────
+
+const RIGHT_VIEW_KEY = "analog.rightView";
+type RightView = "code" | "graph" | "schematic" | "lvs";
+
+function readRightView(): RightView {
+  try {
+    const v = localStorage.getItem(RIGHT_VIEW_KEY);
+    return v === "code" || v === "graph" || v === "schematic" || v === "lvs" ? v : "code";
+  } catch {
+    return "code";
+  }
+}
+
+function writeRightView(v: RightView): void {
+  try {
+    localStorage.setItem(RIGHT_VIEW_KEY, v);
+  } catch {
+    /* storage unavailable */
+  }
+}
+
 // ── Dialect selector ─────────────────────────────────────────────
 
 const DIALECT_OPTIONS: { value: SpiceDialect; label: string }[] = [
@@ -192,7 +214,7 @@ function AnalogNetlist({ dieId }: { dieId: string }) {
   const netlist = useAnalogNetlist(annotations, moduleName, dialect, spiceConfig, hierarchical, analogOverrides);
 
   // ── UI state ────────────────────────────────────────────────────
-  const [rightView, setRightView] = useState<"code" | "graph" | "schematic" | "lvs">(assistantView ?? "code");
+  const [rightView, setRightView] = useState<RightView>(assistantView ?? readRightView());
   const [selectedRegion, setSelectedRegion] = useState<string | null>(null);
   const viewerRef = useRef<CodeViewerHandle | null>(null);
   const [selectedLine, setSelectedLine] = useState<number | null>(null);
@@ -209,6 +231,11 @@ function AnalogNetlist({ dieId }: { dieId: string }) {
     if (assistantView) setRightView(assistantView);
     if (assistantInstances.length > 0) setSelectedInstance(assistantInstances[0]);
   }, [assistantView, assistantInstances]);
+
+  // Remember the last opened sub-tab program-wide.
+  useEffect(() => {
+    writeRightView(rightView);
+  }, [rightView]);
 
   const clearAssistantFragment = useCallback(() => {
     const next = new URLSearchParams(searchParams);
