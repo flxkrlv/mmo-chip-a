@@ -13,6 +13,12 @@ interface ParsedDevice {
   raw: string;
 }
 
+/** Per-net device connectivity: device name + electrode indices attached to a net. */
+export interface NetConnection {
+  device: string;
+  electrodes: number[];
+}
+
 const SYMMETRIC_PREFIXES = new Set(["R", "C", "L"]);
 
 function isOrdered(name: string): boolean {
@@ -156,6 +162,11 @@ export interface NameBasedResult {
     }>;
     netMap: Record<string, string>;
   };
+  /** Display connectivity for unbalanced nets (real electrode indices). */
+  netConnectivity: {
+    layout: Record<string, NetConnection[]>;
+    schematic: Record<string, NetConnection[]>;
+  };
 }
 
 function buildNetSignatures(
@@ -189,6 +200,35 @@ function groupBySignature(netSigs: Map<string, string[]>): Map<string, string[]>
     groups.get(key)!.push(net);
   }
   return groups;
+}
+
+/**
+ * Build per-net display connectivity using real electrode indices (including
+ * symmetric R/C/L devices). Devices are sorted alphabetically (natural order),
+ * electrode indices ascending. Independent of the `*`-collapsed match signatures.
+ */
+function buildNetConnections(devices: ParsedDevice[]): Map<string, NetConnection[]> {
+  const perNet = new Map<string, Map<string, Set<number>>>();
+  for (const dev of devices) {
+    for (let i = 0; i < dev.terminals.length; i++) {
+      const net = dev.terminals[i];
+      if (!perNet.has(net)) perNet.set(net, new Map());
+      const devMap = perNet.get(net)!;
+      if (!devMap.has(dev.name)) devMap.set(dev.name, new Set());
+      devMap.get(dev.name)!.add(i);
+    }
+  }
+
+  const result = new Map<string, NetConnection[]>();
+  for (const [net, devMap] of perNet) {
+    const conns: NetConnection[] = [...devMap.entries()].map(([device, electrodes]) => ({
+      device,
+      electrodes: [...electrodes].sort((a, b) => a - b),
+    }));
+    conns.sort((a, b) => a.device.localeCompare(b.device, undefined, { numeric: true }));
+    result.set(net, conns);
+  }
+  return result;
 }
 
 export function compareByName(
@@ -334,6 +374,23 @@ export function compareByName(
   const hardMismatches = mismatchedDevices.filter((d) => d.reason !== "param");
   const matched = allUnbalanced.length === 0 && hardMismatches.length === 0;
 
+  // Display connectivity for unbalanced nets only (keeps payload lean).
+  const unbalancedNetNames = new Set<string>();
+  for (const u of unbalancedNets) {
+    for (const n of u.a) unbalancedNetNames.add(n);
+    for (const n of u.b) unbalancedNetNames.add(n);
+  }
+  const lConns = buildNetConnections(lDevices);
+  const sConns = buildNetConnections(sDevices);
+  const layoutConn: Record<string, NetConnection[]> = {};
+  const schematicConn: Record<string, NetConnection[]> = {};
+  for (const n of unbalancedNetNames) {
+    const lc = lConns.get(n);
+    const sc = sConns.get(n);
+    if (lc) layoutConn[n] = lc;
+    if (sc) schematicConn[n] = sc;
+  }
+
   return {
     matched,
     a_devices: lDevices.length,
@@ -345,6 +402,10 @@ export function compareByName(
     details: {
       mismatchedDevices,
       netMap,
+    },
+    netConnectivity: {
+      layout: layoutConn,
+      schematic: schematicConn,
     },
   };
 }

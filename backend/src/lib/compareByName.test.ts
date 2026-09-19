@@ -514,3 +514,50 @@ describe("EDGE CASES", () => {
     assertMismatch(run(layout, schematic));
   });
 });
+
+// ══════════════════════════════════════════════════════════════
+// CATEGORY 12: NET CONNECTIVITY (display, real electrode indices)
+// ══════════════════════════════════════════════════════════════
+
+describe("NET CONNECTIVITY (display)", () => {
+  test("unbalanced nets expose sorted device/electrode connectivity", () => {
+    const layout = ".SUBCKT test\nR1 (n1 n2) resistor r=1k\nR2 (n1 n3) resistor r=1k\n.ENDS";
+    const schematic = ".SUBCKT test\nR1 (n1 n2) resistor r=1k\nR2 (n1 n2) resistor r=1k\n.ENDS";
+    const r = run(layout, schematic);
+    assertMismatch(r);
+    assert.deepEqual(r.netConnectivity.layout["n1"], [
+      { device: "R1", electrodes: [0] },
+      { device: "R2", electrodes: [0] },
+    ]);
+    assert.deepEqual(r.netConnectivity.schematic["n2"], [
+      { device: "R1", electrodes: [1] },
+      { device: "R2", electrodes: [1] },
+    ]);
+  });
+
+  test("both terminals of a two-pole device on one net → both electrode numbers", () => {
+    const layout = ".SUBCKT test\nR1 (n1 n1) resistor r=1k\nR2 (n1 n2) resistor r=1k\n.ENDS";
+    const schematic = ".SUBCKT test\nR1 (n1 n2) resistor r=1k\nR2 (n1 n2) resistor r=1k\n.ENDS";
+    const r = run(layout, schematic);
+    assert.deepEqual(r.netConnectivity.layout["n1"], [
+      { device: "R1", electrodes: [0, 1] },
+      { device: "R2", electrodes: [0] },
+    ]);
+  });
+
+  test("ordered device with multiple electrodes on one net — ascending", () => {
+    const layout = ".SUBCKT test\nQ1 (n1 n2 n1) npn\nR1 (n1 n2) resistor r=1k\n.ENDS";
+    const schematic = ".SUBCKT test\nQ1 (n1 n2 n3) npn\nR1 (n1 n2) resistor r=1k\n.ENDS";
+    const r = run(layout, schematic);
+    assert.deepEqual(r.netConnectivity.layout["n1"], [
+      { device: "Q1", electrodes: [0, 2] },
+      { device: "R1", electrodes: [0] },
+    ]);
+  });
+
+  test("matched netlists → empty netConnectivity", () => {
+    const n = ".SUBCKT test\nR1 (n1 n2) resistor r=1k\n.ENDS";
+    const r = run(n, n);
+    assert.deepEqual(r.netConnectivity, { layout: {}, schematic: {} });
+  });
+});

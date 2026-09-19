@@ -1129,6 +1129,18 @@ export interface LvsPropertyDiff {
   b_value: number;
 }
 
+/** Per-net device connectivity: device name + real electrode indices on a net. */
+export interface LvsNetConnection {
+  device: string;
+  electrodes: number[];
+}
+
+/** Display connectivity for unbalanced nets, per side (name-based engine). */
+export interface LvsNetConnectivity {
+  layout: Record<string, LvsNetConnection[]>;
+  schematic: Record<string, LvsNetConnection[]>;
+}
+
 /** A structured event emitted by vyges-lvs on stderr */
 export interface VygesEvent {
   schema: string;
@@ -1154,6 +1166,8 @@ export interface LvsRawResult {
   only_in_b_ports: string[];
   unbalanced: LvsUnbalancedClass[];
   property_diffs: LvsPropertyDiff[];
+  /** Only set by the name-based engine; unbalanced-net display connectivity. */
+  net_connectivity?: LvsNetConnectivity;
 }
 
 /** Per-engine result */

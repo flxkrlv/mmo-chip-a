@@ -3,6 +3,7 @@ import type { SpiceDialect, LvsRawResult, LvsEngine, LvsCombinedResult, VygesEve
 import type { LvsEngineResult } from "shared";
 import { compareNetlists, saveLvsSnapshot } from "../../api/lvs";
 import { Ic } from "../../icons";
+import ResizableSection from "./ResizableSection";
 
 // ── Styles ────────────────────────────────────────────────────
 
@@ -719,8 +720,7 @@ export default function LVSComparePanel({ dieId, layoutNetlist, dialect, moduleN
     if (!pd || !pd.length) return null;
     const engLabel = ` (${ENGINE_LABELS[curEngine] ?? curEngine})`;
     return (
-      <div style={{ margin: "0 10px 8px" }}>
-        <div style={sectionTitle}>Property Diffs{engLabel} ({pd.length})</div>
+      <ResizableSection id="lvs-property" title={`Property Diffs${engLabel}`} count={pd.length}>
         <table style={tableSm}>
           <thead>
             <tr style={{ color: "var(--ink3)", textAlign: "left" }}>
@@ -758,7 +758,7 @@ export default function LVSComparePanel({ dieId, layoutNetlist, dialect, moduleN
             })}
           </tbody>
         </table>
-      </div>
+      </ResizableSection>
     );
   };
 
@@ -885,8 +885,7 @@ export default function LVSComparePanel({ dieId, layoutNetlist, dialect, moduleN
     // High iterations warning: 1-WL may struggle on complex graphs
     const highIters = curEngine !== "name-based" && state.data.json.iterations > 4;
     return (
-      <div style={{ flex: "0 0 auto", margin: "0 10px 8px" }}>
-        <div style={{ ...sectionTitle, fontSize: 12 }}>Device Diffs{engLabel} ({devices.length})</div>
+      <ResizableSection id="lvs-device" title={`Device Diffs${engLabel}`} count={devices.length}>
         {hasCascadeNoise && (
           <div style={{ fontSize: 9, color: "#fd0", marginBottom: 6, lineHeight: 1.4 }}>
             ⚠ For circuits with renamed devices/nets, some diffs below may be cascade noise from the 1-WL algorithm, not real errors. Compare with the report for details.
@@ -902,7 +901,68 @@ export default function LVSComparePanel({ dieId, layoutNetlist, dialect, moduleN
         {catBlock("Device Type Mismatch", typeMism, "#f0f", "different model type (e.g. npn vs pnp)")}
         {catBlock("Param Changed", paramOnly, "#fd0", "same topology, different W/L/R/m")}
         {catBlock("Connection Mismatch", connMism, "#f80", "different terminal connections")}
-      </div>
+      </ResizableSection>
+    );
+  };
+
+  /** New window: unbalanced nets with per-net device/electrode connectivity. */
+  const renderUnbalancedNetsNameBased = () => {
+    if (state.phase !== "done" || state.data.engine !== "name-based") return null;
+    const classes = state.data.json.unbalanced.filter((c) => c.what === "net");
+    if (!classes.length) return null;
+
+    const conn = state.data.json.net_connectivity;
+
+    const renderSide = (side: "layout" | "schematic", nets: string[]) => {
+      const label = side === "layout" ? "Layout" : "Schematic";
+      const color = side === "layout" ? "#f55" : "#48f";
+      const map = conn?.[side];
+      return (
+        <div style={{ marginBottom: 6 }}>
+          <div style={{ fontSize: 10, fontWeight: 600, color, marginBottom: 2 }}>{label}:</div>
+          {nets.length === 0 && (
+            <div style={{ fontSize: 10, color: "var(--ink3)", fontFamily: "var(--mono)" }}>(none)</div>
+          )}
+          {nets.map((net, i) => {
+            const list = map?.[net];
+            return (
+              <div key={i} style={{ ...panelBase, marginTop: i > 0 ? 2 : 0 }}>
+                <div style={{ fontWeight: 600, color: "var(--ink0)" }}>{stripSide(net)}</div>
+                {!list || list.length === 0 ? (
+                  <div style={{ fontSize: 10, color: "var(--ink3)", fontFamily: "var(--mono)" }}>(no connectivity data)</div>
+                ) : (
+                  <table style={{ width: "100%", fontSize: 11, borderCollapse: "collapse" }}>
+                    <tbody>
+                      {list.map((c, j) => (
+                        <tr key={j}>
+                          <td style={{ color: "var(--ink2)", fontFamily: "var(--mono)", paddingRight: 8, whiteSpace: "nowrap" }}>{c.device}</td>
+                          <td style={{ color: "var(--ink2)", fontFamily: "var(--mono)" }}>
+                            {c.electrodes.join(" ")}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      );
+    };
+
+    return (
+      <ResizableSection id="lvs-unbalanced-nets" title="Unbalanced Nets" count={classes.length}>
+        {classes.map((cls, i) => (
+          <div key={i} style={{ marginBottom: i < classes.length - 1 ? 8 : 0 }}>
+            <div style={{ fontSize: 10, fontWeight: 600, color: "var(--ink2)", marginBottom: 3 }}>
+              Class {i + 1}: L {cls.a_count} net{cls.a_count !== 1 ? "s" : ""} : S {cls.b_count} net{cls.b_count !== 1 ? "s" : ""}
+            </div>
+            {renderSide("layout", cls.a)}
+            {renderSide("schematic", cls.b)}
+          </div>
+        ))}
+      </ResizableSection>
     );
   };
 
@@ -1059,7 +1119,10 @@ export default function LVSComparePanel({ dieId, layoutNetlist, dialect, moduleN
                 {engine === "vyges-lvs" ? (
                   <>{renderUnbalancedVyges()}</>
                 ) : (
-                  <>{renderDeviceDiffs()}</>
+                  <>
+                    {renderDeviceDiffs()}
+                    {renderUnbalancedNetsNameBased()}
+                  </>
                 )}
                 {renderEvents()}
               </div>
