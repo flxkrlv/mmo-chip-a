@@ -935,6 +935,8 @@ function InstanceOutline({
 
 // ── Warnings table ────────────────────────────────────────────────
 
+const WARNINGS_OPEN_KEY = "analog.warningsOpen";
+
 function ProblemsTable({
   warnings,
   onJump,
@@ -942,7 +944,23 @@ function ProblemsTable({
   warnings: string[];
   onJump: (line: number) => void;
 }) {
-  const [open, setOpen] = useState(true);
+  const [open, setOpen] = useState<boolean>(() => {
+    try {
+      const v = localStorage.getItem(WARNINGS_OPEN_KEY);
+      return v === null ? true : v === "1";
+    } catch {
+      return true;
+    }
+  });
+  const toggle = () => setOpen((v) => {
+    const next = !v;
+    try {
+      localStorage.setItem(WARNINGS_OPEN_KEY, next ? "1" : "0");
+    } catch {
+      /* storage unavailable */
+    }
+    return next;
+  });
   return (
     <div
       style={{
@@ -954,7 +972,7 @@ function ProblemsTable({
         flexDirection: "column",
       }}
     >
-      <div className="ph" style={{ cursor: "pointer" }} onClick={() => setOpen((v) => !v)}>
+      <div className="ph" style={{ cursor: "pointer" }} onClick={toggle}>
         <span className="u" style={{ color: "var(--warn)", fontSize: 10, display: "flex", alignItems: "center", gap: 4 }}>
           {Ic.chev}
           {warnings.length} {warnings.length === 1 ? "warning" : "warnings"}

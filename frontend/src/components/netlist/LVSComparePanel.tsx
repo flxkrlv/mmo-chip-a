@@ -9,6 +9,7 @@ import { Ic } from "../../icons";
 const LS_SPLIT = "lvs.split.topPct";
 const LS_TAB = "lvs.nb.tab";
 const LS_NETS_TAB = "lvs.nb.netsTab";
+const LS_CMP_FULL = "lvs.nb.cmpFullWidth";
 const LS_ENGINE = "lvs.engine";
 const LS_SCHEMATIC = "lvs.schematicNetlist";
 
@@ -37,6 +38,23 @@ function emptyHint(text: string): React.ReactNode {
       {text}
     </div>
   );
+}
+
+// Measure monospace text width (px) so Compare columns can be content-sized.
+let _measureCtx: CanvasRenderingContext2D | null = null;
+function monoTextWidth(text: string, px = 11): number {
+  if (!text) return 0;
+  if (!_measureCtx) {
+    try {
+      _measureCtx = document.createElement("canvas").getContext("2d");
+    } catch {
+      _measureCtx = null;
+    }
+  }
+  if (!_measureCtx) return text.length * px * 0.6;
+  const stack = getComputedStyle(document.documentElement).getPropertyValue("--mono").trim() || "monospace";
+  _measureCtx.font = `${px}px ${stack}`;
+  return _measureCtx.measureText(text).width;
 }
 
 // ── Styles ────────────────────────────────────────────────────
@@ -433,6 +451,12 @@ export default function LVSComparePanel({ dieId, layoutNetlist, dialect, moduleN
   const selectNetsSubTab = useCallback((tab: NetsSubTab) => {
     setNetsSubTab(tab);
     writeLS(LS_NETS_TAB, tab);
+  }, []);
+  // Compare: stretch columns to full width instead of content-sized equal columns.
+  const [cmpFullWidth, setCmpFullWidth] = useState<boolean>(() => readLS(LS_CMP_FULL) === "1");
+  const selectCmpFullWidth = useCallback((on: boolean) => {
+    setCmpFullWidth(on);
+    writeLS(LS_CMP_FULL, on ? "1" : "0");
   }, []);
   // Compare sub-tab: selected layout / schematic net (one net at a time).
   // `undefined` = not chosen yet (derive default); `null` = explicitly none.
@@ -1068,6 +1092,18 @@ export default function LVSComparePanel({ dieId, layoutNetlist, dialect, moduleN
         a.localeCompare(b, undefined, { numeric: true }),
       );
 
+      // Equal, minimally-sufficient column width: fits the longest device line and
+      // the widest net label (plus select chrome + arrows) fully.
+      let maxDeviceW = 0;
+      for (const k of deviceKeys) {
+        maxDeviceW = Math.max(maxDeviceW, monoTextWidth(netLine(lByKey.get(k))), monoTextWidth(netLine(sByKey.get(k))));
+      }
+      let maxNetW = 0;
+      for (const n of [...layoutNets, ...schematicNets]) {
+        maxNetW = Math.max(maxNetW, monoTextWidth(stripSide(n)));
+      }
+      const colW = Math.max(96, Math.ceil(Math.max(maxDeviceW + 8, maxNetW + 100)));
+
       const selectStyle: React.CSSProperties = {
         flex: "1 1 auto", minWidth: 0, fontSize: 11, fontFamily: "var(--mono)",
         background: "var(--card)", border: "1px solid var(--l2)", borderRadius: 3,
@@ -1140,7 +1176,7 @@ export default function LVSComparePanel({ dieId, layoutNetlist, dialect, moduleN
       );
 
       return (
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", columnGap: 8 }}>
+        <div style={{ display: "grid", gridTemplateColumns: cmpFullWidth ? "1fr 1fr" : `${colW}px ${colW}px`, columnGap: 8 }}>
           {side("Layout", "#f55", layoutSel, layoutNets, pickLayout, stepLayout)}
           {side("Schematic", "#48f", schematicSel, schematicNets, pickSchematic, stepSchematic)}
           {deviceKeys.map((k, i) => {
@@ -1166,7 +1202,7 @@ export default function LVSComparePanel({ dieId, layoutNetlist, dialect, moduleN
 
     return (
       <div>
-        <div style={{ display: "flex", gap: 2, marginBottom: 8 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 2, marginBottom: 8 }}>
           {subTabs.map((t) => {
             const active = netsSubTab === t.id;
             return (
@@ -1186,6 +1222,22 @@ export default function LVSComparePanel({ dieId, layoutNetlist, dialect, moduleN
               </button>
             );
           })}
+          {netsSubTab === "compare" && (
+            <label
+              title="Stretch the comparison to the full window width"
+              style={{
+                marginLeft: "auto", display: "flex", alignItems: "center", gap: 4,
+                fontSize: 10, color: "var(--ink2)", cursor: "pointer", userSelect: "none",
+              }}
+            >
+              <input
+                type="checkbox"
+                checked={cmpFullWidth}
+                onChange={(e) => selectCmpFullWidth(e.target.checked)}
+              />
+              Full width
+            </label>
+          )}
         </div>
         {netsSubTab === "layout" && renderNets("layout", layoutNets)}
         {netsSubTab === "schematic" && renderNets("schematic", schematicNets)}
