@@ -1,4 +1,4 @@
-import { useCallback, useState, useRef, useEffect } from "react";
+import { Fragment, useCallback, useState, useRef, useEffect } from "react";
 import type { SpiceDialect, LvsRawResult, LvsEngine, LvsCombinedResult, VygesEvent } from "shared";
 import type { LvsEngineResult } from "shared";
 import { compareNetlists, saveLvsSnapshot } from "../../api/lvs";
@@ -8,6 +8,7 @@ import { Ic } from "../../icons";
 
 const LS_SPLIT = "lvs.split.topPct";
 const LS_TAB = "lvs.nb.tab";
+const LS_NETS_TAB = "lvs.nb.netsTab";
 const LS_ENGINE = "lvs.engine";
 const LS_SCHEMATIC = "lvs.schematicNetlist";
 
@@ -28,6 +29,7 @@ function writeLS(key: string, value: string): void {
 }
 
 type NbTab = "device" | "property" | "nets" | "report";
+type NetsSubTab = "layout" | "schematic" | "compare";
 
 function emptyHint(text: string): React.ReactNode {
   return (
@@ -422,6 +424,20 @@ export default function LVSComparePanel({ dieId, layoutNetlist, dialect, moduleN
     setNbTab(tab);
     writeLS(LS_TAB, tab);
   }, []);
+
+  // Unbalanced Nets sub-tab (layout / schematic / compare).
+  const [netsSubTab, setNetsSubTab] = useState<NetsSubTab>(() => {
+    const v = readLS(LS_NETS_TAB);
+    return v === "layout" || v === "schematic" || v === "compare" ? v : "layout";
+  });
+  const selectNetsSubTab = useCallback((tab: NetsSubTab) => {
+    setNetsSubTab(tab);
+    writeLS(LS_NETS_TAB, tab);
+  }, []);
+  // Compare sub-tab: selected layout / schematic net (one net at a time).
+  // `undefined` = not chosen yet (derive default); `null` = explicitly none.
+  const [cmpLayoutNet, setCmpLayoutNet] = useState<string | null | undefined>(undefined);
+  const [cmpSchematicNet, setCmpSchematicNet] = useState<string | null | undefined>(undefined);
 
   // Persist engine + externally pasted netlist program-wide.
   useEffect(() => {
@@ -988,7 +1004,7 @@ export default function LVSComparePanel({ dieId, layoutNetlist, dialect, moduleN
 
   /**
    * Unbalanced nets with per-net device/electrode connectivity.
-   * All layout nets first, then all schematic nets (no per-class "(none)" rows).
+   * Sub-tabs: Layout | Schematic | Compare.
    */
   const renderUnbalancedNetsNameBased = () => {
     if (state.phase !== "done") return null;
@@ -1003,6 +1019,9 @@ export default function LVSComparePanel({ dieId, layoutNetlist, dialect, moduleN
       }
       return [...names].sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
     };
+
+    const layoutNets = collect("layout");
+    const schematicNets = collect("schematic");
 
     const renderNets = (side: "layout" | "schematic", nets: string[]) => (
       <>
@@ -1022,15 +1041,155 @@ export default function LVSComparePanel({ dieId, layoutNetlist, dialect, moduleN
       </>
     );
 
-    const layoutNets = collect("layout");
-    const schematicNets = collect("schematic");
+    const netLine = (c: { device: string; electrodes: number[] } | undefined): string =>
+      c ? `${c.device}${c.electrodes.length ? " " + c.electrodes.join(" ") : ""}` : "";
+
+    // Layout and schematic nets are chosen independently (no auto-pairing).
+    const pickLayout = (net: string | null) => setCmpLayoutNet(net);
+    const pickSchematic = (net: string | null) => setCmpSchematicNet(net);
+
+    const renderCompare = () => {
+      const layoutSel = cmpLayoutNet === undefined
+        ? (layoutNets[0] ?? null)
+        : (cmpLayoutNet && layoutNets.includes(cmpLayoutNet) ? cmpLayoutNet : null);
+      const schematicSel = cmpSchematicNet === undefined
+        ? (schematicNets[0] ?? null)
+        : (cmpSchematicNet && schematicNets.includes(cmpSchematicNet) ? cmpSchematicNet : null);
+
+      const lList = layoutSel ? (conn?.layout?.[layoutSel] ?? []) : [];
+      const sList = schematicSel ? (conn?.schematic?.[schematicSel] ?? []) : [];
+
+      // Devices are matched by name (case-insensitive), not by position.
+      const lByKey = new Map<string, { device: string; electrodes: number[] }>();
+      for (const c of lList) lByKey.set(c.device.toLowerCase(), c);
+      const sByKey = new Map<string, { device: string; electrodes: number[] }>();
+      for (const c of sList) sByKey.set(c.device.toLowerCase(), c);
+      const deviceKeys = [...new Set([...lByKey.keys(), ...sByKey.keys()])].sort((a, b) =>
+        a.localeCompare(b, undefined, { numeric: true }),
+      );
+
+      const selectStyle: React.CSSProperties = {
+        flex: "1 1 auto", minWidth: 0, fontSize: 11, fontFamily: "var(--mono)",
+        background: "var(--card)", border: "1px solid var(--l2)", borderRadius: 3,
+        color: "var(--fg)", padding: "2px 4px", outline: "none",
+        colorScheme: "dark",
+      };
+      const optionStyle: React.CSSProperties = { background: "var(--card)", color: "var(--fg)" };
+      const arrowStyle: React.CSSProperties = {
+        flex: "0 0 auto", fontSize: 10, lineHeight: 1, padding: "3px 7px",
+        border: "1px solid var(--l2)", borderRadius: 3, cursor: "pointer",
+        background: "var(--l1)", color: "var(--ink0)",
+      };
+      const rowBorder = "1px solid var(--l2)";
+
+      const stepLayout = (dir: 1 | -1) => {
+        if (!layoutNets.length) return;
+        const idx = layoutSel ? layoutNets.indexOf(layoutSel) : -1;
+        pickLayout(layoutNets[(idx + dir + layoutNets.length) % layoutNets.length]);
+      };
+      const stepSchematic = (dir: 1 | -1) => {
+        if (!schematicNets.length) return;
+        const idx = schematicSel ? schematicNets.indexOf(schematicSel) : -1;
+        pickSchematic(schematicNets[(idx + dir + schematicNets.length) % schematicNets.length]);
+      };
+
+      const side = (
+        label: string,
+        color: string,
+        value: string | null,
+        nets: string[],
+        onPick: (net: string | null) => void,
+        onStep: (dir: 1 | -1) => void,
+      ) => (
+        <div style={{ minWidth: 0, marginBottom: 6 }}>
+          <div style={{ fontSize: 10, fontWeight: 600, color, marginBottom: 2 }}>{label}</div>
+          <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
+            <select
+              value={value ?? ""}
+              onChange={(e) => onPick(e.target.value || null)}
+              style={selectStyle}
+              disabled={!nets.length}
+            >
+              {!nets.length
+                ? <option value="" style={optionStyle}>(no {label.toLowerCase()} nets)</option>
+                : (
+                  <>
+                    <option value="" style={optionStyle}></option>
+                    {nets.map((n) => <option key={n} value={n} style={optionStyle}>{stripSide(n)}</option>)}
+                  </>
+                )}
+            </select>
+            <button type="button" style={arrowStyle} onClick={() => onStep(-1)} disabled={!nets.length} title="Previous">◀</button>
+            <button type="button" style={arrowStyle} onClick={() => onStep(1)} disabled={!nets.length} title="Next">▶</button>
+          </div>
+        </div>
+      );
+
+      const cell = (i: number, text: string, matched: boolean): React.ReactNode => (
+        <div
+          style={{
+            minWidth: 0, padding: "2px 2px", fontSize: 11, fontFamily: "var(--mono)",
+            whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
+            borderTop: i === 0 ? rowBorder : undefined,
+            borderBottom: rowBorder,
+            color: matched ? "var(--ink0)" : "var(--ink2)",
+          }}
+        >
+          {text}
+        </div>
+      );
+
+      return (
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", columnGap: 8 }}>
+          {side("Layout", "#f55", layoutSel, layoutNets, pickLayout, stepLayout)}
+          {side("Schematic", "#48f", schematicSel, schematicNets, pickSchematic, stepSchematic)}
+          {deviceKeys.map((k, i) => {
+            const l = lByKey.get(k);
+            const s = sByKey.get(k);
+            const matched = !!l && !!s;
+            return (
+              <Fragment key={k}>
+                {cell(i, netLine(l), matched)}
+                {cell(i, netLine(s), matched)}
+              </Fragment>
+            );
+          })}
+        </div>
+      );
+    };
+
+    const subTabs: { id: NetsSubTab; label: string }[] = [
+      { id: "layout", label: `Layout (${layoutNets.length})` },
+      { id: "schematic", label: `Schematic (${schematicNets.length})` },
+      { id: "compare", label: "Compare" },
+    ];
 
     return (
       <div>
-        <div style={{ ...sectionTitle, color: "#f55" }}>Layout ({layoutNets.length})</div>
-        {renderNets("layout", layoutNets)}
-        <div style={{ ...sectionTitle, color: "#48f", marginTop: 10 }}>Schematic ({schematicNets.length})</div>
-        {renderNets("schematic", schematicNets)}
+        <div style={{ display: "flex", gap: 2, marginBottom: 8 }}>
+          {subTabs.map((t) => {
+            const active = netsSubTab === t.id;
+            return (
+              <button
+                key={t.id}
+                type="button"
+                onClick={() => selectNetsSubTab(t.id)}
+                style={{
+                  fontSize: 10, fontWeight: active ? 600 : 400,
+                  padding: "3px 8px", cursor: "pointer",
+                  border: "1px solid var(--l2)", borderRadius: 3,
+                  background: active ? "var(--accent)" : "var(--l1)",
+                  color: active ? "var(--accentFg, #fff)" : "var(--ink2)",
+                }}
+              >
+                {t.label}
+              </button>
+            );
+          })}
+        </div>
+        {netsSubTab === "layout" && renderNets("layout", layoutNets)}
+        {netsSubTab === "schematic" && renderNets("schematic", schematicNets)}
+        {netsSubTab === "compare" && renderCompare()}
       </div>
     );
   };
@@ -1183,8 +1342,8 @@ export default function LVSComparePanel({ dieId, layoutNetlist, dialect, moduleN
     const tabs: { id: NbTab; label: string; count: number | null }[] = [
       { id: "device", label: "Device Diffs", count: state.data.devices.length },
       { id: "property", label: "Property Diffs", count: state.data.json.property_diffs.length },
-      { id: "nets", label: "Unbalanced Nets", count: state.data.json.unbalanced.filter((c) => c.what === "net").length },
       { id: "report", label: "Report", count: null },
+      { id: "nets", label: "Unbalanced Nets", count: state.data.json.unbalanced.filter((c) => c.what === "net").length },
     ];
     return (
       <div style={{ display: "flex", flexDirection: "column", flex: "1 1 auto", minHeight: 0, overflow: "hidden" }}>
