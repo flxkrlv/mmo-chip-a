@@ -29,6 +29,7 @@ import {
   type MergeCanvasHandle
 } from "../components/mergeCells/MergeCanvas";
 import { MergeLeftPanel } from "../components/mergeCells/MergeLeftPanel";
+import { PanelToggle, usePanelCollapsed } from "../components/shell/PanelToggle";
 import { Filmstrip } from "../components/mergeCells/Filmstrip";
 import { MergeBottomBar } from "../components/mergeCells/MergeBottomBar";
 import {
@@ -87,6 +88,7 @@ function Merge({ dieId }: { dieId: string }) {
     [overlayLayers]
   );
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  const [leftCollapsed, toggleLeft] = usePanelCollapsed("merge.left");
   useEffect(() => {
     const handler = () => setShortcutsOpen((v) => !v);
     window.addEventListener("toggle-shortcuts", handler);
@@ -554,6 +556,8 @@ function Merge({ dieId }: { dieId: string }) {
           </button>
         }
       >
+        <PanelToggle side="left" collapsed={leftCollapsed} onClick={toggleLeft} />
+        <ToolDivider />
         <span
           className={"chip" + (mode === "overlay" ? " on" : "")}
           style={{ cursor: "pointer" }}
@@ -662,7 +666,7 @@ function Merge({ dieId }: { dieId: string }) {
           display: "flex"
         }}
       >
-        {annotations ? (
+        {!leftCollapsed && (annotations ? (
           <MergeLeftPanel
             dieId={dieId}
             annotations={annotations}
@@ -674,7 +678,7 @@ function Merge({ dieId }: { dieId: string }) {
           />
         ) : (
           <div style={{ width: 248, flex: "0 0 auto", background: "var(--card)" }} />
-        )}
+        ))}
 
         <div className="col" style={{ flex: "1 1 auto", minWidth: 0, minHeight: 0 }}>
           <MergeCanvas

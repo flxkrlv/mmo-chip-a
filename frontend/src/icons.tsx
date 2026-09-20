@@ -241,6 +241,20 @@ export const Ic = {
     </>
   ),
   chev: Icon(<path d="M4 6l4 4 4-4" fill="currentColor" stroke="none" />),
+  panelLeft: Icon(
+    <>
+      <rect x="2" y="3" width="12" height="10" rx="1.2" />
+      <path d="M6 3v10" />
+      <rect x="2.7" y="3.7" width="2.6" height="8.6" rx="0.4" fill="currentColor" stroke="none" opacity=".5" />
+    </>
+  ),
+  panelRight: Icon(
+    <>
+      <rect x="2" y="3" width="12" height="10" rx="1.2" />
+      <path d="M10 3v10" />
+      <rect x="10.7" y="3.7" width="2.6" height="8.6" rx="0.4" fill="currentColor" stroke="none" opacity=".5" />
+    </>
+  ),
   more: Icon(
     <>
       <circle cx="8" cy="3.5" r="1.2" fill="currentColor" stroke="none" />

@@ -3,6 +3,7 @@ import { useSearchParams } from "react-router-dom";
 import { AppShell } from "../components/shell/AppShell";
 import { StatusBar } from "../components/shell/StatusBar";
 import { SubBar, ToolDivider } from "../components/shell/SubBar";
+import { PanelToggle, usePanelCollapsed } from "../components/shell/PanelToggle";
 import { CodeViewer, type CodeViewerHandle } from "../components/code/CodeViewer";
 import { CodeOutline } from "../components/code/CodeOutline";
 import { ProblemsPanel } from "../components/code/ProblemsPanel";
@@ -60,6 +61,7 @@ function Code({ dieId }: { dieId: string }) {
   const viewerRef = useRef<CodeViewerHandle | null>(null);
   const [selectedLine, setSelectedLine] = useState<number | null>(null);
   const [problemsOpen, setProblemsOpen] = useState(false);
+  const [leftCollapsed, toggleLeft] = usePanelCollapsed("code.left");
   const [search, setSearch] = useState("");
   const [searchFocused, setSearchFocused] = useState(false);
   const [matchIndex, setMatchIndex] = useState(0);
@@ -224,6 +226,8 @@ function Code({ dieId }: { dieId: string }) {
           </>
         }
       >
+        <PanelToggle side="left" collapsed={leftCollapsed} onClick={toggleLeft} />
+        <ToolDivider />
         <span
           className="m"
           style={{ fontSize: 11, color: "var(--ink2)", padding: "0 8px" }}
@@ -237,27 +241,30 @@ function Code({ dieId }: { dieId: string }) {
           flex: "1 1 auto",
           minHeight: 0,
           display: "grid",
-          gridTemplateColumns: "240px 1fr",
+          gridTemplateColumns: `${leftCollapsed ? "0px" : "240px"} 1fr`,
         }}
       >
-        <aside
-          style={{
-            borderRight: "1px solid var(--l2)",
-            background: "var(--card)",
-            minHeight: 0,
-            overflow: "hidden",
-          }}
-        >
-          {code.data ? (
-            <CodeOutline
-              outline={code.data.outline}
-              selectedLine={selectedLine ?? undefined}
-              onGoToLine={goToLine}
-            />
-          ) : (
-            <OutlinePlaceholder loading={code.loading} error={code.error} />
-          )}
-        </aside>
+        {!leftCollapsed && (
+          <aside
+            style={{
+              borderRight: "1px solid var(--l2)",
+              background: "var(--card)",
+              minHeight: 0,
+              overflow: "hidden",
+              gridColumn: 1,
+            }}
+          >
+            {code.data ? (
+              <CodeOutline
+                outline={code.data.outline}
+                selectedLine={selectedLine ?? undefined}
+                onGoToLine={goToLine}
+              />
+            ) : (
+              <OutlinePlaceholder loading={code.loading} error={code.error} />
+            )}
+          </aside>
+        )}
 
         <section
           style={{
@@ -265,6 +272,7 @@ function Code({ dieId }: { dieId: string }) {
             flexDirection: "column",
             minHeight: 0,
             background: "var(--card)",
+            gridColumn: 2,
           }}
         >
           {code.data ? (

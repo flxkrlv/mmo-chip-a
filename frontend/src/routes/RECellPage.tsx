@@ -16,7 +16,8 @@ import type {
 } from "shared";
 import { AppShell } from "../components/shell/AppShell";
 import { StatusBar } from "../components/shell/StatusBar";
-import { SubBar } from "../components/shell/SubBar";
+import { SubBar, ToolDivider } from "../components/shell/SubBar";
+import { PanelToggle, usePanelCollapsed } from "../components/shell/PanelToggle";
 import { Ic } from "../icons";
 import { useDie } from "../api/dies";
 import { useAnnotations } from "../api/annotations";
@@ -124,6 +125,8 @@ function RE({ dieId }: { dieId: string }) {
     [overlayLayers]
   );
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  const [leftCollapsed, toggleLeft] = usePanelCollapsed("re.left");
+  const [rightCollapsed, toggleRight] = usePanelCollapsed("re.right");
   useEffect(() => {
     const handler = () => setShortcutsOpen((v) => !v);
     window.addEventListener("toggle-shortcuts", handler);
@@ -631,28 +634,34 @@ function RE({ dieId }: { dieId: string }) {
     >
       <SubBar
         right={
-          <button
-            className="btn"
-            disabled
-            title="Base image (one per die for now)"
-            style={{ maxWidth: 220 }}
-          >
-            {Ic.image}
-            <span
-              className="m"
-              style={{
-                fontSize: 10.5,
-                marginLeft: 4,
-                overflow: "hidden",
-                textOverflow: "ellipsis"
-              }}
+          <>
+            <button
+              className="btn"
+              disabled
+              title="Base image (one per die for now)"
+              style={{ maxWidth: 220 }}
             >
-              {baseImageName}
-            </span>
-            {Ic.caret}
-          </button>
+              {Ic.image}
+              <span
+                className="m"
+                style={{
+                  fontSize: 10.5,
+                  marginLeft: 4,
+                  overflow: "hidden",
+                  textOverflow: "ellipsis"
+                }}
+              >
+                {baseImageName}
+              </span>
+              {Ic.caret}
+            </button>
+            <ToolDivider />
+            <PanelToggle side="right" collapsed={rightCollapsed} onClick={toggleRight} />
+          </>
         }
       >
+        <PanelToggle side="left" collapsed={leftCollapsed} onClick={toggleLeft} />
+        <ToolDivider />
         <CellREToolbar
           activeTool={activeTool}
           setActiveTool={setActiveTool}
@@ -670,7 +679,7 @@ function RE({ dieId }: { dieId: string }) {
           display: "flex"
         }}
       >
-        {annotations ? (
+        {!leftCollapsed && (annotations ? (
           <CellRELeftPanel
             annotations={annotations}
             onCellContextMenu={(c, x, y) => {
@@ -681,7 +690,7 @@ function RE({ dieId }: { dieId: string }) {
           />
         ) : (
           <div style={{ width: 248, flex: "0 0 auto", background: "var(--card)" }} />
-        )}
+        ))}
 
         <div className="col" style={{ flex: "1 1 auto", minWidth: 0, minHeight: 0 }}>
           {/* Tab strip above the canvas. Three views on the same cell:
@@ -854,7 +863,7 @@ function RE({ dieId }: { dieId: string }) {
           )}
         </div>
 
-        <CellRERightPanel
+        {!rightCollapsed && (<CellRERightPanel
           cellType={cellType}
           extraction={extraction.data}
           loading={extraction.loading}
@@ -955,7 +964,7 @@ function RE({ dieId }: { dieId: string }) {
             setActiveDomainId(domainId);
             setCanvasTab("schematic");
           }}
-        />
+        />)}
       </main>
 
       <StatusBar

@@ -9,6 +9,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { AppShell } from "../components/shell/AppShell";
 import { SubBar } from "../components/shell/SubBar";
+import { PanelToggle, usePanelCollapsed } from "../components/shell/PanelToggle";
 import { WaveformViewer, type WaveformViewerHandle } from "../components/simulation/WaveformViewer";
 import { SchematicViewPanel } from "../components/netlist/SchematicViewPanel";
 import { SubcircuitPicker, parseSubcircuits, filterTopLevel, type SubcircuitEntry } from "../components/simulation/SubcircuitPicker";
@@ -122,6 +123,7 @@ function SpiceSimulator({ dieId }: { dieId: string }) {
   const [selectedSubcircuit, setSelectedSubcircuit] = useState<string | null>(null);
   const [engineReady, setEngineReady] = useState(false);
   const [running, setRunning] = useState(false);
+  const [leftCollapsed, toggleLeft] = usePanelCollapsed("spice.left");
   const [output, setOutput] = useState<SpiceSimulationOutput | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [rightView, setRightView] = useState<"waveforms" | "schematic" | "netlist">("waveforms");
@@ -217,6 +219,8 @@ function SpiceSimulator({ dieId }: { dieId: string }) {
   return (
     <AppShell breadcrumb="SPICE Simulation" meta={die?.name}>
       <SubBar>
+        <PanelToggle side="left" collapsed={leftCollapsed} onClick={toggleLeft} />
+        <div style={{ width: 1, height: 16, background: "var(--l2)", margin: "0 4px" }} />
         <span style={{ fontSize: 11, color: "var(--ink3)" }}>
           {ngspiceMode === "server"
             ? (engineReady ? "ngspice server-side ready" : "Connecting to server...")
@@ -237,6 +241,7 @@ function SpiceSimulator({ dieId }: { dieId: string }) {
 
       <div style={{ display: "flex", flex: 1, overflow: "hidden" }}>
         {/* ── Left panel ── */}
+        {!leftCollapsed && (
         <div style={{ width: 300, minWidth: 240, borderRight: "1px solid var(--l2)", display: "flex", flexDirection: "column", overflow: "hidden" }}>
           {/* Subcircuit list */}
           <div style={{ flex: "0 0 auto", maxHeight: "30%", overflow: "auto", borderBottom: "1px solid var(--l2)" }}>
@@ -277,6 +282,7 @@ function SpiceSimulator({ dieId }: { dieId: string }) {
             {error && <span style={{ color: "var(--bad)" }}> {error}</span>}
           </div>
         </div>
+        )}
 
         {/* ── Right panel ── */}
         <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>

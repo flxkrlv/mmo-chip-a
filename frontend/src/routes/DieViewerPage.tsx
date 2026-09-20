@@ -9,6 +9,7 @@ import { useDie } from "../api/dies";
 import { AppShell } from "../components/shell/AppShell";
 import { StatusBar } from "../components/shell/StatusBar";
 import { SubBar } from "../components/shell/SubBar";
+import { PanelToggle, usePanelCollapsed } from "../components/shell/PanelToggle";
 import { Ic } from "../icons";
 import {
   TiledCanvas,
@@ -283,6 +284,8 @@ function DieViewer({ dieId }: { dieId: string }) {
   const outlineSearchRef = useRef<(() => void) | null>(null);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [leftCollapsed, toggleLeft] = usePanelCollapsed("die.left");
+  const [rightCollapsed, toggleRight] = usePanelCollapsed("die.right");
   useEffect(() => {
     const handler = () => setShortcutsOpen((v) => !v);
     window.addEventListener("toggle-shortcuts", handler);
@@ -3499,9 +3502,13 @@ function DieViewer({ dieId }: { dieId: string }) {
             >
               {Ic.download}
             </button>
+            <div style={{ width: 1, height: 18, background: "var(--l2)", margin: "0 2px" }} />
+            <PanelToggle side="right" collapsed={rightCollapsed} onClick={toggleRight} />
           </div>
         }
       >
+        <PanelToggle side="left" collapsed={leftCollapsed} onClick={toggleLeft} />
+        <div style={{ width: 1, height: 18, background: "var(--l2)", margin: "0 2px" }} />
         <DieToolbar
           activeTool={activeTool}
           setActiveTool={setActiveTool}
@@ -3513,38 +3520,40 @@ function DieViewer({ dieId }: { dieId: string }) {
           flex: "1 1 auto",
           minHeight: 0,
           display: "grid",
-          gridTemplateColumns: "248px 1fr 320px"
+          gridTemplateColumns: `${leftCollapsed ? "0px" : "248px"} 1fr ${rightCollapsed ? "0px" : "320px"}`
         }}
       >
-        <aside style={panelStyle}>
-          <div className="ph" style={{ paddingRight: 8 }}>
-            <span className="u">Items</span>
-            <button
-              className="btn ghost"
-              title="Search (Ctrl+F)"
-              onClick={() => outlineSearchRef.current?.()}
-              style={{ padding: "2px 0", marginLeft: "auto" }}
-            >
-              {Ic.search}
-            </button>
-          </div>
-          <OutlineTree
-            annotations={annotations}
-            onFocus={focusOnIds}
-            baseImages={die ? [{ id: die.id, name: die.name }] : []}
-            deviceLabels={deviceLabels}
-            onDeviceSelect={(id) => { const d = analogDevices.find((x:any) => x._cellId === id || (x as any)._cellId === id); if(d) setSelectedDevice(d) }}
-            onOpenInRE={dieId ? (cellId, cellTypeId) => navigate(`/re?die=${encodeURIComponent(dieId)}&type=${encodeURIComponent(cellTypeId)}&cell=${encodeURIComponent(cellId)}`) : undefined}
-            searchOpenRef={outlineSearchRef}
-          />
-        </aside>
+        {!leftCollapsed && (
+          <aside style={{ ...panelStyle, gridColumn: 1 }}>
+            <div className="ph" style={{ paddingRight: 8 }}>
+              <span className="u">Items</span>
+              <button
+                className="btn ghost"
+                title="Search (Ctrl+F)"
+                onClick={() => outlineSearchRef.current?.()}
+                style={{ padding: "2px 0", marginLeft: "auto" }}
+              >
+                {Ic.search}
+              </button>
+            </div>
+            <OutlineTree
+              annotations={annotations}
+              onFocus={focusOnIds}
+              baseImages={die ? [{ id: die.id, name: die.name }] : []}
+              deviceLabels={deviceLabels}
+              onDeviceSelect={(id) => { const d = analogDevices.find((x:any) => x._cellId === id || (x as any)._cellId === id); if(d) setSelectedDevice(d) }}
+              onOpenInRE={dieId ? (cellId, cellTypeId) => navigate(`/re?die=${encodeURIComponent(dieId)}&type=${encodeURIComponent(cellTypeId)}&cell=${encodeURIComponent(cellId)}`) : undefined}
+              searchOpenRef={outlineSearchRef}
+            />
+          </aside>
+        )}
         <section
           ref={containerRef}
           onPointerMove={onPointerMove}
           onPointerLeave={onPointerLeave}
           onContextMenu={onCanvasContextMenu}
           onDoubleClick={onCanvasDoubleClick}
-          style={{ background: "var(--canvas-bg)", minWidth: 0, position: "relative", overflow: "hidden" }}
+          style={{ background: "var(--canvas-bg)", minWidth: 0, position: "relative", overflow: "hidden", gridColumn: 2 }}
         >
           {error && (
             <CenteredStatus>failed to load die · {error.message}</CenteredStatus>
@@ -3684,7 +3693,8 @@ function DieViewer({ dieId }: { dieId: string }) {
             />
           )}
         </section>
-        <aside style={panelStyle}>
+        {!rightCollapsed && (
+        <aside style={{ ...panelStyle, gridColumn: 3 }}>
           <div style={{ flex: "1 1 0", minHeight: 0, overflow: "auto" }}>
           <InspectorPanel
             annotations={annotations}
@@ -3742,6 +3752,7 @@ function DieViewer({ dieId }: { dieId: string }) {
             ) : null}
           </div>
         </aside>
+        )}
       </main>
       {selectedDevice && (
         <div

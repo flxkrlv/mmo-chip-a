@@ -1161,14 +1161,19 @@ export default function LVSComparePanel({ dieId, layoutNetlist, dialect, moduleN
         </div>
       );
 
-      const cell = (i: number, text: string, matched: boolean): React.ReactNode => (
+      // Green: matched + identical electrodes. Yellow: matched, electrodes differ.
+      // White: device present on one side only.
+      const sameElectrodes = (a: { electrodes: number[] }, b: { electrodes: number[] }): boolean =>
+        a.electrodes.length === b.electrodes.length && a.electrodes.every((e, j) => e === b.electrodes[j]);
+
+      const cell = (i: number, text: string, color: string): React.ReactNode => (
         <div
           style={{
             minWidth: 0, padding: "2px 2px", fontSize: 11, fontFamily: "var(--mono)",
             whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
             borderTop: i === 0 ? rowBorder : undefined,
             borderBottom: rowBorder,
-            color: matched ? "var(--ink0)" : "var(--ink2)",
+            color,
           }}
         >
           {text}
@@ -1182,11 +1187,11 @@ export default function LVSComparePanel({ dieId, layoutNetlist, dialect, moduleN
           {deviceKeys.map((k, i) => {
             const l = lByKey.get(k);
             const s = sByKey.get(k);
-            const matched = !!l && !!s;
+            const color = l && s ? (sameElectrodes(l, s) ? "#4f4" : "#fd0") : "#fff";
             return (
               <Fragment key={k}>
-                {cell(i, netLine(l), matched)}
-                {cell(i, netLine(s), matched)}
+                {cell(i, netLine(l), color)}
+                {cell(i, netLine(s), color)}
               </Fragment>
             );
           })}

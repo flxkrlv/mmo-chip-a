@@ -17,6 +17,7 @@ import type { SpiceConfig, SpiceDialect } from "shared";
 import { AppShell } from "../components/shell/AppShell";
 import { StatusBar } from "../components/shell/StatusBar";
 import { SubBar, ToolDivider } from "../components/shell/SubBar";
+import { PanelToggle, usePanelCollapsed } from "../components/shell/PanelToggle";
 import { CodeViewer, type CodeViewerHandle } from "../components/code/CodeViewer";
 import { TreeRow, TreeSep } from "../components/tree/TreeRow";
 import { useDie } from "../api/dies";
@@ -215,6 +216,7 @@ function AnalogNetlist({ dieId }: { dieId: string }) {
 
   // ── UI state ────────────────────────────────────────────────────
   const [rightView, setRightView] = useState<RightView>(assistantView ?? readRightView());
+  const [leftCollapsed, toggleLeft] = usePanelCollapsed("analog.left");
   const [selectedRegion, setSelectedRegion] = useState<string | null>(null);
   const viewerRef = useRef<CodeViewerHandle | null>(null);
   const [selectedLine, setSelectedLine] = useState<number | null>(null);
@@ -637,6 +639,8 @@ function AnalogNetlist({ dieId }: { dieId: string }) {
           </>
         }
       >
+        <PanelToggle side="left" collapsed={leftCollapsed} onClick={toggleLeft} />
+        <ToolDivider />
         <span
           className="m"
           style={{ fontSize: 11, color: "var(--ink2)", padding: "0 8px" }}
@@ -650,31 +654,34 @@ function AnalogNetlist({ dieId }: { dieId: string }) {
           flex: "1 1 auto",
           minHeight: 0,
           display: "grid",
-          gridTemplateColumns: "240px 1fr",
+          gridTemplateColumns: `${leftCollapsed ? "0px" : "240px"} 1fr`,
         }}
       >
         {/* ── Left panel: device instances ───────────────────── */}
-        <aside
-          style={{
-            borderRight: "1px solid var(--l2)",
-            background: "var(--card)",
-            minHeight: 0,
-            overflow: "hidden",
-          }}
-        >
-          {netlist.data ? (
-            <InstanceOutline
-              outline={netlist.data.outline}
-              selectedLine={selectedLine ?? undefined}
-              onGoToLine={goToLine}
-              onSelectDevice={onSelectDevice}
-              onSelectInstance={onSelectInstance}
-              totalDevices={netlist.data.totalDevices}
-            />
-          ) : (
-            <OutlinePlaceholder loading={netlist.loading} />
-          )}
-        </aside>
+        {!leftCollapsed && (
+          <aside
+            style={{
+              borderRight: "1px solid var(--l2)",
+              background: "var(--card)",
+              minHeight: 0,
+              overflow: "hidden",
+              gridColumn: 1,
+            }}
+          >
+            {netlist.data ? (
+              <InstanceOutline
+                outline={netlist.data.outline}
+                selectedLine={selectedLine ?? undefined}
+                onGoToLine={goToLine}
+                onSelectDevice={onSelectDevice}
+                onSelectInstance={onSelectInstance}
+                totalDevices={netlist.data.totalDevices}
+              />
+            ) : (
+              <OutlinePlaceholder loading={netlist.loading} />
+            )}
+          </aside>
+        )}
 
         {/* ── Right panel: CDL source ────────────────────────── */}
         <section
@@ -683,6 +690,7 @@ function AnalogNetlist({ dieId }: { dieId: string }) {
             flexDirection: "column",
             minHeight: 0,
             background: "var(--card)",
+            gridColumn: 2,
           }}
         >
           {rightView === "lvs" ? (

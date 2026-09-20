@@ -8,6 +8,7 @@ import { apiPut } from "../api/client";
 import { useIcPackageStore } from "../state/icPackage";
 import { useOverlayLayers } from "../state/overlayLayers";
 import { AppShell } from "../components/shell/AppShell";
+import { PanelToggle, usePanelCollapsed } from "../components/shell/PanelToggle";
 import {
   findNearestPad,
   findClickedPin,
@@ -75,6 +76,7 @@ function IcPackageView({ dieId }: { dieId: string }) {
   }, [dieId]);
   const [imageLoading, setImageLoading] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  const [rightCollapsed, toggleRight] = usePanelCollapsed("icpackage.right");
   /** Pin being renamed via the inline canvas overlay. */
   const [editingPinNumber, setEditingPinNumber] = useState<number | null>(null);
   const [editDraft, setEditDraft] = useState("");
@@ -358,7 +360,10 @@ function IcPackageView({ dieId }: { dieId: string }) {
     <AppShell meta="Pin planner" savedAgo={saveStatus === "saved" ? "saved" : saveStatus === "saving" ? "saving…" : saveStatus === "error" ? "save failed" : undefined}>
       <IcPackageToolbar onApplyToDieViewer={applyToDieViewer} applyDisabled={applyDisabled}
         onExportPng={exportPng} onExportCsv={exportCsv}
-        right={<OverlaySelector value={bgOverlayId} onChange={changeBgOverlay} />} />
+        right={<>
+          <OverlaySelector value={bgOverlayId} onChange={changeBgOverlay} />
+          <PanelToggle side="right" collapsed={rightCollapsed} onClick={toggleRight} />
+        </>} />
       <div style={{ flex: "1 1 auto", display: "flex", minHeight: 0 }}>
         {centerMsg ? (
           <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--ink3)", fontSize: 12 }}>
@@ -452,11 +457,13 @@ function IcPackageView({ dieId }: { dieId: string }) {
                 );
               })()}
             </div>
+            {!rightCollapsed && (
             <div style={{ width: 260, flex: "0 0 auto", borderLeft: "1px solid var(--l2)", background: "var(--card)", display: "flex", flexDirection: "column", padding: 8, gap: 8, overflowY: "auto" }}>
               <PackageSelector />
               <DieTransformPanel />
               <PinListPanel pads={scaledPads} />
             </div>
+            )}
           </>
         )}
       </div>
