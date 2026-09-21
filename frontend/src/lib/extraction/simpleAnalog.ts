@@ -1405,6 +1405,12 @@ export function detectMOSFromLayers(
               modelName: mosType === "pmos" ? "PMOS" : "NMOS",
               terminals,
               bbox: bodyBox,
+              // Keep the synthetic diffusion-segment shapes ON the device so the
+              // die-level pipeline can resolve contact→terminal mapping even when
+              // this device comes from the cell-type cache (which skips
+              // detectMOSFromLayers and therefore never repopulates the global
+              // _segmentShapesCache).
+              _segmentShapes: split.shapes,
               ...(gateAnchor ? { _gateAnchor: gateAnchor } : {}),
               ...{
                 _wellShapeId: well.id,

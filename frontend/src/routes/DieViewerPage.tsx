@@ -1333,6 +1333,11 @@ function DieViewer({ dieId }: { dieId: string }) {
       ),
     [annotations?.cellTypes, annotations?.cells]
   );
+  // Device-electrode terminals (from the extraction pipeline's `_termPoints`,
+  // already orientation-correct). These cover cell types whose metal1/contact
+  // geometry doesn't yield a `buildInstanceTerminalMap` target (notably MOS),
+  // so wire snapping lands on the same points the labels are drawn at.
+  const deviceTerminalsRef = useRef<TerminalSnapTarget[]>([]);
   const findNearestTerminal = useCallback(
     (world: Point, tolWorld: number): TerminalSnapTarget | null => {
       let best: TerminalSnapTarget | null = null;
@@ -1343,6 +1348,14 @@ function DieViewer({ dieId }: { dieId: string }) {
         if (d <= bestD) {
           bestD = d;
           best = { x: t.worldX, y: t.worldY, terminalId: t.id };
+        }
+      }
+      // Check extracted device electrodes.
+      for (const t of deviceTerminalsRef.current) {
+        const d = Math.hypot(t.x - world.x, t.y - world.y);
+        if (d <= bestD) {
+          bestD = d;
+          best = t;
         }
       }
       // Also check IO pins from annotations.
@@ -1404,6 +1417,20 @@ function DieViewer({ dieId }: { dieId: string }) {
     netIdMap,
   } = useDieExtraction(annotations as any);
   const { progress: extractionProgress, isRunning: extractionRunning, lastTimeMs, lastCached } = useExtractionProgress();
+
+  // Feed the extracted device electrodes into the wire-snap candidates.
+  useEffect(() => {
+    const out: TerminalSnapTarget[] = [];
+    for (const d of analogDevices) {
+      const pts = (d as { _termPoints?: Array<{ x: number; y: number; name: string }> })._termPoints;
+      if (!pts || pts.length === 0) continue;
+      const cellId = (d as { _cellId?: string })._cellId ?? "";
+      for (const p of pts) {
+        out.push({ x: p.x, y: p.y, terminalId: `dev:${cellId}:${p.name}` });
+      }
+    }
+    deviceTerminalsRef.current = out;
+  }, [analogDevices]);
 
   // Rebuild the per-net device-electrode connection grid from the extracted
   // devices. Only terminals whose resolved netId maps to a real annotation net

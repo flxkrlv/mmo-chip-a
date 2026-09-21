@@ -14,6 +14,7 @@
  */
 
 import type { CellLayers, LayerShape, LayerType, Cell, CellType } from "shared";
+import { applyOrientation } from "../geometry";
 
 // ── Exported types ───────────────────────────────────────────────
 
@@ -167,12 +168,21 @@ export function buildInstanceTerminalMap(
     const ct = cellTypes.find((t) => t.id === cell.cellTypeId);
     if (!ct) continue;
 
+    // Terminals are detected in canonical cell-local coordinates; apply the
+    // instance's orientation (mirror + rotation about the crop-box centre)
+    // before translating to die-world, matching the device `_termPoints`
+    // pipeline. Without this, rotated/mirrored cells (e.g. MOS) get snap
+    // targets at the unrotated position and never snap.
+    const cw = ct.cropRect?.width || 1;
+    const ch = ct.cropRect?.height || 1;
+
     for (const t of typeTerminals) {
+      const op = applyOrientation({ x: t.worldX, y: t.worldY }, cell, cw, ch);
       result.push({
         ...t,
         id: `${cell.id}:${t.portName}`,
-        worldX: cell.x + t.worldX,  // worldX in cell-local is actually the local offset
-        worldY: cell.y + t.worldY,
+        worldX: cell.x + op.x,
+        worldY: cell.y + op.y,
         cell,
         cellType: ct,
       });

@@ -383,8 +383,16 @@ function _computeResultKey(
     .map((c) => `${c.id}:${c.cellTypeId}:${c.x ?? 0}:${c.y ?? 0}:fv:${!!c.flippedV}:fh:${!!c.flippedH}:r:${c.rotation ?? 0}`)
     .join("|");
   const spiceKey = spiceConfig ? `${spiceConfig.vdd ?? ""}|${spiceConfig.gnd ?? ""}` : "";
+  // Include net GEOMETRY (not just counts): moving a wire endpoint away from a
+  // device electrode leaves node/edge counts unchanged but must invalidate the
+  // cached result so the terminal re-resolves to a fresh (unconnected) net and
+  // the red "unconnected" glow appears immediately, without a page reload.
   const netContentKey = (ann.nets ?? [])
-    .map(n => `${n.id}:${n.nodes.length}:${n.edges.length}`)
+    .map(n => {
+      const nodes = n.nodes.map(nd => `${Math.round(nd.x)},${Math.round(nd.y)}`).join(";");
+      const edges = n.edges.map(e => `${e.from}>${e.to}:${e.layer ?? ""}`).join(";");
+      return `${n.id}[${nodes}][${edges}]`;
+    })
     .join("|");
   const data = JSON.stringify({
     ctH: ctKeys,
@@ -525,7 +533,9 @@ function _processOneCellType(
           : { ...dev.bbox, x: dev.bbox.x + cx, y: dev.bbox.y + cy };
       })();
 
-      const segShapes = consumeSegmentShapes(dev.id);
+      // Prefer the segment shapes carried on the device (survives the cell-type
+      // device cache). Fall back to the global cache for older callers.
+      const segShapes = ((dev as any)._segmentShapes as LayerShape[] | undefined) ?? consumeSegmentShapes(dev.id);
       const layersWithSegs = segShapes.length > 0
         ? {
             ...ct.layers,
