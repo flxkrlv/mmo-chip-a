@@ -561,7 +561,15 @@ function _processOneCellType(
       const termContacts = rawTermContacts.map((arr) => arr.map(orientPoint));
 
       const matchedTerms = dev.terminals.map((t,ti)=>{
-        if (t.netId < 0 && dev.kind === "mos" && t.name === "B") {
+        if (dev.kind === "mos" && t.name === "B") {
+          // 1. If a wire is drawn to the bulk contact (well tap), use THAT net —
+          //    never force the bulk to a supply when the user wired it elsewhere.
+          for (const cp of termContacts[ti]) {
+            const wid = matchWireToPoint(nets, cp.x, cp.y, cp.tol ?? 10, netIdMap, nextNetId, shared.bottomMetalLayer as WireLayer);
+            if (wid != null) return { ...t, netId: wid };
+          }
+          // 2. Nothing connected to the bulk → default to the supply rail
+          //    (GND for NMOS, VDD for PMOS).
           const mosType = (dev.geometry as DeviceGeometryMOS)?.mosType;
           const vddNames = [spiceConfig?.vdd ?? "VDD", "VCC", "vcc", "VDD", "vdd"];
           const gndNames = [spiceConfig?.gnd ?? "GND", "VSS", "vss", "GND", "gnd"];
@@ -587,7 +595,7 @@ function _processOneCellType(
             }
           }
           if (foundNetId != null) {
-            warnings.push(`[INFO] ${instName} (${mosType.toUpperCase()}): bulk has no well contact — auto-connected to global ${supplyName}`);
+            warnings.push(`[INFO] ${instName} (${mosType.toUpperCase()}): bulk not connected — auto-connected to global ${supplyName}`);
             return {...t, netId: foundNetId};
           }
           let freshId = netIdMap.get(`_global_${supplyName}`);
@@ -595,7 +603,7 @@ function _processOneCellType(
             freshId = nextNetId.v++;
             netIdMap.set(`_global_${supplyName}`, freshId);
           }
-          warnings.push(`[INFO] ${instName} (${mosType.toUpperCase()}): bulk has no well contact — auto-connected to global ${supplyName}`);
+          warnings.push(`[INFO] ${instName} (${mosType.toUpperCase()}): bulk not connected — auto-connected to global ${supplyName}`);
           return {...t, netId: freshId};
         }
         if (t.netId < 0) {

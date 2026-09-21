@@ -1610,11 +1610,21 @@ export function resolveDeviceContacts(
   const cTis = new Map<string, Set<number>>();
   const cPos = new Map<string, {x:number;y:number;tol:number}>();
 
-  const mosOtherLayers: string[] = [];
-  for (const [key, d] of defMap) {
-    if (key === "B") continue;
-    for (const l of d.layers) {
-      if (!mosOtherLayers.includes(l)) mosOtherLayers.push(l);
+  // Shape-id lookup so the bulk (B) terminal can exclude contacts that belong
+  // to THIS device's own D/S diffusion segments or gate poly — without
+  // rejecting genuine well/bulk tap contacts that merely sit on diffusion
+  // elsewhere in the well. (Rejecting *all* diffusion contacts made bulk taps
+  // invisible, so B was always forced to a supply rail.)
+  const shapeById = new Map<string, LayerShape>();
+  for (const arr of Object.values(ctLayers)) {
+    for (const sh of (arr as LayerShape[] | undefined) ?? []) shapeById.set(sh.id, sh);
+  }
+  const bExcludeShapeIds: string[] = [];
+  if (dev.kind === "mos") {
+    for (const t of dev.terminals) {
+      if (t.name === "D" || t.name === "S" || t.name === "G") {
+        for (const sid of t.shapeIds ?? []) bExcludeShapeIds.push(sid);
+      }
     }
   }
 
@@ -1641,11 +1651,11 @@ export function resolveDeviceContacts(
           const isInside = _pointInShape(cc.x, cc.y, shape);
           if (isInside) {
             if (dev.kind === "mos" && termDef.name === "B") {
-              const alsoOnOther = mosOtherLayers.some((otherLayer) => {
-                const otherShapes = ctLayers[otherLayer] as LayerShape[] | undefined;
-                return otherShapes?.some((s) => _pointInShape(cc.x, cc.y, s)) ?? false;
+              const onOwnSDorGate = bExcludeShapeIds.some((sid) => {
+                const s = shapeById.get(sid);
+                return s ? _pointInShape(cc.x, cc.y, s) : false;
               });
-              if (alsoOnOther) continue;
+              if (onOwnSDorGate) continue;
             }
             candidates.push({ ti, pri: termDef.priority ?? 999 });
             matched = true;
