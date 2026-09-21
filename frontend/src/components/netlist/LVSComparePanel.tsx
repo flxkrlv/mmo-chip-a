@@ -12,6 +12,7 @@ const LS_NETS_TAB = "lvs.nb.netsTab";
 const LS_CMP_FULL = "lvs.nb.cmpFullWidth";
 const LS_ENGINE = "lvs.engine";
 const LS_SCHEMATIC = "lvs.schematicNetlist";
+const LS_RESULTS = "lvs.results";
 
 function readLS(key: string): string | null {
   try {
@@ -104,6 +105,26 @@ type PanelPhase =
   | { phase: "loading" }
   | { phase: "done"; data: LvsResultData }
   | { phase: "error"; error: string; detail?: string };
+
+/** Persisted comparison results — one per engine, plus the last shown one. */
+interface ResultsCache {
+  byEngine: Partial<Record<LvsEngine, LvsResultData>>;
+  lastEngine?: LvsEngine;
+}
+
+const EMPTY_RESULTS: ResultsCache = { byEngine: {} };
+
+function loadResultsCache(): ResultsCache {
+  try {
+    const raw = readLS(LS_RESULTS);
+    if (!raw) return EMPTY_RESULTS;
+    const parsed = JSON.parse(raw) as ResultsCache;
+    if (!parsed || typeof parsed !== "object" || !parsed.byEngine) return EMPTY_RESULTS;
+    return parsed;
+  } catch {
+    return EMPTY_RESULTS;
+  }
+}
 
 interface Props {
   dieId: string;
@@ -398,8 +419,23 @@ export default function LVSComparePanel({ dieId, layoutNetlist, dialect, moduleN
   const [schematicNetlist, setSchematicNetlist] = useState<string>(() => readLS(LS_SCHEMATIC) ?? "");
   const [layoutNetlistOverride, setLayoutNetlistOverride] = useState<string | null>(null);
   const [layoutLocked, setLayoutLocked] = useState(true);
-  const [state, setState] = useState<PanelPhase>({ phase: "idle" });
+  const [results, setResults] = useState<ResultsCache>(loadResultsCache);
+  const [running, setRunning] = useState(false);
+  const [runError, setRunError] = useState<{ error: string; detail?: string } | null>(null);
   const [engine, setEngine] = useState<LvsEngine>(() => (readLS(LS_ENGINE) === "name-based" ? "name-based" : "vyges-lvs"));
+
+  // Derive the panel phase from persisted per-engine results. While a run is in
+  // flight the previous result stays visible (only a running banner is added),
+  // so results survive engine switches and repeated runs.
+  const shownResult =
+    results.byEngine[engine] ??
+    (results.lastEngine ? results.byEngine[results.lastEngine] : undefined) ??
+    null;
+  const state: PanelPhase = runError
+    ? { phase: "error", error: runError.error, detail: runError.detail }
+    : shownResult
+      ? { phase: "done", data: shownResult }
+      : { phase: "idle" };
   const [highlightedLine, setHighlightedLine] = useState<number | null>(null);
   const [highlightedSchematicLine, setHighlightedSchematicLine] = useState<number | null>(null);
   const reportRef = useRef<HTMLDivElement>(null);
@@ -473,9 +509,15 @@ export default function LVSComparePanel({ dieId, layoutNetlist, dialect, moduleN
 
   const displayLayout = layoutNetlistOverride ?? layoutNetlist;
 
+  const persistResults = useCallback((next: ResultsCache) => {
+    setResults(next);
+    writeLS(LS_RESULTS, JSON.stringify(next));
+  }, []);
+
   const handleCompare = useCallback(async () => {
     if (!schematicNetlist.trim() || !displayLayout) return;
-    setState({ phase: "loading" });
+    setRunning(true);
+    setRunError(null);
     try {
       const res = await compareNetlists(dieId, {
         layoutNetlist: displayLayout, schematicNetlist, dialect, moduleName, engine,
@@ -496,18 +538,34 @@ export default function LVSComparePanel({ dieId, layoutNetlist, dialect, moduleN
             snapshotJson.property_diffs.map(d => `${d.a_device} ${d.param} ${d.a_value}→${d.b_value}`).join(", "));
         }
 
-        setState({ phase: "done", data: { engine: engine, matched: data.matched, json: snapshotJson, report: data.report, devices: snapshotDevices, events: data.events } });
+        const result: LvsResultData = {
+          engine, matched: data.matched, json: snapshotJson,
+          report: data.report, devices: snapshotDevices, events: data.events,
+        };
+        persistResults({
+          byEngine: { ...results.byEngine, [engine]: result },
+          lastEngine: engine,
+        });
 
         saveLvsSnapshot({ layoutNetlist: displayLayout, schematicNetlist, matched: data.matched, json: snapshotJson, report: data.report, devices: snapshotDevices });
       } else if (res.ok) {
-        setState({ phase: "error", error: "Unexpected response format" });
+        setRunError({ error: "Unexpected response format" });
       } else {
-        setState({ phase: "error", error: res.error, detail: (res as any).detail });
+        setRunError({ error: res.error, detail: (res as any).detail });
       }
     } catch (err: unknown) {
-      setState({ phase: "error", error: err instanceof Error ? err.message : "Network error" });
+      setRunError({ error: err instanceof Error ? err.message : "Network error" });
+    } finally {
+      setRunning(false);
     }
-  }, [schematicNetlist, displayLayout, dieId, dialect, moduleName, engine]);
+  }, [schematicNetlist, displayLayout, dieId, dialect, moduleName, engine, results.byEngine, persistResults]);
+
+  /** Clear the shown comparison result (and the persisted cache). */
+  const cleanResult = useCallback(() => {
+    setRunError(null);
+    setRunning(false);
+    persistResults(EMPTY_RESULTS);
+  }, [persistResults]);
 
   useEffect(() => {
     if (state.phase === "done" && reportRef.current) {
@@ -550,7 +608,7 @@ export default function LVSComparePanel({ dieId, layoutNetlist, dialect, moduleN
     });
   }, [deviceToHighlight, engine, layoutLocked, displayLayout]);
 
-  const canCompare = schematicNetlist.trim().length > 0 && !!displayLayout && state.phase !== "loading";
+  const canCompare = schematicNetlist.trim().length > 0 && !!displayLayout && !running;
 
   // ── Render sections ────────────────────────────────────────
 
@@ -567,7 +625,7 @@ export default function LVSComparePanel({ dieId, layoutNetlist, dialect, moduleN
         }}>
           <input type="radio" name="lvs-engine" value={opt.value}
             checked={engine === opt.value}
-            onChange={() => { setEngine(opt.value); if (state.phase !== "idle") setState({ phase: "idle" }); }}
+            onChange={() => setEngine(opt.value)}
             style={{ display: "none" }} />
           {opt.label}
         </label>
@@ -664,7 +722,7 @@ export default function LVSComparePanel({ dieId, layoutNetlist, dialect, moduleN
           color: canCompare ? "var(--accentFg, #fff)" : "var(--ink3)",
           opacity: canCompare ? 1 : 0.5,
         }}>
-          {state.phase === "loading" ? `Running ${ENGINE_LABELS[engine] ?? engine}...` : "Compare"}
+          {running ? `Running ${ENGINE_LABELS[engine] ?? engine}...` : "Compare"}
         </button>
 
         {/* Copy Report button — only when done */}
@@ -679,6 +737,17 @@ export default function LVSComparePanel({ dieId, layoutNetlist, dialect, moduleN
             background: "transparent", color: "var(--ink2)",
           }}>
             Copy Report
+          </button>
+        )}
+
+        {/* Clean result button — clears the shown comparison result */}
+        {data && (
+          <button type="button" onClick={cleanResult} title="Clear the comparison result" style={{
+            fontSize: 10, fontWeight: 600, padding: "4px 10px", borderRadius: 4,
+            cursor: "pointer", border: "1px solid var(--l2)",
+            background: "transparent", color: "var(--ink2)",
+          }}>
+            Clean result
           </button>
         )}
       </div>
@@ -767,10 +836,7 @@ export default function LVSComparePanel({ dieId, layoutNetlist, dialect, moduleN
             <textarea
               readOnly={false}
               value={displayLayout ?? ""}
-              onChange={(e) => {
-                setLayoutNetlistOverride(e.target.value);
-                if (state.phase !== "idle") setState({ phase: "idle" });
-              }}
+              onChange={(e) => setLayoutNetlistOverride(e.target.value)}
               style={{
                 ...textareaBase, flex: 1, resize: "none",
                 cursor: "text", border: "1px solid #fd0",
@@ -804,7 +870,7 @@ export default function LVSComparePanel({ dieId, layoutNetlist, dialect, moduleN
             <textarea
               placeholder="Ctrl+V reference SPICE netlist..."
               value={schematicNetlist}
-              onChange={(e) => { setSchematicNetlist(e.target.value); if (state.phase !== "idle") setState({ phase: "idle" }); }}
+              onChange={(e) => setSchematicNetlist(e.target.value)}
               style={{ ...textareaBase, flex: 1, resize: "none" }}
               spellCheck={false}
             />
@@ -1464,14 +1530,15 @@ export default function LVSComparePanel({ dieId, layoutNetlist, dialect, moduleN
 
         {/* Bottom: comparison results */}
         <div ref={reportRef} style={{ flex: "1 1 auto", minHeight: 0, display: "flex", flexDirection: "column", overflow: "hidden" }}>
-        {state.phase === "loading" && (
-          <div className="m" style={{ padding: 20, fontSize: 11, color: "var(--ink3)", textAlign: "center" }}>
+        {/* Running banner — the previous result stays visible underneath. */}
+        {running && (
+          <div className="m" style={{ padding: "6px 20px", fontSize: 11, color: "var(--accent, #60a5fa)", textAlign: "center" }}>
             running {ENGINE_LABELS[engine] ?? engine}...
           </div>
         )}
 
         {state.phase === "done" && (
-          engine === "name-based" ? renderNameBasedResults() : renderVygesResults()
+          state.data.engine === "name-based" ? renderNameBasedResults() : renderVygesResults()
         )}
 
         {state.phase === "error" && (
@@ -1487,7 +1554,7 @@ export default function LVSComparePanel({ dieId, layoutNetlist, dialect, moduleN
           </div>
         )}
 
-        {state.phase === "idle" && (
+        {state.phase === "idle" && !running && (
           <div className="m" style={{ padding: 20, fontSize: 11, color: "var(--ink3)", textAlign: "center" }}>
             Paste a reference netlist above and press Compare.
           </div>
