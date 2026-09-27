@@ -285,6 +285,7 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
   const irregularViaIds = anns
     .filter((a) => a.class === "irregular_via")
     .map((a) => `anno:${a.id}`);
+  const netIdsAll = annotations.nets.map((n) => `net:${n.id}`);
   const viaIdsAll = [...pointViaIds, ...irregularViaIds];
   const pinIdsAll = (annotations.pins ?? []).map((p) => `pin:${p.id}`);
   const roiIdsAll = (annotations.rois ?? []).map((r) => `roi:${r.id}`);
