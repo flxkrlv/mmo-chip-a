@@ -1185,13 +1185,10 @@ function NetSettingsButton() {
   const setNetNodeSize = usePreferences((s) => s.setNetNodeSize);
   const netNodeVisible = usePreferences((s) => s.netNodeVisible);
   const setNetNodeVisible = usePreferences((s) => s.setNetNodeVisible);
-<<<<<<< HEAD
   const customNetColorsEnabled = usePreferences((s) => s.customNetColorsEnabled);
   const setCustomNetColorsEnabled = usePreferences((s) => s.setCustomNetColorsEnabled);
-=======
   const netNodeJunctionsOnly = usePreferences((s) => s.netNodeJunctionsOnly);
   const setNetNodeJunctionsOnly = usePreferences((s) => s.setNetNodeJunctionsOnly);
->>>>>>> 3e1a32c9b07f092972c59f383101edcf3128fb10
   const metalStack = useSession((s) => s.metalStack ?? DEFAULT_METAL_STACK);
 
   return (
