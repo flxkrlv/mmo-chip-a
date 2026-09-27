@@ -26,7 +26,7 @@ import {
   type AnnotationKind
 } from "../../state/annotationKinds";
 import { useDieViewerStore } from "../../state/dieViewer";
-import { usePreferences } from "../../state/preferences";
+import { usePreferences, selectNetWidth } from "../../state/preferences";
 import { TreeRow, TreeSep } from "../tree/TreeRow";
 
 // Re-export so existing imports keep working.
@@ -1172,8 +1172,10 @@ function viaCounts(annotations: DieAnnotations | undefined) {
 // ── Settings popovers ───────────────────────────────────────────────
 
 function NetSettingsButton() {
-  const width = usePreferences((s) => s.netWidth);
-  const setNetWidth = usePreferences((s) => s.setNetWidth);
+  const dieId = useSession((s) => s.dieId);
+  const width = usePreferences(selectNetWidth(dieId));
+  const setNetWidthForDie = usePreferences((s) => s.setNetWidth);
+  const setNetWidth = (w: number) => { if (dieId) setNetWidthForDie(dieId, w); };
   const netColor = usePreferences((s) => s.netColor);
   const setNetColor = usePreferences((s) => s.setNetColor);
   const wireLayerColors = usePreferences((s) => s.wireLayerColors);

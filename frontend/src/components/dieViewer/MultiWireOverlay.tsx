@@ -2,7 +2,8 @@ import { useEffect, useRef } from "react";
 import { distancePointToSegment, type Point } from "../../lib/geometry";
 import type { LiveValue } from "../../lib/liveValue";
 import type { Viewport } from "../../renderer/types";
-import { usePreferences } from "../../state/preferences";
+import { usePreferences, selectNetWidth } from "../../state/preferences";
+import { useSession } from "../../state/session";
 import { drawSnapHalo, snapRingRadiusPx } from "./snapHalo";
 import { multiParallelEnd, multiWireEndpoint } from "./useMultiWireTool";
 
@@ -84,7 +85,7 @@ export function MultiWireOverlay({
             ctx,
             sx(snap.x),
             sy(snap.y),
-            snapRingRadiusPx(vp.zoom, usePreferences.getState().netWidth)
+            snapRingRadiusPx(vp.zoom, selectNetWidth(useSession.getState().dieId)(usePreferences.getState()))
           );
         }
       }
@@ -157,7 +158,7 @@ export function MultiWireOverlay({
                 ctx,
                 b.x,
                 b.y,
-                snapRingRadiusPx(vp.zoom, usePreferences.getState().netWidth)
+                snapRingRadiusPx(vp.zoom, selectNetWidth(useSession.getState().dieId)(usePreferences.getState()))
               );
               ctx.fillStyle = COLOR;
               ctx.strokeStyle = COLOR;

@@ -140,7 +140,7 @@ import type { WirePreview } from "../components/dieViewer/WireDraftOverlay";
 import { ANNOTATION_KIND_VALUES } from "../state/annotationKinds";
 import { DEFAULT_ML_CONFIG, useDieViewerStore } from "../state/dieViewer";
 import { useOverlayLayers, saveOverlaySettingsToPrefs, applyOverlaySettingsFromPrefs } from "../state/overlayLayers";
-import { usePreferences } from "../state/preferences";
+import { usePreferences, selectNetWidth } from "../state/preferences";
 import { useSession, DEFAULT_METAL_STACK, fetchMetalStack } from "../state/session";
 import { useUserStatus } from "../lib/useUserStatus";
 import { uuid } from "../lib/uuid";
@@ -592,7 +592,10 @@ function DieViewer({ dieId }: { dieId: string }) {
     return () => window.removeEventListener("keydown", onKey);
   }, [setActiveTool]);
 
-  const getNetW = useCallback(() => usePreferences.getState().netWidth, []);
+  const getNetW = useCallback(
+    () => selectNetWidth(useSession.getState().dieId)(usePreferences.getState()),
+    []
+  );
   /** Per-net color: return a (netId: string) => string function that checks
    *  per-net override first, then falls back to global netColor. */
   const getNetC = useCallback(() => {
@@ -721,7 +724,7 @@ function DieViewer({ dieId }: { dieId: string }) {
       netWidth: () =>
         usePreferences.getState().inspectorTab === "ml"
           ? useDieViewerStore.getState().mlConfig.traceWidth
-          : usePreferences.getState().netWidth,
+          : selectNetWidth(useSession.getState().dieId)(usePreferences.getState()),
       netColor: (netId: string) => {
         const prefs = usePreferences.getState();
         return prefs.netColors[netId] ?? prefs.netColor;
@@ -789,7 +792,7 @@ function DieViewer({ dieId }: { dieId: string }) {
   // + net node size/visibility pref changes → invalidate the canvas.
   useEffect(() => {
     const unsubs = (
-      ["netWidth", "netColor", "netColors", "customNetColorsEnabled", "cellColor", "cellShowShapes", "viaSize",
+      ["netWidth", "netWidthByDie", "netColor", "netColors", "customNetColorsEnabled", "cellColor", "cellShowShapes", "viaSize",
        "viaColor", "wireLayerColors", "viaLayerColors", "netNodeSize", "netNodeVisible", "pinNamesVisible"] as const
     ).map((key) =>
       usePreferences.subscribe(

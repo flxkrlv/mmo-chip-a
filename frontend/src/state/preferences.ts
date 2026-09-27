@@ -32,9 +32,14 @@ export interface OverlayLayerPersistedSettings {
 }
 
 interface PreferencesState {
-  /** Base width (world units) for net wires. The renderer's screen clamp
-   *  applies on top of this. */
+  /** Global fallback wire width (world units), used for a die with no entry
+   *  in `netWidthByDie` yet. The renderer's screen clamp applies on top of
+   *  this. */
   netWidth: number;
+  /** Per-die net wire width, keyed by dieId. Absent = fall back to
+   *  `netWidth`. Each die has its own magnification/scale, so a single
+   *  global width doesn't read well on every chip. */
+  netWidthByDie: Record<string, number>;
   /** Base color for unselected wires + vertices (one of NET_COLOR_OPTIONS). */
   netColor: string;
   /** Cell outline + block-fill color (one of CELL_COLOR_OPTIONS). */
@@ -264,7 +269,8 @@ interface PreferencesState {
 }
 
 interface PreferencesActions {
-  setNetWidth: (width: number) => void;
+  /** Set the net wire width for a specific die (each chip has its own scale). */
+  setNetWidth: (dieId: string, width: number) => void;
   setNetColor: (color: string) => void;
   /** Override color for a specific net (id like "net:abc"). null = clear. */
   setNetColorOverride: (netId: string, color: string | null) => void;
@@ -403,6 +409,7 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
     persist(
       (set) => ({
         netWidth: NET_DEFAULT_WIDTH,
+        netWidthByDie: {},
         netColor: NET_COLOR,
         netColors: {},
         hiddenNetIds: {},
@@ -485,7 +492,8 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
           ? "C:\\Program Files\\Spice64\\bin\\ngspice.exe"
           : "ngspice",
 
-        setNetWidth: (width) => set({ netWidth: width }),
+        setNetWidth: (dieId, width) =>
+          set((state) => ({ netWidthByDie: { ...state.netWidthByDie, [dieId]: width } })),
         setNetColor: (color) => set({ netColor: color }),
         setWireLayerColor: (layer, color) =>
           set((state) => ({
@@ -771,6 +779,7 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
         // schema change, so the UI never references a removed kind.
         partialize: (state) => ({
           netWidth: state.netWidth,
+          netWidthByDie: state.netWidthByDie,
           netColor: state.netColor,
           cellColor: state.cellColor,
           cellShowShapes: state.cellShowShapes,
@@ -856,6 +865,13 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
 /** Select the effective color for a net: override if set, else global netColor. */
 export function selectNetColor(netId: string) {
   return (state: PreferencesState) => state.netColors[netId] ?? state.netColor;
+}
+
+/** Select the effective net wire width for a die: per-die override if set,
+ *  else the global fallback `netWidth`. */
+export function selectNetWidth(dieId: string | null | undefined) {
+  return (state: PreferencesState) =>
+    (dieId ? state.netWidthByDie[dieId] : undefined) ?? state.netWidth;
 }
 
 /** Helper selector: is this net (keyed by `net:<netId>`) currently visible?
