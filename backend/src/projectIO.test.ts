@@ -7,6 +7,7 @@ import AdmZip from "adm-zip";
 import express from "express";
 import request from "supertest";
 import { createProjectIORouter } from "./api/projectIO.js";
+import { prepareFolderProject } from "./projectLayout.js";
 import { createTileScheduler } from "./tileScheduler.js";
 import { ensureDataStore, writeDieRecord } from "./store.js";
 import type { DieRecord } from "./types.js";
@@ -215,4 +216,105 @@ test("project import extracts a compressed original without buffering the archiv
     await fs.readFile(path.join(dataRoot, "dies", "streamed-project", "metadata.json"), "utf8")
   ) as DieRecord;
   assert.equal(metadata.originalPath, path.join(dataRoot, "dies", "streamed-project", "original", "die.png"));
+});
+
+test("analog-devices.json round-trips through export and import", async () => {
+  const dataRoot = await createRoot();
+  const dieId = "analog-names-export";
+  await writeMinimalDie(dataRoot, dieId);
+
+  const analogDevices = {
+    version: 1,
+    devices: {
+      "mos:well1:diff1:gate1@cell-1": "M1",
+      "marker:res-1@cell-1": "R7"
+    }
+  };
+  await fs.writeFile(
+    path.join(dataRoot, "dies", dieId, "analog-devices.json"),
+    JSON.stringify(analogDevices)
+  );
+
+  // Export must include the names file.
+  const exportResponse = await request(projectApp(dataRoot))
+    .post(`/api/dies/${dieId}/export-project`)
+    .send({ mode: "light" })
+    .buffer(true)
+    .parse((res, callback) => {
+      const chunks: Buffer[] = [];
+      res.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
+      res.on("end", () => callback(null, Buffer.concat(chunks)));
+    });
+  assert.equal(exportResponse.status, 200);
+  const zip = new AdmZip(exportResponse.body as Buffer);
+  const exported = JSON.parse(zip.readAsText("analog-devices.json"));
+  assert.deepEqual(exported.devices, analogDevices.devices);
+
+  // Import under a new name must restore the names file into the new die dir.
+  const importResponse = await request(projectApp(dataRoot))
+    .post("/api/dies/import-project?name=analog-names-copy")
+    .attach("file", zip.toBuffer(), {
+      filename: "names-project.zip",
+      contentType: "application/zip"
+    });
+  assert.equal(importResponse.status, 200);
+  const importedDieId = importResponse.body.dieId as string;
+  const restored = JSON.parse(
+    await fs.readFile(path.join(dataRoot, "dies", importedDieId, "analog-devices.json"), "utf8")
+  );
+  assert.deepEqual(restored.devices, analogDevices.devices);
+});
+test("folder-project export reads names and files from the project folder", async () => {
+  const dataRoot = await createRoot();
+  const folder = path.join(dataRoot, "external-folder-project");
+  await fs.mkdir(folder);
+  const { id: dieId } = await prepareFolderProject(dataRoot, folder, { name: "external" });
+
+  const now = new Date().toISOString();
+  const record: DieRecord = {
+    id: dieId,
+    name: "external",
+    originalFilename: "die.png",
+    originalPath: "",
+    width: 512,
+    height: 512,
+    tileSize: 256,
+    tileFormat: "png",
+    maxZoomLevel: 0,
+    levels: [],
+    createdAt: now,
+    updatedAt: now,
+    location: "folder",
+    folderPath: folder
+  };
+  await writeDieRecord(dataRoot, record);
+
+  const analogDevices = {
+    version: 1,
+    devices: { "mos:well1:diff1:gate1@cell-1": "M1" }
+  };
+  await fs.writeFile(path.join(folder, "annotations.json"), "{}");
+  await fs.writeFile(
+    path.join(folder, "analog-devices.json"),
+    JSON.stringify(analogDevices)
+  );
+
+  const exportResponse = await request(projectApp(dataRoot))
+    .post(`/api/dies/${dieId}/export-project`)
+    .send({ mode: "light" })
+    .buffer(true)
+    .parse((res, callback) => {
+      const chunks: Buffer[] = [];
+      res.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
+      res.on("end", () => callback(null, Buffer.concat(chunks)));
+    });
+  assert.equal(exportResponse.status, 200);
+
+  const zip = new AdmZip(exportResponse.body as Buffer);
+  const entryNames = zip.getEntries().map((entry) => entry.entryName);
+  assert.ok(entryNames.includes("metadata.json"));
+  assert.ok(entryNames.includes("annotations.json"));
+  assert.ok(entryNames.includes("analog-devices.json"));
+  const exported = JSON.parse(zip.readAsText("analog-devices.json"));
+  assert.deepEqual(exported.devices, analogDevices.devices);
 });

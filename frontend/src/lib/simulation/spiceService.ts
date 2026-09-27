@@ -5,6 +5,7 @@
  */
 
 import * as Comlink from "comlink";
+import { authHeaders } from "../../api/client";
 import type {
   SimulationResult,
   SimulationStatus,
@@ -44,7 +45,7 @@ async function runSpiceSimulationServer(
 ): Promise<SimulationResult> {
   const resp = await fetch("/api/ngspice/run", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...authHeaders() },
     body: JSON.stringify({ netlist, binPath }),
   });
   if (!resp.ok) {

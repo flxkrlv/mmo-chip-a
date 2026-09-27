@@ -261,7 +261,7 @@ export function extractMarkedDevices(
               { name: "MINUS", netId: terminalNet(emitters), shapeIds: emitters.map(s => s.id) },
             ],
             bbox: marker.bbox,
-            ...(marker.id ? { _markerShapeId: marker.id } : {}),
+            ...(marker.id ? { _markerShapeId: marker.id, _deviceAnchor: `marker:${marker.id}` } : {}),
           });
           break; // done — don't fall through to BJT
         }
@@ -325,7 +325,7 @@ export function extractMarkedDevices(
             { name: "E", netId: terminalNet(emitters), shapeIds: emitters.map(s => s.id) },
           ],
           bbox: marker.bbox,
-          ...(marker.id ? { _markerShapeId: marker.id } : {}),
+          ...(marker.id ? { _markerShapeId: marker.id, _deviceAnchor: `marker:${marker.id}` } : {}),
         });
         break;
       }
@@ -498,7 +498,7 @@ export function extractMarkedDevices(
             { name: "MINUS", netId: minusContactIds.length > 0 ? nextNet() : -1, shapeIds: minusContactIds },
           ],
           bbox: marker.bbox,
-          ...(marker.id ? { _markerShapeId: marker.id } : {}),
+          ...(marker.id ? { _markerShapeId: marker.id, _deviceAnchor: `marker:${marker.id}` } : {}),
         });
         
         break;
@@ -527,7 +527,7 @@ export function extractMarkedDevices(
             { name: "MINUS", netId: nextNet(), shapeIds: capContactIds },
           ],
           bbox: marker.bbox,
-          ...(marker.id ? { _markerShapeId: marker.id } : {}),
+          ...(marker.id ? { _markerShapeId: marker.id, _deviceAnchor: `marker:${marker.id}` } : {}),
         });
         
         break;
@@ -557,7 +557,7 @@ export function extractMarkedDevices(
             { name: "MINUS", netId: nextNet(), shapeIds: diodeContactIds },
           ],
           bbox: marker.bbox,
-          ...(marker.id ? { _markerShapeId: marker.id } : {}),
+          ...(marker.id ? { _markerShapeId: marker.id, _deviceAnchor: `marker:${marker.id}` } : {}),
         });
         break;
       }
@@ -780,6 +780,11 @@ export function extractMarkedDevices(
       const devId = `analog_resistor_geo_${counter}`;
       const resistorType = bl.type;
       const shape = lineSegs.length > 0 ? "meander" : "straight";
+      const geoResAnchor = `geores:${[...allBodyIds].sort().join(",")}:${[
+        ...new Set([...plusContactIds, ...minusContactIds]),
+      ]
+        .sort()
+        .join(",")}`;
       devices.push({
         id: devId,
         kind: "resistor",
@@ -798,6 +803,7 @@ export function extractMarkedDevices(
           { name: "MINUS", netId: nextNet(), shapeIds: minusTermIds },
         ],
         bbox: gBbox,
+        ...{ _deviceAnchor: geoResAnchor },
       });
 
     }
@@ -1399,7 +1405,19 @@ export function detectMOSFromLayers(
               modelName: mosType === "pmos" ? "PMOS" : "NMOS",
               terminals,
               bbox: bodyBox,
+              // Keep the synthetic diffusion-segment shapes ON the device so the
+              // die-level pipeline can resolve contact→terminal mapping even when
+              // this device comes from the cell-type cache (which skips
+              // detectMOSFromLayers and therefore never repopulates the global
+              // _segmentShapesCache).
+              _segmentShapes: split.shapes,
               ...(gateAnchor ? { _gateAnchor: gateAnchor } : {}),
+              ...{
+                _wellShapeId: well.id,
+                _diffusionShapeId: body.id,
+                _gateShapeId: gate.id,
+                _deviceAnchor: `mos:${well.id}:${body.id}:${gate.id}`,
+              },
             } as unknown as AnalogDevice);
             
           }
@@ -1592,11 +1610,21 @@ export function resolveDeviceContacts(
   const cTis = new Map<string, Set<number>>();
   const cPos = new Map<string, {x:number;y:number;tol:number}>();
 
-  const mosOtherLayers: string[] = [];
-  for (const [key, d] of defMap) {
-    if (key === "B") continue;
-    for (const l of d.layers) {
-      if (!mosOtherLayers.includes(l)) mosOtherLayers.push(l);
+  // Shape-id lookup so the bulk (B) terminal can exclude contacts that belong
+  // to THIS device's own D/S diffusion segments or gate poly — without
+  // rejecting genuine well/bulk tap contacts that merely sit on diffusion
+  // elsewhere in the well. (Rejecting *all* diffusion contacts made bulk taps
+  // invisible, so B was always forced to a supply rail.)
+  const shapeById = new Map<string, LayerShape>();
+  for (const arr of Object.values(ctLayers)) {
+    for (const sh of (arr as LayerShape[] | undefined) ?? []) shapeById.set(sh.id, sh);
+  }
+  const bExcludeShapeIds: string[] = [];
+  if (dev.kind === "mos") {
+    for (const t of dev.terminals) {
+      if (t.name === "D" || t.name === "S" || t.name === "G") {
+        for (const sid of t.shapeIds ?? []) bExcludeShapeIds.push(sid);
+      }
     }
   }
 
@@ -1623,11 +1651,11 @@ export function resolveDeviceContacts(
           const isInside = _pointInShape(cc.x, cc.y, shape);
           if (isInside) {
             if (dev.kind === "mos" && termDef.name === "B") {
-              const alsoOnOther = mosOtherLayers.some((otherLayer) => {
-                const otherShapes = ctLayers[otherLayer] as LayerShape[] | undefined;
-                return otherShapes?.some((s) => _pointInShape(cc.x, cc.y, s)) ?? false;
+              const onOwnSDorGate = bExcludeShapeIds.some((sid) => {
+                const s = shapeById.get(sid);
+                return s ? _pointInShape(cc.x, cc.y, s) : false;
               });
-              if (alsoOnOther) continue;
+              if (onOwnSDorGate) continue;
             }
             candidates.push({ ti, pri: termDef.priority ?? 999 });
             matched = true;

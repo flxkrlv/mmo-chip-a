@@ -188,6 +188,7 @@ function nameBasedToRawResult(nb: NameBasedResult): LvsRawResult {
     only_in_b_ports: [],
     unbalanced,
     property_diffs: nb.property_diffs,
+    net_connectivity: nb.netConnectivity,
   };
 }
 

@@ -18,6 +18,7 @@ import {
 import { matchGeometry } from "../lib/export/matching";
 import { collectDieWideAnalogDevices, getRenameVersion } from "./dieWideAnalog";
 import { getDeviceRecord, getLegacyOverrides, setLegacyOverrides, useRegistryVersion } from "../state/deviceRegistry";
+import { useAnalogNamesVersion } from "../state/analogDeviceNames";
 
 // ── Public shapes ─────────────────────────────────────────────────
 
@@ -32,6 +33,8 @@ export interface AnalogNetlistLeaf {
   /** Stable die-level key for rename persistence. */
   dieLevelKey?: string;
   uuid?: string;
+  /** Deterministic per-instance id (cell anchor @ cell instance id). */
+  instanceId?: string;
 }
 
 export interface AnalogNetlistGroup {
@@ -117,7 +120,7 @@ function buildLineIndex(
  * instance names to source lines.
  */
 function buildOutline(
-  devices: Array<{ instanceName: string; kind: string; modelName?: string; _cellId?: string; _dieLevelKey?: string; _uuid?: string }>,
+  devices: Array<{ instanceName: string; kind: string; modelName?: string; _cellId?: string; _dieLevelKey?: string; _uuid?: string; _instanceId?: string }>,
   lineIndex: Map<string, number>,
 ): AnalogNetlistGroup[] { // eslint-disable-line
   const groups = new Map<string, AnalogNetlistGroup>();
@@ -140,6 +143,7 @@ function buildOutline(
       cellId: d._cellId ?? "",
       dieLevelKey: d._dieLevelKey,
       uuid: d._uuid,
+      instanceId: d._instanceId,
     });
   }
   // Sort groups by kind, leaves by instance name numerically
@@ -319,6 +323,7 @@ export function useAnalogNetlist(
   analogOverrides?: Record<string, Record<string, Record<string, number>>>,
 ): UseAnalogNetlist {
   const regVer = useRegistryVersion((s) => s.v);
+  const namesVer = useAnalogNamesVersion((s) => s.v);
   const data = useMemo<AnalogNetlistResult | null>(() => {
     if (!annotations) return null;
     try {
@@ -329,7 +334,7 @@ export function useAnalogNetlist(
     } catch (e) {
       throw e;
     }
-  }, [annotations, moduleName, dialect, spiceConfig, hierarchical, analogOverrides, getRenameVersion(), regVer]);
+  }, [annotations, moduleName, dialect, spiceConfig, hierarchical, analogOverrides, getRenameVersion(), regVer, namesVer]);
 
   return {
     data,

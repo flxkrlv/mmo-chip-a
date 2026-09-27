@@ -4,7 +4,16 @@ import {
   useQueryClient,
   type UseQueryOptions
 } from "@tanstack/react-query";
-import type { DieMetadata, DieSummary, DieTileInfo, DieTileProgress, ImportJob, OverlayTileProgress } from "shared";
+import type {
+  DieMetadata,
+  DieSummary,
+  DieTileInfo,
+  DieTileProgress,
+  FsBrowseResponse,
+  ImportJob,
+  OpenFolderResponse,
+  OverlayTileProgress
+} from "shared";
 import { ApiError, apiDelete, apiGet, apiPost, apiPut, apiUpload, authHeaders } from "./client";
 import { useProjectTransfer } from "../state/projectTransfer";
 import { importJobKeys } from "./importJobs";
@@ -52,9 +61,10 @@ export function useDieTileInfo(dieId: string | undefined, enabled: boolean) {
   });
 }
 
-export function importDie(file: File): Promise<ImportJob> {
+export function importDie(file: File, targetFolder?: string): Promise<ImportJob> {
   const form = new FormData();
   form.append("file", file);
+  if (targetFolder) form.append("targetFolder", targetFolder);
   return apiUpload<ImportJob>("/api/dies/import", form);
 }
 
@@ -89,10 +99,12 @@ export function useDies(options?: DiesQueryOptions) {
   });
 }
 
+// useImportDie patched: takes a File or { file, targetFolder }
 export function useImportDie() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: importDie,
+    mutationFn: (input: File | { file: File; targetFolder?: string }) =>
+      input instanceof File ? importDie(input) : importDie(input.file, input.targetFolder),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: dieKeys.list() });
       void qc.invalidateQueries({ queryKey: importJobKeys.list() });
@@ -134,6 +146,53 @@ export function useRenameDie() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: ({ dieId, name }: { dieId: string; name: string }) => renameDie(dieId, name),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: dieKeys.list() });
+    }
+  });
+}
+
+// ─── Folder projects ────────────────────────────────────────────────
+
+/** Browse the server's filesystem (roots when path is omitted). */
+export function browseFs(path: string | undefined, signal?: AbortSignal): Promise<FsBrowseResponse> {
+  const query = path ? `?path=${encodeURIComponent(path)}` : "";
+  return apiGet<FsBrowseResponse>(`/api/fs/browse${query}`, signal);
+}
+
+export function useFsBrowse(path: string | null, enabled: boolean) {
+  return useQuery({
+    queryKey: ["fs-browse", path ?? "__roots__"],
+    queryFn: ({ signal }) => browseFs(path ?? undefined, signal),
+    enabled,
+    staleTime: 5_000
+  });
+}
+
+/** Register (or create) a project inside an existing folder. */
+export function openProjectFolder(path: string, name?: string): Promise<OpenFolderResponse> {
+  return apiPost<OpenFolderResponse>("/api/dies/open-folder", { path, name });
+}
+
+export function useOpenProjectFolder() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ path, name }: { path: string; name?: string }) => openProjectFolder(path, name),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: dieKeys.list() });
+    }
+  });
+}
+
+/** Point an existing folder project at its new location after a move. */
+export function relocateProject(dieId: string, path: string): Promise<{ ok: true; dieId: string; path: string }> {
+  return apiPost<{ ok: true; dieId: string; path: string }>(`/api/dies/${dieId}/relocate`, { path });
+}
+
+export function useRelocateProject() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ dieId, path }: { dieId: string; path: string }) => relocateProject(dieId, path),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: dieKeys.list() });
     }
@@ -227,13 +286,17 @@ export interface ImportProjectResult {
  */
 export async function importProject(
   file: File,
-  renameTo?: string
+  renameTo?: string,
+  targetFolder?: string
 ): Promise<ImportProjectResult> {
   const form = new FormData();
   form.append("file", file);
 
-  let url = "/api/dies/import-project";
-  if (renameTo) url += `?name=${encodeURIComponent(renameTo)}`;
+  const params = new URLSearchParams();
+  if (renameTo) params.set("name", renameTo);
+  if (targetFolder) params.set("folder", targetFolder);
+  const query = params.toString();
+  let url = "/api/dies/import-project" + (query ? `?${query}` : "");
 
   const transfer = useProjectTransfer.getState();
   transfer.start("import", "Загрузка ZIP-архива…", file.size);
@@ -322,12 +385,14 @@ export function useImportProject() {
   return useMutation({
     mutationFn: async ({
       file,
-      renameTo
+      renameTo,
+      targetFolder
     }: {
       file: File;
       renameTo?: string;
+      targetFolder?: string;
     }) => {
-      return importProject(file, renameTo);
+      return importProject(file, renameTo, targetFolder);
     },
     onSuccess: (result) => {
       void qc.invalidateQueries({ queryKey: dieKeys.list() });

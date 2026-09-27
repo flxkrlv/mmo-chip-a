@@ -2,6 +2,12 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import type { MLInferenceJob } from "shared";
 import type { DieAnnotations, DieIndex, DieRecord, ImportJobIndex, ImportJobRecord, UserRecord } from "./types.js";
+import {
+  resolveProjectDir,
+  registerFolderShortcut,
+  unregisterFolderShortcut,
+  listFolderShortcuts
+} from "./projectLayout.js";
 
 const EMPTY_DIE_INDEX: DieIndex = { dies: [] };
 const EMPTY_JOB_INDEX: ImportJobIndex = { jobs: [] };
@@ -44,23 +50,74 @@ export async function listDieRecords(dataRoot: string): Promise<DieRecord[]> {
   await ensureDataStore(dataRoot);
   const indexPath = path.join(dataRoot, "index.json");
   const index = await readJson<DieIndex>(indexPath, EMPTY_DIE_INDEX);
-  const records = await Promise.all(index.dies.map((dieId) => readDieRecord(dataRoot, dieId)));
 
-  return records.sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+    // Managed records come from the index; folder records are remembered as
+  // local shortcuts. A folder project whose directory was moved/deleted on
+  // disk must not break the whole list, so it is skipped — managed records keep
+  // their original behaviour (an unreadable managed record still throws).
+  const managedIds = new Set(index.dies);
+  const shortcuts = await listFolderShortcuts(dataRoot);
+  const folderIds = shortcuts.map((s) => s.dieId);
+  const allIds = Array.from(new Set([...index.dies, ...folderIds]));
+
+  const records = await Promise.all(
+    allIds.map(async (dieId) => {
+      if (managedIds.has(dieId)) {
+        return readDieRecord(dataRoot, dieId);
+      }
+      try {
+        return await readDieRecord(dataRoot, dieId);
+      } catch {
+        // The folder is gone/unreadable. If we have a snapshot, still list
+        // the project as an unavailable folder project so the user can see
+        // it and relocate it; otherwise drop it silently.
+        const shortcut = shortcuts.find((s) => s.dieId === dieId);
+        return shortcut?.snapshot ? snapshotRecord(dieId, shortcut.folderPath, shortcut.snapshot) : null;
+      }
+    })
+  );
+
+  return records
+    .filter((record): record is DieRecord => record !== null)
+    .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
 }
 
 export async function readDieRecord(dataRoot: string, dieId: string): Promise<DieRecord> {
-  return readJson<DieRecord>(path.join(dataRoot, "dies", dieId, "metadata.json"));
+  const resolved = await resolveProjectDir(dataRoot, dieId);
+  const record = await readJson<DieRecord>(path.join(resolved.dir, "metadata.json"));
+  // The local shortcut is the source of truth for a folder project's location;
+  // metadata's `folderPath` can go stale after the folder is moved or copied
+  // (e.g. opened from another machine). Correcting it here keeps every consumer
+  // — the tile scheduler's synchronous resolver, ML, crops — pointed at the
+  // folder that actually exists on this machine.
+  if (resolved.kind === "folder") {
+    return { ...record, location: "folder", folderPath: resolved.dir };
+  }
+  return record;
 }
 
 export async function writeDieRecord(dataRoot: string, record: DieRecord) {
-  const dieDir = path.join(dataRoot, "dies", record.id);
-  await fs.mkdir(dieDir, { recursive: true });
+  const resolved = await resolveProjectDir(dataRoot, record.id);
+  await fs.mkdir(resolved.dir, { recursive: true });
   await fs.writeFile(
-    path.join(dieDir, "metadata.json"),
+    path.join(resolved.dir, "metadata.json"),
     `${JSON.stringify(record, null, 2)}\n`,
     "utf8"
   );
+
+  if (resolved.kind === "folder") {
+    // Folder projects are tracked by a local shortcut, not the managed index.
+    // Snapshot the display fields so the project can still be listed
+    // (as "folder missing") if its directory is moved/deleted later.
+    await registerFolderShortcut(dataRoot, record.id, resolved.dir, {
+      name: record.name,
+      width: record.width,
+      height: record.height,
+      originalFilename: record.originalFilename,
+      createdAt: record.createdAt
+    });
+    return;
+  }
 
   const indexPath = path.join(dataRoot, "index.json");
   const index = await readJson<DieIndex>(indexPath, EMPTY_DIE_INDEX);
@@ -71,8 +128,17 @@ export async function writeDieRecord(dataRoot: string, record: DieRecord) {
 }
 
 export async function deleteDieRecord(dataRoot: string, dieId: string) {
-  const dieDir = path.join(dataRoot, "dies", dieId);
-  await fs.rm(dieDir, { recursive: true, force: true });
+    const resolved = await resolveProjectDir(dataRoot, dieId);
+
+  // Managed projects: remove the die directory — exactly what the legacy code
+  // did (overlay-images were never removed here and still are not).
+  // Folder projects: only forget the shortcut — the user's folder is theirs and
+  // must never be deleted implicitly.
+  if (resolved.kind === "managed") {
+    await fs.rm(resolved.dir, { recursive: true, force: true });
+  } else {
+    await unregisterFolderShortcut(dataRoot, dieId);
+  }
 
   const indexPath = path.join(dataRoot, "index.json");
   const index = await readJson<DieIndex>(indexPath, EMPTY_DIE_INDEX);
@@ -200,7 +266,8 @@ const EMPTY_ANNOTATIONS: DieAnnotations = {
 };
 
 export async function readAnnotations(dataRoot: string, dieId: string): Promise<DieAnnotations> {
-  const filePath = path.join(dataRoot, "dies", dieId, "annotations.json");
+  const { dir } = await resolveProjectDir(dataRoot, dieId);
+  const filePath = path.join(dir, "annotations.json");
   const data = await readJson<DieAnnotations>(filePath, EMPTY_ANNOTATIONS);
   return { ...EMPTY_ANNOTATIONS, ...data };
 }
@@ -217,7 +284,9 @@ export async function writeAnnotations(
 ): Promise<number> {
   const nextRev = (annotations.rev ?? 0) + 1;
   const stamped: DieAnnotations = { ...annotations, rev: nextRev };
-  const filePath = path.join(dataRoot, "dies", dieId, "annotations.json");
+  const { dir } = await resolveProjectDir(dataRoot, dieId);
+  await fs.mkdir(dir, { recursive: true });
+  const filePath = path.join(dir, "annotations.json");
   await fs.writeFile(filePath, `${JSON.stringify(stamped, null, 2)}\n`, "utf8");
   return nextRev;
 }
@@ -247,6 +316,31 @@ export async function withDieLock<T>(dieId: string, fn: () => Promise<T>): Promi
       dieLocks.delete(dieId);
     }
   }
+}
+
+/** Build a degraded DieRecord for a folder project whose directory is
+ *  missing, from the last-known snapshot stored on its shortcut. */
+function snapshotRecord(
+  dieId: string,
+  folderPath: string,
+  snapshot: { name: string; width: number; height: number; originalFilename: string; createdAt: string }
+): DieRecord {
+  return {
+    id: dieId,
+    name: snapshot.name,
+    originalFilename: snapshot.originalFilename,
+    originalPath: "",
+    width: snapshot.width,
+    height: snapshot.height,
+    tileSize: 0,
+    tileFormat: "jpg",
+    maxZoomLevel: 0,
+    levels: [],
+    createdAt: snapshot.createdAt,
+    updatedAt: snapshot.createdAt,
+    location: "folder",
+    folderPath
+  };
 }
 
 async function readJson<T>(filePath: string, fallback?: T): Promise<T> {

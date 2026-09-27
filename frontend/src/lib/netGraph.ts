@@ -259,6 +259,212 @@ export function splitEdgeAtPoint(
   };
 }
 
+/** A to-be-created junction on the body of an edge (an `EdgeSplitTarget`). */
+export interface EdgeBodyTarget {
+  netId: string;
+  edgeId: string;
+  at: Point;
+}
+
+/**
+ * Commit a draft whose endpoint lands on the *body* of another net's edge:
+ * split that edge at `target.at` (creating a junction node) and connect the
+ * draft into it. The draft's start-edge split (`startSplit`) is applied first
+ * when present, so the whole edit is a single net change (one undo step).
+ *
+ * The draft's own points are chained; the final bridge segment (into the
+ * junction node) uses `connectLayer`. Returns [] when either edge is gone, so
+ * the caller can fall back to a free placement.
+ */
+export function connectToEdgeBody(
+  nets: AnnotationNet[],
+  rawPoints: Point[],
+  anchor: DrawAnchor | null,
+  startSplit: EdgeBodyTarget | null,
+  target: EdgeBodyTarget,
+  rawSegLayers: SegLayer[] = [],
+  connectLayer: SegLayer = null
+): NetChange[] {
+  const originals = new Map(nets.map((n) => [n.id, n]));
+  let working = nets;
+  let effAnchor = anchor;
+
+  if (startSplit) {
+    const orig = working.find((n) => n.id === startSplit.netId);
+    const done = orig && splitEdgeAtPoint(orig, startSplit.edgeId, startSplit.at);
+    if (orig && done) {
+      working = working.map((n) => (n.id === orig.id ? done.net : n));
+      effAnchor = { netId: orig.id, nodeId: done.nodeId };
+    }
+  }
+
+  const targetNet = working.find((n) => n.id === target.netId);
+  const endDone = targetNet && splitEdgeAtPoint(targetNet, target.edgeId, target.at);
+  if (!targetNet || !endDone) return [];
+
+  const afterEnd = working.map((n) =>
+    n.id === targetNet.id ? endDone.net : n
+  );
+  const changes = connectToNode(
+    afterEnd,
+    rawPoints,
+    effAnchor,
+    targetNet.id,
+    endDone.nodeId,
+    rawSegLayers,
+    connectLayer
+  );
+
+  // Fold the pre-split nets back in as `prev` so a single undo restores the
+  // original (un-split) graph.
+  return changes.map((c) =>
+    c.prev && originals.has(c.prev.id)
+      ? { ...c, prev: originals.get(c.prev.id)! }
+      : c
+  );
+}
+
+/** Merge `src`'s graph into `dstAfter`, welding `srcNodeId` onto `dstNodeId`:
+ *  every src edge that touched `srcNodeId` now touches `dstNodeId`, and the src
+ *  node is dropped. `dstOrig` is the pre-split destination net, recorded as the
+ *  undo `prev`. Pure. */
+function weldNets(
+  src: AnnotationNet,
+  srcNodeId: string,
+  dstOrig: AnnotationNet,
+  dstAfter: AnnotationNet,
+  dstNodeId: string
+): NetChange[] {
+  const srcEdges = src.edges.map((e) =>
+    e.from === srcNodeId
+      ? { ...e, from: dstNodeId }
+      : e.to === srcNodeId
+        ? { ...e, to: dstNodeId }
+        : e
+  );
+  const srcNodes = src.nodes.filter((n) => n.id !== srcNodeId);
+  const merged: AnnotationNet = {
+    ...dstAfter,
+    nodes: [...dstAfter.nodes, ...srcNodes],
+    edges: [...dstAfter.edges, ...srcEdges]
+  };
+  return [
+    { prev: dstOrig, next: merged },
+    { prev: src, next: null }
+  ];
+}
+
+/**
+ * Weld a source net's endpoint onto a destination net's existing node, merging
+ * the two nets into one (the source is removed). Used when dragging the end of
+ * a net onto another net's vertex. Single-undo batch. Pure.
+ */
+export function weldNetAtNode(
+  nets: AnnotationNet[],
+  srcNetId: string,
+  srcNodeId: string,
+  dstNetId: string,
+  dstNodeId: string
+): NetChange[] {
+  if (srcNetId === dstNetId) return [];
+  const src = nets.find((n) => n.id === srcNetId);
+  const dst = nets.find((n) => n.id === dstNetId);
+  if (!src || !dst) return [];
+  return weldNets(src, srcNodeId, dst, dst, dstNodeId);
+}
+
+/**
+ * Weld a source net's endpoint onto the *body* of a destination edge: split the
+ * edge at `at` and merge the source net into the new junction. Used when
+ * dragging the end of a net onto another net's segment. Single-undo batch.
+ * Pure.
+ */
+export function weldNetAtEdge(
+  nets: AnnotationNet[],
+  srcNetId: string,
+  srcNodeId: string,
+  dstNetId: string,
+  dstEdgeId: string,
+  at: Point
+): NetChange[] {
+  if (srcNetId === dstNetId) return [];
+  const src = nets.find((n) => n.id === srcNetId);
+  const dstOrig = nets.find((n) => n.id === dstNetId);
+  if (!src || !dstOrig) return [];
+  const split = splitEdgeAtPoint(dstOrig, dstEdgeId, at);
+  if (!split) return [];
+  return weldNets(src, srcNodeId, dstOrig, split.net, split.nodeId);
+}
+
+/**
+ * Split a net at a degree-two node. The node is duplicated as an endpoint in
+ * both resulting nets, so the two traces can still be edited independently.
+ * Returns null when the node is not a true two-sided cut (for example, a loop
+ * reconnects the two incident edges elsewhere).
+ */
+export function splitNetAtNode(
+  nets: AnnotationNet[],
+  netId: string,
+  nodeId: string
+): NetChange[] | null {
+  const net = nets.find((candidate) => candidate.id === netId);
+  const node = net?.nodes.find((candidate) => candidate.id === nodeId);
+  if (!net || !node) return null;
+
+  const incident = net.edges.filter((edge) => edge.from === nodeId || edge.to === nodeId);
+  if (incident.length !== 2) return null;
+
+  const withoutNodeEdges = net.edges.filter((edge) => !incident.includes(edge));
+  const adjacency = new Map<string, string[]>();
+  for (const edge of withoutNodeEdges) {
+    const from = adjacency.get(edge.from) ?? [];
+    const to = adjacency.get(edge.to) ?? [];
+    from.push(edge.to);
+    to.push(edge.from);
+    adjacency.set(edge.from, from);
+    adjacency.set(edge.to, to);
+  }
+
+  const neighborId = (edge: AnnotationNetEdge): string =>
+    edge.from === nodeId ? edge.to : edge.from;
+  const componentOf = (start: string): Set<string> => {
+    const seen = new Set<string>([start]);
+    const pending = [start];
+    while (pending.length) {
+      const current = pending.pop()!;
+      for (const next of adjacency.get(current) ?? []) {
+        if (!seen.has(next)) {
+          seen.add(next);
+          pending.push(next);
+        }
+      }
+    }
+    return seen;
+  };
+
+  const firstComponent = componentOf(neighborId(incident[0]));
+  if (firstComponent.has(neighborId(incident[1]))) return null;
+
+  const makePart = (edge: AnnotationNetEdge, component: Set<string>): AnnotationNet => {
+    const nodeIds = new Set(component);
+    nodeIds.add(nodeId);
+    return {
+      ...net,
+      nodes: net.nodes.filter((candidate) => nodeIds.has(candidate.id)),
+      edges: net.edges.filter((candidate) => {
+        if (candidate === edge) return true;
+        return nodeIds.has(candidate.from) && nodeIds.has(candidate.to);
+      })
+    };
+  };
+
+  const secondComponent = componentOf(neighborId(incident[1]));
+  return [
+    { prev: net, next: makePart(incident[0], firstComponent) },
+    { prev: null, next: { ...makePart(incident[1], secondComponent), id: newId(), name: nextNetName(nets) } }
+  ];
+}
+
 /** What the user has selected, grouped per net. */
 export interface NetSelection {
   /** Whole nets to delete outright. */

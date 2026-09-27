@@ -181,6 +181,38 @@ export function shapeInRect(shape: LayerShape, r: Rect): boolean {
 
 // ── Transforms ────────────────────────────────────────────────────────
 
+/** Axis-aligned bounding box of a shape (world/cell-local units). */
+export function shapeBounds(shape: LayerShape): Rect {
+  switch (shape.kind) {
+    case "rect":
+      return { x: shape.x, y: shape.y, width: shape.width, height: shape.height };
+    case "point":
+      return {
+        x: shape.x - shape.size / 2,
+        y: shape.y - shape.size / 2,
+        width: shape.size,
+        height: shape.size
+      };
+    case "circle":
+      return {
+        x: shape.x - shape.radius,
+        y: shape.y - shape.radius,
+        width: shape.radius * 2,
+        height: shape.radius * 2
+      };
+    case "polygon":
+      return polygonBounds(shape.points) ?? { x: 0, y: 0, width: 0, height: 0 };
+    case "line": {
+      const hw = shape.width / 2;
+      const x1 = Math.min(shape.x1, shape.x2) - hw;
+      const y1 = Math.min(shape.y1, shape.y2) - hw;
+      const x2 = Math.max(shape.x1, shape.x2) + hw;
+      const y2 = Math.max(shape.y1, shape.y2) + hw;
+      return { x: x1, y: y1, width: x2 - x1, height: y2 - y1 };
+    }
+  }
+}
+
 /** Translate every coordinate in a shape by `(dx, dy)`. Pure: returns a new
  *  shape with the same id. */
 export function translateShape(shape: LayerShape, dx: number, dy: number): LayerShape {

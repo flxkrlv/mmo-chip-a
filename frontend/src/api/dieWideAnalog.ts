@@ -35,7 +35,17 @@ import { runChunked, type ChunkedRunnerOptions } from "../lib/extraction/chunked
 import { applyOrientation, polygonBounds } from "../lib/geometry";
 import { isClipperLoaded } from "../lib/extraction/clipper";
 import { generateSpiceNetlist } from "../lib/export/spice";
-import { matchOrCreateDevice, reconcileWithLiveDevices, compactFingerprints, setLegacyOverrides, getLegacyOverrides, clearLegacyOverrides, getLiveRecords, getDeviceRecord, setDeviceInstanceName } from "../state/deviceRegistry";
+import { matchOrCreateDevice, reconcileWithLiveDevices, compactFingerprints, setLegacyOverrides, getLegacyOverrides, clearLegacyOverrides, getDeviceRecord } from "../state/deviceRegistry";
+import {
+  collectUsedNameNumbers,
+  getActiveProjectDieId,
+  getAnalogNamesVersion,
+  isProjectNamesLoaded,
+  nextFreeInstanceName,
+  setProjectDeviceName,
+  syncLiveProjectDevices,
+  validateProjectDeviceName,
+} from "../state/analogDeviceNames";
 
 // ═════════════════════════════════════════════════════════════════
 // Wire-to-terminal matching
@@ -189,6 +199,11 @@ export function extractAnalogDevicesFromCellType(
     const legacy = legacyOverrides?.[cellType.id]?.[fingerprint];
     const { uuid: templateUuid } = matchOrCreateDevice(fingerprint, legacy);
     (d as any)._templateUuid = templateUuid;
+    // Deterministic template identity, derived from the cell type's layer shape
+    // ids (marker / well+diffusion+gate). Stable across re-extraction, ZIP
+    // round-trips and layer nudges — unlike the position-based fingerprint.
+    const deviceAnchor = (d as any)._deviceAnchor as string | undefined;
+    (d as any)._templateId = deviceAnchor ?? fingerprint;
   }
 
   return all;
@@ -368,8 +383,16 @@ function _computeResultKey(
     .map((c) => `${c.id}:${c.cellTypeId}:${c.x ?? 0}:${c.y ?? 0}:fv:${!!c.flippedV}:fh:${!!c.flippedH}:r:${c.rotation ?? 0}`)
     .join("|");
   const spiceKey = spiceConfig ? `${spiceConfig.vdd ?? ""}|${spiceConfig.gnd ?? ""}` : "";
+  // Include net GEOMETRY (not just counts): moving a wire endpoint away from a
+  // device electrode leaves node/edge counts unchanged but must invalidate the
+  // cached result so the terminal re-resolves to a fresh (unconnected) net and
+  // the red "unconnected" glow appears immediately, without a page reload.
   const netContentKey = (ann.nets ?? [])
-    .map(n => `${n.id}:${n.nodes.length}:${n.edges.length}`)
+    .map(n => {
+      const nodes = n.nodes.map(nd => `${Math.round(nd.x)},${Math.round(nd.y)}`).join(";");
+      const edges = n.edges.map(e => `${e.from}>${e.to}:${e.layer ?? ""}`).join(";");
+      return `${n.id}[${nodes}][${edges}]`;
+    })
     .join("|");
   const data = JSON.stringify({
     ctH: ctKeys,
@@ -378,6 +401,12 @@ function _computeResultKey(
     pc: ann.pins?.length ?? 0,
     u: umPerPx,
     s: spiceKey,
+    // The active project owns the name store; two projects with identical
+    // annotations (e.g. copies) must never share a cached named result.
+    proj: getActiveProjectDieId(),
+    // Names change independently of annotations (load / rename / auto-assign),
+    // so the version is part of the key.
+    nv: getAnalogNamesVersion(),
   });
   const bytes = new TextEncoder().encode(data);
   return fnv1a64(bytes);
@@ -504,7 +533,9 @@ function _processOneCellType(
           : { ...dev.bbox, x: dev.bbox.x + cx, y: dev.bbox.y + cy };
       })();
 
-      const segShapes = consumeSegmentShapes(dev.id);
+      // Prefer the segment shapes carried on the device (survives the cell-type
+      // device cache). Fall back to the global cache for older callers.
+      const segShapes = ((dev as any)._segmentShapes as LayerShape[] | undefined) ?? consumeSegmentShapes(dev.id);
       const layersWithSegs = segShapes.length > 0
         ? {
             ...ct.layers,
@@ -530,7 +561,15 @@ function _processOneCellType(
       const termContacts = rawTermContacts.map((arr) => arr.map(orientPoint));
 
       const matchedTerms = dev.terminals.map((t,ti)=>{
-        if (t.netId < 0 && dev.kind === "mos" && t.name === "B") {
+        if (dev.kind === "mos" && t.name === "B") {
+          // 1. If a wire is drawn to the bulk contact (well tap), use THAT net —
+          //    never force the bulk to a supply when the user wired it elsewhere.
+          for (const cp of termContacts[ti]) {
+            const wid = matchWireToPoint(nets, cp.x, cp.y, cp.tol ?? 10, netIdMap, nextNetId, shared.bottomMetalLayer as WireLayer);
+            if (wid != null) return { ...t, netId: wid };
+          }
+          // 2. Nothing connected to the bulk → default to the supply rail
+          //    (GND for NMOS, VDD for PMOS).
           const mosType = (dev.geometry as DeviceGeometryMOS)?.mosType;
           const vddNames = [spiceConfig?.vdd ?? "VDD", "VCC", "vcc", "VDD", "vdd"];
           const gndNames = [spiceConfig?.gnd ?? "GND", "VSS", "vss", "GND", "gnd"];
@@ -556,7 +595,7 @@ function _processOneCellType(
             }
           }
           if (foundNetId != null) {
-            warnings.push(`[INFO] ${instName} (${mosType.toUpperCase()}): bulk has no well contact — auto-connected to global ${supplyName}`);
+            warnings.push(`[INFO] ${instName} (${mosType.toUpperCase()}): bulk not connected — auto-connected to global ${supplyName}`);
             return {...t, netId: foundNetId};
           }
           let freshId = netIdMap.get(`_global_${supplyName}`);
@@ -564,7 +603,7 @@ function _processOneCellType(
             freshId = nextNetId.v++;
             netIdMap.set(`_global_${supplyName}`, freshId);
           }
-          warnings.push(`[INFO] ${instName} (${mosType.toUpperCase()}): bulk has no well contact — auto-connected to global ${supplyName}`);
+          warnings.push(`[INFO] ${instName} (${mosType.toUpperCase()}): bulk not connected — auto-connected to global ${supplyName}`);
           return {...t, netId: freshId};
         }
         if (t.netId < 0) {
@@ -590,6 +629,7 @@ function _processOneCellType(
       });
 
       const templateUuid = (dev as any)._templateUuid as string | undefined;
+      const templateId = (dev as any)._templateId as string | undefined;
       const cellLevelKey = (dev as any)._cellLevelKey as string ?? "unknown:0:0";
       const instanceFingerprint = `${cellLevelKey}:${instCell.id}`;
       const dieLevelKey = `${instCell.id}:${cellLevelKey}`;
@@ -597,12 +637,16 @@ function _processOneCellType(
       const seedOverride = templateRecord?.overrides;
       const result = matchOrCreateDevice(instanceFingerprint, seedOverride);
       const devUuid = result.uuid;
+      // Deterministic per-instance identity: the cell-level anchor plus the
+      // stable cell-instance id. Used to key the per-project name store.
+      const instanceId = templateId ? `${templateId}@${instCell.id}` : undefined;
 
       allDevices.push({
         ...dev, instanceName: instName, terminals: matchedTerms, bbox: worldBbox,
         _termPoints: termPoints, _cellId: instCell.id, _cellBbox: dev.bbox,
         _cellLevelKey: cellLevelKey, _dieLevelKey: dieLevelKey,
         _templateUuid: templateUuid, _uuid: devUuid,
+        _templateId: templateId, _instanceId: instanceId,
       } as any);
     }
   }
@@ -719,24 +763,8 @@ export async function collectDieWideChunked(
   return result;
 }
 
-// ── Stable instance naming using position-based keys + localStorage ──
+// ── Stable instance naming using deterministic ids + per-project store ──
 // Lives here so ALL consumers (DieViewer, AnalogNetlistPage) get stable names.
-
-const NAMEMAP_KEY = "mmo-chip-analog-names";
-const ACTIVE_KEYS_KEY = NAMEMAP_KEY + "-active";
-
-function _loadNameMap(): Record<string, string> {
-  try { return JSON.parse(localStorage.getItem(NAMEMAP_KEY) ?? "{}"); } catch { return {}; }
-}
-function _saveNameMap(map: Record<string, string>): void {
-  try { localStorage.setItem(NAMEMAP_KEY, JSON.stringify(map)); } catch {}
-}
-function _loadActiveKeys(): string[] {
-  try { return JSON.parse(localStorage.getItem(ACTIVE_KEYS_KEY) ?? "[]"); } catch { return []; }
-}
-function _saveActiveKeys(keys: string[]): void {
-  try { localStorage.setItem(ACTIVE_KEYS_KEY, JSON.stringify(keys)); } catch {}
-}
 
 const INSTANCE_PREFIXES: Record<string, string> = {
   mos: "M", bjt_npn: "Q", bjt_pnp: "Q", jfet_n: "J", jfet_p: "J",
@@ -745,80 +773,64 @@ const INSTANCE_PREFIXES: Record<string, string> = {
 };
 
 /**
- * Assign stable instance names using the per-device UUID from the registry.
- * Each device's UUID is the canonical identity — its instance name lives
- * on the DeviceRecord. For brand-new devices (no registry entry yet) the
- * nameMap legacy store is used as a transitional fallback; the registry
- * absorbs the auto-generated name on the next run.
+ * Assign stable instance names from the current project's name store.
  *
- * Counter is built from ALL live records (including deleted ones) so the
- * auto-counter never dips below the highest ever assigned.
+ * Each device's `_instanceId` is a deterministic id (`<cellAnchor>@<cellId>`)
+ * derived from the cell type's layer shape ids, so the name is bound to the
+ * device — not to a browser-global registry. Names are looked up in the
+ * per-project `analog-devices.json` store; brand-new devices are auto-named
+ * and persisted (only once the store is loaded, so a slow load can never
+ * overwrite user-assigned names). Names of devices that no longer exist are
+ * dropped from the store, freeing them for re-use.
+ *
+ * The legacy `deviceRegistry` is still reconciled below purely so device
+ * *override* records keep their soft-delete behaviour.
  */
-function assignStableInstanceNames(devices: AnalogDevice[]): void {
-  const nameMap = _loadNameMap();
-  // Build counter from ALL known names in registry (live + deleted) so
-  // the auto-counter never dips below the highest ever assigned.
-  const liveRecords = getLiveRecords();
-  const counters: Record<string, number> = {};
-  const collectCounters = (name: string | null | undefined) => {
-    if (!name) return;
-    const m = name.match(/^([A-Za-z]+)(\d+)$/);
-    if (m) counters[m[1]] = Math.max(counters[m[1]] ?? 0, parseInt(m[2], 10));
-  };
-  for (const rec of liveRecords) collectCounters(rec.instanceName);
-  // Also collect from legacy nameMap (transitional)
-  for (const n of Object.values(nameMap)) collectCounters(n);
+export function assignStableInstanceNames(devices: AnalogDevice[]): void {
+  const loaded = isProjectNamesLoaded();
 
-  const activeKeys = new Set<string>();
-  const liveFingerprints = new Set<string>();
-  const liveUuids = new Set<string>();
-
+  // Deterministic set of device instances present in the current extraction.
+  const liveInstanceIds = new Set<string>();
   for (const d of devices) {
-    const devUuid = (d as any)._uuid as string | undefined;
-    const fingerprint = (d as any)._cellLevelKey as string | undefined;
-    const dieKey = (d as any)._dieLevelKey as string | undefined;
-    if (!devUuid || !fingerprint) continue;
-    if (dieKey) activeKeys.add(dieKey);
-    liveFingerprints.add(fingerprint);
-    liveUuids.add(devUuid);
-
-    // 1) Registry has the canonical name
-    const rec = getDeviceRecord(devUuid);
-    if (rec?.instanceName) {
-      d.instanceName = rec.instanceName;
-      continue;
-    }
-    // 2) Fallback to legacy nameMap by die-level key (transitional)
-    if (dieKey && nameMap[dieKey]) {
-      d.instanceName = nameMap[dieKey];
-      continue;
-    }
-    // 3) Auto-assign new name
-    const prefix = INSTANCE_PREFIXES[d.kind] || "X";
-    const next = (counters[prefix] ?? 0) + 1;
-    const newName = `${prefix}${next}`;
-    counters[prefix] = next;
-    d.instanceName = newName;
-    // Persist into the registry (canonical)
-    if (rec) {
-      setDeviceInstanceName(devUuid, newName);
-    } else if (dieKey) {
-      // No registry record yet (shouldn't happen if cell-level ran) —
-      // fall back to legacy nameMap so we don't lose the name on reload.
-      nameMap[dieKey] = newName;
-    }
+    const instanceId = (d as any)._instanceId as string | undefined;
+    if (instanceId) liveInstanceIds.add(instanceId);
   }
 
-  // Reconcile: anything not seen in this extraction is soft-deleted
+  // Drop names of devices that no longer exist so a deleted device's name is
+  // freed for re-use; live devices keep their stored names.
+  const projectNames = syncLiveProjectDevices(liveInstanceIds);
+
+  // Seed per-prefix used numbers from LIVE names only, so a freed number can
+  // be reused by a new device while no live name is ever duplicated.
+  const usedNumbers = collectUsedNameNumbers(projectNames);
+
+  // Keep override records reconciled (soft-delete devices no longer live).
+  const liveFingerprints = new Set<string>();
+  const liveUuids = new Set<string>();
+  for (const d of devices) {
+    const fp = (d as any)._cellLevelKey as string | undefined;
+    const uu = (d as any)._uuid as string | undefined;
+    if (fp) liveFingerprints.add(fp);
+    if (uu) liveUuids.add(uu);
+  }
   reconcileWithLiveDevices(liveFingerprints, liveUuids);
 
-  // Save active keys for rename validation (stale names are blocked from
-  // auto-assign by the counter, but allowed for manual rename).
-  _saveActiveKeys([...activeKeys]);
-  // Persist legacy nameMap in case we wrote any fallbacks
-  if (Object.keys(nameMap).length > 0) _saveNameMap(nameMap);
+  for (const d of devices) {
+    const instanceId = (d as any)._instanceId as string | undefined;
+    if (!instanceId) continue;
+    const prefix = INSTANCE_PREFIXES[d.kind] || "X";
+    const stored = projectNames[instanceId];
+    if (stored) {
+      d.instanceName = stored;
+      continue;
+    }
+    const used = usedNumbers[prefix] ?? (usedNumbers[prefix] = new Set<number>());
+    const newName = nextFreeInstanceName(prefix, used);
+    used.add(parseInt(newName.slice(prefix.length), 10));
+    d.instanceName = newName;
+    if (loaded) setProjectDeviceName(instanceId, newName);
+  }
 
-  // Clean up: drop fingerprints not used by any record
   compactFingerprints();
 }
 
@@ -829,41 +841,15 @@ let _renameVersion = 0;
 function bumpRenameVersion(): void { _renameVersion++; }
 export function getRenameVersion(): number { return _renameVersion; }
 
-export function renameDeviceInstance(devUuid: string, newName: string): void {
+export function renameDeviceInstance(instanceId: string, newName: string): void {
   bumpRenameVersion();
-  if (!devUuid) { return; }
-  setDeviceInstanceName(devUuid, newName);
-  // Mirror into legacy nameMap by _dieLevelKey so callers that still look
-  // up by die-level key (e.g. validateDeviceName) see the rename.
-  // The die-level key is unstable across re-extractions so this is best-
-  // effort: the registry is the canonical source.
-  const rec = getDeviceRecord(devUuid);
-  if (rec) {
-    const nameMap = _loadNameMap();
-    // We don't know the current _dieLevelKey from here (the device may not
-    // be in the current extraction), so just record the name in a special
-    // "_byUUID" entry under the nameMap for cross-reference.
-    nameMap[`uuid:${devUuid}`] = newName;
-    _saveNameMap(nameMap);
-  }
+  if (!instanceId) { return; }
+  setProjectDeviceName(instanceId, newName);
 }
 
-/** Validate name against the registry. */
-export function validateDeviceName(devUuid: string, newName: string): string | null {
-  const s = newName.trim();
-  if (!s) return "Name is empty";
-  if (!/^[A-Za-z][A-Za-z0-9_]*$/.test(s))
-    return "Must start with letter, only letters/digits/underscores";
-  if (s.length > 48) return "Too long (max 48 chars)";
-  // Block any name used by a different live (non-deleted) device.
-  const live = getLiveRecords();
-  for (const rec of live) {
-    if (rec.uuid === devUuid) continue;
-    if (rec.instanceName === s) {
-      return `"${s}" is already assigned to another device`;
-    }
-  }
-  return null;
+/** Validate a rename against the current project's name store. */
+export function validateDeviceName(instanceId: string, newName: string): string | null {
+  return validateProjectDeviceName(instanceId, newName);
 }
 
 // ═════════════════════════════════════════════════════════════════

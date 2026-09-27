@@ -185,6 +185,8 @@ export const DIE_VIEWER_MOD_HOTKEYS: Record<string, {
 
 // ── Overlay hotkeys (shared across Die viewer / Merge / RE Cell) ─
 //   Space+B         — toggle base image visibility
+//   Space+C         — toggle cell visibility (die viewer only)
+//   Space+N         — toggle net visibility (die viewer only)
 //   ]               — cycle to next overlay (toggle on/off)
 //   [               — cycle to previous overlay (toggle on/off)
 //   Space+1..8       — show only overlay layer #1..#8; repeat to hide it

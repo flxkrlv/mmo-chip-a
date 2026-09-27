@@ -28,6 +28,10 @@ export async function importDieShot(params: {
   tileSize: number;
   limitInputPixels: number | false;
   tileConcurrency: number;
+  /** Import straight into this existing directory (creates a folder project). */
+  targetDir?: string;
+  /** Project id to use when targeting a folder (already registered as a shortcut). */
+  targetId?: string;
   onProgress?: (update: ImportProgressUpdate) => Promise<void> | void;
   logger?: (message: string) => void;
 }): Promise<DieRecord> {
@@ -45,9 +49,9 @@ export async function importDieShot(params: {
 
   params.logger?.(`analyzed ${params.originalFilename} at ${metadata.width}x${metadata.height}`);
 
-  const id = crypto.randomUUID();
+  const id = params.targetDir ? params.targetId ?? crypto.randomUUID() : crypto.randomUUID();
   const extension = params.mimeType === "image/png" ? "png" : "jpg";
-  const dieDir = path.join(params.dataRoot, "dies", id);
+  const dieDir = params.targetDir ? path.resolve(params.targetDir) : path.join(params.dataRoot, "dies", id);
   const originalDir = path.join(dieDir, "original");
   const tilesDir = path.join(dieDir, "tiles");
   await fs.mkdir(originalDir, { recursive: true });
@@ -89,7 +93,10 @@ export async function importDieShot(params: {
     maxZoomLevel,
     levels,
     createdAt: timestamp,
-    updatedAt: timestamp
+    updatedAt: timestamp,
+    ...(params.targetDir
+      ? { location: "folder" as const, folderPath: dieDir }
+      : {})
   };
 
   await params.onProgress?.({
@@ -157,12 +164,35 @@ export function buildLevels(
   });
 }
 
+/**
+ * Resolve the base die image for a project. The original always lives in the
+ * project directory (`<projectDir>/original/`), so that copy wins over the
+ * absolute `record.originalPath` — which can go stale when a folder project is
+ * moved, renamed or copied between machines.
+ */
+async function resolveBaseOriginalPath(record: DieRecord, projectDir: string): Promise<string> {
+  const originalDir = path.join(projectDir, "original");
+  try {
+    const files = await fs.readdir(originalDir);
+    if (files.length > 0) {
+      const wanted = record.originalPath ? path.basename(record.originalPath) : null;
+      const pick = wanted && files.includes(wanted) ? wanted : files[0];
+      return path.join(originalDir, pick);
+    }
+  } catch {
+    /* no original/ directory — fall back to the recorded path */
+  }
+  return record.originalPath;
+}
+
 export async function ensureTileForRecord(params: {
   dataRoot: string;
   record: DieRecord;
   z: number;
   x: number;
   y: number;
+  /** Override the project directory (folder projects live outside dataRoot). */
+  projectDir?: string;
 }) {
   const level = params.record.levels[params.z];
   if (!level) {
@@ -178,10 +208,9 @@ export async function ensureTileForRecord(params: {
     throw new Error("Tile coordinates out of range.");
   }
 
+  const projectDir = params.projectDir ?? path.join(params.dataRoot, "dies", params.record.id);
   const tilePath = path.join(
-    params.dataRoot,
-    "dies",
-    params.record.id,
+    projectDir,
     "tiles",
     String(params.z),
     `${params.x}_${params.y}.jpg`
@@ -208,8 +237,10 @@ export async function ensureTileForRecord(params: {
   const sourceWidth = Math.min(params.record.width - sourceLeft, width * level.scale);
   const sourceHeight = Math.min(params.record.height - sourceTop, height * level.scale);
 
+  const sourcePath = await resolveBaseOriginalPath(params.record, projectDir);
+
   await pipelineToFileAtomic(
-    sharp(params.record.originalPath, {
+    sharp(sourcePath, {
       limitInputPixels: false,
       sequentialRead: true
     })

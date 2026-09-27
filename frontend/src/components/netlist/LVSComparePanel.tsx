@@ -1,8 +1,62 @@
-import { useCallback, useState, useRef, useEffect } from "react";
+import { Fragment, useCallback, useState, useRef, useEffect } from "react";
 import type { SpiceDialect, LvsRawResult, LvsEngine, LvsCombinedResult, VygesEvent } from "shared";
 import type { LvsEngineResult } from "shared";
 import { compareNetlists, saveLvsSnapshot } from "../../api/lvs";
 import { Ic } from "../../icons";
+
+// ── localStorage helpers (split position / active tab) ────────
+
+const LS_SPLIT = "lvs.split.topPct";
+const LS_TAB = "lvs.nb.tab";
+const LS_NETS_TAB = "lvs.nb.netsTab";
+const LS_CMP_FULL = "lvs.nb.cmpFullWidth";
+const LS_ENGINE = "lvs.engine";
+const LS_SCHEMATIC = "lvs.schematicNetlist";
+const LS_RESULTS = "lvs.results";
+
+function readLS(key: string): string | null {
+  try {
+    return window.localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+function writeLS(key: string, value: string): void {
+  try {
+    window.localStorage.setItem(key, value);
+  } catch {
+    /* storage unavailable */
+  }
+}
+
+type NbTab = "device" | "property" | "nets" | "report";
+type NetsSubTab = "layout" | "schematic" | "compare";
+
+function emptyHint(text: string): React.ReactNode {
+  return (
+    <div style={{ fontSize: 11, color: "var(--ink3)", fontStyle: "italic", padding: "8px 2px" }}>
+      {text}
+    </div>
+  );
+}
+
+// Measure monospace text width (px) so Compare columns can be content-sized.
+let _measureCtx: CanvasRenderingContext2D | null = null;
+function monoTextWidth(text: string, px = 11): number {
+  if (!text) return 0;
+  if (!_measureCtx) {
+    try {
+      _measureCtx = document.createElement("canvas").getContext("2d");
+    } catch {
+      _measureCtx = null;
+    }
+  }
+  if (!_measureCtx) return text.length * px * 0.6;
+  const stack = getComputedStyle(document.documentElement).getPropertyValue("--mono").trim() || "monospace";
+  _measureCtx.font = `${px}px ${stack}`;
+  return _measureCtx.measureText(text).width;
+}
 
 // ── Styles ────────────────────────────────────────────────────
 
@@ -51,6 +105,26 @@ type PanelPhase =
   | { phase: "loading" }
   | { phase: "done"; data: LvsResultData }
   | { phase: "error"; error: string; detail?: string };
+
+/** Persisted comparison results — one per engine, plus the last shown one. */
+interface ResultsCache {
+  byEngine: Partial<Record<LvsEngine, LvsResultData>>;
+  lastEngine?: LvsEngine;
+}
+
+const EMPTY_RESULTS: ResultsCache = { byEngine: {} };
+
+function loadResultsCache(): ResultsCache {
+  try {
+    const raw = readLS(LS_RESULTS);
+    if (!raw) return EMPTY_RESULTS;
+    const parsed = JSON.parse(raw) as ResultsCache;
+    if (!parsed || typeof parsed !== "object" || !parsed.byEngine) return EMPTY_RESULTS;
+    return parsed;
+  } catch {
+    return EMPTY_RESULTS;
+  }
+}
 
 interface Props {
   dieId: string;
@@ -342,21 +416,108 @@ const ENGINE_LABELS: Record<string, string> = {
 };
 
 export default function LVSComparePanel({ dieId, layoutNetlist, dialect, moduleName, deviceToHighlight }: Props) {
-  const [schematicNetlist, setSchematicNetlist] = useState("");
+  const [schematicNetlist, setSchematicNetlist] = useState<string>(() => readLS(LS_SCHEMATIC) ?? "");
   const [layoutNetlistOverride, setLayoutNetlistOverride] = useState<string | null>(null);
   const [layoutLocked, setLayoutLocked] = useState(true);
-  const [state, setState] = useState<PanelPhase>({ phase: "idle" });
-  const [engine, setEngine] = useState<LvsEngine>("vyges-lvs");
+  const [results, setResults] = useState<ResultsCache>(loadResultsCache);
+  const [running, setRunning] = useState(false);
+  const [runError, setRunError] = useState<{ error: string; detail?: string } | null>(null);
+  const [engine, setEngine] = useState<LvsEngine>(() => (readLS(LS_ENGINE) === "name-based" ? "name-based" : "vyges-lvs"));
+
+  // Derive the panel phase from persisted per-engine results. While a run is in
+  // flight the previous result stays visible (only a running banner is added),
+  // so results survive engine switches and repeated runs.
+  const shownResult =
+    results.byEngine[engine] ??
+    (results.lastEngine ? results.byEngine[results.lastEngine] : undefined) ??
+    null;
+  const state: PanelPhase = runError
+    ? { phase: "error", error: runError.error, detail: runError.detail }
+    : shownResult
+      ? { phase: "done", data: shownResult }
+      : { phase: "idle" };
   const [highlightedLine, setHighlightedLine] = useState<number | null>(null);
   const [highlightedSchematicLine, setHighlightedSchematicLine] = useState<number | null>(null);
   const reportRef = useRef<HTMLDivElement>(null);
   const layoutScrollRef = useRef<HTMLDivElement>(null);
 
+  // Vertical split between the netlists (top) and the results (bottom).
+  const [topPct, setTopPct] = useState<number>(() => {
+    const v = parseFloat(readLS(LS_SPLIT) ?? "");
+    return Number.isFinite(v) && v >= 15 && v <= 85 ? v : 40;
+  });
+  const topPctRef = useRef(topPct);
+  topPctRef.current = topPct;
+  const splitRef = useRef<HTMLDivElement>(null);
+
+  const onSplitDown = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    const onMove = (ev: MouseEvent) => {
+      const el = splitRef.current;
+      if (!el) return;
+      const rect = el.getBoundingClientRect();
+      if (rect.height <= 0) return;
+      const pct = ((ev.clientY - rect.top) / rect.height) * 100;
+      setTopPct(Math.min(85, Math.max(15, pct)));
+    };
+    const onUp = () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+      writeLS(LS_SPLIT, String(topPctRef.current));
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  }, []);
+
+  // Active results tab (name-based engine only).
+  const [nbTab, setNbTab] = useState<NbTab>(() => {
+    const v = readLS(LS_TAB);
+    return v === "device" || v === "property" || v === "nets" || v === "report" ? v : "device";
+  });
+  const selectTab = useCallback((tab: NbTab) => {
+    setNbTab(tab);
+    writeLS(LS_TAB, tab);
+  }, []);
+
+  // Unbalanced Nets sub-tab (layout / schematic / compare).
+  const [netsSubTab, setNetsSubTab] = useState<NetsSubTab>(() => {
+    const v = readLS(LS_NETS_TAB);
+    return v === "layout" || v === "schematic" || v === "compare" ? v : "layout";
+  });
+  const selectNetsSubTab = useCallback((tab: NetsSubTab) => {
+    setNetsSubTab(tab);
+    writeLS(LS_NETS_TAB, tab);
+  }, []);
+  // Compare: stretch columns to full width instead of content-sized equal columns.
+  const [cmpFullWidth, setCmpFullWidth] = useState<boolean>(() => readLS(LS_CMP_FULL) === "1");
+  const selectCmpFullWidth = useCallback((on: boolean) => {
+    setCmpFullWidth(on);
+    writeLS(LS_CMP_FULL, on ? "1" : "0");
+  }, []);
+  // Compare sub-tab: selected layout / schematic net (one net at a time).
+  // `undefined` = not chosen yet (derive default); `null` = explicitly none.
+  const [cmpLayoutNet, setCmpLayoutNet] = useState<string | null | undefined>(undefined);
+  const [cmpSchematicNet, setCmpSchematicNet] = useState<string | null | undefined>(undefined);
+
+  // Persist engine + externally pasted netlist program-wide.
+  useEffect(() => {
+    writeLS(LS_ENGINE, engine);
+  }, [engine]);
+  useEffect(() => {
+    writeLS(LS_SCHEMATIC, schematicNetlist);
+  }, [schematicNetlist]);
+
   const displayLayout = layoutNetlistOverride ?? layoutNetlist;
+
+  const persistResults = useCallback((next: ResultsCache) => {
+    setResults(next);
+    writeLS(LS_RESULTS, JSON.stringify(next));
+  }, []);
 
   const handleCompare = useCallback(async () => {
     if (!schematicNetlist.trim() || !displayLayout) return;
-    setState({ phase: "loading" });
+    setRunning(true);
+    setRunError(null);
     try {
       const res = await compareNetlists(dieId, {
         layoutNetlist: displayLayout, schematicNetlist, dialect, moduleName, engine,
@@ -377,18 +538,34 @@ export default function LVSComparePanel({ dieId, layoutNetlist, dialect, moduleN
             snapshotJson.property_diffs.map(d => `${d.a_device} ${d.param} ${d.a_value}→${d.b_value}`).join(", "));
         }
 
-        setState({ phase: "done", data: { engine: engine, matched: data.matched, json: snapshotJson, report: data.report, devices: snapshotDevices, events: data.events } });
+        const result: LvsResultData = {
+          engine, matched: data.matched, json: snapshotJson,
+          report: data.report, devices: snapshotDevices, events: data.events,
+        };
+        persistResults({
+          byEngine: { ...results.byEngine, [engine]: result },
+          lastEngine: engine,
+        });
 
         saveLvsSnapshot({ layoutNetlist: displayLayout, schematicNetlist, matched: data.matched, json: snapshotJson, report: data.report, devices: snapshotDevices });
       } else if (res.ok) {
-        setState({ phase: "error", error: "Unexpected response format" });
+        setRunError({ error: "Unexpected response format" });
       } else {
-        setState({ phase: "error", error: res.error, detail: (res as any).detail });
+        setRunError({ error: res.error, detail: (res as any).detail });
       }
     } catch (err: unknown) {
-      setState({ phase: "error", error: err instanceof Error ? err.message : "Network error" });
+      setRunError({ error: err instanceof Error ? err.message : "Network error" });
+    } finally {
+      setRunning(false);
     }
-  }, [schematicNetlist, displayLayout, dieId, dialect, moduleName, engine]);
+  }, [schematicNetlist, displayLayout, dieId, dialect, moduleName, engine, results.byEngine, persistResults]);
+
+  /** Clear the shown comparison result (and the persisted cache). */
+  const cleanResult = useCallback(() => {
+    setRunError(null);
+    setRunning(false);
+    persistResults(EMPTY_RESULTS);
+  }, [persistResults]);
 
   useEffect(() => {
     if (state.phase === "done" && reportRef.current) {
@@ -431,13 +608,7 @@ export default function LVSComparePanel({ dieId, layoutNetlist, dialect, moduleN
     });
   }, [deviceToHighlight, engine, layoutLocked, displayLayout]);
 
-  const canCompare = schematicNetlist.trim().length > 0 && !!displayLayout && state.phase !== "loading";
-
-  const sbStyles: React.CSSProperties = state.phase === "done" ? {
-    borderTop: "1px solid var(--l2)", display: "flex", flexDirection: "column", flex: "1 1 auto", minHeight: 0,
-  } : {
-    overflow: "auto", flex: "1 1 auto",
-  };
+  const canCompare = schematicNetlist.trim().length > 0 && !!displayLayout && !running;
 
   // ── Render sections ────────────────────────────────────────
 
@@ -454,7 +625,7 @@ export default function LVSComparePanel({ dieId, layoutNetlist, dialect, moduleN
         }}>
           <input type="radio" name="lvs-engine" value={opt.value}
             checked={engine === opt.value}
-            onChange={() => { setEngine(opt.value); if (state.phase !== "idle") setState({ phase: "idle" }); }}
+            onChange={() => setEngine(opt.value)}
             style={{ display: "none" }} />
           {opt.label}
         </label>
@@ -551,7 +722,7 @@ export default function LVSComparePanel({ dieId, layoutNetlist, dialect, moduleN
           color: canCompare ? "var(--accentFg, #fff)" : "var(--ink3)",
           opacity: canCompare ? 1 : 0.5,
         }}>
-          {state.phase === "loading" ? `Running ${ENGINE_LABELS[engine] ?? engine}...` : "Compare"}
+          {running ? `Running ${ENGINE_LABELS[engine] ?? engine}...` : "Compare"}
         </button>
 
         {/* Copy Report button — only when done */}
@@ -566,6 +737,17 @@ export default function LVSComparePanel({ dieId, layoutNetlist, dialect, moduleN
             background: "transparent", color: "var(--ink2)",
           }}>
             Copy Report
+          </button>
+        )}
+
+        {/* Clean result button — clears the shown comparison result */}
+        {data && (
+          <button type="button" onClick={cleanResult} title="Clear the comparison result" style={{
+            fontSize: 10, fontWeight: 600, padding: "4px 10px", borderRadius: 4,
+            cursor: "pointer", border: "1px solid var(--l2)",
+            background: "transparent", color: "var(--ink2)",
+          }}>
+            Clean result
           </button>
         )}
       </div>
@@ -592,8 +774,8 @@ export default function LVSComparePanel({ dieId, layoutNetlist, dialect, moduleN
 
     return (
       <div style={{
-        display: "flex", gap: 8, padding: "6px 10px", flex: "0 0 40%", minHeight: 0,
-        borderBottom: "1px solid var(--l2)", position: "relative",
+        display: "flex", gap: 8, padding: "6px 10px", flex: "1 1 auto", minHeight: 0,
+        overflow: "hidden", position: "relative",
       }}>
         {dialectMismatch && (
           <div style={{
@@ -654,10 +836,7 @@ export default function LVSComparePanel({ dieId, layoutNetlist, dialect, moduleN
             <textarea
               readOnly={false}
               value={displayLayout ?? ""}
-              onChange={(e) => {
-                setLayoutNetlistOverride(e.target.value);
-                if (state.phase !== "idle") setState({ phase: "idle" });
-              }}
+              onChange={(e) => setLayoutNetlistOverride(e.target.value)}
               style={{
                 ...textareaBase, flex: 1, resize: "none",
                 cursor: "text", border: "1px solid #fd0",
@@ -691,7 +870,7 @@ export default function LVSComparePanel({ dieId, layoutNetlist, dialect, moduleN
             <textarea
               placeholder="Ctrl+V reference SPICE netlist..."
               value={schematicNetlist}
-              onChange={(e) => { setSchematicNetlist(e.target.value); if (state.phase !== "idle") setState({ phase: "idle" }); }}
+              onChange={(e) => setSchematicNetlist(e.target.value)}
               style={{ ...textareaBase, flex: 1, resize: "none" }}
               spellCheck={false}
             />
@@ -712,16 +891,12 @@ export default function LVSComparePanel({ dieId, layoutNetlist, dialect, moduleN
     );
   };
 
-  const renderPropertyTable = () => {
+  const propertyTableBody = (): React.ReactNode => {
     if (state.phase !== "done") return null;
-    const curEngine = state.data.engine;
     const pd = state.data.json.property_diffs;
-    if (!pd || !pd.length) return null;
-    const engLabel = ` (${ENGINE_LABELS[curEngine] ?? curEngine})`;
+    if (!pd || !pd.length) return emptyHint("No property diffs.");
     return (
-      <div style={{ margin: "0 10px 8px" }}>
-        <div style={sectionTitle}>Property Diffs{engLabel} ({pd.length})</div>
-        <table style={tableSm}>
+      <table style={tableSm}>
           <thead>
             <tr style={{ color: "var(--ink3)", textAlign: "left" }}>
               <th style={{ padding: "2px 6px" }}>Kind</th>
@@ -758,6 +933,19 @@ export default function LVSComparePanel({ dieId, layoutNetlist, dialect, moduleN
             })}
           </tbody>
         </table>
+    );
+  };
+
+  const renderPropertyTable = () => {
+    if (state.phase !== "done") return null;
+    const pd = state.data.json.property_diffs;
+    if (!pd || !pd.length) return null;
+    const curEngine = state.data.engine;
+    const engLabel = ` (${ENGINE_LABELS[curEngine] ?? curEngine})`;
+    return (
+      <div style={{ margin: "0 10px 8px" }}>
+        <div style={sectionTitle}>Property Diffs{engLabel} ({pd.length})</div>
+        {propertyTableBody()}
       </div>
     );
   };
@@ -840,10 +1028,10 @@ export default function LVSComparePanel({ dieId, layoutNetlist, dialect, moduleN
     );
   };
 
-  const renderDeviceDiffs = () => {
+  const deviceDiffsBody = (): React.ReactNode => {
     if (state.phase !== "done") return null;
     const { devices } = state.data;
-    if (!devices.length) return null;
+    if (!devices.length) return emptyHint("No device diffs.");
 
     const lOnly = devices.filter((d) => d.category === "l-only");
     const sOnly = devices.filter((d) => d.category === "s-only");
@@ -879,14 +1067,12 @@ export default function LVSComparePanel({ dieId, layoutNetlist, dialect, moduleN
     };
 
     const curEngine = state.data.engine;
-    const engLabel = ` (${ENGINE_LABELS[curEngine] ?? curEngine})`;
     // Cascade warning only for vyges-lvs — name-based engine matches by name, no cascade issue
     const hasCascadeNoise = curEngine !== "name-based" && lOnly.length > 0 && sOnly.length > 0;
     // High iterations warning: 1-WL may struggle on complex graphs
     const highIters = curEngine !== "name-based" && state.data.json.iterations > 4;
     return (
-      <div style={{ flex: "0 0 auto", margin: "0 10px 8px" }}>
-        <div style={{ ...sectionTitle, fontSize: 12 }}>Device Diffs{engLabel} ({devices.length})</div>
+      <>
         {hasCascadeNoise && (
           <div style={{ fontSize: 9, color: "#fd0", marginBottom: 6, lineHeight: 1.4 }}>
             ⚠ For circuits with renamed devices/nets, some diffs below may be cascade noise from the 1-WL algorithm, not real errors. Compare with the report for details.
@@ -902,6 +1088,231 @@ export default function LVSComparePanel({ dieId, layoutNetlist, dialect, moduleN
         {catBlock("Device Type Mismatch", typeMism, "#f0f", "different model type (e.g. npn vs pnp)")}
         {catBlock("Param Changed", paramOnly, "#fd0", "same topology, different W/L/R/m")}
         {catBlock("Connection Mismatch", connMism, "#f80", "different terminal connections")}
+      </>
+    );
+  };
+
+  /**
+   * Unbalanced nets with per-net device/electrode connectivity.
+   * Sub-tabs: Layout | Schematic | Compare.
+   */
+  const renderUnbalancedNetsNameBased = () => {
+    if (state.phase !== "done") return null;
+    const classes = state.data.json.unbalanced.filter((c) => c.what === "net");
+    if (!classes.length) return emptyHint("No unbalanced nets.");
+    const conn = state.data.json.net_connectivity;
+
+    const collect = (side: "layout" | "schematic"): string[] => {
+      const names = new Set<string>();
+      for (const cls of classes) {
+        for (const net of (side === "layout" ? cls.a : cls.b)) names.add(net);
+      }
+      return [...names].sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+    };
+
+    const layoutNets = collect("layout");
+    const schematicNets = collect("schematic");
+
+    const renderNets = (side: "layout" | "schematic", nets: string[]) => (
+      <>
+        {nets.map((net, i) => {
+          const list = conn?.[side]?.[net] ?? [];
+          return (
+            <div key={net} style={{ ...panelBase, marginTop: i > 0 ? 2 : 0 }}>
+              <div style={{ fontWeight: 600, color: "var(--ink0)" }}>{stripSide(net)}</div>
+              {list.map((c, j) => (
+                <div key={j} style={{ fontFamily: "var(--mono)", color: "var(--ink2)" }}>
+                  {c.device}{c.electrodes.length ? ` ${c.electrodes.join(" ")}` : ""}
+                </div>
+              ))}
+            </div>
+          );
+        })}
+      </>
+    );
+
+    const netLine = (c: { device: string; electrodes: number[] } | undefined): string =>
+      c ? `${c.device}${c.electrodes.length ? " " + c.electrodes.join(" ") : ""}` : "";
+
+    // Layout and schematic nets are chosen independently (no auto-pairing).
+    const pickLayout = (net: string | null) => setCmpLayoutNet(net);
+    const pickSchematic = (net: string | null) => setCmpSchematicNet(net);
+
+    const renderCompare = () => {
+      const layoutSel = cmpLayoutNet === undefined
+        ? (layoutNets[0] ?? null)
+        : (cmpLayoutNet && layoutNets.includes(cmpLayoutNet) ? cmpLayoutNet : null);
+      const schematicSel = cmpSchematicNet === undefined
+        ? (schematicNets[0] ?? null)
+        : (cmpSchematicNet && schematicNets.includes(cmpSchematicNet) ? cmpSchematicNet : null);
+
+      const lList = layoutSel ? (conn?.layout?.[layoutSel] ?? []) : [];
+      const sList = schematicSel ? (conn?.schematic?.[schematicSel] ?? []) : [];
+
+      // Devices are matched by name (case-insensitive), not by position.
+      const lByKey = new Map<string, { device: string; electrodes: number[] }>();
+      for (const c of lList) lByKey.set(c.device.toLowerCase(), c);
+      const sByKey = new Map<string, { device: string; electrodes: number[] }>();
+      for (const c of sList) sByKey.set(c.device.toLowerCase(), c);
+      const deviceKeys = [...new Set([...lByKey.keys(), ...sByKey.keys()])].sort((a, b) =>
+        a.localeCompare(b, undefined, { numeric: true }),
+      );
+
+      // Equal, minimally-sufficient column width: fits the longest device line and
+      // the widest net label (plus select chrome + arrows) fully.
+      let maxDeviceW = 0;
+      for (const k of deviceKeys) {
+        maxDeviceW = Math.max(maxDeviceW, monoTextWidth(netLine(lByKey.get(k))), monoTextWidth(netLine(sByKey.get(k))));
+      }
+      let maxNetW = 0;
+      for (const n of [...layoutNets, ...schematicNets]) {
+        maxNetW = Math.max(maxNetW, monoTextWidth(stripSide(n)));
+      }
+      const colW = Math.max(96, Math.ceil(Math.max(maxDeviceW + 8, maxNetW + 100)));
+
+      const selectStyle: React.CSSProperties = {
+        flex: "1 1 auto", minWidth: 0, fontSize: 11, fontFamily: "var(--mono)",
+        background: "var(--card)", border: "1px solid var(--l2)", borderRadius: 3,
+        color: "var(--fg)", padding: "2px 4px", outline: "none",
+        colorScheme: "dark",
+      };
+      const optionStyle: React.CSSProperties = { background: "var(--card)", color: "var(--fg)" };
+      const arrowStyle: React.CSSProperties = {
+        flex: "0 0 auto", fontSize: 10, lineHeight: 1, padding: "3px 7px",
+        border: "1px solid var(--l2)", borderRadius: 3, cursor: "pointer",
+        background: "var(--l1)", color: "var(--ink0)",
+      };
+      const rowBorder = "1px solid var(--l2)";
+
+      const stepLayout = (dir: 1 | -1) => {
+        if (!layoutNets.length) return;
+        const idx = layoutSel ? layoutNets.indexOf(layoutSel) : -1;
+        pickLayout(layoutNets[(idx + dir + layoutNets.length) % layoutNets.length]);
+      };
+      const stepSchematic = (dir: 1 | -1) => {
+        if (!schematicNets.length) return;
+        const idx = schematicSel ? schematicNets.indexOf(schematicSel) : -1;
+        pickSchematic(schematicNets[(idx + dir + schematicNets.length) % schematicNets.length]);
+      };
+
+      const side = (
+        label: string,
+        color: string,
+        value: string | null,
+        nets: string[],
+        onPick: (net: string | null) => void,
+        onStep: (dir: 1 | -1) => void,
+      ) => (
+        <div style={{ minWidth: 0, marginBottom: 6 }}>
+          <div style={{ fontSize: 10, fontWeight: 600, color, marginBottom: 2 }}>{label}</div>
+          <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
+            <select
+              value={value ?? ""}
+              onChange={(e) => onPick(e.target.value || null)}
+              style={selectStyle}
+              disabled={!nets.length}
+            >
+              {!nets.length
+                ? <option value="" style={optionStyle}>(no {label.toLowerCase()} nets)</option>
+                : (
+                  <>
+                    <option value="" style={optionStyle}></option>
+                    {nets.map((n) => <option key={n} value={n} style={optionStyle}>{stripSide(n)}</option>)}
+                  </>
+                )}
+            </select>
+            <button type="button" style={arrowStyle} onClick={() => onStep(-1)} disabled={!nets.length} title="Previous">◀</button>
+            <button type="button" style={arrowStyle} onClick={() => onStep(1)} disabled={!nets.length} title="Next">▶</button>
+          </div>
+        </div>
+      );
+
+      // Green: matched + identical electrodes. Yellow: matched, electrodes differ.
+      // White: device present on one side only.
+      const sameElectrodes = (a: { electrodes: number[] }, b: { electrodes: number[] }): boolean =>
+        a.electrodes.length === b.electrodes.length && a.electrodes.every((e, j) => e === b.electrodes[j]);
+
+      const cell = (i: number, text: string, color: string): React.ReactNode => (
+        <div
+          style={{
+            minWidth: 0, padding: "2px 2px", fontSize: 11, fontFamily: "var(--mono)",
+            whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
+            borderTop: i === 0 ? rowBorder : undefined,
+            borderBottom: rowBorder,
+            color,
+          }}
+        >
+          {text}
+        </div>
+      );
+
+      return (
+        <div style={{ display: "grid", gridTemplateColumns: cmpFullWidth ? "1fr 1fr" : `${colW}px ${colW}px`, columnGap: 8 }}>
+          {side("Layout", "#f55", layoutSel, layoutNets, pickLayout, stepLayout)}
+          {side("Schematic", "#48f", schematicSel, schematicNets, pickSchematic, stepSchematic)}
+          {deviceKeys.map((k, i) => {
+            const l = lByKey.get(k);
+            const s = sByKey.get(k);
+            const color = l && s ? (sameElectrodes(l, s) ? "#4f4" : "#fd0") : "#fff";
+            return (
+              <Fragment key={k}>
+                {cell(i, netLine(l), color)}
+                {cell(i, netLine(s), color)}
+              </Fragment>
+            );
+          })}
+        </div>
+      );
+    };
+
+    const subTabs: { id: NetsSubTab; label: string }[] = [
+      { id: "layout", label: `Layout (${layoutNets.length})` },
+      { id: "schematic", label: `Schematic (${schematicNets.length})` },
+      { id: "compare", label: "Compare" },
+    ];
+
+    return (
+      <div>
+        <div style={{ display: "flex", alignItems: "center", gap: 2, marginBottom: 8 }}>
+          {subTabs.map((t) => {
+            const active = netsSubTab === t.id;
+            return (
+              <button
+                key={t.id}
+                type="button"
+                onClick={() => selectNetsSubTab(t.id)}
+                style={{
+                  fontSize: 10, fontWeight: active ? 600 : 400,
+                  padding: "3px 8px", cursor: "pointer",
+                  border: "1px solid var(--l2)", borderRadius: 3,
+                  background: active ? "var(--accent)" : "var(--l1)",
+                  color: active ? "var(--accentFg, #fff)" : "var(--ink2)",
+                }}
+              >
+                {t.label}
+              </button>
+            );
+          })}
+          {netsSubTab === "compare" && (
+            <label
+              title="Stretch the comparison to the full window width"
+              style={{
+                marginLeft: "auto", display: "flex", alignItems: "center", gap: 4,
+                fontSize: 10, color: "var(--ink2)", cursor: "pointer", userSelect: "none",
+              }}
+            >
+              <input
+                type="checkbox"
+                checked={cmpFullWidth}
+                onChange={(e) => selectCmpFullWidth(e.target.checked)}
+              />
+              Full width
+            </label>
+          )}
+        </div>
+        {netsSubTab === "layout" && renderNets("layout", layoutNets)}
+        {netsSubTab === "schematic" && renderNets("schematic", schematicNets)}
+        {netsSubTab === "compare" && renderCompare()}
       </div>
     );
   };
@@ -1032,39 +1443,102 @@ export default function LVSComparePanel({ dieId, layoutNetlist, dialect, moduleN
     );
   };
 
+  /** vyges-lvs results: two columns (unchanged layout). */
+  const renderVygesResults = () => (
+    <div style={{ display: "flex", gap: 10, flex: "1 1 auto", minHeight: 0, overflow: "hidden", padding: "6px 10px 0" }}>
+      <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "auto", minWidth: 0 }}>
+        {renderJsonNote()}
+        {renderPortChips()}
+        {renderPropertyTable()}
+        {renderReportInline()}
+      </div>
+      <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "auto", minWidth: 0 }}>
+        {renderUnbalancedVyges()}
+        {renderEvents()}
+      </div>
+    </div>
+  );
+
+  /** name-based results: one tab per result type. */
+  const renderNameBasedResults = () => {
+    if (state.phase !== "done") return null;
+    const tabs: { id: NbTab; label: string; count: number | null }[] = [
+      { id: "device", label: "Device Diffs", count: state.data.devices.length },
+      { id: "property", label: "Property Diffs", count: state.data.json.property_diffs.length },
+      { id: "report", label: "Report", count: null },
+      { id: "nets", label: "Unbalanced Nets", count: state.data.json.unbalanced.filter((c) => c.what === "net").length },
+    ];
+    return (
+      <div style={{ display: "flex", flexDirection: "column", flex: "1 1 auto", minHeight: 0, overflow: "hidden" }}>
+        {renderJsonNote()}
+        <div style={{ display: "flex", gap: 2, padding: "4px 10px 0", borderBottom: "1px solid var(--l2)", flex: "0 0 auto" }}>
+          {tabs.map((t) => {
+            const active = nbTab === t.id;
+            return (
+              <button
+                key={t.id}
+                type="button"
+                onClick={() => selectTab(t.id)}
+                style={{
+                  fontSize: 11, fontWeight: active ? 600 : 400,
+                  padding: "4px 10px", cursor: "pointer",
+                  border: "1px solid var(--l2)", borderBottom: active ? "1px solid var(--card)" : "1px solid var(--l2)",
+                  borderTopLeftRadius: 4, borderTopRightRadius: 4, marginBottom: -1,
+                  background: active ? "var(--card)" : "var(--l1)",
+                  color: active ? "var(--ink0)" : "var(--ink2)",
+                }}
+              >
+                {t.label}{t.count != null ? ` (${t.count})` : ""}
+              </button>
+            );
+          })}
+        </div>
+        <div style={{ flex: "1 1 auto", minHeight: 0, overflow: "auto", padding: "6px 10px", display: "flex", flexDirection: "column" }}>
+          {nbTab === "device" && deviceDiffsBody()}
+          {nbTab === "property" && propertyTableBody()}
+          {nbTab === "nets" && renderUnbalancedNetsNameBased()}
+          {nbTab === "report" && renderReportInline()}
+        </div>
+      </div>
+    );
+  };
+
   // ── Render ────────────────────────────────────────────────
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", height: "100%", background: "var(--card)" }}>
+    <div style={{ display: "flex", flexDirection: "column", flex: "1 1 auto", minHeight: 0, background: "var(--card)" }}>
       {renderSummary()}
-      {renderSideBySide()}
 
-      <div ref={reportRef} style={sbStyles}>
-        {state.phase === "loading" && (
-          <div className="m" style={{ padding: 20, fontSize: 11, color: "var(--ink3)", textAlign: "center" }}>
+      <div ref={splitRef} style={{ flex: "1 1 auto", minHeight: 0, display: "flex", flexDirection: "column" }}>
+        {/* Top: layout + schematic netlists */}
+        <div style={{ flex: `0 0 ${topPct}%`, minHeight: 60, display: "flex", flexDirection: "column", overflow: "hidden" }}>
+          {renderSideBySide()}
+        </div>
+
+        {/* Draggable divider */}
+        <div
+          onMouseDown={onSplitDown}
+          title="Drag to resize"
+          style={{
+            flex: "0 0 auto", height: 6, cursor: "row-resize",
+            background: "var(--l2)", display: "flex", alignItems: "center", justifyContent: "center",
+            userSelect: "none",
+          }}
+        >
+          <div style={{ width: 36, height: 2, borderRadius: 2, background: "var(--ink3)", opacity: 0.6 }} />
+        </div>
+
+        {/* Bottom: comparison results */}
+        <div ref={reportRef} style={{ flex: "1 1 auto", minHeight: 0, display: "flex", flexDirection: "column", overflow: "hidden" }}>
+        {/* Running banner — the previous result stays visible underneath. */}
+        {running && (
+          <div className="m" style={{ padding: "6px 20px", fontSize: 11, color: "var(--accent, #60a5fa)", textAlign: "center" }}>
             running {ENGINE_LABELS[engine] ?? engine}...
           </div>
         )}
 
         {state.phase === "done" && (
-          <>
-            <div style={{ display: "flex", gap: 10, flex: "1 1 auto", minHeight: 0, overflow: "hidden", padding: "6px 10px 0" }}>
-              <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "auto", minWidth: 0 }}>
-                {renderJsonNote()}
-                {renderPortChips()}
-                {renderPropertyTable()}
-                {renderReportInline()}
-              </div>
-              <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "auto", minWidth: 0 }}>
-                {engine === "vyges-lvs" ? (
-                  <>{renderUnbalancedVyges()}</>
-                ) : (
-                  <>{renderDeviceDiffs()}</>
-                )}
-                {renderEvents()}
-              </div>
-            </div>
-          </>
+          state.data.engine === "name-based" ? renderNameBasedResults() : renderVygesResults()
         )}
 
         {state.phase === "error" && (
@@ -1080,11 +1554,12 @@ export default function LVSComparePanel({ dieId, layoutNetlist, dialect, moduleN
           </div>
         )}
 
-        {state.phase === "idle" && (
+        {state.phase === "idle" && !running && (
           <div className="m" style={{ padding: 20, fontSize: 11, color: "var(--ink3)", textAlign: "center" }}>
             Paste a reference netlist above and press Compare.
           </div>
         )}
+        </div>
       </div>
     </div>
   );

@@ -15,6 +15,8 @@ import {
   SELECT_RING,
   SELECT_WIDTH_MULT,
   WIRE_LAYER_COLOR,
+  contrastColor,
+  netNodeWorldRadius,
   netScreenWidth
 } from "./style";
 
@@ -45,6 +47,19 @@ export function buildNetAnnotation(
   /** Optional: node radius multiplier (relative to net width). 0 = hide
    *  junction dots entirely. Default = `NET_NODE_RADIUS_MULT`. */
   getNodeRadiusMult?: () => number,
+  /** Optional: junction-only drawing mode. When it returns true, a dot is
+   *  drawn only where the net graph actually branches — vertices whose degree
+   *  is 1 (a dangling wire end) or ≥ 3 (a real junction). Plain bends
+   *  (degree 2) get no dot, matching the "dots only at connections" look of a
+   *  hand-drawn schematic. When false, a dot is drawn on EVERY vertex (legacy
+   *  behaviour). Drawing only — vertices stay grabbable in both modes.
+   *  Default: false. */
+  getJunctionsOnly?: () => boolean,
+  /** Optional: returns true when (x, y) is a connection point to an analog
+   *  device electrode **on this net**. In junction-only mode such a mid-net
+   *  vertex (graph degree 2) is still drawn — it is a real connection even
+   *  though the net graph does not branch there. */
+  getConnectionPoint?: (netId: string, x: number, y: number) => boolean,
 ): Annotation {
   // Compute bbox from all nodes.
   let minX = Infinity,
@@ -82,6 +97,13 @@ export function buildNetAnnotation(
   }
   const drawOrder =
     maxZ >= 0 ? (minZ + 1) * 100 + (maxZ + 1) : 0;
+  // Radius the node discs were last painted at (world units). Cached so
+  // hit-testing matches the on-screen disc; see `draw`.
+  let lastNodeWorldRadius = 0;
+  // Node ids whose dot was actually painted on the last draw. Only these get
+  // the enlarged (dot-sized) grab area; vertices filtered out by the
+  // junction-only mode keep just the small click slop.
+  let lastVisibleNodes: Set<string> = new Set();
   return {
     id: netId,
     kind: "net",
@@ -162,9 +184,12 @@ export function buildNetAnnotation(
       // scaled by the user-configurable node radius multiplier.
       const nodeMult = getNodeRadiusMult?.() ?? NET_NODE_RADIUS_MULT;
       const showNodes = nodeMult > 0;
-      const nodeRadius = mlMode
-        ? worldWidth / 2
-        : (screenWidth * nodeMult) / bounds.zoom;
+      const nodeRadius = netNodeWorldRadius(
+        bounds.zoom,
+        getWidth(),
+        nodeMult,
+        mlMode
+      );
       // Node colour: use highest-layer connected edge's colour so dots on
       // metal1 turns match teal, dots on metal2 turn violet, etc.
       const nodeColor = new Map<string, string>();
@@ -189,13 +214,61 @@ export function buildNetAnnotation(
         }
       }
 
+      // Precompute each vertex's graph degree (number of edges touching it).
+      // Used both by the junction-only dot filter and by the junction cross:
+      // degree ≥ 3 is a real branch (several segments meet); degree 1 is a
+      // dangling end and degree 2 a plain bend / cell contact — neither is
+      // marked.
+      const nodeDegree = new Map<string, number>();
+      for (const e of net.edges) {
+        nodeDegree.set(e.from, (nodeDegree.get(e.from) ?? 0) + 1);
+        nodeDegree.set(e.to, (nodeDegree.get(e.to) ?? 0) + 1);
+      }
+      const junctionsOnly = getJunctionsOnly?.() ?? false;
+      const nodeWantsDot = (id: string) => {
+        if (!junctionsOnly) return true; // legacy: every vertex
+        const d = nodeDegree.get(id) ?? 0;
+        if (d === 1 || d >= 3) return true;
+        // A mid-net vertex (degree 2) that is a device-electrode connection
+        // point on THIS net is a real connection, so it must still be shown
+        // even though the net graph does not branch there.
+        if (getConnectionPoint) {
+          const n = nodeIndex.get(id);
+          if (n && getConnectionPoint(net.id, n.x, n.y)) return true;
+        }
+        return false;
+      };
+
+      // Remember the radius the dots are actually painted at so hit-testing
+      // can match the visible disc (it is screen-clamped, so it differs from
+      // the raw width × multiplier at extreme zooms).
+      lastNodeWorldRadius = showNodes ? nodeRadius : 0;
+      const visibleNodes = new Set<string>();
+
       if (showNodes) {
         for (const n of net.nodes) {
           if (nodeSel(n)) continue;
-          ctx.fillStyle = nodeColor.get(n.id) ?? baseColor;
+          if (!nodeWantsDot(n.id)) continue;
+          visibleNodes.add(n.id);
+          const dotColor = nodeColor.get(n.id) ?? baseColor;
+          ctx.fillStyle = dotColor;
           ctx.beginPath();
           ctx.arc(n.x, n.y, nodeRadius, 0, Math.PI * 2);
           ctx.fill();
+          // A junction (several segments of this net meet here) gets a
+          // contrasting cross inside the dot, so it reads differently from a
+          // dangling end or a plain cell contact.
+          if ((nodeDegree.get(n.id) ?? 0) >= 3) {
+            const h = nodeRadius * 0.62;
+            ctx.strokeStyle = contrastColor(dotColor);
+            ctx.lineWidth = Math.max(nodeRadius * 0.3, 1.5 / bounds.zoom);
+            ctx.beginPath();
+            ctx.moveTo(n.x - h, n.y - h);
+            ctx.lineTo(n.x + h, n.y + h);
+            ctx.moveTo(n.x + h, n.y - h);
+            ctx.lineTo(n.x - h, n.y + h);
+            ctx.stroke();
+          }
         }
         const selRadius = nodeRadius * SELECT_NODE_MULT;
         ctx.fillStyle = SELECT_COLOR;
@@ -203,6 +276,7 @@ export function buildNetAnnotation(
         ctx.lineWidth = SELECT_OUTLINE_PX / bounds.zoom;
         for (const n of net.nodes) {
           if (!nodeSel(n)) continue;
+          visibleNodes.add(n.id);
           ctx.beginPath();
           ctx.arc(n.x, n.y, selRadius, 0, Math.PI * 2);
           ctx.fill();
@@ -211,15 +285,17 @@ export function buildNetAnnotation(
           ctx.stroke();
         }
       }
+      lastVisibleNodes = visibleNodes;
     },
     hitTest(p, tol) {
-      // Vertices win over segments — they're the smaller, on-top target.
-      const nodeMult = getNodeRadiusMult?.() ?? NET_NODE_RADIUS_MULT;
-      const nodeR = getWidth() * nodeMult + tol;
+      // Vertices win over segments — they're the smaller, on-top target. Only
+      // a vertex whose dot was actually painted gets the enlarged (dot-sized)
+      // grab area; a filtered-out vertex keeps just the small click slop.
       let bestNode: { id: string; d: number } | null = null;
       for (const n of net.nodes) {
+        const r = (lastVisibleNodes.has(n.id) ? lastNodeWorldRadius : 0) + tol;
         const d = Math.hypot(p.x - n.x, p.y - n.y);
-        if (d <= nodeR && (!bestNode || d < bestNode.d)) {
+        if (d <= r && (!bestNode || d < bestNode.d)) {
           bestNode = { id: n.id, d };
         }
       }

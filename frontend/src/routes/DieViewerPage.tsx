@@ -9,6 +9,7 @@ import { useDie } from "../api/dies";
 import { AppShell } from "../components/shell/AppShell";
 import { StatusBar } from "../components/shell/StatusBar";
 import { SubBar } from "../components/shell/SubBar";
+import { PanelToggle, usePanelCollapsed } from "../components/shell/PanelToggle";
 import { Ic } from "../icons";
 import {
   TiledCanvas,
@@ -63,6 +64,7 @@ import { SubcircuitHighlightsOverlay } from "../components/dieViewer/SubcircuitH
 import { DeviceInspector } from "../components/dieViewer/DeviceInspector";
 import { DeviceInstancePanel } from "../components/dieViewer/DeviceInstancePanel";
 import { useDieExtraction } from "../hooks/useDieExtraction";
+import { setActiveProject, flushProjectDeviceNames } from "../state/analogDeviceNames";
 import { useExtractionProgress } from "../state/extractionProgress";
 import { loadClipper } from "../lib/extraction";
 import { useMLJob, useMLStatus } from "../api/ml";
@@ -116,9 +118,10 @@ import { useSelectionDelete } from "../components/dieViewer/useSelectionDelete";
 import { useUndoRedoHotkeys } from "../components/dieViewer/useUndoRedoHotkeys";
 import { useOverlayHotkeys } from "../lib/useOverlayHotkeys";
 import type { AnnotationAction } from "../api/actions";
-import { parseNetPartId, type DrawAnchor } from "../lib/netGraph";
+import { parseNetPartId, splitNetAtNode, weldNetAtEdge, weldNetAtNode, type DrawAnchor } from "../lib/netGraph";
 import { pasteWireClipboard, snapshotWireClipboard, wireSelectionBounds } from "../lib/wireClipboard";
 import {
+  closestPointOnSegment,
   normalizeRect,
   distancePointToSegment,
   pointInRect,
@@ -130,7 +133,7 @@ import {
   type Point,
   type Rect
 } from "../lib/geometry";
-import { viaSnapTolerance } from "../renderer/annotations/style";
+import { netNodeWorldRadius, viaSnapTolerance } from "../renderer/annotations/style";
 import type { Layer, Viewport } from "../renderer/types";
 import { formatPercent } from "../lib/format";
 import { isTypingTarget } from "../lib/keyboard";
@@ -147,6 +150,78 @@ import { uuid } from "../lib/uuid";
 
 /** Stable empty points array so the overlay effect doesn't churn when idle. */
 const NO_DRAFT_POINTS: Point[] = [];
+
+/** Quantisation (px) of the analog-device terminal grid used to flag net
+ *  vertices that are real device-electrode connections. Kept tight so a node
+ *  merely *near* a terminal is not mistaken for a connection. */
+const DEVICE_CONN_GRID_PX = 1;
+
+/** Broad-phase pick radius (world units) covering the rendered net-vertex
+ *  dots. A vertex dot is drawn wider than the net's node bbox (screen-clamped),
+ *  so a click anywhere on a visible dot must widen the spatial search or the
+ *  annotation is culled before its precise `hitTest` runs — leaving only the
+ *  dot's centre grabbable. */
+function netNodePickWorldRadius(zoom: number): number {
+  const prefs = usePreferences.getState();
+  return netNodeWorldRadius(
+    zoom,
+    prefs.netWidth,
+    prefs.netNodeVisible ? prefs.netNodeSize : 0,
+    prefs.inspectorTab === "ml"
+  );
+}
+
+type DragSnap =
+  | { kind: "vertex"; netId: string; nodeId: string; x: number; y: number }
+  | { kind: "edge"; netId: string; edgeId: string; at: Point };
+
+/** Snap a dragged net endpoint onto ANOTHER net — nearest vertex first, then
+ *  nearest edge body. Mirrors the wire tool's drawing snap so a moved end joins
+ *  a foreign net the same way a freshly drawn one does. The dragged net itself
+ *  is excluded so it never snaps to its own graph. */
+function resolveDragSnap(
+  nets: AnnotationNet[],
+  excludeNetId: string,
+  world: Point,
+  vertexTol: number,
+  edgeTol: number
+): DragSnap | null {
+  let bestV: { netId: string; nodeId: string; x: number; y: number } | null = null;
+  let bestVD = vertexTol;
+  for (const net of nets) {
+    if (net.id === excludeNetId) continue;
+    for (const nd of net.nodes) {
+      const d = Math.hypot(nd.x - world.x, nd.y - world.y);
+      if (d <= bestVD) {
+        bestVD = d;
+        bestV = { netId: net.id, nodeId: nd.id, x: nd.x, y: nd.y };
+      }
+    }
+  }
+  if (bestV) return { kind: "vertex", ...bestV };
+
+  let bestE: { netId: string; edgeId: string; at: Point } | null = null;
+  let bestED = edgeTol;
+  for (const net of nets) {
+    if (net.id === excludeNetId) continue;
+    for (const edge of net.edges) {
+      const a = net.nodes.find((n) => n.id === edge.from);
+      const b = net.nodes.find((n) => n.id === edge.to);
+      if (!a || !b) continue;
+      const c = closestPointOnSegment(world, a, b);
+      const d = Math.hypot(c.x - world.x, c.y - world.y);
+      if (d <= bestED) {
+        bestED = d;
+        bestE = {
+          netId: net.id,
+          edgeId: edge.id,
+          at: { x: Math.round(c.x), y: Math.round(c.y) }
+        };
+      }
+    }
+  }
+  return bestE ? { kind: "edge", ...bestE } : null;
+}
 
 export function DieViewerPage() {
   const { dieId } = useParams<{ dieId: string }>();
@@ -183,6 +258,14 @@ function DieViewer({ dieId }: { dieId: string }) {
   const toast = useToast();
   const dialog = useDialog();
   useAnnotationsWebSocket(dieId);
+
+  // Scope the per-project analog device name store to this die.
+  useEffect(() => {
+    setActiveProject(dieId);
+    return () => {
+      flushProjectDeviceNames();
+    };
+  }, [dieId]);
   // Always-fresh annotations for the (stable) pointer router's shape editing.
   const annotationsRef = useRef(annotations);
   annotationsRef.current = annotations;
@@ -202,6 +285,8 @@ function DieViewer({ dieId }: { dieId: string }) {
   const outlineSearchRef = useRef<(() => void) | null>(null);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [leftCollapsed, toggleLeft] = usePanelCollapsed("die.left");
+  const [rightCollapsed, toggleRight] = usePanelCollapsed("die.right");
   useEffect(() => {
     const handler = () => setShortcutsOpen((v) => !v);
     window.addEventListener("toggle-shortcuts", handler);
@@ -711,6 +796,25 @@ function DieViewer({ dieId }: { dieId: string }) {
     mlViasLayer?.clearCache();
   }, [mlCheckpointHash, mlViasLayer]);
 
+  // Analog-device terminal points that are genuinely connected to a net,
+  // grouped per net (annotation net UUID) and quantised into a grid. The net
+  // renderer reads this live so a mid-net vertex that sits on a device
+  // electrode of THAT net is still drawn in "only connection points" mode —
+  // while a node merely near some unrelated/disconnected terminal is not.
+  const deviceConnPointsByNetRef = useRef<Map<string, Set<string>>>(new Map());
+  const isDeviceConnectionPoint = useCallback((netId: string, x: number, y: number) => {
+    const grid = deviceConnPointsByNetRef.current.get(netId);
+    if (!grid || grid.size === 0) return false;
+    const gx = Math.floor(x / DEVICE_CONN_GRID_PX);
+    const gy = Math.floor(y / DEVICE_CONN_GRID_PX);
+    for (let dx = -1; dx <= 1; dx += 1) {
+      for (let dy = -1; dy <= 1; dy += 1) {
+        if (grid.has(`${gx + dx},${gy + dy}`)) return true;
+      }
+    }
+    return false;
+  }, []);
+
   const annotationLayer = useMemo(
     () => (die ? new AnnotationLayer("die-annotations") : null),
     [die]
@@ -761,6 +865,9 @@ function DieViewer({ dieId }: { dieId: string }) {
         usePreferences.getState().netNodeVisible
           ? usePreferences.getState().netNodeSize
           : 0,
+      netNodeJunctionsOnly: () =>
+        usePreferences.getState().netNodeJunctionsOnly,
+      netNodeConnectionPoint: isDeviceConnectionPoint,
       isSibling: (cellId: string) => {
         if (!annotations) return false;
         const sel = useDieViewerStore.getState().selectedIds;
@@ -793,7 +900,7 @@ function DieViewer({ dieId }: { dieId: string }) {
   useEffect(() => {
     const unsubs = (
       ["netWidth", "netWidthByDie", "netColor", "netColors", "customNetColorsEnabled", "cellColor", "cellShowShapes", "viaSize",
-       "viaColor", "wireLayerColors", "viaLayerColors", "netNodeSize", "netNodeVisible", "pinNamesVisible"] as const
+       "viaColor", "wireLayerColors", "viaLayerColors", "netNodeSize", "netNodeVisible", "netNodeJunctionsOnly","pinNamesVisible"] as const
     ).map((key) =>
       usePreferences.subscribe(
         (s) => s[key],
@@ -1275,6 +1382,11 @@ function DieViewer({ dieId }: { dieId: string }) {
       ),
     [annotations?.cellTypes, annotations?.cells]
   );
+  // Device-electrode terminals (from the extraction pipeline's `_termPoints`,
+  // already orientation-correct). These cover cell types whose metal1/contact
+  // geometry doesn't yield a `buildInstanceTerminalMap` target (notably MOS),
+  // so wire snapping lands on the same points the labels are drawn at.
+  const deviceTerminalsRef = useRef<TerminalSnapTarget[]>([]);
   const findNearestTerminal = useCallback(
     (world: Point, tolWorld: number): TerminalSnapTarget | null => {
       let best: TerminalSnapTarget | null = null;
@@ -1285,6 +1397,14 @@ function DieViewer({ dieId }: { dieId: string }) {
         if (d <= bestD) {
           bestD = d;
           best = { x: t.worldX, y: t.worldY, terminalId: t.id };
+        }
+      }
+      // Check extracted device electrodes.
+      for (const t of deviceTerminalsRef.current) {
+        const d = Math.hypot(t.x - world.x, t.y - world.y);
+        if (d <= bestD) {
+          bestD = d;
+          best = t;
         }
       }
       // Also check IO pins from annotations.
@@ -1346,6 +1466,51 @@ function DieViewer({ dieId }: { dieId: string }) {
     netIdMap,
   } = useDieExtraction(annotations as any);
   const { progress: extractionProgress, isRunning: extractionRunning, lastTimeMs, lastCached } = useExtractionProgress();
+
+  // Feed the extracted device electrodes into the wire-snap candidates.
+  useEffect(() => {
+    const out: TerminalSnapTarget[] = [];
+    for (const d of analogDevices) {
+      const pts = (d as { _termPoints?: Array<{ x: number; y: number; name: string }> })._termPoints;
+      if (!pts || pts.length === 0) continue;
+      const cellId = (d as { _cellId?: string })._cellId ?? "";
+      for (const p of pts) {
+        out.push({ x: p.x, y: p.y, terminalId: `dev:${cellId}:${p.name}` });
+      }
+    }
+    deviceTerminalsRef.current = out;
+  }, [analogDevices]);
+
+  // Rebuild the per-net device-electrode connection grid from the extracted
+  // devices. Only terminals whose resolved netId maps to a real annotation net
+  // count — an unconnected terminal (netId >= 2000) never marks a node, so
+  // removing a connection stops its dot from appearing.
+  useEffect(() => {
+    const byNet = new Map<string, Set<string>>();
+    const uuidByNumeric = new Map<number, string>();
+    for (const [uuid, num] of netIdMap) uuidByNumeric.set(num, uuid);
+    for (const d of analogDevices) {
+      const pts = (d as { _termPoints?: Array<{ x: number; y: number; name: string }> })._termPoints;
+      if (!pts || pts.length === 0) continue;
+      const terms = (d as { terminals?: Array<{ name: string; netId: number }> }).terminals ?? [];
+      for (const p of pts) {
+        const term = terms.find((t) => t.name === p.name);
+        if (!term) continue;
+        const uuid = uuidByNumeric.get(term.netId);
+        if (!uuid) continue; // unconnected or synthetic net
+        let grid = byNet.get(uuid);
+        if (!grid) {
+          grid = new Set();
+          byNet.set(uuid, grid);
+        }
+        grid.add(
+          `${Math.floor(p.x / DEVICE_CONN_GRID_PX)},${Math.floor(p.y / DEVICE_CONN_GRID_PX)}`
+        );
+      }
+    }
+    deviceConnPointsByNetRef.current = byNet;
+    canvasHandle.current?.invalidate();
+  }, [analogDevices, netIdMap]);
 
   // Reverse map: numeric netId → annotation net UUID (for zoom)
   const netIdToUuid = useMemo(() => {
@@ -1751,7 +1916,10 @@ function DieViewer({ dieId }: { dieId: string }) {
       if (!overlays.baseImageVisible) overlays.toggleBaseImage();
     }
   }, [dieId]);
-  useOverlayHotkeys(toggleBaseImageForDie);
+  const toggleKindForDie = useCallback((kind: "cell" | "net") => {
+    usePreferences.getState().toggleKindVisibility(kind);
+  }, []);
+  useOverlayHotkeys(toggleBaseImageForDie, toggleKindForDie);
 
   // ── Pointer move / leave ────────────────────────────────────────
 
@@ -2156,7 +2324,11 @@ function DieViewer({ dieId }: { dieId: string }) {
       const vp = viewportLive.get();
       if (!vp || !annotationLayer) return "pan";
       const tolerance = HIT_TOLERANCE_PX / vp.zoom;
-      const hit = annotationLayer.hitTest(e.worldPoint, tolerance);
+      const hit = annotationLayer.hitTest(
+        e.worldPoint,
+        tolerance,
+        Math.max(tolerance, netNodePickWorldRadius(vp.zoom))
+      );
 
       if (hit) {
         // A mixed cell + wire selection must move as one bundle, regardless
@@ -2286,10 +2458,38 @@ function DieViewer({ dieId }: { dieId: string }) {
         // Dragging an existing net vertex moves it. The move is shown live by
         // updating just that one net in the index (no full repopulate); the
         // undoable `upsertNet` is dispatched only on pointer-up.
+        //
+        // Dragging the END of a net (degree-1 vertex) also snaps onto another
+        // net: a vertex welds the two nets into one, an edge body splits it and
+        // welds — matching the wire tool's drawing snap.
         const node = wire.nodeFromHit(hit);
         if (node && annotationLayer) {
           const original =
             wire.netsRef.current.find((n) => n.id === node.netId) ?? null;
+          const isEndpoint = original
+            ? original.edges.filter(
+                (e) => e.from === node.nodeId || e.to === node.nodeId
+              ).length === 1
+            : false;
+          const resolveSnap = (
+            worldPoint: { x: number; y: number }
+          ): DragSnap | null => {
+            if (!isEndpoint) return null;
+            const zoom = viewportLive.get()?.zoom ?? 1;
+            const prefs = usePreferences.getState();
+            const vertexTol = Math.max(
+              HIT_TOLERANCE_PX / zoom,
+              netNodePickWorldRadius(zoom)
+            );
+            const edgeTol = Math.max(HIT_TOLERANCE_PX / zoom, prefs.netWidth / 2);
+            return resolveDragSnap(
+              wire.netsRef.current,
+              node.netId,
+              worldPoint,
+              vertexTol,
+              edgeTol
+            );
+          };
           const moveNode = (worldPoint: { x: number; y: number }): AnnotationNet | null =>
             original
               ? {
@@ -2306,17 +2506,46 @@ function DieViewer({ dieId }: { dieId: string }) {
               useDieViewerStore.getState().select([hit.partId], "replace");
             },
             onDragMove: ({ worldPoint }) => {
-              const moved = moveNode(worldPoint);
+              const snap = resolveSnap(worldPoint);
+              const target = snap
+                ? snap.kind === "vertex"
+                  ? { x: snap.x, y: snap.y }
+                  : snap.at
+                : worldPoint;
+              const moved = moveNode(target);
               if (moved) {
                 annotationLayer.update(buildNetAnnotation(moved, getNetW, getNetC()));
               }
             },
             onPointerUp: ({ dragged, worldPoint, modifiers }) => {
-              const moved = dragged ? moveNode(worldPoint) : null;
-              if (!moved || !original) {
+              if (!dragged || !original) {
                 selectFromHit(hit, modifiers.shift);
                 return;
               }
+              const snap = resolveSnap(worldPoint);
+              if (snap) {
+                const changes =
+                  snap.kind === "vertex"
+                    ? weldNetAtNode(
+                        wire.netsRef.current,
+                        node.netId,
+                        node.nodeId,
+                        snap.netId,
+                        snap.nodeId
+                      )
+                    : weldNetAtEdge(
+                        wire.netsRef.current,
+                        node.netId,
+                        node.nodeId,
+                        snap.netId,
+                        snap.edgeId,
+                        snap.at
+                      );
+                const action = netChangesToAction(changes);
+                if (action) void dispatcher.dispatch(action);
+                return;
+              }
+              const moved = moveNode(worldPoint);
               const action = netChangesToAction([{ prev: original, next: moved }]);
               if (action) void dispatcher.dispatch(action);
             },
@@ -2959,6 +3188,7 @@ function DieViewer({ dieId }: { dieId: string }) {
       let hitLabel = "from this point";
       let hitCellId: string | undefined;
       let hitPartId: string | undefined;
+      let canSplitNetAtNode = false;
       let hitRulerId: string | undefined;
       const rulerHitPrefs = usePreferences.getState();
       const rulerHit = (annotationsRef.current?.rulers ?? []).find((ruler) =>
@@ -2970,7 +3200,7 @@ function DieViewer({ dieId }: { dieId: string }) {
         setSelectedRulerIds(new Set([rulerHit.id]));
       }
       const tol = HIT_TOLERANCE_PX / vp.zoom;
-      const hit = annotationLayer?.hitTest(world, tol) ?? null;
+      const hit = annotationLayer?.hitTest(world, tol, Math.max(tol, netNodePickWorldRadius(vp.zoom))) ?? null;
       if (hit) {
         hitPartId = hit.partId;
         if (hit.annotation.kind === "cell" && hit.annotation.id.startsWith("cell:")) {
@@ -2981,6 +3211,8 @@ function DieViewer({ dieId }: { dieId: string }) {
           hitPoint = { x: node.x, y: node.y };
           hitAnchor = { netId: node.netId, nodeId: node.nodeId };
           hitLabel = "from net vertex";
+          const hitNet = annotationsRef.current?.nets.find((net) => net.id === node.netId);
+          canSplitNetAtNode = hitNet?.edges.filter((edge) => edge.from === node.nodeId || edge.to === node.nodeId).length === 2;
         } else if (
           hit.annotation.kind === "via" &&
           hit.annotation.id.startsWith("anno:")
@@ -3038,6 +3270,7 @@ function DieViewer({ dieId }: { dieId: string }) {
         multiPointCount: picks.length,
         hitCellId,
         hitPartId,
+        canSplitNetAtNode,
         hitRulerId
       });
     },
@@ -3134,7 +3367,7 @@ function DieViewer({ dieId }: { dieId: string }) {
       // Manual via first (annotation layer paints on top + has the tighter
       // pickable region), then ML via as the fallback.
       const tol = HIT_TOLERANCE_PX / vp.zoom;
-      const hit = annotationLayer?.hitTest(world, tol) ?? null;
+      const hit = annotationLayer?.hitTest(world, tol, Math.max(tol, netNodePickWorldRadius(vp.zoom))) ?? null;
       if (hit && hit.annotation.kind === "via") {
         const annoId = hit.annotation.id.startsWith("anno:")
           ? hit.annotation.id.slice(5)
@@ -3186,7 +3419,7 @@ function DieViewer({ dieId }: { dieId: string }) {
       }
       if (!cellId && anns) {
         // Check annotation layer for cell hits (covers manually drawn cells)
-        const cellHit = annotationLayer?.hitTest(world, tol) ?? null;
+        const cellHit = annotationLayer?.hitTest(world, tol, Math.max(tol, netNodePickWorldRadius(vp.zoom))) ?? null;
         if (cellHit && cellHit.annotation.id.startsWith("cell:")) {
           const cid = cellHit.annotation.id.slice(5);
           const cell = (anns as any).cells?.find((c: any) => c.id === cid);
@@ -3407,9 +3640,13 @@ function DieViewer({ dieId }: { dieId: string }) {
             >
               {Ic.download}
             </button>
+            <div style={{ width: 1, height: 18, background: "var(--l2)", margin: "0 2px" }} />
+            <PanelToggle side="right" collapsed={rightCollapsed} onClick={toggleRight} />
           </div>
         }
       >
+        <PanelToggle side="left" collapsed={leftCollapsed} onClick={toggleLeft} />
+        <div style={{ width: 1, height: 18, background: "var(--l2)", margin: "0 2px" }} />
         <DieToolbar
           activeTool={activeTool}
           setActiveTool={setActiveTool}
@@ -3421,38 +3658,40 @@ function DieViewer({ dieId }: { dieId: string }) {
           flex: "1 1 auto",
           minHeight: 0,
           display: "grid",
-          gridTemplateColumns: "248px 1fr 320px"
+          gridTemplateColumns: `${leftCollapsed ? "0px" : "248px"} 1fr ${rightCollapsed ? "0px" : "320px"}`
         }}
       >
-        <aside style={panelStyle}>
-          <div className="ph" style={{ paddingRight: 8 }}>
-            <span className="u">Items</span>
-            <button
-              className="btn ghost"
-              title="Search (Ctrl+F)"
-              onClick={() => outlineSearchRef.current?.()}
-              style={{ padding: "2px 0", marginLeft: "auto" }}
-            >
-              {Ic.search}
-            </button>
-          </div>
-          <OutlineTree
-            annotations={annotations}
-            onFocus={focusOnIds}
-            baseImages={die ? [{ id: die.id, name: die.name }] : []}
-            deviceLabels={deviceLabels}
-            onDeviceSelect={(id) => { const d = analogDevices.find((x:any) => x._cellId === id || (x as any)._cellId === id); if(d) setSelectedDevice(d) }}
-            onOpenInRE={dieId ? (cellId, cellTypeId) => navigate(`/re?die=${encodeURIComponent(dieId)}&type=${encodeURIComponent(cellTypeId)}&cell=${encodeURIComponent(cellId)}`) : undefined}
-            searchOpenRef={outlineSearchRef}
-          />
-        </aside>
+        {!leftCollapsed && (
+          <aside style={{ ...panelStyle, gridColumn: 1 }}>
+            <div className="ph" style={{ paddingRight: 8 }}>
+              <span className="u">Items</span>
+              <button
+                className="btn ghost"
+                title="Search (Ctrl+F)"
+                onClick={() => outlineSearchRef.current?.()}
+                style={{ padding: "2px 0", marginLeft: "auto" }}
+              >
+                {Ic.search}
+              </button>
+            </div>
+            <OutlineTree
+              annotations={annotations}
+              onFocus={focusOnIds}
+              baseImages={die ? [{ id: die.id, name: die.name }] : []}
+              deviceLabels={deviceLabels}
+              onDeviceSelect={(id) => { const d = analogDevices.find((x:any) => x._cellId === id || (x as any)._cellId === id); if(d) setSelectedDevice(d) }}
+              onOpenInRE={dieId ? (cellId, cellTypeId) => navigate(`/re?die=${encodeURIComponent(dieId)}&type=${encodeURIComponent(cellTypeId)}&cell=${encodeURIComponent(cellId)}`) : undefined}
+              searchOpenRef={outlineSearchRef}
+            />
+          </aside>
+        )}
         <section
           ref={containerRef}
           onPointerMove={onPointerMove}
           onPointerLeave={onPointerLeave}
           onContextMenu={onCanvasContextMenu}
           onDoubleClick={onCanvasDoubleClick}
-          style={{ background: "var(--canvas-bg)", minWidth: 0, position: "relative", overflow: "hidden" }}
+          style={{ background: "var(--canvas-bg)", minWidth: 0, position: "relative", overflow: "hidden", gridColumn: 2 }}
         >
           {error && (
             <CenteredStatus>failed to load die · {error.message}</CenteredStatus>
@@ -3592,7 +3831,8 @@ function DieViewer({ dieId }: { dieId: string }) {
             />
           )}
         </section>
-        <aside style={panelStyle}>
+        {!rightCollapsed && (
+        <aside style={{ ...panelStyle, gridColumn: 3 }}>
           <div style={{ flex: "1 1 0", minHeight: 0, overflow: "auto" }}>
           <InspectorPanel
             annotations={annotations}
@@ -3650,6 +3890,7 @@ function DieViewer({ dieId }: { dieId: string }) {
             ) : null}
           </div>
         </aside>
+        )}
       </main>
       {selectedDevice && (
         <div
@@ -3774,6 +4015,14 @@ function DieViewer({ dieId }: { dieId: string }) {
               }
               viewerStore.setWireClipboard(snapshotWireClipboard(ann.nets, wireSelection, { x: minX, y: minY })!);
             }
+          }}
+          onSplitNetAtNode={() => {
+            const ann = annotationsRef.current;
+            const anchor = contextMenu.hitAnchor;
+            if (!ann || !anchor || !contextMenu.canSplitNetAtNode) return;
+            const changes = splitNetAtNode(ann.nets, anchor.netId, anchor.nodeId);
+            const action = changes ? netChangesToAction(changes) : null;
+            if (action) void dispatcher.dispatch(action);
           }}
           onMakeUnique={() => {
             const ann = annotationsRef.current;

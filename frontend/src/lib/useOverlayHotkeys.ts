@@ -4,6 +4,8 @@
  * Works across Die Viewer, Merge Cells, and RE Cell.
  *
  *   Space+B         — toggle base image visibility
+ *   Space+C         — toggle cell visibility (die viewer only)
+ *   Space+N         — toggle net visibility (die viewer only)
  *   ]               — show only the NEXT overlay layer (N+1), hide others
  *   [               — show only the PREVIOUS overlay layer (N-1), hide others
  *   Space+1..8      — show only overlay layer #1..#8, hide others; repeat to hide it
@@ -12,7 +14,12 @@
 import { useEffect } from "react";
 import { useOverlayLayers } from "../state/overlayLayers";
 
-export function useOverlayHotkeys(onToggleBaseImage?: () => void): void {
+export function useOverlayHotkeys(
+  onToggleBaseImage?: () => void,
+  /** Die-viewer only: Space+C / Space+N toggle cell / net visibility.
+   *  Omit on pages where annotation-kind visibility is not meaningful. */
+  toggleKindVisibility?: (kind: "cell" | "net") => void,
+): void {
   useEffect(() => {
     let spaceHeld = false;
     const onKeyDown = (e: KeyboardEvent) => {
@@ -35,6 +42,16 @@ export function useOverlayHotkeys(onToggleBaseImage?: () => void): void {
         if (onToggleBaseImage) onToggleBaseImage();
         else useOverlayLayers.getState().toggleBaseImage();
         return;
+      }
+
+      // Space+C / Space+N → toggle cell / net annotation visibility.
+      if (space && !ctrl && !shift && !e.altKey && toggleKindVisibility) {
+        const kindKey = e.key.toLowerCase();
+        if (kindKey === "c" || kindKey === "n") {
+          e.preventDefault();
+          toggleKindVisibility(kindKey === "c" ? "cell" : "net");
+          return;
+        }
       }
 
       // Space+1..8 → show only layer N, hide all others; repeat when it is the
@@ -106,5 +123,5 @@ export function useOverlayHotkeys(onToggleBaseImage?: () => void): void {
       window.removeEventListener("keyup", onKeyUp);
       window.removeEventListener("blur", onBlur);
     };
-  }, [onToggleBaseImage]);
+  }, [onToggleBaseImage, toggleKindVisibility]);
 }

@@ -47,6 +47,10 @@ export interface DieRecord {
   createdAt: string;
   updatedAt: string;
   config?: import("shared").DieConfig;
+  /** "managed" (absent) = inside <dataRoot>/dies; "folder" = external directory. */
+  location?: import("shared").ProjectLocationKind;
+  /** Absolute external directory for folder projects. */
+  folderPath?: string;
 }
 
 export interface DieIndex {
@@ -67,6 +71,10 @@ export interface ImportJobRecord {
   startedAt: string | null;
   finishedAt: string | null;
   progress: import("shared").ImportJobProgress;
+  /** Folder project destination (null for managed imports). */
+  targetDir?: string | null;
+  /** Folder project id used for targetDir imports. */
+  targetId?: string | null;
 }
 
 export interface ImportJobIndex {

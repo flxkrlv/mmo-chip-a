@@ -16,7 +16,8 @@ import type {
 } from "shared";
 import { AppShell } from "../components/shell/AppShell";
 import { StatusBar } from "../components/shell/StatusBar";
-import { SubBar } from "../components/shell/SubBar";
+import { SubBar, ToolDivider } from "../components/shell/SubBar";
+import { PanelToggle, usePanelCollapsed } from "../components/shell/PanelToggle";
 import { Ic } from "../icons";
 import { useDie } from "../api/dies";
 import { useAnnotations } from "../api/annotations";
@@ -45,6 +46,7 @@ import {
   buildSetShapeForcedTypesAction,
   buildSetShapeLabelsAction,
   buildToggleForceSourceAction,
+  shapeBounds,
   translateShape
 } from "../lib/cellLayers";
 import {
@@ -123,6 +125,8 @@ function RE({ dieId }: { dieId: string }) {
     [overlayLayers]
   );
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  const [leftCollapsed, toggleLeft] = usePanelCollapsed("re.left");
+  const [rightCollapsed, toggleRight] = usePanelCollapsed("re.right");
   useEffect(() => {
     const handler = () => setShortcutsOpen((v) => !v);
     window.addEventListener("toggle-shortcuts", handler);
@@ -413,15 +417,33 @@ function RE({ dieId }: { dieId: string }) {
     if (!cellType || clipboard.length === 0) return;
     // Default to pasting all into the active layer if it's a sensible target
     // (i.e. the active layer matches the source layer of every item), else
-    // each item lands back in its original layer. Either way new ids and an
-    // offset so the duplicates are obviously distinct from anything below.
+    // each item lands back in its original layer. Either way new ids.
     const uniformLayer =
       clipboard.every((c) => c.layer === activeLayer) ? activeLayer : null;
+    // Anchor at the cursor (die-viewer behaviour): translate so the clipboard's
+    // top-left lands under the pointer. Fall back to a fixed offset when the
+    // cursor is unknown (e.g. pasting from the context menu).
+    const cursor = canvasRef.current?.getCursor() ?? null;
+    let dx = PASTE_OFFSET;
+    let dy = PASTE_OFFSET;
+    if (cursor) {
+      let minX = Infinity;
+      let minY = Infinity;
+      for (const item of clipboard) {
+        const b = shapeBounds(item.shape);
+        if (b.x < minX) minX = b.x;
+        if (b.y < minY) minY = b.y;
+      }
+      if (Number.isFinite(minX) && Number.isFinite(minY)) {
+        dx = Math.round(cursor.x) - minX;
+        dy = Math.round(cursor.y) - minY;
+      }
+    }
     // Group by destination layer.
     const byLayer = new Map<LayerType, LayerShape[]>();
     for (const item of clipboard) {
       const layer = uniformLayer ?? item.layer;
-      const shape = translateShape(item.shape, PASTE_OFFSET, PASTE_OFFSET);
+      const shape = translateShape(item.shape, dx, dy);
       let arr = byLayer.get(layer);
       if (!arr) {
         arr = [];
@@ -612,28 +634,34 @@ function RE({ dieId }: { dieId: string }) {
     >
       <SubBar
         right={
-          <button
-            className="btn"
-            disabled
-            title="Base image (one per die for now)"
-            style={{ maxWidth: 220 }}
-          >
-            {Ic.image}
-            <span
-              className="m"
-              style={{
-                fontSize: 10.5,
-                marginLeft: 4,
-                overflow: "hidden",
-                textOverflow: "ellipsis"
-              }}
+          <>
+            <button
+              className="btn"
+              disabled
+              title="Base image (one per die for now)"
+              style={{ maxWidth: 220 }}
             >
-              {baseImageName}
-            </span>
-            {Ic.caret}
-          </button>
+              {Ic.image}
+              <span
+                className="m"
+                style={{
+                  fontSize: 10.5,
+                  marginLeft: 4,
+                  overflow: "hidden",
+                  textOverflow: "ellipsis"
+                }}
+              >
+                {baseImageName}
+              </span>
+              {Ic.caret}
+            </button>
+            <ToolDivider />
+            <PanelToggle side="right" collapsed={rightCollapsed} onClick={toggleRight} />
+          </>
         }
       >
+        <PanelToggle side="left" collapsed={leftCollapsed} onClick={toggleLeft} />
+        <ToolDivider />
         <CellREToolbar
           activeTool={activeTool}
           setActiveTool={setActiveTool}
@@ -651,7 +679,7 @@ function RE({ dieId }: { dieId: string }) {
           display: "flex"
         }}
       >
-        {annotations ? (
+        {!leftCollapsed && (annotations ? (
           <CellRELeftPanel
             annotations={annotations}
             onCellContextMenu={(c, x, y) => {
@@ -662,7 +690,7 @@ function RE({ dieId }: { dieId: string }) {
           />
         ) : (
           <div style={{ width: 248, flex: "0 0 auto", background: "var(--card)" }} />
-        )}
+        ))}
 
         <div className="col" style={{ flex: "1 1 auto", minWidth: 0, minHeight: 0 }}>
           {/* Tab strip above the canvas. Three views on the same cell:
@@ -835,7 +863,7 @@ function RE({ dieId }: { dieId: string }) {
           )}
         </div>
 
-        <CellRERightPanel
+        {!rightCollapsed && (<CellRERightPanel
           cellType={cellType}
           extraction={extraction.data}
           loading={extraction.loading}
@@ -936,7 +964,7 @@ function RE({ dieId }: { dieId: string }) {
             setActiveDomainId(domainId);
             setCanvasTab("schematic");
           }}
-        />
+        />)}
       </main>
 
       <StatusBar

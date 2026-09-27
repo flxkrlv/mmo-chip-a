@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { importDieShot, type ImportProgressUpdate } from "./importer.js";
 import { readImportJob, writeImportJob } from "../store.js";
+import { prepareFolderProject } from "../projectLayout.js";
 import type { createTileScheduler } from "../tileScheduler.js";
 import type { ImportJobProgress, ImportJobRecord } from "../types.js";
 
@@ -18,7 +19,13 @@ export function createImportJobManager(config: {
 }) {
   const activeJobs = new Set<string>();
 
-  async function enqueueImportJob(file: Express.Multer.File) {
+  async function enqueueImportJob(file: Express.Multer.File, targetFolder?: string) {
+    // Validate + register the destination folder before creating the job, so an
+    // occupied/invalid folder surfaces as a synchronous 4xx to the caller.
+    const target = targetFolder ? await prepareFolderProject(config.dataRoot, targetFolder, {
+      name: file.originalname.replace(/.[^.]+$/, "")
+    }) : null;
+
     const jobId = crypto.randomUUID();
     const jobDirectory = path.join(config.dataRoot, "jobs", jobId);
     await fs.mkdir(jobDirectory, { recursive: true });
@@ -42,6 +49,8 @@ export function createImportJobManager(config: {
       updatedAt: timestamp,
       startedAt: null,
       finishedAt: null,
+      targetDir: target?.dir ?? null,
+      targetId: target?.id ?? null,
       progress: createProgress({
         phase: "queued",
         message: "Queued for import",
@@ -125,6 +134,8 @@ export function createImportJobManager(config: {
         tileSize: config.tileSize,
         limitInputPixels: config.limitInputPixels,
         tileConcurrency: config.tileConcurrency,
+        targetDir: job.targetDir ?? undefined,
+        targetId: job.targetId ?? undefined,
         onProgress: persistProgress,
         logger: (message) => console.log(`[import:${jobId}] ${message}`)
       });

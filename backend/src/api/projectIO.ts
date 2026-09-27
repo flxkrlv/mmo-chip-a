@@ -27,6 +27,7 @@ import {
   type OverlayImageManifest
 } from "./overlayImages.js";
 import { listDieRecords, readDieRecord, writeDieRecord } from "../store.js";
+import { prepareFolderProject, resolveProjectDir, unregisterFolderShortcut } from "../projectLayout.js";
 import type { createTileScheduler } from "../tileScheduler.js";
 import type { DieRecord } from "../types.js";
 
@@ -101,10 +102,8 @@ function archiveTarget(root: string, relative: string): string {
 
 async function appendCompactOverlayImages(
   archive: Archiver,
-  dataRoot: string,
-  dieId: string
+  overlayDir: string
 ): Promise<void> {
-  const overlayDir = path.join(dataRoot, "overlay-images", dieId);
   let entries: import("node:fs").Dirent[];
   try {
     entries = await fs.readdir(overlayDir, { withFileTypes: true });
@@ -164,7 +163,9 @@ async function queueExport(
   const mode = body.mode === "full" ? "full" : "light";
 
   const archive: Archiver = new ZipArchive({ zlib: { level: 0 } }); // store — images already compressed
-  const dieDir = path.join(dataRoot, "dies", dieId);
+  // Folder projects live outside <dataRoot>; resolve so export reads the
+  // actual project folder (metadata/annotations/names/original/overlays).
+  const { dir: dieDir, overlayDir } = await resolveProjectDir(dataRoot, dieId);
   const dieName = sanitizeName(record.name) || "project";
   const filename = `mmochip-${dieName}-${mode}.zip`;
 
@@ -188,6 +189,12 @@ async function queueExport(
   await measure("spice_config.json", async () => {
     const p = path.join(dieDir, "spice_config.json");
     if (await fileExists(p)) archive.file(p, { name: "spice_config.json" });
+  });
+
+  // 3b. analog-devices.json (optional) — per-project analog device names
+  await measure("analog-devices.json", async () => {
+    const p = path.join(dieDir, "analog-devices.json");
+    if (await fileExists(p)) archive.file(p, { name: "analog-devices.json" });
   });
 
   // 4. export/ netlists (optional)
@@ -224,7 +231,7 @@ async function queueExport(
     });
 
     await measure("overlay-images/", async () => {
-      await appendCompactOverlayImages(archive, dataRoot, dieId);
+      await appendCompactOverlayImages(archive, overlayDir);
     });
   }
 
@@ -259,7 +266,8 @@ async function handleImport(
   dataRoot: string,
   tileScheduler: ReturnType<typeof createTileScheduler>,
   zipPath: string,
-  renameTo?: string
+  renameTo?: string,
+  targetFolder?: string
 ): Promise<{ dieId: string; preferences: string | null; deviceRegistry: string | null; analogNames: string | null }> {
   const archive = await ZipStreamReader.open(zipPath);
   const stagingRoot = path.join(dataRoot, "tmp", `project-import-${Date.now()}-${Math.random().toString(16).slice(2)}`);
@@ -290,21 +298,33 @@ async function handleImport(
       targetName = renameTo;
     }
 
-    dieDir = path.join(dataRoot, "dies", targetDieId);
-    overlayDir = path.join(dataRoot, "overlay-images", targetDieId);
-    if (await fileExists(dieDir)) {
-      throw new ProjectIOError(
-        409,
-        JSON.stringify({
-          error: "die_already_exists",
-          dieId: targetDieId,
-          name: targetName,
-          originalDieId: meta.id
-        })
-      );
-    }
-    if (await fileExists(overlayDir)) {
-      throw new ProjectIOError(409, `Project resources already exist for ${targetName}`);
+    if (targetFolder) {
+      // Create (or validate) the folder project up-front so the destination is
+      // registered and any conflict (already a project / not empty) fails here.
+      const prepared = await prepareFolderProject(dataRoot, targetFolder, {
+        name: targetName
+      });
+      targetDieId = prepared.id;
+      targetName = prepared.name;
+      dieDir = prepared.dir;
+      overlayDir = path.join(prepared.dir, "overlay-images");
+    } else {
+      dieDir = path.join(dataRoot, "dies", targetDieId);
+      overlayDir = path.join(dataRoot, "overlay-images", targetDieId);
+      if (await fileExists(dieDir)) {
+        throw new ProjectIOError(
+          409,
+          JSON.stringify({
+            error: "die_already_exists",
+            dieId: targetDieId,
+            name: targetName,
+            originalDieId: meta.id
+          })
+        );
+      }
+      if (await fileExists(overlayDir)) {
+        throw new ProjectIOError(409, `Project resources already exist for ${targetName}`);
+      }
     }
 
     const allDies = await listDieRecords(dataRoot);
@@ -334,6 +354,7 @@ async function handleImport(
       if (
         entry.entryName === "annotations.json" ||
         entry.entryName === "spice_config.json" ||
+        entry.entryName === "analog-devices.json" ||
         entry.entryName === "preferences.json" ||
         entry.entryName === "device-registry.json" ||
         entry.entryName === "analog-names.json"
@@ -343,7 +364,9 @@ async function handleImport(
         }
         seenSingleEntries.add(entry.entryName);
         const target =
-          entry.entryName === "annotations.json" || entry.entryName === "spice_config.json"
+          entry.entryName === "annotations.json" ||
+          entry.entryName === "spice_config.json" ||
+          entry.entryName === "analog-devices.json"
             ? path.join(stagedDieDir, entry.entryName)
             : path.join(stagedExtrasDir, entry.entryName);
         await archive.extractEntry(entry, target);
@@ -404,9 +427,16 @@ async function handleImport(
       id: targetDieId,
       name: targetName,
       originalPath: resolvedOriginalPath ?? meta.originalPath,
-      updatedAt: new Date().toISOString()
+      updatedAt: new Date().toISOString(),
+      ...(targetFolder
+        ? { location: "folder" as const, folderPath: dieDir, available: true }
+        : {})
     };
     await fs.writeFile(path.join(stagedDieDir, "metadata.json"), `${JSON.stringify(updatedMeta, null, 2)}\n`, "utf8");
+    if (targetFolder) {
+      // Keep the on-disk marker consistent with the final name/id.
+      await syncFolderManifest(dieDir, updatedMeta);
+    }
 
     const reboundManifests: OverlayImageManifest[] = [];
     for (const [sourceId, item] of importedOverlays) {
@@ -436,12 +466,24 @@ async function handleImport(
     const deviceRegistry = await readStagedText(path.join(stagedExtrasDir, "device-registry.json"));
     const analogNames = await readStagedText(path.join(stagedExtrasDir, "analog-names.json"));
 
-    await fs.rename(stagedDieDir, dieDir);
-    dieMoved = true;
-    if (importedOverlays.size > 0) {
-      await ensureDir(path.join(dataRoot, "overlay-images"));
-      await fs.rename(stagedOverlayDir, overlayDir);
-      overlayMoved = true;
+    if (targetFolder) {
+      // The destination folder already exists (created by prepareFolderProject);
+      // move the staged contents into it instead of renaming the directory.
+      await moveDirectoryContents(stagedDieDir, dieDir);
+      if (importedOverlays.size > 0) {
+        await ensureDir(overlayDir);
+        await moveDirectoryContents(stagedOverlayDir, overlayDir);
+        overlayMoved = true;
+      }
+      dieMoved = true;
+    } else {
+      await moveEntry(stagedDieDir, dieDir);
+      dieMoved = true;
+      if (importedOverlays.size > 0) {
+        await ensureDir(path.join(dataRoot, "overlay-images"));
+        await moveEntry(stagedOverlayDir, overlayDir);
+        overlayMoved = true;
+      }
     }
     await writeDieRecord(dataRoot, updatedMeta);
     // A project ZIP creates the same base-image record as an ordinary import.
@@ -460,14 +502,98 @@ async function handleImport(
 
     return { dieId: targetDieId, preferences, deviceRegistry, analogNames };
   } catch (error) {
-    if (dieMoved && dieDir) await fs.rm(dieDir, { recursive: true, force: true }).catch(() => {});
-    if (overlayMoved && overlayDir) await fs.rm(overlayDir, { recursive: true, force: true }).catch(() => {});
+    if (targetFolder) {
+      // Never delete the user's folder. Remove only the artefacts we moved in,
+      // and unregister the shortcut so the half-created project disappears.
+      if (dieMoved) await pruneProjectArtefacts(dieDir).catch(() => {});
+      if (overlayMoved) await fs.rm(overlayDir, { recursive: true, force: true }).catch(() => {});
+      await unregisterFolderShortcutSafe(dataRoot, targetDieId);
+    } else {
+      if (dieMoved && dieDir) await fs.rm(dieDir, { recursive: true, force: true }).catch(() => {});
+      if (overlayMoved && overlayDir) await fs.rm(overlayDir, { recursive: true, force: true }).catch(() => {});
+    }
     if (error instanceof ZipStreamError) throw new ProjectIOError(400, error.message);
     throw error;
   } finally {
     await archive.close().catch(() => {});
     await fs.rm(stagingRoot, { recursive: true, force: true }).catch(() => {});
   }
+}
+
+/** Refresh a folder project's project.json marker from its record. */
+async function syncFolderManifest(dieDir: string, record: DieRecord): Promise<void> {
+  const manifestPath = path.join(dieDir, "project.json");
+  let createdAt = record.createdAt;
+  try {
+    const parsed = JSON.parse(await fs.readFile(manifestPath, "utf8")) as { createdAt?: string };
+    if (parsed?.createdAt) createdAt = parsed.createdAt;
+  } catch {
+    // fresh marker — use the record's createdAt
+  }
+  await fs.writeFile(
+    manifestPath,
+    `${JSON.stringify(
+      {
+        version: 1,
+        id: record.id,
+        name: record.name,
+        createdAt,
+        updatedAt: record.updatedAt
+      },
+      null,
+      2
+    )}\n`,
+    "utf8"
+  );
+}
+
+/**
+ * Move a single path, falling back to copy+remove when the rename crosses
+ * volumes (EXDEV). The application's data root and a user's project folder can
+ * live on different drives (e.g. C: staging vs D: project), where rename fails.
+ */
+async function moveEntry(source: string, target: string): Promise<void> {
+  try {
+    await fs.rename(source, target);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EXDEV") throw error;
+    // fs.cp preserves nested structure (files + directories).
+    await fs.mkdir(path.dirname(target), { recursive: true });
+    await fs.cp(source, target, { recursive: true });
+    await fs.rm(source, { recursive: true, force: true });
+  }
+}
+
+/** Move every top-level entry of `from` into the existing directory `to`. */
+async function moveDirectoryContents(from: string, to: string): Promise<void> {
+  await ensureDir(to);
+  const entries = await fs.readdir(from, { withFileTypes: true });
+  for (const entry of entries) {
+    const source = path.join(from, entry.name);
+    const target = path.join(to, entry.name);
+    // A collision should never happen for a freshly prepared folder, but guard
+    // anyway so we never silently overwrite an existing artefact.
+    if (await fileExists(target)) {
+      throw new ProjectIOError(409, `Target already contains ${entry.name}`);
+    }
+    await moveEntry(source, target);
+  }
+}
+
+/** Remove the loose project artefacts we may have moved into a user folder. */
+async function pruneProjectArtefacts(dieDir: string): Promise<void> {
+  for (const artefact of ["metadata.json", "annotations.json", "spice_config.json", "analog-devices.json"]) {
+    await fs.rm(path.join(dieDir, artefact), { force: true }).catch(() => {});
+  }
+  for (const dir of ["original", "tiles", "export", "overlay-images"]) {
+    await fs.rm(path.join(dieDir, dir), { recursive: true, force: true }).catch(() => {});
+  }
+  // Leave project.json in place? No — the project was never created successfully.
+  await fs.rm(path.join(dieDir, "project.json"), { force: true }).catch(() => {});
+}
+
+async function unregisterFolderShortcutSafe(dataRoot: string, dieId: string): Promise<void> {
+  await unregisterFolderShortcut(dataRoot, dieId).catch(() => {});
 }
 
 // ═════════════════════════════════════════════════════════════════════
@@ -585,11 +711,20 @@ export function createProjectIORouter(config: {
             ? request.query.name.trim() || undefined
             : undefined;
 
+        const rawFolder =
+          typeof request.query.folder === "string"
+            ? request.query.folder
+            : typeof request.body?.targetFolder === "string"
+              ? request.body.targetFolder
+              : undefined;
+        const targetFolder = rawFolder?.trim() || undefined;
+
         const result = await handleImport(
           config.dataRoot,
           config.tileScheduler,
           request.file.path,
-          renameTo
+          renameTo,
+          targetFolder
         );
         await fs.rm(request.file.path, { force: true });
 
@@ -603,6 +738,17 @@ export function createProjectIORouter(config: {
       } catch (error) {
         if (filePath) await fs.rm(filePath, { force: true }).catch(() => {});
 
+        const folderStatus = (error as { status?: number }).status;
+        if (
+          !(error instanceof ProjectIOError) &&
+          (folderStatus === 400 || folderStatus === 409)
+        ) {
+          response.status(folderStatus).json({
+            error: (error as { code?: string }).code ?? "folder_error",
+            message: (error as Error).message
+          });
+          return;
+        }
         if (error instanceof ProjectIOError) {
           let parsed: unknown;
           try {

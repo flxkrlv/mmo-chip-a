@@ -212,6 +212,13 @@ interface PreferencesState {
   /** Wire node (junction dot) visibility toggle. When false, no dots drawn
    *  at wire junctions regardless of netNodeSize. */
   netNodeVisible: boolean;
+  /** Wire node drawing mode.
+   *  - true  → "real schematic" mode: draw a dot only where the net graph
+   *    branches — vertices with degree 1 (dangling end) or ≥ 3 (a real
+   *    junction); plain bends (degree 2) get no dot.
+   *  - false → legacy behaviour: a dot on EVERY net vertex (ends + turns).
+   *  Only affects drawing; vertices stay grabbable in both modes. */
+  netNodeJunctionsOnly: boolean;
   /** Resistor body layers opacity (0..1) in the RE canvas. Default 1.
    *  Helps superimpose the drawn polyline onto the image to verify width. */
   resistorOpacity: number;
@@ -327,6 +334,8 @@ interface PreferencesActions {
   setNetNodeSize: (size: number) => void;
   /** Toggle wire node visibility. */
   setNetNodeVisible: (visible: boolean) => void;
+  /** Toggle junction-only wire node drawing (see `netNodeJunctionsOnly`). */
+  setNetNodeJunctionsOnly: (junctionsOnly: boolean) => void;
   setViaColor: (color: string) => void;
   setCellColor: (color: string) => void;
   setCellShowShapes: (show: boolean) => void;
@@ -464,8 +473,9 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
         floorplanOverlayOn: true,
         showFloorplanIO: false,
         showCellRelations: false,
-        netNodeSize: NET_NODE_RADIUS_MULT,
+              netNodeSize: NET_NODE_RADIUS_MULT,
         netNodeVisible: true,
+        netNodeJunctionsOnly: true,
         resistorOpacity: 1,
         reDeviceLabelsVisible: true,
         reTerminalLabelsVisible: true,
@@ -515,6 +525,8 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
         setNetNodeSize: (size) =>
           set({ netNodeSize: Math.max(0, Math.min(5, size)) }),
         setNetNodeVisible: (visible) => set({ netNodeVisible: visible }),
+        setNetNodeJunctionsOnly: (junctionsOnly) =>
+          set({ netNodeJunctionsOnly: junctionsOnly }),
         setViaColor: (color) => set({ viaColor: color }),
         setNetColorOverride: (netId, color) =>
           set((state) => {
@@ -833,6 +845,7 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
           viaLayerColors: state.viaLayerColors,
           netNodeSize: state.netNodeSize,
           netNodeVisible: state.netNodeVisible,
+          netNodeJunctionsOnly: state.netNodeJunctionsOnly,
           resistorOpacity: state.resistorOpacity,
           reDeviceLabelsVisible: state.reDeviceLabelsVisible,
           reTerminalLabelsVisible: state.reTerminalLabelsVisible,

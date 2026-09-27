@@ -217,6 +217,23 @@ export function netNodeScreenRadius(zoom: number, netWidth: number): number {
   return netScreenWidth(zoom, netWidth) * NET_NODE_RADIUS_MULT * SELECT_NODE_MULT;
 }
 
+/** World-unit radius a net vertex dot is actually painted at for the given
+ *  zoom, base width and node-size multiplier. Mirrors
+ *  `buildNetAnnotation.draw` exactly (screen-clamped wire width -> world
+ *  radius), so hit-testing can match the visible disc instead of a
+ *  zoom-independent guess. `mlMode` paints vertices flush with the stroke
+ *  (radius = half the width). */
+export function netNodeWorldRadius(
+  zoom: number,
+  worldWidth: number,
+  nodeMult: number,
+  mlMode = false
+): number {
+  if (mlMode) return worldWidth / 2;
+  if (nodeMult <= 0) return 0;
+  return (netScreenWidth(zoom, worldWidth) * nodeMult) / zoom;
+}
+
 // ── Via / ML annotations ─────────────────────────────────────────────
 
 export const COLOR_VIA = "rgba(130, 214, 166, 0.85)"; // green-power
@@ -335,3 +352,29 @@ export const PICK = {
   ignore: 1,
   cell: 0
 } as const;
+
+/** Parse #rgb / #rrggbb / rgb() / rgba() into 0-255 channels. */
+function parseRgb(color: string): { r: number; g: number; b: number } | null {
+  const c = color.trim();
+  if (c.startsWith("#")) {
+    let hex = c.slice(1);
+    if (hex.length === 3) hex = hex.replace(/./g, (ch) => ch + ch);
+    if (hex.length !== 6) return null;
+    return {
+      r: parseInt(hex.slice(0, 2), 16),
+      g: parseInt(hex.slice(2, 4), 16),
+      b: parseInt(hex.slice(4, 6), 16)
+    };
+  }
+  const m = c.match(/rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/i);
+  return m ? { r: +m[1], g: +m[2], b: +m[3] } : null;
+}
+
+/** Best-contrast black/white ink for a given colour, chosen by relative
+ *  luminance. Keeps the junction cross legible on any dot colour. */
+export function contrastColor(color: string): string {
+  const rgb = parseRgb(color);
+  if (!rgb) return "#000000";
+  const lum = (0.299 * rgb.r + 0.587 * rgb.g + 0.114 * rgb.b) / 255;
+  return lum > 0.5 ? "#000000" : "#ffffff";
+}

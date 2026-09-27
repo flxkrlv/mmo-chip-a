@@ -31,6 +31,8 @@ You wake up fresh each session. These files are your continuity:
 
 Capture what matters. Decisions, context, things to remember. Skip the secrets unless asked to keep them.
 
+**Cadence (user request, 2026-09-17):** дописывать дневник в `memory/YYYY-MM-DD.md` после КАЖДОГО законченного изменения, а не только в конце сессии. Правки файлов репы — CRLF (см. `tools/crlf-patch.mjs`), новые файлы нормализовать в CRLF.
+
 ### 🧠 MEMORY.md - Your Long-Term Memory
 
 - **ONLY load in main session** (direct chats with your human)

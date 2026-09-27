@@ -9,12 +9,14 @@ import {
 } from "../../lib/geometry";
 import {
   VIA_DEFAULT_SIZE,
+  netNodeWorldRadius,
   viaSnapTolerance
 } from "../../renderer/annotations/style";
 import { isTypingTarget } from "../../lib/keyboard";
 import type { LiveValue } from "../../lib/liveValue";
 import {
   commitDraft,
+  connectToEdgeBody,
   connectToNode,
   parseNetPartId,
   splitEdgeAtPoint,
@@ -29,6 +31,7 @@ import type {
 import type { Viewport } from "../../renderer/types";
 import { useDieViewerStore, type ToolKind } from "../../state/dieViewer";
 import { useSession, DEFAULT_METAL_STACK } from "../../state/session";
+import { usePreferences } from "../../state/preferences";
 import type { WirePreview } from "./WireDraftOverlay";
 import type { WireLayer, MetalStack } from "shared";
 import { uuid } from "../../lib/uuid";
@@ -379,6 +382,21 @@ export function useWireTool(opts: {
     []
   );
 
+  /** World-unit radius of the visible vertex dot at `zoom` (0 when hidden).
+   *  The snap area grows to this so clicking anywhere inside the disc lands
+   *  on the vertex. */
+  const dotRadiusAt = useCallback((zoom: number): number => {
+    const prefs = usePreferences.getState();
+    const nodeMult = prefs.netNodeVisible ? prefs.netNodeSize : 0;
+    if (nodeMult <= 0) return 0;
+    return netNodeWorldRadius(
+      zoom,
+      prefs.netWidth,
+      nodeMult,
+      prefs.inspectorTab === "ml",
+    );
+  }, []);
+
   /** Resolve an existing net vertex to snap to, enforcing "vertex beats via":
    *  when via snapping is on, the vertex search radius is widened to the via
    *  tolerance, and a vertex sitting under `via` (even one larger than the
@@ -398,7 +416,10 @@ export function useWireTool(opts: {
       zoom: number,
       widen: boolean
     ): (ResolvedNode & { autoViaId?: string }) | null => {
-      const hitTol = HIT_TOLERANCE_PX / zoom;
+      // The snap area matches the rendered vertex disc (the fixed screen-px
+      // slop is only a floor), so a click anywhere inside the visible dot
+      // snaps to it.
+      const hitTol = Math.max(HIT_TOLERANCE_PX / zoom, dotRadiusAt(zoom));
       if (!widen) return nearestNode(cursor, hitTol);
       const { snapToViasEnabled, getViaSizeWorld, findViaAnnotation, autoViaEnabled } = snapRef.current;
       const viaTol = snapToViasEnabled?.()
@@ -409,7 +430,7 @@ export function useWireTool(opts: {
       if (byCursor) return byCursor;
       return via ? nearestNode(via, viaTol) : null;
     },
-    [nearestNode]
+    [nearestNode, dotRadiusAt]
   );
 
   /** Check layer compatibility between the current wire metal and a vertex.
@@ -537,6 +558,27 @@ export function useWireTool(opts: {
         }
       }
       return netChangesToAction(build(netsRef.current, d.anchor));
+    },
+    []
+  );
+
+  /** Commit the draft by connecting its endpoint onto the *body* of another
+   *  net's edge (splitting that edge into a junction). Composes with a
+   *  start-edge split so the whole edit is a single undo step. Returns null
+   *  when the target edge vanished, so the caller can fall back to free
+   *  placement. */
+  const buildEdgeConnectAction = useCallback(
+    (d: WireDraft, target: EdgeSplitTarget, layer: SegLayer) => {
+      const changes = connectToEdgeBody(
+        netsRef.current,
+        d.points,
+        d.anchor,
+        d.startSplit ?? null,
+        target,
+        d.segLayers,
+        layer
+      );
+      return changes.length > 0 ? netChangesToAction(changes) : null;
     },
     []
   );
@@ -750,6 +792,20 @@ export function useWireTool(opts: {
         }
       }
 
+      // Endpoint lands on the body of another net's edge → split that edge and
+      // connect into it, mirroring the "start on a wire body" behaviour.
+      // Without this the endpoint would just sit on top of the trace without
+      // joining the net.
+      const endSplit = edgeSplitFromHit(hit, world);
+      if (endSplit) {
+        const action = buildEdgeConnectAction(d, endSplit, layer);
+        if (action) {
+          void dispatcher.dispatch(action);
+          clearDraft();
+          return;
+        }
+      }
+
       const point = shift
         ? world
         : via
@@ -769,6 +825,7 @@ export function useWireTool(opts: {
       clearDraft,
       edgeSplitFromHit,
       buildAction,
+      buildEdgeConnectAction,
       viewportLive,
       viaSnap,
       viaOnProjection,
@@ -860,31 +917,44 @@ export function useWireTool(opts: {
       } else if (shiftKey) {
         preview = { ...world, onNode: false };
       } else {
-        // Cell terminal: before via so the orange terminal halo appears in
-        // preference to the blue via halo — the terminal is a deliberate
-        // connection target.
-        const terminal = resolveTerminalSnap(world, zoom);
-        if (terminal) {
+        // Endpoint over another net's wire body → it will be split and the
+        // draft connected into it (dashed virtual-vertex marker).
+        const hit = annotationLayer.hitTest(world, HIT_TOLERANCE_PX / zoom);
+        const endSplit = edgeSplitFromHit(hit, world);
+        if (endSplit) {
           preview = {
-            x: terminal.x,
-            y: terminal.y,
+            x: endSplit.at.x,
+            y: endSplit.at.y,
             onNode: false,
-            onTerminal: terminal
-          };
-        } else if (via) {
-          preview = {
-            x: Math.round(via.x),
-            y: Math.round(via.y),
-            onNode: false,
-            onVia: true
+            onEdgeSplit: true
           };
         } else {
-          preview = { ...snapped45, onNode: false };
+          // Cell terminal: before via so the orange terminal halo appears in
+          // preference to the blue via halo — the terminal is a deliberate
+          // connection target.
+          const terminal = resolveTerminalSnap(world, zoom);
+          if (terminal) {
+            preview = {
+              x: terminal.x,
+              y: terminal.y,
+              onNode: false,
+              onTerminal: terminal
+            };
+          } else if (via) {
+            preview = {
+              x: Math.round(via.x),
+              y: Math.round(via.y),
+              onNode: false,
+              onVia: true
+            };
+          } else {
+            preview = { ...snapped45, onNode: false };
+          }
         }
       }
       wirePreviewLive.set(preview);
     },
-    [annotationLayer, wirePreviewLive, viaSnap, viaOnProjection, snapNode, resolveTerminalSnap]
+    [annotationLayer, wirePreviewLive, viaSnap, viaOnProjection, snapNode, resolveTerminalSnap, edgeSplitFromHit]
   );
 
   /**

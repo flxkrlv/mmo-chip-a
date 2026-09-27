@@ -183,6 +183,13 @@ export const Ic = {
     </>
   ),
   plus: Icon(<path d="M8 2.5v11M2.5 8h11" />),
+  folder: Icon(<path d="M2 4.2a1 1 0 011-1h3.2l1.4 1.6H13a1 1 0 011 1V12a1 1 0 01-1 1H3a1 1 0 01-1-1z" />),
+  folderOpen: Icon(
+    <>
+      <path d="M2 4.2a1 1 0 011-1h3.2l1.4 1.6H13a1 1 0 011 1V7" />
+      <path d="M2 6.5h12l-1.6 6a1 1 0 01-1 .8H3.2a1 1 0 01-1-.9z" />
+    </>
+  ),
   caret: Icon(<path d="M4 6l4 4 4-4" fill="currentColor" stroke="none" />),
   caretR: Icon(<path d="M6 4l4 4-4 4" fill="currentColor" stroke="none" />),
   caretD: Icon(<path d="M4 6l4 4 4-4" fill="currentColor" stroke="none" />),
@@ -236,6 +243,20 @@ export const Ic = {
     </>
   ),
   chev: Icon(<path d="M4 6l4 4 4-4" fill="currentColor" stroke="none" />),
+  panelLeft: Icon(
+    <>
+      <rect x="2" y="3" width="12" height="10" rx="1.2" />
+      <path d="M6 3v10" />
+      <rect x="2.7" y="3.7" width="2.6" height="8.6" rx="0.4" fill="currentColor" stroke="none" opacity=".5" />
+    </>
+  ),
+  panelRight: Icon(
+    <>
+      <rect x="2" y="3" width="12" height="10" rx="1.2" />
+      <path d="M10 3v10" />
+      <rect x="10.7" y="3.7" width="2.6" height="8.6" rx="0.4" fill="currentColor" stroke="none" opacity=".5" />
+    </>
+  ),
   more: Icon(
     <>
       <circle cx="8" cy="3.5" r="1.2" fill="currentColor" stroke="none" />

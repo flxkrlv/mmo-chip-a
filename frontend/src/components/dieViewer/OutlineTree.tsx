@@ -278,8 +278,6 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
 
   // Annotation ids per category, for double-click "frame in viewport". Cheap
   // to recompute; double-click is rare.
-  const netIdsAll = annotations.nets.map((n) => `net:${n.id}`);
-  const cellIdsAll = annotations.cells.map((c) => `cell:${c.id}`);
   const anns = annotations.annotations ?? [];
   const pointViaIds = anns
     .filter((a) => a.class === "point_via")
@@ -379,7 +377,6 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
         }}
         onToggleExpand={() => toggleSection("net")}
         onSelect={() => toggleSection("net")}
-        onDoubleClick={() => focus(netIdsAll)}
       />
       {isOpen("net") &&
         filteredNets.map((net) => {
@@ -435,7 +432,6 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
         }}
         onToggleExpand={() => toggleSection("cell")}
         onSelect={() => toggleSection("cell")}
-        onDoubleClick={() => focus(cellIdsAll)}
       />
       {isOpen("cell") &&
         filteredCellsByType.map((group) => {
@@ -1189,8 +1185,13 @@ function NetSettingsButton() {
   const setNetNodeSize = usePreferences((s) => s.setNetNodeSize);
   const netNodeVisible = usePreferences((s) => s.netNodeVisible);
   const setNetNodeVisible = usePreferences((s) => s.setNetNodeVisible);
+<<<<<<< HEAD
   const customNetColorsEnabled = usePreferences((s) => s.customNetColorsEnabled);
   const setCustomNetColorsEnabled = usePreferences((s) => s.setCustomNetColorsEnabled);
+=======
+  const netNodeJunctionsOnly = usePreferences((s) => s.netNodeJunctionsOnly);
+  const setNetNodeJunctionsOnly = usePreferences((s) => s.setNetNodeJunctionsOnly);
+>>>>>>> 3e1a32c9b07f092972c59f383101edcf3128fb10
   const metalStack = useSession((s) => s.metalStack ?? DEFAULT_METAL_STACK);
 
   return (
@@ -1314,6 +1315,14 @@ function NetSettingsButton() {
           onChange={(e) => setNetNodeVisible(e.target.checked)}
         />
         Show dots at wire turns
+      </label>
+      <label className="check" style={{ marginBottom: 8 }}>
+        <input
+          type="checkbox"
+          checked={netNodeJunctionsOnly}
+          onChange={(e) => setNetNodeJunctionsOnly(e.target.checked)}
+        />
+        Show only connection points
       </label>
       <div className="row" style={{ gap: 10 }}>
         <input

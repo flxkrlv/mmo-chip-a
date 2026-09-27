@@ -17,6 +17,7 @@ import type { SpiceConfig, SpiceDialect } from "shared";
 import { AppShell } from "../components/shell/AppShell";
 import { StatusBar } from "../components/shell/StatusBar";
 import { SubBar, ToolDivider } from "../components/shell/SubBar";
+import { PanelToggle, usePanelCollapsed } from "../components/shell/PanelToggle";
 import { CodeViewer, type CodeViewerHandle } from "../components/code/CodeViewer";
 import { EditableCodeViewer, type EditableCodeViewerHandle } from "../components/code/EditableCodeViewer";
 import { TreeRow, TreeSep } from "../components/tree/TreeRow";
@@ -31,12 +32,35 @@ import {
   saveSpiceConfigToBackend,
 } from "../api/analogNetlist";
 import { renameDeviceInstance, validateDeviceName } from "../api/dieWideAnalog";
+import { setActiveProject, flushProjectDeviceNames } from "../state/analogDeviceNames";
 import { loadClipper } from "../lib/extraction";
 import { ANALOG_NETLIST_HOTKEYS, ANALOG_NETLIST_ALT_HOTKEYS } from "../lib/hotkeys";
 import { isTypingTarget } from "../lib/keyboard";
 
 import { Ic } from "../icons";
 import { exportLayout, renderLayoutCsv } from "../lib/export/layoutExport";
+
+// ── Global (program-wide) view persistence ───────────────────────
+
+const RIGHT_VIEW_KEY = "analog.rightView";
+type RightView = "code" | "graph" | "schematic" | "lvs";
+
+function readRightView(): RightView {
+  try {
+    const v = localStorage.getItem(RIGHT_VIEW_KEY);
+    return v === "code" || v === "graph" || v === "schematic" || v === "lvs" ? v : "code";
+  } catch {
+    return "code";
+  }
+}
+
+function writeRightView(v: RightView): void {
+  try {
+    localStorage.setItem(RIGHT_VIEW_KEY, v);
+  } catch {
+    /* storage unavailable */
+  }
+}
 
 // ── Dialect selector ─────────────────────────────────────────────
 
@@ -85,6 +109,14 @@ function AnalogNetlist({ dieId }: { dieId: string }) {
   const annotationsQ = useAnnotations(dieId);
   useAnnotationsWebSocket(dieId);
   const annotations = annotationsQ.data;
+
+  // Scope the per-project analog device name store to this die.
+  useEffect(() => {
+    setActiveProject(dieId);
+    return () => {
+      flushProjectDeviceNames();
+    };
+  }, [dieId]);
 
   // Dialect picker state
   const [dialect, setDialect] = useState<SpiceDialect>("spectre");
@@ -184,7 +216,8 @@ function AnalogNetlist({ dieId }: { dieId: string }) {
   const netlist = useAnalogNetlist(annotations, moduleName, dialect, spiceConfig, hierarchical, analogOverrides);
 
   // ── UI state ────────────────────────────────────────────────────
-  const [rightView, setRightView] = useState<"code" | "graph" | "schematic" | "lvs">(assistantView ?? "code");
+  const [rightView, setRightView] = useState<RightView>(assistantView ?? readRightView());
+  const [leftCollapsed, toggleLeft] = usePanelCollapsed("analog.left");
   const [selectedRegion, setSelectedRegion] = useState<string | null>(null);
   const viewerRef = useRef<CodeViewerHandle | null>(null);
   const editorRef = useRef<EditableCodeViewerHandle | null>(null);
@@ -211,6 +244,11 @@ function AnalogNetlist({ dieId }: { dieId: string }) {
     if (assistantView) setRightView(assistantView);
     if (assistantInstances.length > 0) setSelectedInstance(assistantInstances[0]);
   }, [assistantView, assistantInstances]);
+
+  // Remember the last opened sub-tab program-wide.
+  useEffect(() => {
+    writeRightView(rightView);
+  }, [rightView]);
 
   const clearAssistantFragment = useCallback(() => {
     const next = new URLSearchParams(searchParams);
@@ -641,6 +679,8 @@ function AnalogNetlist({ dieId }: { dieId: string }) {
           </>
         }
       >
+        <PanelToggle side="left" collapsed={leftCollapsed} onClick={toggleLeft} />
+        <ToolDivider />
         <span
           className="m"
           style={{ fontSize: 11, color: "var(--ink2)", padding: "0 8px" }}
@@ -654,31 +694,34 @@ function AnalogNetlist({ dieId }: { dieId: string }) {
           flex: "1 1 auto",
           minHeight: 0,
           display: "grid",
-          gridTemplateColumns: "240px 1fr",
+          gridTemplateColumns: `${leftCollapsed ? "0px" : "240px"} 1fr`,
         }}
       >
         {/* ── Left panel: device instances ───────────────────── */}
-        <aside
-          style={{
-            borderRight: "1px solid var(--l2)",
-            background: "var(--card)",
-            minHeight: 0,
-            overflow: "hidden",
-          }}
-        >
-          {netlist.data ? (
-            <InstanceOutline
-              outline={netlist.data.outline}
-              selectedLine={selectedLine ?? undefined}
-              onGoToLine={goToLine}
-              onSelectDevice={onSelectDevice}
-              onSelectInstance={onSelectInstance}
-              totalDevices={netlist.data.totalDevices}
-            />
-          ) : (
-            <OutlinePlaceholder loading={netlist.loading} />
-          )}
-        </aside>
+        {!leftCollapsed && (
+          <aside
+            style={{
+              borderRight: "1px solid var(--l2)",
+              background: "var(--card)",
+              minHeight: 0,
+              overflow: "hidden",
+              gridColumn: 1,
+            }}
+          >
+            {netlist.data ? (
+              <InstanceOutline
+                outline={netlist.data.outline}
+                selectedLine={selectedLine ?? undefined}
+                onGoToLine={goToLine}
+                onSelectDevice={onSelectDevice}
+                onSelectInstance={onSelectInstance}
+                totalDevices={netlist.data.totalDevices}
+              />
+            ) : (
+              <OutlinePlaceholder loading={netlist.loading} />
+            )}
+          </aside>
+        )}
 
         {/* ── Right panel: CDL source ────────────────────────── */}
         <section
@@ -687,6 +730,7 @@ function AnalogNetlist({ dieId }: { dieId: string }) {
             flexDirection: "column",
             minHeight: 0,
             background: "var(--card)",
+            gridColumn: 2,
           }}
         >
           {rightView === "lvs" ? (
@@ -895,7 +939,7 @@ function InstanceOutline({
                                 value={renameDraft}
                                 onChange={(e: any) => { setRenameDraft(e.target.value); setRenameErr(""); }}
                                 onKeyDown={(e: any) => {
-                                  if (e.key === "Enter" && leaf.uuid) commitRename(leaf.uuid, leaf.label, renameDraft);
+                                  if (e.key === "Enter" && leaf.instanceId) commitRename(leaf.instanceId, leaf.label, renameDraft);
                                   if (e.key === "Escape") { setRenamingLeaf(null); setRenameErr(""); }
                                 }}
                                 autoFocus
@@ -905,8 +949,8 @@ function InstanceOutline({
                                   borderRadius: 3, color: "var(--ink0)", padding: "0 4px",
                                 }}
                               />
-                              {leaf.uuid && (
-                                <span onClick={() => commitRename(leaf.uuid as string, leaf.label, renameDraft)} style={{ cursor: "pointer", fontSize: 11, color: "var(--accent)" }}>✓</span>
+                              {leaf.instanceId && (
+                                <span onClick={() => commitRename(leaf.instanceId as string, leaf.label, renameDraft)} style={{ cursor: "pointer", fontSize: 11, color: "var(--accent)" }}>✓</span>
                               )}
                               <span onClick={() => { setRenamingLeaf(null); setRenameErr(""); }} style={{ cursor: "pointer", fontSize: 11, color: "var(--ink3)" }}>✕</span>
                             </div>
@@ -926,7 +970,7 @@ function InstanceOutline({
                                 onDoubleClick={() => onSelectDevice(leaf.label, leaf.cellId, leaf.line)}
                               />
                             </div>
-                            {leaf.uuid && (
+                            {leaf.instanceId && (
                               <span
                                 onClick={() => { setRenamingLeaf(leaf.id); setRenameDraft(leaf.label); setRenameErr(""); }}
                                 style={{ cursor: "pointer", fontSize: 9, color: "var(--ink3, #666)", padding: "0 6px" }}
@@ -949,6 +993,8 @@ function InstanceOutline({
 
 // ── Warnings table ────────────────────────────────────────────────
 
+const WARNINGS_OPEN_KEY = "analog.warningsOpen";
+
 function ProblemsTable({
   warnings,
   onJump,
@@ -956,7 +1002,23 @@ function ProblemsTable({
   warnings: string[];
   onJump: (line: number) => void;
 }) {
-  const [open, setOpen] = useState(true);
+  const [open, setOpen] = useState<boolean>(() => {
+    try {
+      const v = localStorage.getItem(WARNINGS_OPEN_KEY);
+      return v === null ? true : v === "1";
+    } catch {
+      return true;
+    }
+  });
+  const toggle = () => setOpen((v) => {
+    const next = !v;
+    try {
+      localStorage.setItem(WARNINGS_OPEN_KEY, next ? "1" : "0");
+    } catch {
+      /* storage unavailable */
+    }
+    return next;
+  });
   return (
     <div
       style={{
@@ -968,7 +1030,7 @@ function ProblemsTable({
         flexDirection: "column",
       }}
     >
-      <div className="ph" style={{ cursor: "pointer" }} onClick={() => setOpen((v) => !v)}>
+      <div className="ph" style={{ cursor: "pointer" }} onClick={toggle}>
         <span className="u" style={{ color: "var(--warn)", fontSize: 10, display: "flex", alignItems: "center", gap: 4 }}>
           {Ic.chev}
           {warnings.length} {warnings.length === 1 ? "warning" : "warnings"}
