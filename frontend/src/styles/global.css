@@ -446,6 +446,13 @@ hr {
   padding: 10px 12px;
   z-index: 1000;
   min-width: 200px;
+  /* Never taller than the viewport; a scrollbar appears only when the
+     content actually overflows. Positioned popovers (SettingsPopover) set a
+     tighter inline max-height from the space left below/above the trigger. */
+  max-height: calc(100vh - 16px);
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 /* Small action button inside a tree row (e.g. settings, sliders). */

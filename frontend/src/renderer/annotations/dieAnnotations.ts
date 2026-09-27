@@ -118,6 +118,8 @@ export interface PopulateOptions {
    *  junction-only mode a mid-net vertex (degree 2) at such a point is still
    *  drawn. Default: none. */
   netNodeConnectionPoint?: (netId: string, x: number, y: number) => boolean;
+  /** Live getter: draw the cross inside junction dots. Default true. */
+  netNodeJunctionCross?: () => boolean;
   /** Called at draw time for each cell: true → draw a glow outline
    *  (sibling cells sharing a cellTypeId with the selection). */
   isSibling?: (cellId: string) => boolean;
@@ -155,6 +157,7 @@ export function populateAnnotationLayer(
   const getNodeRadiusMult = options.netNodeRadiusMult;
   const getJunctionsOnly = options.netNodeJunctionsOnly;
   const getConnectionPoint = options.netNodeConnectionPoint;
+  const getJunctionCross = options.netNodeJunctionCross;
 
   const cellTypeMap = new Map(annotations.cellTypes.map((ct) => [ct.id, ct]));
 
@@ -201,7 +204,7 @@ export function populateAnnotationLayer(
           buildNetAnnotation(
         net, getNetWidth, getNetColor, getNetNodeMatchesWidth,
         getNetOverrideColor, getLayerColor, getNodeRadiusMult, getJunctionsOnly,
-        getConnectionPoint
+        getConnectionPoint, getJunctionCross
       )
     );
   }

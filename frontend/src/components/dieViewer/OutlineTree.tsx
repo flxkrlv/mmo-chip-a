@@ -1189,6 +1189,8 @@ function NetSettingsButton() {
   const setCustomNetColorsEnabled = usePreferences((s) => s.setCustomNetColorsEnabled);
   const netNodeJunctionsOnly = usePreferences((s) => s.netNodeJunctionsOnly);
   const setNetNodeJunctionsOnly = usePreferences((s) => s.setNetNodeJunctionsOnly);
+  const netNodeJunctionCross = usePreferences((s) => s.netNodeJunctionCross);
+  const setNetNodeJunctionCross = usePreferences((s) => s.setNetNodeJunctionCross);
   const metalStack = useSession((s) => s.metalStack ?? DEFAULT_METAL_STACK);
 
   return (
@@ -1320,6 +1322,14 @@ function NetSettingsButton() {
           onChange={(e) => setNetNodeJunctionsOnly(e.target.checked)}
         />
         Show only connection points
+      </label>
+      <label className="check" style={{ marginBottom: 8 }}>
+        <input
+          type="checkbox"
+          checked={netNodeJunctionCross}
+          onChange={(e) => setNetNodeJunctionCross(e.target.checked)}
+        />
+        Show cross at net junctions
       </label>
       <div className="row" style={{ gap: 10 }}>
         <input

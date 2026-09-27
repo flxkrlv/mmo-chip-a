@@ -60,6 +60,9 @@ export function buildNetAnnotation(
    *  vertex (graph degree 2) is still drawn — it is a real connection even
    *  though the net graph does not branch there. */
   getConnectionPoint?: (netId: string, x: number, y: number) => boolean,
+  /** Optional: when it returns false, junction dots (degree ≥ 3) are drawn
+   *  without the contrasting cross. Default: true. */
+  getJunctionCross?: () => boolean,
 ): Annotation {
   // Compute bbox from all nodes.
   let minX = Infinity,
@@ -225,6 +228,7 @@ export function buildNetAnnotation(
         nodeDegree.set(e.to, (nodeDegree.get(e.to) ?? 0) + 1);
       }
       const junctionsOnly = getJunctionsOnly?.() ?? false;
+      const junctionCross = getJunctionCross?.() ?? true;
       const nodeWantsDot = (id: string) => {
         if (!junctionsOnly) return true; // legacy: every vertex
         const d = nodeDegree.get(id) ?? 0;
@@ -258,7 +262,7 @@ export function buildNetAnnotation(
           // A junction (several segments of this net meet here) gets a
           // contrasting cross inside the dot, so it reads differently from a
           // dangling end or a plain cell contact.
-          if ((nodeDegree.get(n.id) ?? 0) >= 3) {
+          if (junctionCross && (nodeDegree.get(n.id) ?? 0) >= 3) {
             const h = nodeRadius * 0.62;
             ctx.strokeStyle = contrastColor(dotColor);
             ctx.lineWidth = Math.max(nodeRadius * 0.3, 1.5 / bounds.zoom);

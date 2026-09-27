@@ -21,18 +21,29 @@ export function SettingsPopover({
   const [open, setOpen] = useState(false);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const popoverRef = useRef<HTMLDivElement>(null);
-  const [position, setPosition] = useState<{ top: number; left: number } | null>(null);
+  const [position, setPosition] = useState<{ top: number; left: number; maxHeight: number } | null>(null);
 
   useLayoutEffect(() => {
     if (!open || !triggerRef.current) return;
     const rect = triggerRef.current.getBoundingClientRect();
     const popWidth = popoverRef.current?.offsetWidth ?? 300;
+    const popHeight = popoverRef.current?.offsetHeight ?? 0;
     // Popover right-edge aligned with trigger right-edge, but clamped so
     // the left edge never goes off-screen (minimum 8px margin) and the right
     // edge never goes off-screen either.
     const maxLeft = window.innerWidth - popWidth - 8;
     const left = Math.max(8, Math.min(maxLeft, rect.right - popWidth));
-    setPosition({ top: rect.bottom + 4, left });
+    // Open below the trigger unless the content doesn't fit there and there
+    // is more room above. Height is capped to the available space; the
+    // popover then scrolls (overflow: auto, so only when it overflows).
+    const spaceBelow = window.innerHeight - rect.bottom - 4 - 8;
+    const spaceAbove = rect.top - 4 - 8;
+    if (popHeight > spaceBelow && spaceAbove > spaceBelow) {
+      const maxHeight = spaceAbove;
+      setPosition({ top: rect.top - 4 - Math.min(popHeight, maxHeight), left, maxHeight });
+    } else {
+      setPosition({ top: rect.bottom + 4, left, maxHeight: spaceBelow });
+    }
   }, [open]);
 
   useEffect(() => {
@@ -46,7 +57,10 @@ export function SettingsPopover({
     function onKey(event: KeyboardEvent) {
       if (event.key === "Escape") setOpen(false);
     }
-    function close() {
+    function close(event: Event) {
+      // Scrolling inside the popover itself (when its content overflows)
+      // must not dismiss it; only outside scrolls move the trigger away.
+      if (event.target instanceof Node && popoverRef.current?.contains(event.target)) return;
       setOpen(false);
     }
     window.addEventListener("mousedown", onDown);
@@ -90,6 +104,7 @@ export function SettingsPopover({
               top: position?.top ?? -9999,
               left: position?.left ?? -9999,
               visibility: position ? "visible" : "hidden",
+              maxHeight: position?.maxHeight,
               width: 300
             }}
           >

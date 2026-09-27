@@ -219,6 +219,9 @@ interface PreferencesState {
    *  - false → legacy behaviour: a dot on EVERY net vertex (ends + turns).
    *  Only affects drawing; vertices stay grabbable in both modes. */
   netNodeJunctionsOnly: boolean;
+  /** Draw a contrasting cross inside junction dots (vertices where ≥ 3
+   *  segments of a net meet). Drawing only. Default true. */
+  netNodeJunctionCross: boolean;
   /** Resistor body layers opacity (0..1) in the RE canvas. Default 1.
    *  Helps superimpose the drawn polyline onto the image to verify width. */
   resistorOpacity: number;
@@ -336,6 +339,8 @@ interface PreferencesActions {
   setNetNodeVisible: (visible: boolean) => void;
   /** Toggle junction-only wire node drawing (see `netNodeJunctionsOnly`). */
   setNetNodeJunctionsOnly: (junctionsOnly: boolean) => void;
+  /** Toggle the cross inside junction dots (see `netNodeJunctionCross`). */
+  setNetNodeJunctionCross: (cross: boolean) => void;
   setViaColor: (color: string) => void;
   setCellColor: (color: string) => void;
   setCellShowShapes: (show: boolean) => void;
@@ -476,6 +481,7 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
               netNodeSize: NET_NODE_RADIUS_MULT,
         netNodeVisible: true,
         netNodeJunctionsOnly: true,
+        netNodeJunctionCross: true,
         resistorOpacity: 1,
         reDeviceLabelsVisible: true,
         reTerminalLabelsVisible: true,
@@ -527,6 +533,7 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
         setNetNodeVisible: (visible) => set({ netNodeVisible: visible }),
         setNetNodeJunctionsOnly: (junctionsOnly) =>
           set({ netNodeJunctionsOnly: junctionsOnly }),
+        setNetNodeJunctionCross: (cross) => set({ netNodeJunctionCross: cross }),
         setViaColor: (color) => set({ viaColor: color }),
         setNetColorOverride: (netId, color) =>
           set((state) => {
@@ -846,6 +853,7 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
           netNodeSize: state.netNodeSize,
           netNodeVisible: state.netNodeVisible,
           netNodeJunctionsOnly: state.netNodeJunctionsOnly,
+          netNodeJunctionCross: state.netNodeJunctionCross,
           resistorOpacity: state.resistorOpacity,
           reDeviceLabelsVisible: state.reDeviceLabelsVisible,
           reTerminalLabelsVisible: state.reTerminalLabelsVisible,
