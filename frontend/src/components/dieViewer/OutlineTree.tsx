@@ -35,8 +35,9 @@ export type { AnnotationKind };
 
 type Props = {
   annotations: DieAnnotations | undefined;
-  /** Frame these annotation ids in the viewport — fired on row double-click. */
-  onFocus?: (ids: string[]) => void;
+  /** Frame these annotation ids in the viewport — fired on row double-click.
+   *  `tight` (from long-pressing a net's eye) fits the bbox edge-to-edge. */
+  onFocus?: (ids: string[], opts?: { tight?: boolean }) => void;
   /** Base (die background) images. One per die today; the data model will
    *  grow to multiple later. Each gets independent visibility + opacity. */
   baseImages?: { id: string; name: string }[];
@@ -290,8 +291,8 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
   const pinIdsAll = (annotations.pins ?? []).map((p) => `pin:${p.id}`);
   const roiIdsAll = (annotations.rois ?? []).map((r) => `roi:${r.id}`);
   const ignoreIdsAll = (annotations.ignores ?? []).map((r) => `ignore:${r.id}`);
-  const focus = (ids: string[]) => {
-    if (ids.length) onFocus?.(ids);
+  const focus = (ids: string[], opts?: { tight?: boolean }) => {
+    if (ids.length) onFocus?.(ids, opts);
   };
 
   // Filtered lists for search.
@@ -373,7 +374,8 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
           onToggle: () => {
             resetHiddenNets();
             toggleKindVisibility("net");
-          }
+          },
+          onLongPress: () => focus(netIdsAll, { tight: true })
         }}
         onToggleExpand={() => toggleSection("net")}
         onSelect={() => toggleSection("net")}
@@ -400,7 +402,8 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
               }
               visibility={{
                 visible: netVisible,
-                onToggle: () => setNetHidden(id, netVisible)
+                onToggle: () => setNetHidden(id, netVisible),
+                onLongPress: () => focus([id], { tight: true })
               }}
               selected={selectedIds.has(id)}
               onSelect={(e) =>

@@ -1,3 +1,4 @@
+import { useEffect, useRef, useState } from "react";
 import type { ReactNode, DragEventHandler } from "react";
 import { Ic } from "../../icons";
 
@@ -27,13 +28,21 @@ export type TreeRowProps = {
   onDragOver?: DragEventHandler<HTMLDivElement>;
   onDrop?: DragEventHandler<HTMLDivElement>;
   onDragEnd?: DragEventHandler<HTMLDivElement>;
-  /** Render an eye / eye-off button at the right end; click toggles visibility. */
-  visibility?: { visible: boolean; onToggle: () => void };
+  /** Render an eye / eye-off button at the right end; click toggles visibility.
+   *  Optional `onLongPress` fires after holding the eye for LONG_PRESS_MS
+   *  (the click that follows the release is swallowed, so it doesn't toggle). */
+  visibility?: { visible: boolean; onToggle: () => void; onLongPress?: () => void };
   /** Render a lock / unlock button next to the eye; click toggles selectability. */
   selectable?: { selectable: boolean; onToggle: () => void };
   /** Extra controls (small action buttons) rendered before the visibility eye. */
   controls?: ReactNode;
 };
+
+const LONG_PRESS_MS = 2000;
+/** Hovering a long-pressable eye this long reveals a hint about the gesture. */
+const LONG_PRESS_HINT_MS = 5000;
+/** The progress ring only appears once a press outlasts a normal click. */
+const LONG_PRESS_RING_DELAY_MS = 500;
 
 /**
  * One row of the outline tree, matching the hifi `.trow` design.
@@ -153,7 +162,12 @@ export function TreeRow({
         </span>
       )}
       {(selectable || visibility) && (
-        <span style={{ display: "inline-flex", alignItems: "center", gap: 2, marginLeft: meta == null && !controls ? "auto" : 4 }}>
+        <span
+          style={{ display: "inline-flex", alignItems: "center", gap: 2, marginLeft: meta == null && !controls ? "auto" : 4 }}
+          // Rapid clicks on the lock/eye are just repeated toggles — don't let
+          // them bubble up as a row double-click (which frames the entity).
+          onDoubleClick={(e) => e.stopPropagation()}
+        >
           {selectable && (
             <button
               type="button"
@@ -178,33 +192,143 @@ export function TreeRow({
               {selectable.selectable ? Ic.unlock : Ic.lock}
             </button>
           )}
-          {visibility && (
-            <button
-              type="button"
-              className="trow-eye"
-              aria-label={visibility.visible ? "hide" : "show"}
-              aria-pressed={!visibility.visible}
-              onClick={(e) => {
-                e.stopPropagation();
-                visibility.onToggle();
-              }}
-              style={{
-                display: "inline-flex",
-                alignItems: "center",
-                justifyContent: "center",
-                background: "transparent",
-                border: 0,
-                padding: 0,
-                color: visibility.visible ? "var(--ink3)" : "var(--muted)",
-                cursor: "pointer"
-              }}
-            >
-              {visibility.visible ? Ic.eye : Ic.eyeOff}
-            </button>
-          )}
+          {visibility && <EyeButton {...visibility} />}
         </span>
       )}
     </div>
+  );
+}
+
+function EyeButton({
+  visible,
+  onToggle,
+  onLongPress
+}: NonNullable<TreeRowProps["visibility"]>) {
+  const pressTimer = useRef<number | null>(null);
+  const ringTimer = useRef<number | null>(null);
+  const hintTimer = useRef<number | null>(null);
+  const longPressFired = useRef(false);
+  // Bumped on every press so the progress ring remounts and its CSS
+  // animation restarts from zero.
+  const [pressKey, setPressKey] = useState<number | null>(null);
+  const [hintAt, setHintAt] = useState<{ x: number; y: number } | null>(null);
+
+  const cancelPress = () => {
+    if (pressTimer.current !== null) {
+      window.clearTimeout(pressTimer.current);
+      pressTimer.current = null;
+    }
+    if (ringTimer.current !== null) {
+      window.clearTimeout(ringTimer.current);
+      ringTimer.current = null;
+    }
+    setPressKey(null);
+  };
+  const cancelHint = () => {
+    if (hintTimer.current !== null) {
+      window.clearTimeout(hintTimer.current);
+      hintTimer.current = null;
+    }
+    setHintAt(null);
+  };
+  useEffect(
+    () => () => {
+      if (pressTimer.current !== null) window.clearTimeout(pressTimer.current);
+      if (ringTimer.current !== null) window.clearTimeout(ringTimer.current);
+      if (hintTimer.current !== null) window.clearTimeout(hintTimer.current);
+    },
+    []
+  );
+
+  return (
+    <button
+      type="button"
+      className="trow-eye"
+      aria-label={visible ? "hide" : "show"}
+      aria-pressed={!visible}
+      onPointerEnter={
+        onLongPress
+          ? (e) => {
+              const el = e.currentTarget;
+              cancelHint();
+              hintTimer.current = window.setTimeout(() => {
+                hintTimer.current = null;
+                const r = el.getBoundingClientRect();
+                setHintAt({ x: r.right + 6, y: r.top + r.height / 2 });
+              }, LONG_PRESS_HINT_MS);
+            }
+          : undefined
+      }
+      onPointerDown={
+        onLongPress
+          ? (e) => {
+              if (e.button !== 0) return;
+              cancelHint();
+              cancelPress();
+              longPressFired.current = false;
+              ringTimer.current = window.setTimeout(() => {
+                ringTimer.current = null;
+                setPressKey(Date.now());
+              }, LONG_PRESS_RING_DELAY_MS);
+              pressTimer.current = window.setTimeout(() => {
+                pressTimer.current = null;
+                longPressFired.current = true;
+                setPressKey(null);
+                onLongPress();
+              }, LONG_PRESS_MS);
+            }
+          : undefined
+      }
+      onPointerUp={onLongPress ? cancelPress : undefined}
+      onPointerLeave={
+        onLongPress
+          ? () => {
+              cancelPress();
+              cancelHint();
+            }
+          : undefined
+      }
+      onPointerCancel={onLongPress ? cancelPress : undefined}
+      onClick={(e) => {
+        e.stopPropagation();
+        if (longPressFired.current) {
+          longPressFired.current = false;
+          return;
+        }
+        onToggle();
+      }}
+      style={{
+        position: "relative",
+        display: "inline-flex",
+        alignItems: "center",
+        justifyContent: "center",
+        background: "transparent",
+        border: 0,
+        padding: 0,
+        color: visible ? "var(--ink3)" : "var(--muted)",
+        cursor: "pointer"
+      }}
+    >
+      {visible ? Ic.eye : Ic.eyeOff}
+      {pressKey !== null && (
+        <svg
+          key={pressKey}
+          className="trow-eye-ring"
+          viewBox="0 0 20 20"
+          aria-hidden
+          // Start the fill already LONG_PRESS_RING_DELAY_MS in, so the ring
+          // still completes exactly when the long press fires.
+          style={{ ["--ring-delay" as string]: `-${LONG_PRESS_RING_DELAY_MS}ms` }}
+        >
+          <circle cx="10" cy="10" r="8.5" pathLength={1} />
+        </svg>
+      )}
+      {hintAt && (
+        <span className="trow-eye-hint" style={{ left: hintAt.x, top: hintAt.y }}>
+          Hold 2s to zoom to fit
+        </span>
+      )}
+    </button>
   );
 }
 

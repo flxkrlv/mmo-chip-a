@@ -3249,12 +3249,14 @@ function DieViewer({ dieId }: { dieId: string }) {
   // Double-clicking an Items-panel row frames that entity (or the union of a
   // group/category's entities) in the viewport, with a margin.
   const focusOnIds = useCallback(
-    (ids: string[]) => {
+    (ids: string[], opts?: { tight?: boolean }) => {
       if (!annotationLayer || !containerRef.current) return;
       const box = annotationLayer.unionBBox(ids);
       if (!box) return;
       const rect = containerRef.current.getBoundingClientRect();
-      const newVp = fitRectViewport(box, rect.width, rect.height, 56, 32);
+      // `tight`: bbox fills the viewport edge-to-edge (uniform zoom, so the
+      // limiting axis touches and the other is centered).
+      const newVp = fitRectViewport(box, rect.width, rect.height, opts?.tight ? 0 : 56, 32);
       if (canvasHandle.current) {
         canvasHandle.current.setViewport(newVp);
       } else {

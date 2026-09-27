@@ -565,6 +565,45 @@ input[type="range"] {
 .trow-eye:hover {
   color: var(--ink) !important;
 }
+/* Long-press progress ring drawn around the eye while it's held. */
+.trow-eye-ring {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 20px;
+  height: 20px;
+  transform: translate(-50%, -50%) rotate(-90deg);
+  pointer-events: none;
+  overflow: visible;
+}
+.trow-eye-ring circle {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-dasharray: 1;
+  stroke-dashoffset: 1;
+  animation: trow-eye-ring 2s linear var(--ring-delay, 0ms) forwards;
+}
+@keyframes trow-eye-ring {
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+/* Delayed hover hint for the long-press gesture. Fixed so the outline
+   panel's overflow can't clip it. */
+.trow-eye-hint {
+  position: fixed;
+  transform: translateY(-50%);
+  z-index: 1000;
+  padding: 3px 6px;
+  border-radius: 4px;
+  background: var(--ink);
+  color: var(--bg);
+  font: 500 10.5px/1.2 var(--font);
+  white-space: nowrap;
+  pointer-events: none;
+}
 .trow.sel .meta {
   color: var(--accent);
 }
