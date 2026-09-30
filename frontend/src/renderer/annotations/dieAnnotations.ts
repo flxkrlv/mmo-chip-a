@@ -7,12 +7,11 @@ import type {
   IOPin,
   ROIRectangle
 } from "shared";
+import { cellBox, cellWorldRect } from "../../lib/cellFootprint";
 import { withAlpha } from "../../lib/color";
 import {
-  applyOrientation,
   pointInPolygon,
   pointInRect,
-  polygonBounds,
   type Rect
 } from "../../lib/geometry";
 import type { AnnotationLayer, Annotation } from "../layers/AnnotationLayer";
@@ -226,27 +225,11 @@ export function buildCellAnnotation(
 ): Annotation {
   const w = cellType.cropRect.width;
   const h = cellType.cropRect.height;
-  // Footprint AABB: the canonical w×h box, oriented (mirror + rotation) about
-  // its centre, then placed at (cell.x, cell.y). A 90°/270° rotation swaps the
-  // extent, so the bbox is derived from the oriented corners.
-  const orientedCorners = [
-    { x: 0, y: 0 },
-    { x: w, y: 0 },
-    { x: w, y: h },
-    { x: 0, y: h }
-  ].map((p) => applyOrientation(p, cell, w, h));
-  const ob = polygonBounds(orientedCorners) ?? {
-    x: 0,
-    y: 0,
-    width: w,
-    height: h
-  };
-  const bbox: Rect = {
-    x: cell.x + ob.x,
-    y: cell.y + ob.y,
-    width: ob.width,
-    height: ob.height
-  };
+  // Footprint AABB: the cell's box (per-instance `bounds`, else the type's
+  // w×h), oriented (mirror + rotation) about the *type* box centre, then
+  // placed at (cell.x, cell.y). A 90°/270° rotation swaps the extent.
+  const box = cellBox(cell, w, h);
+  const bbox: Rect = cellWorldRect(cell, w, h);
   const layers = cellType.layers ?? {};
   // A cell with no inner layer shapes has nothing to draw at high zoom — keep
   // the solid block fill at every zoom so it stays visible.
@@ -293,7 +276,7 @@ export function buildCellAnnotation(
         } else {
           ctx.fillStyle = selected ? SELECT_FILL : withAlpha(color, CELL_FILL_ALPHA);
         }
-        ctx.fillRect(0, 0, w, h);
+        ctx.fillRect(box.x, box.y, box.width, box.height);
       }
 
       // Strong outline, always — this is what makes cell boundaries readable.
@@ -307,7 +290,7 @@ export function buildCellAnnotation(
         ctx.strokeStyle = withAlpha(color, CELL_OUTLINE_ALPHA);
         ctx.lineWidth = CELL_OUTLINE_PX / bounds.zoom;
       }
-      ctx.strokeRect(0, 0, w, h);
+      ctx.strokeRect(box.x, box.y, box.width, box.height);
 
       // CV label overlay — shown only when zoomed in enough to read text
       if (isMl && bounds.zoom >= 0.3 && cell.mlConfidence != null) {

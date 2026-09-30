@@ -68,10 +68,10 @@ import { DeviceInspector } from "../components/dieViewer/DeviceInspector";
 import { DeviceInstancePanel } from "../components/dieViewer/DeviceInstancePanel";
 import { CellTypePickerDialog } from "../components/dieViewer/CellTypePickerDialog";
 import {
-  cellResizeAction,
   cellSideAt,
   cellWorldRect,
-  resizeCellType,
+  resizeCell,
+  retypeCellKeepingSize,
   resolveSelectedCell,
   sideCursor,
   type CellSide
@@ -516,6 +516,7 @@ function DieViewer({ dieId }: { dieId: string }) {
                   flippedV: c.flippedV,
                   flippedH: c.flippedH,
                   rotation: c.rotation,
+                  bounds: c.bounds,
                 }))
               );
             } else {
@@ -546,6 +547,7 @@ function DieViewer({ dieId }: { dieId: string }) {
                   x: baseX + clip.offsetX, y: baseY + clip.offsetY,
                   flippedV: clip.flippedV, flippedH: clip.flippedH,
                   rotation: clip.rotation,
+                  ...(clip.bounds ? { bounds: clip.bounds } : {}),
                 },
                 prevCell: null,
               }));
@@ -2110,12 +2112,15 @@ function DieViewer({ dieId }: { dieId: string }) {
   const reassignCellType = useCallback(
     (cellId: string, cellType: CellType) => {
       setCellTypePickerCellId(null);
-      const cell = annotationsRef.current?.cells.find((c) => c.id === cellId);
-      if (!cell || cell.cellTypeId === cellType.id) return;
+      const ann = annotationsRef.current;
+      const cell = ann?.cells.find((c) => c.id === cellId);
+      const oldType = cell && ann?.cellTypes.find((t) => t.id === cell.cellTypeId);
+      if (!cell || !oldType || cell.cellTypeId === cellType.id) return;
       void dispatcher.dispatch({
         kind: "batch",
         actions: [
-          { kind: "upsertCell", cell: { ...cell, cellTypeId: cellType.id }, prevCell: cell },
+          // The cell keeps its footprint; only the content/type changes.
+          { kind: "upsertCell", cell: retypeCellKeepingSize(cell, oldType, cellType), prevCell: cell },
           ...orphanCleanup(cell)
         ]
       });
@@ -2442,8 +2447,8 @@ function DieViewer({ dieId }: { dieId: string }) {
       const vp = viewportLive.get();
       if (!vp || !annotationLayer) return "pan";
 
-      // Dragging a side of the selected cell resizes just that cell (split
-      // onto its own type if the type is shared; see cellResize.ts). Checked before the
+      // Dragging a side of the selected cell resizes just that instance (its
+      // own `bounds`; the type is untouched — see cellResize.ts). Checked before the
       // hit-test since the grab zone straddles the cell outline.
       const edgeGrab = selectedCellSideAt(e.worldPoint, vp.zoom);
       if (edgeGrab) {
@@ -2472,29 +2477,28 @@ function DieViewer({ dieId }: { dieId: string }) {
               : side === "top" ? sn.y
               : sn.y + sn.height;
           }
-          return resizeCellType(ann0, rCell, rType, side as CellSide, pos, splitId);
+          return resizeCell(rCell, rType, side as CellSide, pos);
         };
-        const splitId = uuid();
         const restore = () => {
           annotationLayer.update(buildCellAnnotation(rCell, rType, getCellC, getCellShapes));
           editPreviewLive.set(null);
         };
         const handler: DragHandler = {
           onDragMove: ({ worldPoint }) => {
-            const res = compute(worldPoint);
-            if (!res) {
+            const next = compute(worldPoint);
+            if (!next) {
               restore();
               return;
             }
-            annotationLayer.update(buildCellAnnotation(res.cell, res.cellType, getCellC, getCellShapes));
-            const { width, height } = res.cellType.cropRect;
-            editPreviewLive.set({ kind: "cellRect", rect: cellWorldRect(res.cell, width, height) });
+            annotationLayer.update(buildCellAnnotation(next, rType, getCellC, getCellShapes));
+            const { width, height } = rType.cropRect;
+            editPreviewLive.set({ kind: "cellRect", rect: cellWorldRect(next, width, height) });
           },
           onPointerUp: ({ dragged, worldPoint }) => {
             editPreviewLive.set(null);
             if (!dragged) return; // plain click on the edge keeps the selection
-            const res = compute(worldPoint);
-            if (res) void dispatcher.dispatch(cellResizeAction(res));
+            const next = compute(worldPoint);
+            if (next) void dispatcher.dispatch({ kind: "upsertCell", cell: next, prevCell: rCell });
             else restore();
           },
           onCancel: restore

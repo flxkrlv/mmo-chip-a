@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import type { DieMLConfig } from "shared";
+import type { AnnotationRect, DieMLConfig } from "shared";
 import type { AnnotationAction } from "../api/actions";
 import type { WireClipboard } from "../lib/wireClipboard";
 
@@ -106,7 +106,7 @@ interface DieViewerState {
  *  fetched so far this session, not a die-wide ground truth. */
   mlViasCount: number;
   /** Copied cell data for paste (cellTypeId + orientation, no position). */
-  clipboardCells: { cellTypeId: string; offsetX: number; offsetY: number; flippedV?: boolean; flippedH?: boolean; rotation?: 0 | 90 | 180 | 270 }[];
+  clipboardCells: { cellTypeId: string; offsetX: number; offsetY: number; flippedV?: boolean; flippedH?: boolean; rotation?: 0 | 90 | 180 | 270; bounds?: AnnotationRect }[];
   clipboardWires: WireClipboard | null;
 }
 
