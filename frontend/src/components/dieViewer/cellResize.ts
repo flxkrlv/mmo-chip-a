@@ -1,14 +1,15 @@
-import type { Cell, CellType, DieAnnotations } from "shared";
-import type { Point, Rect } from "../../lib/geometry";
-import { boundsForWorldRect, cellWorldRect, keepFootprint, withBounds } from "../../lib/cellFootprint";
+import type { Cell, CellLayers, CellType, DieAnnotations, LayerShape } from "shared";
+import type { AnnotationAction } from "../../api/actions";
+import { applyOrientation, type Point, type Rect } from "../../lib/geometry";
+import { boundsForWorldRect, cellWorldRect, withBounds } from "../../lib/cellFootprint";
 
 export { cellWorldRect } from "../../lib/cellFootprint";
 
 /**
- * Edge-resize of a single placed cell (GIMP-style side handles). Size is a
- * per-instance `Cell.bounds` override (die axes, relative to the cell origin
- * — see lib/cellFootprint.ts); the type, position, orientation and content
- * are untouched.
+ * Edge-resize of placed cells (GIMP-style side handles). Dragging a side of
+ * one cell resizes its *type* — every linked instance gets the same die-axis
+ * change, which keeps them aligned — while content stays put on the die.
+ * Footprints are die-axis rects (see lib/cellFootprint.ts).
  */
 
 export type CellSide = "left" | "right" | "top" | "bottom";
@@ -52,54 +53,112 @@ export function cellSideAt(r: Rect, p: Point, tol: number): CellSide | null {
 export const sideCursor = (s: CellSide) =>
   s === "left" || s === "right" ? "ew-resize" : "ns-resize";
 
+export interface CellTypeResize {
+  cellType: CellType;
+  prevCellType: CellType;
+  /** Every instance of the type, updated. */
+  cells: { cell: Cell; prevCell: Cell }[];
+}
+
+function shiftShape(s: LayerShape, dx: number, dy: number): LayerShape {
+  switch (s.kind) {
+    case "rect":
+    case "point":
+    case "circle":
+      return { ...s, x: s.x + dx, y: s.y + dy };
+    case "line":
+      return { ...s, x1: s.x1 + dx, y1: s.y1 + dy, x2: s.x2 + dx, y2: s.y2 + dy };
+    case "polygon":
+      return { ...s, points: s.points.map((p) => ({ x: p.x + dx, y: p.y + dy })) };
+  }
+}
+
+function shiftLayers(layers: CellLayers | undefined, dx: number, dy: number) {
+  if (!layers || (dx === 0 && dy === 0)) return layers;
+  const out: CellLayers = {};
+  for (const [k, shapes] of Object.entries(layers) as [keyof CellLayers, LayerShape[] | undefined][]) {
+    out[k] = shapes?.map((sh) => shiftShape(sh, dx, dy));
+  }
+  return out;
+}
+
 /**
- * Resize `cell` alone by dragging its world-space `side` so that edge lands
- * at world coordinate `edgePos` (x for left/right, y for top/bottom). Only
- * the instance's `bounds` change. Returns null for a no-op.
+ * Resize `cell`'s whole type by dragging its die-space `side` so that edge
+ * lands at die coordinate `edgePos` (x for left/right, y for top/bottom).
+ * Every instance's footprint grows by the same die-axis amount on that side
+ * (keeps linked cells aligned). Content stays put on the die: growing on the
+ * left/top shifts the type-local layers, and each instance's origin is
+ * re-solved for its own orientation, with `bounds` absorbing any difference
+ * so the footprint lands exactly. Returns null for a no-op.
  */
-export function resizeCell(
+export function resizeCellType(
+  ann: DieAnnotations,
   cell: Cell,
   cellType: CellType,
   side: CellSide,
   edgePos: number
-): Cell | null {
-  const { width: tw, height: th } = cellType.cropRect;
-  const r = cellWorldRect(cell, tw, th);
-  const pos = Math.round(edgePos);
-  const next: Rect = { ...r };
-  if (side === "left") {
-    next.x = Math.min(pos, r.x + r.width - MIN_CELL_SIZE);
-    next.width = r.x + r.width - next.x;
-  } else if (side === "right") {
-    next.width = Math.max(pos - r.x, MIN_CELL_SIZE);
-  } else if (side === "top") {
-    next.y = Math.min(pos, r.y + r.height - MIN_CELL_SIZE);
-    next.height = r.y + r.height - next.y;
-  } else {
-    next.height = Math.max(pos - r.y, MIN_CELL_SIZE);
-  }
-  if (next.x === r.x && next.y === r.y && next.width === r.width && next.height === r.height) {
-    return null;
-  }
-  return withBounds(cell, boundsForWorldRect(cell, tw, th, next));
+): CellTypeResize | null {
+  const { width: w, height: h } = cellType.cropRect;
+  const r = cellWorldRect(cell, w, h);
+  // Outward growth of the dragged edge, clamped so neither the dragged cell
+  // nor the type box collapses below the minimum size.
+  const horizontal = side === "left" || side === "right";
+  let grow = Math.round(
+    side === "left" ? r.x - edgePos
+    : side === "right" ? edgePos - (r.x + r.width)
+    : side === "top" ? r.y - edgePos
+    : edgePos - (r.y + r.height)
+  );
+  grow = Math.max(grow, MIN_CELL_SIZE - Math.min(horizontal ? r.width : r.height, horizontal ? w : h));
+  if (grow === 0) return null;
+
+  const g = { left: 0, right: 0, top: 0, bottom: 0 };
+  g[side] = grow;
+  const nw = w + g.left + g.right;
+  const nh = h + g.top + g.bottom;
+  const nextType: CellType = {
+    ...cellType,
+    cropRect: { ...cellType.cropRect, width: nw, height: nh },
+    layers: shiftLayers(cellType.layers, g.left, g.top)
+  };
+
+  // Content world pos is origin + c + M(p - c) with c the type-box centre.
+  // Layers shift by t = (left, top) and c by Δc, so keeping it fixed needs
+  // origin' = origin - Δc + M(Δc - t) = origin - Δc + M((right-left)/2, (bottom-top)/2).
+  const dcx = (g.left + g.right) / 2;
+  const dcy = (g.top + g.bottom) / 2;
+  const cells = ann.cells
+    .filter((c) => c.cellTypeId === cellType.id)
+    .map((c) => {
+      const m = applyOrientation({ x: (g.right - g.left) / 2, y: (g.bottom - g.top) / 2 }, c, 0, 0);
+      const moved: Cell = {
+        ...c,
+        x: Math.round(c.x - dcx + m.x),
+        y: Math.round(c.y - dcy + m.y)
+      };
+      const fp = cellWorldRect(c, w, h);
+      const nextFp: Rect = {
+        x: fp.x - g.left,
+        y: fp.y - g.top,
+        width: fp.width + g.left + g.right,
+        height: fp.height + g.top + g.bottom
+      };
+      return {
+        prevCell: c,
+        cell: withBounds(moved, boundsForWorldRect(moved, nw, nh, nextFp))
+      };
+    });
+  return { cellType: nextType, prevCellType: cellType, cells };
 }
 
-/**
- * `cell` moved onto `newType` with its world footprint unchanged — changing
- * a cell's type never changes its size. Position is kept, so the new type's
- * content anchors where the old one's did.
- */
-export function retypeCellKeepingSize(
-  cell: Cell,
-  oldType: CellType,
-  newType: CellType
-): Cell {
-  return keepFootprint(
-    cell,
-    oldType.cropRect.width,
-    oldType.cropRect.height,
-    { ...cell, cellTypeId: newType.id },
-    newType.cropRect.width,
-    newType.cropRect.height
-  );
+export function cellTypeResizeAction(res: CellTypeResize): AnnotationAction {
+  return {
+    kind: "batch",
+    actions: [
+      { kind: "upsertCellType", cellType: res.cellType, prevCellType: res.prevCellType },
+      ...res.cells.map(
+        ({ cell, prevCell }): AnnotationAction => ({ kind: "upsertCell", cell, prevCell })
+      )
+    ]
+  };
 }

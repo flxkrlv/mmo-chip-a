@@ -36,14 +36,15 @@ describe("die footprint vs orientation", () => {
     expect(moved).toMatchObject({ rotation: 90, flippedH: true });
   });
 
-  it("merging into a differently-sized type keeps the footprint", () => {
+  it("merging adopts the specimen type's size", () => {
     const candType = type("a", 40, 20);
     const specimen = type("s", 22, 44, true);
-    const cand: Cell = { id: "c", cellTypeId: "a", x: 100, y: 200, rotation: 90 };
+    const cand: Cell = { id: "c", cellTypeId: "a", x: 100, y: 200, rotation: 90, bounds: { x: 1, y: 1, width: 9, height: 9 } };
     const ann = { cells: [cand], cellTypes: [candType, specimen] } as unknown as DieAnnotations;
     const plan = buildMergeAction(ann, cand, specimen, { flippedH: false, flippedV: false, rotation: 90, x: 100, y: 200 });
     const merged = upserted(plan.action);
     expect(merged.cellTypeId).toBe("s");
-    expect(cellWorldRect(merged, 22, 44)).toEqual(cellWorldRect(cand, 40, 20));
+    expect(merged.bounds).toBeUndefined();
+    expect(cellWorldRect(merged, 22, 44)).toEqual({ x: 100, y: 200, width: 22, height: 44 });
   });
 });

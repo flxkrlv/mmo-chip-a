@@ -1,7 +1,7 @@
 import type { Cell, CellType, DieAnnotations } from "shared";
 import type { AnnotationAction } from "../api/actions";
 import { uuid } from "./uuid";
-import { keepFootprint } from "./cellFootprint";
+import { withBounds } from "./cellFootprint";
 
 // ── Orientation ──────────────────────────────────────────────────────
 
@@ -192,8 +192,9 @@ function hasLayerShapes(ct: CellType | null): boolean {
 /**
  * Re-type `candidate` into `specimenType` with the given orientation/position,
  * promote the specimen to a matched type, and clean up the candidate's now
- * orphaned placeholder type. One batched (single-undo) action. The cell's die
- * footprint is kept across the type change (`keepFootprint`).
+ * orphaned placeholder type. One batched (single-undo) action. The cell
+ * adopts the specimen type's size (any `bounds` override is dropped), so all
+ * instances of a type share one size.
  */
 export function buildMergeAction(
   annotations: DieAnnotations,
@@ -214,16 +215,7 @@ export function buildMergeAction(
     rotation: orient.rotation === 0 ? undefined : orient.rotation,
     merged: true
   };
-  const nextCell = prevType
-    ? keepFootprint(
-        candidate,
-        prevType.cropRect.width,
-        prevType.cropRect.height,
-        merged,
-        specimenType.cropRect.width,
-        specimenType.cropRect.height
-      )
-    : merged;
+  const nextCell = withBounds(merged, undefined);
 
   const actions: AnnotationAction[] = [
     { kind: "upsertCell", cell: nextCell, prevCell }

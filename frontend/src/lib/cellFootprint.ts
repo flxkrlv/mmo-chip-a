@@ -50,18 +50,10 @@ export function withBounds(cell: Cell, bounds: AnnotationRect | undefined): Cell
 }
 
 /**
- * `next` (a re-typed / re-positioned version of `prev`) with `bounds`
- * re-solved so its die footprint equals `prev`'s — e.g. changing a cell's
- * type never changes its size or place on the die.
+ * `cell` moved onto type `cellTypeId`, adopting that type's size (its own
+ * `bounds` override is dropped) so every instance of a type has the same
+ * size. Its origin, and so its place on the die, is kept.
  */
-export function keepFootprint(
-  prev: Cell,
-  prevTypeW: number,
-  prevTypeH: number,
-  next: Cell,
-  nextTypeW: number,
-  nextTypeH: number
-): Cell {
-  const world = cellWorldRect(prev, prevTypeW, prevTypeH);
-  return withBounds(next, boundsForWorldRect(next, nextTypeW, nextTypeH, world));
+export function retypeCell(cell: Cell, cellTypeId: string): Cell {
+  return withBounds({ ...cell, cellTypeId }, undefined);
 }
