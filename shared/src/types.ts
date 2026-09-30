@@ -407,6 +407,11 @@ export interface Cell {
   mlDetected?: boolean;
   /** Confidence score from CV matching (0..1). */
   mlConfidence?: number;
+  /** Per-instance footprint override: a rect in die axes relative to
+   *  `(x, y)`. Absent ⇒ the type's `cropRect` box `(0, 0, width, height)`.
+   *  Orientation never affects the footprint — it only changes how the
+   *  type's content is presented on the cell. */
+  bounds?: AnnotationRect;
 }
 
 // ── Grid definitions ──────────────────────────────────────────────

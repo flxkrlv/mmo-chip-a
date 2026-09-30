@@ -7,7 +7,7 @@ import type {
   IOPin,
   ROIRectangle
 } from "shared";
-import { cellBox, cellWorldRect } from "../../lib/cellFootprint";
+import { cellWorldRect } from "../../lib/cellFootprint";
 import { withAlpha } from "../../lib/color";
 import {
   pointInPolygon,
@@ -225,10 +225,8 @@ export function buildCellAnnotation(
 ): Annotation {
   const w = cellType.cropRect.width;
   const h = cellType.cropRect.height;
-  // Footprint AABB: the cell's box (per-instance `bounds`, else the type's
-  // w×h), oriented (mirror + rotation) about the *type* box centre, then
-  // placed at (cell.x, cell.y). A 90°/270° rotation swaps the extent.
-  const box = cellBox(cell, w, h);
+  // Footprint: a die-axis rect at (cell.x, cell.y) — per-instance `bounds`,
+  // else the type's w×h. Orientation never moves it (see cellFootprint.ts).
   const bbox: Rect = cellWorldRect(cell, w, h);
   const layers = cellType.layers ?? {};
   // A cell with no inner layer shapes has nothing to draw at high zoom — keep
@@ -247,27 +245,28 @@ export function buildCellAnnotation(
         getShowShapes() && bounds.zoom >= CELL_DETAIL_ZOOM && hasShapes;
       const color = getColor();
 
-      ctx.save();
-      // Canonical cell-local → world: place at the cell centre, then apply the
-      // instance orientation (rotation + mirror) about that centre, matching
-      // the cell-RE / merge canvas transform so layer shapes land on the die
-      // exactly where the cell image shows them.
-      ctx.translate(cell.x + w / 2, cell.y + h / 2);
-      ctx.rotate(((cell.rotation ?? 0) * Math.PI) / 180);
-      ctx.scale(cell.flippedH ? -1 : 1, cell.flippedV ? -1 : 1);
-      ctx.translate(-w / 2, -h / 2);
-
       // Only the selected cell (or every instance of a selected cell type)
       // changes colour; all other cells keep their normal look.
       const selected = state.selected || isTypeSelected?.(cell.id) === true;
 
       const isMl = cell.mlDetected === true;
 
+      ctx.save();
       if (showShapes) {
+        // Content only: canonical cell-local → world, placed at the type box
+        // centre with the instance orientation (rotation + mirror) applied
+        // about it, matching the cell-RE / merge canvas transform so layer
+        // shapes land on the die where the cell image shows them.
+        ctx.save();
+        ctx.translate(cell.x + w / 2, cell.y + h / 2);
+        ctx.rotate(((cell.rotation ?? 0) * Math.PI) / 180);
+        ctx.scale(cell.flippedH ? -1 : 1, cell.flippedV ? -1 : 1);
+        ctx.translate(-w / 2, -h / 2);
         // No outlines on the die view — at die-wide zooms the per-shape
         // strokes add noise without disambiguating anything (the cell box
         // itself carries the outline).
         drawCellLayers(ctx, layers, bounds, { outline: false });
+        ctx.restore();
       } else {
         // Solid block so placement structure stays legible (when zoomed out,
         // or for cells that carry no inner shapes at all).
@@ -276,7 +275,7 @@ export function buildCellAnnotation(
         } else {
           ctx.fillStyle = selected ? SELECT_FILL : withAlpha(color, CELL_FILL_ALPHA);
         }
-        ctx.fillRect(box.x, box.y, box.width, box.height);
+        ctx.fillRect(bbox.x, bbox.y, bbox.width, bbox.height);
       }
 
       // Strong outline, always — this is what makes cell boundaries readable.
@@ -290,7 +289,7 @@ export function buildCellAnnotation(
         ctx.strokeStyle = withAlpha(color, CELL_OUTLINE_ALPHA);
         ctx.lineWidth = CELL_OUTLINE_PX / bounds.zoom;
       }
-      ctx.strokeRect(box.x, box.y, box.width, box.height);
+      ctx.strokeRect(bbox.x, bbox.y, bbox.width, bbox.height);
 
       // CV label overlay — shown only when zoomed in enough to read text
       if (isMl && bounds.zoom >= 0.3 && cell.mlConfidence != null) {
@@ -300,7 +299,11 @@ export function buildCellAnnotation(
         ctx.textBaseline = "bottom";
         ctx.textAlign = "right";
         ctx.fillStyle = "#90caf9";
-        ctx.fillText(label, w - 2 / bounds.zoom, h - 2 / bounds.zoom);
+        ctx.fillText(
+          label,
+          bbox.x + bbox.width - 2 / bounds.zoom,
+          bbox.y + bbox.height - 2 / bounds.zoom
+        );
       }
 
       ctx.restore();

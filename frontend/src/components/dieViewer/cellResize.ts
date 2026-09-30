@@ -1,26 +1,19 @@
-import type { AnnotationRect, Cell, CellType, DieAnnotations } from "shared";
+import type { Cell, CellType, DieAnnotations } from "shared";
 import type { Point, Rect } from "../../lib/geometry";
-import { boundsForWorldRect, cellWorldRect } from "../../lib/cellFootprint";
+import { boundsForWorldRect, cellWorldRect, keepFootprint, withBounds } from "../../lib/cellFootprint";
 
 export { cellWorldRect } from "../../lib/cellFootprint";
 
 /**
  * Edge-resize of a single placed cell (GIMP-style side handles). Size is a
- * per-instance `Cell.bounds` override in the cell-local canonical frame (the
- * frame the type's layers live in); the type and its content are untouched,
- * and orientation keeps pivoting on the type's `cropRect` box, so layer
- * shapes never move on the die.
+ * per-instance `Cell.bounds` override (die axes, relative to the cell origin
+ * — see lib/cellFootprint.ts); the type, position, orientation and content
+ * are untouched.
  */
 
 export type CellSide = "left" | "right" | "top" | "bottom";
 
 const MIN_CELL_SIZE = 1;
-
-/** `cell` with its `bounds` replaced (dropped when undefined). */
-function withBounds(cell: Cell, bounds: AnnotationRect | undefined): Cell {
-  const { bounds: _prev, ...rest } = cell;
-  return bounds ? { ...rest, bounds } : rest;
-}
 
 /** The selected cell + its type, when it's the only selection. */
 export function resolveSelectedCell(
@@ -101,10 +94,12 @@ export function retypeCellKeepingSize(
   oldType: CellType,
   newType: CellType
 ): Cell {
-  const world = cellWorldRect(cell, oldType.cropRect.width, oldType.cropRect.height);
-  const moved: Cell = { ...cell, cellTypeId: newType.id };
-  return withBounds(
-    moved,
-    boundsForWorldRect(moved, newType.cropRect.width, newType.cropRect.height, world)
+  return keepFootprint(
+    cell,
+    oldType.cropRect.width,
+    oldType.cropRect.height,
+    { ...cell, cellTypeId: newType.id },
+    newType.cropRect.width,
+    newType.cropRect.height
   );
 }

@@ -1,6 +1,7 @@
 import type { Cell, CellType, DieAnnotations } from "shared";
 import type { AnnotationAction } from "../api/actions";
 import { uuid } from "./uuid";
+import { keepFootprint } from "./cellFootprint";
 
 // ── Orientation ──────────────────────────────────────────────────────
 
@@ -191,7 +192,8 @@ function hasLayerShapes(ct: CellType | null): boolean {
 /**
  * Re-type `candidate` into `specimenType` with the given orientation/position,
  * promote the specimen to a matched type, and clean up the candidate's now
- * orphaned placeholder type. One batched (single-undo) action.
+ * orphaned placeholder type. One batched (single-undo) action. The cell's die
+ * footprint is kept across the type change (`keepFootprint`).
  */
 export function buildMergeAction(
   annotations: DieAnnotations,
@@ -202,7 +204,7 @@ export function buildMergeAction(
   const prevCell = candidate;
   const prevType = cellTypeById(annotations, candidate.cellTypeId);
 
-  const nextCell: Cell = {
+  const merged: Cell = {
     ...candidate,
     cellTypeId: specimenType.id,
     x: Math.round(orient.x),
@@ -212,6 +214,16 @@ export function buildMergeAction(
     rotation: orient.rotation === 0 ? undefined : orient.rotation,
     merged: true
   };
+  const nextCell = prevType
+    ? keepFootprint(
+        candidate,
+        prevType.cropRect.width,
+        prevType.cropRect.height,
+        merged,
+        specimenType.cropRect.width,
+        specimenType.cropRect.height
+      )
+    : merged;
 
   const actions: AnnotationAction[] = [
     { kind: "upsertCell", cell: nextCell, prevCell }
@@ -305,7 +317,9 @@ export function buildMakeUniqueAction(
 }
 
 /** A single-field orientation/position edit on a candidate (flip/rotate/align)
- *  — its own undo step. */
+ *  — its own undo step. Rotation / mirrors only change how the cell is
+ *  presented (the die footprint ignores orientation); `x`/`y` are die-axis
+ *  translations (MergeCanvas un-rotates drags) and move the footprint. */
 export function buildOrientAction(
   cell: Cell,
   patch: Partial<Pick<Cell, "flippedH" | "flippedV" | "rotation" | "x" | "y">>
