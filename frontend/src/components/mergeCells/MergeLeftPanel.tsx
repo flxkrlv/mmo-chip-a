@@ -5,6 +5,7 @@ import { Ic } from "../../icons";
 import { useMergeStore } from "../../state/mergeCells";
 import { usePreferences } from "../../state/preferences";
 import { CellTypeColorPicker } from "../dieViewer/CellTypeColorPicker";
+import { CellThumb } from "./CellThumb";
 import {
   candidatesFor,
   cellCropUrl,
@@ -16,12 +17,14 @@ import {
 interface Props {
   dieId: string;
   annotations: DieAnnotations;
+  /** Overlay composited into the crops (same URL as the filmstrip → shared cache). */
+  overlaySourceId?: string;
   onCandidateContextMenu: (cell: Cell, clientX: number, clientY: number) => void;
   /** Set / clear (undefined) a cell type's own color. */
   onSetCellTypeColor: (cellTypeId: string, color: string | undefined) => void;
 }
 
-export function MergeLeftPanel({ dieId, annotations, onCandidateContextMenu, onSetCellTypeColor }: Props) {
+export function MergeLeftPanel({ dieId, annotations, overlaySourceId, onCandidateContextMenu, onSetCellTypeColor }: Props) {
   const specimenTypeId = useMergeStore((s) => s.specimenTypeId);
   const specimenCellId = useMergeStore((s) => s.specimenCellId);
   const candidateCellId = useMergeStore((s) => s.candidateCellId);
@@ -255,29 +258,16 @@ export function MergeLeftPanel({ dieId, annotations, onCandidateContextMenu, onS
                 onCandidateContextMenu(cell, e.clientX, e.clientY);
               }}
             >
-              <div
+              <CellThumb
+                src={cellCropUrl(dieId, cell, overlaySourceId)}
                 style={{
                   width: 40,
                   height: 28,
                   flex: "0 0 auto",
                   borderRadius: 3,
-                  overflow: "hidden",
-                  position: "relative",
-                  border: "1px solid var(--l2)",
-                  background: "var(--canvas-bg)"
+                  border: "1px solid var(--l2)"
                 }}
               >
-                <img
-                  src={cellCropUrl(dieId, cell)}
-                  alt=""
-                  loading="lazy"
-                  style={{
-                    width: "100%",
-                    height: "100%",
-                    objectFit: "cover",
-                    display: "block"
-                  }}
-                />
                 {done && (
                   <span
                     style={{
@@ -293,7 +283,7 @@ export function MergeLeftPanel({ dieId, annotations, onCandidateContextMenu, onS
                     {CHECK}
                   </span>
                 )}
-              </div>
+              </CellThumb>
               <div className="col" style={{ minWidth: 0, gap: 1, flex: 1 }}>
                 <span
                   className="m"

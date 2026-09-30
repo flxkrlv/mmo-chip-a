@@ -1,5 +1,6 @@
 import type { Cell } from "shared";
 import { cellCropUrl } from "../../lib/mergeCells";
+import { CellThumb } from "./CellThumb";
 
 /**
  * Floating list over the merge canvas in multiple-overlay mode: one switch per
@@ -87,18 +88,14 @@ export function MultiOverlayPanel({
                 checked={on}
                 onChange={(e) => onSetIncluded([c.id], e.target.checked)}
               />
-              <img
+              <CellThumb
                 src={cellCropUrl(dieId, c, overlaySourceId)}
-                alt=""
-                loading="lazy"
                 style={{
                   width: 40,
                   height: 28,
                   flex: "0 0 auto",
-                  objectFit: "cover",
                   borderRadius: 3,
-                  border: "1px solid var(--l2)",
-                  background: "var(--canvas-bg)"
+                  border: "1px solid var(--l2)"
                 }}
               />
               <span className="m" style={{ fontSize: 10.5, color: "var(--ink2)", flex: "1 1 auto" }}>

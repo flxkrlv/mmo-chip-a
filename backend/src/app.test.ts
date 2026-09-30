@@ -169,6 +169,42 @@ test("analyses a supplied circuit snapshot without changing annotations", async 
   assert.equal(after.body.rev, before.body.rev);
 });
 
+test("cell crops come from the tile pyramid, with ?px previews at coarse levels", async () => {
+  const { app, dataRoot } = await createHarness();
+  // Left half dark, right half bright: a crop straddling x=256 shows both.
+  const imageBuffer = await sharp({ create: { width: 512, height: 512, channels: 3, background: { r: 30, g: 30, b: 30 } } })
+    .composite([{ input: { create: { width: 256, height: 512, channels: 3, background: { r: 220, g: 220, b: 220 } } }, left: 256, top: 0 }])
+    .png()
+    .toBuffer();
+  const imported = await request(app).post("/api/dies/import").attach("file", imageBuffer, { filename: "crop.png", contentType: "image/png" });
+  const job = await waitForCompletedJob(app, imported.body.id);
+  await waitForTilePrebuild(app, job.dieId);
+
+  const annotations = (await request(app).get(`/api/dies/${job.dieId}/annotations`)).body;
+  annotations.cellTypes = [{ id: "ct1", name: "T", cropRect: { x: 0, y: 0, width: 200, height: 160 } }];
+  annotations.cells = [{ id: "c1", cellTypeId: "ct1", x: 150, y: 100 }]; // straddles tile edges at 128/256
+  assert.equal((await request(app).put(`/api/dies/${job.dieId}/annotations`).send(annotations)).status, 200);
+
+  const full = await request(app).get(`/api/dies/${job.dieId}/cells/c1/crop`).buffer(true);
+  assert.equal(full.status, 200);
+  const fullImg = await sharp(full.body).raw().toBuffer({ resolveWithObject: true });
+  assert.equal(fullImg.info.width, 200);
+  assert.equal(fullImg.info.height, 160);
+  const at = (img: typeof fullImg, x: number, y: number) => img.data[(y * img.info.width + x) * img.info.channels];
+  assert.ok(at(fullImg, 50, 80) < 60, "left of x=256 is dark"); // die x=200
+  assert.ok(at(fullImg, 150, 80) > 190, "right of x=256 is bright"); // die x=300
+
+  const preview = await request(app).get(`/api/dies/${job.dieId}/cells/c1/crop?px=40`).buffer(true);
+  assert.equal(preview.status, 200);
+  const previewMeta = await sharp(preview.body).metadata();
+  assert.ok(previewMeta.width! < 200 && previewMeta.width! >= 40, `preview width ${previewMeta.width}`);
+
+  // Cached per position + size + scale.
+  const cached = await fs.readdir(path.join(dataRoot, "dies", job.dieId, "cell-crops"));
+  assert.ok(cached.includes("base-c1-150-100-200x160-s1.jpg"), cached.join(","));
+  assert.equal(cached.filter((f) => f.startsWith("base-c1-")).length, 2);
+});
+
 async function createHarness() {
   const dataRoot = await fs.mkdtemp(path.join(os.tmpdir(), "chiptool-test-"));
   tempRoots.push(dataRoot);

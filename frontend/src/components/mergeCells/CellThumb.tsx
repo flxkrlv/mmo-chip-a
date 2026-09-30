@@ -1,16 +1,18 @@
 import { useState, type CSSProperties, type ReactNode } from "react";
+import { THUMB_PREVIEW_PX, THUMB_PX, withCropPx } from "../../lib/progressiveImage";
 
 /**
- * Cell crop miniature with a visible loading state. Cold crops are rendered
- * server-side on first request, so the image can take a moment: until it
- * arrives the slot shows a pulsing placeholder + spinner instead of a flat
- * black box, and a failed crop says so.
+ * Cell crop miniature. Loads progressively from the tile pyramid: a tiny
+ * preview paints almost at once, then a sharper one (still far below full
+ * resolution — thumbs are ~84px) replaces it. Until the first stage arrives
+ * the slot shows a pulsing placeholder + spinner; a failed crop says so.
  */
 export function CellThumb({
   src,
   style,
   children
 }: {
+  /** Crop URL (cellCropUrl); the pyramid size is added here. */
   src: string;
   /** Size / border / radius of the thumbnail box. */
   style?: CSSProperties;
@@ -28,23 +30,44 @@ export function CellThumb({
 }
 
 function ThumbImage({ src }: { src: string }) {
-  const [state, setState] = useState<"loading" | "loaded" | "error">("loading");
+  const previewSrc = withCropPx(src, THUMB_PREVIEW_PX);
+  const sharpSrc = withCropPx(src, THUMB_PX);
+  const [stage, setStage] = useState<"none" | "preview" | "sharp">("none");
+  // Stage 2 starts once stage 1 settled (loaded or failed). Stage 1 is the
+  // lazy one, so off-screen thumbs request nothing.
+  const [previewSettled, setPreviewSettled] = useState(false);
+  const [sharpFailed, setSharpFailed] = useState(false);
+  const failed = sharpFailed && stage === "none";
   return (
     <>
-      <img
-        src={src}
-        alt=""
-        loading="lazy"
-        onLoad={() => setState("loaded")}
-        onError={() => setState("error")}
-        className={state === "loaded" ? "cell-thumb-img loaded" : "cell-thumb-img"}
-      />
-      {state === "loading" && (
+      {stage !== "sharp" && (
+        <img
+          src={previewSrc}
+          alt=""
+          loading="lazy"
+          onLoad={() => {
+            setStage((s) => (s === "none" ? "preview" : s));
+            setPreviewSettled(true);
+          }}
+          onError={() => setPreviewSettled(true)}
+          className={stage === "preview" ? "cell-thumb-img loaded" : "cell-thumb-img"}
+        />
+      )}
+      {previewSettled && !sharpFailed && (
+        <img
+          src={sharpSrc}
+          alt=""
+          onLoad={() => setStage("sharp")}
+          onError={() => setSharpFailed(true)}
+          className={stage === "sharp" ? "cell-thumb-img loaded" : "cell-thumb-img"}
+        />
+      )}
+      {stage === "none" && !failed && (
         <div className="cell-thumb-status loading" aria-label="Loading image">
           <span className="cell-thumb-spinner" />
         </div>
       )}
-      {state === "error" && (
+      {failed && (
         <div className="cell-thumb-status" title="Image could not be loaded">
           no image
         </div>

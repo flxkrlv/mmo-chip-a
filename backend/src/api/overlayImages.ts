@@ -19,6 +19,7 @@ import { ensurePreviewImage } from "../imagePreview.js";
 import type { OverlayTileProgress, OverlayTileSourceProgress } from "shared";
 import { buildLevels } from "../dieImport/importer.js";
 import { resolveProjectDir } from "../projectLayout.js";
+import type { PyramidSource } from "../tileCrop.js";
 
 const DEFAULT_TILE_SIZE = 512;
 const SUPPORTED_MIME_TYPES = new Set([
@@ -381,6 +382,37 @@ async function ensureTileImpl(params: {
     throw error;
   }
   return target;
+}
+
+/**
+ * Tile pyramid (already-built tiles only) and original of an overlay, for
+ * cell crop assembly (tileCrop.ts).
+ */
+export async function getOverlayCropSource(params: {
+  dataRoot: string;
+  dieId: string;
+  sourceId: string;
+}): Promise<{ pyramid: PyramidSource; originalPath: string } | null> {
+  if (!SAFE_ID.test(params.sourceId)) return null;
+  const manifest = await readManifest(params.dataRoot, params.dieId, params.sourceId);
+  if (!manifest || manifest.levels.length === 0) return null;
+  const tilesDir = path.join(await sourceDir(params.dataRoot, params.dieId, manifest.id), "tiles");
+  return {
+    originalPath: manifest.originalPath,
+    pyramid: {
+      levels: manifest.levels,
+      tileSize: manifest.tileSize,
+      peekTile: async (z, x, y) => {
+        const tilePath = path.join(tilesDir, String(z), `${x}_${y}.${manifest.tileFormat}`);
+        try {
+          await fs.access(tilePath);
+          return tilePath;
+        } catch {
+          return null;
+        }
+      }
+    }
+  };
 }
 
 /** Resolve a tiled overlay original in the shared namespace. */

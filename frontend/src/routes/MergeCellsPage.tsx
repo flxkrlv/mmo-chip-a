@@ -716,6 +716,7 @@ function Merge({ dieId }: { dieId: string }) {
           <MergeLeftPanel
             dieId={dieId}
             annotations={annotations}
+            overlaySourceId={previewOverlaySourceId}
             onSetCellTypeColor={(cellTypeId, color) => {
               const ct = cellTypeById(annotations, cellTypeId);
               if (ct) void dispatcher.dispatch({ kind: "upsertCellType", cellType: { ...ct, color }, prevCellType: ct });

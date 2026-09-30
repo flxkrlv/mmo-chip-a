@@ -3,6 +3,7 @@ import {
   useEffect,
   useImperativeHandle,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
   forwardRef
@@ -66,6 +67,7 @@ import { uuid } from "../../lib/uuid";
 import { useCellREStore } from "../../state/cellRE";
 import { useOverlayLayers } from "../../state/overlayLayers";
 import { usePreferences } from "../../state/preferences";
+import { createProgressiveImageCache } from "../../lib/progressiveImage";
 
 export interface CellRECanvasHandle {
   /** Re-fit the cell into the viewport. */
@@ -379,23 +381,8 @@ export const CellRECanvas = forwardRef<CellRECanvasHandle, Props>(function CellR
   }, [overlayKey]);
 
   // ── Image cache ────────────────────────────────────────────────────
-  const imgCacheRef = useRef(new Map<string, HTMLImageElement>());
-  const getImage = useCallback(
-    (url: string | null): HTMLImageElement | null => {
-      if (!url) return null;
-      const cache = imgCacheRef.current;
-      const hit = cache.get(url);
-      if (hit) return hit.complete && hit.naturalWidth > 0 ? hit : null;
-      const img = new Image();
-      img.decoding = "async";
-      img.onload = redraw;
-      img.onerror = redraw;
-      img.src = url;
-      cache.set(url, img);
-      return null;
-    },
-    [redraw]
-  );
+  // Preview first, full resolution once it arrives (see lib/progressiveImage).
+  const getImage = useMemo(() => createProgressiveImageCache(redraw), [redraw]);
 
   // ── Fit ────────────────────────────────────────────────────────────
   const fit = useCallback(() => {

@@ -3,6 +3,7 @@ import {
   useEffect,
   useImperativeHandle,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
   forwardRef,
@@ -15,6 +16,7 @@ import type { TileBounds } from "../../renderer/types";
 import { orientOf } from "../../lib/mergeCells";
 import { withAlpha } from "../../lib/color";
 import { useOverlayLayers } from "../../state/overlayLayers";
+import { createProgressiveImageCache } from "../../lib/progressiveImage";
 
 export interface CellView {
   cell: Cell | null;
@@ -147,23 +149,8 @@ export const MergeCanvas = forwardRef<MergeCanvasHandle, Props>(function MergeCa
   propsRef.current = { mode, opacity, showAnno, showMlVias, specimen, candidate, onAlign };
 
   // ── Image cache ────────────────────────────────────────────────────
-  const imgCache = useRef(new Map<string, HTMLImageElement>());
-  const getImage = useCallback(
-    (url: string | null): HTMLImageElement | null => {
-      if (!url) return null;
-      const cache = imgCache.current;
-      const hit = cache.get(url);
-      if (hit) return hit.complete && hit.naturalWidth > 0 ? hit : null;
-      const img = new Image();
-      img.decoding = "async";
-      img.onload = redraw;
-      img.onerror = redraw;
-      img.src = url;
-      cache.set(url, img);
-      return null;
-    },
-    [redraw]
-  );
+  // Preview first, full resolution once it arrives (see lib/progressiveImage).
+  const getImage = useMemo(() => createProgressiveImageCache(redraw), [redraw]);
 
   // Last successfully-loaded image per cell id + a "pending visual offset"
   // (canonical px) accumulated by drag-align commits that haven't yet been
@@ -206,6 +193,14 @@ export const MergeCanvas = forwardRef<MergeCanvasHandle, Props>(function MergeCa
         // optimistic cellType update lands, so this render still sees the
         // old URL — we'd otherwise wipe the drag delta we just stashed and
         // the cell would snap back to its original position for one frame.
+        // Right after a drag-align the fresh URL first yields a coarse
+        // preview; the previous sharp image, shifted by the drag, is the
+        // better picture until the new full-resolution crop lands.
+        const keepShiftedSharp =
+          !!existing &&
+          (existing.pendingOffset.dx !== 0 || existing.pendingOffset.dy !== 0) &&
+          existing.img.naturalWidth > fresh.naturalWidth;
+        if (keepShiftedSharp) return { img: existing.img, offset: existing.pendingOffset };
         if (!existing || existing.img !== fresh) {
           if (existing) map.delete(cellId);
           map.set(cellId, { img: fresh, pendingOffset: { dx: 0, dy: 0 } });
