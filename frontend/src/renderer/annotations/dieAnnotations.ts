@@ -120,12 +120,9 @@ export interface PopulateOptions {
   netNodeConnectionPoint?: (netId: string, x: number, y: number) => boolean;
   /** Live getter: draw the cross inside junction dots. Default true. */
   netNodeJunctionCross?: () => boolean;
-  /** Called at draw time for each cell: true → draw a glow outline
-   *  (sibling cells sharing a cellTypeId with the selection). */
-  isSibling?: (cellId: string) => boolean;
-  /** Called at draw time: when sibling highlighting is active, non-sibling
-   *  cells are dimmed so the group stands out. */
-  siblingActive?: () => boolean;
+  /** Called at draw time for each cell: true → the cell's *type* is selected
+   *  (e.g. from the outline tree), so draw it with the selection highlight. */
+  isTypeSelected?: (cellId: string) => boolean;
   /** Live getter: show the name+number label next to each I/O pin marker.
    *  Default true (names always shown). Independent of the pin kind's
    *  own all-or-nothing visibility (which hides the whole marker). */
@@ -161,13 +158,12 @@ export function populateAnnotationLayer(
 
   const cellTypeMap = new Map(annotations.cellTypes.map((ct) => [ct.id, ct]));
 
-  const getIsSibling = options.isSibling;
-  const getSiblingActive = options.siblingActive;
+  const getIsTypeSelected = options.isTypeSelected;
 
   for (const cell of annotations.cells) {
     const ct = cellTypeMap.get(cell.cellTypeId);
     if (!ct) continue;
-    layer.add(buildCellAnnotation(cell, ct, getCellColor, getCellShowShapes, getIsSibling, getSiblingActive));
+    layer.add(buildCellAnnotation(cell, ct, getCellColor, getCellShowShapes, getIsTypeSelected));
   }
 
   const getNetOverrideColor = options.netOverrideColor ?? ((_: string) => null);
@@ -226,8 +222,7 @@ export function buildCellAnnotation(
   cellType: CellType,
   getColor: () => string,
   getShowShapes: () => boolean,
-  isSibling?: (cellId: string) => boolean,
-  siblingActive?: () => boolean
+  isTypeSelected?: (cellId: string) => boolean
 ): Annotation {
   const w = cellType.cropRect.width;
   const h = cellType.cropRect.height;
@@ -279,10 +274,9 @@ export function buildCellAnnotation(
       ctx.scale(cell.flippedH ? -1 : 1, cell.flippedV ? -1 : 1);
       ctx.translate(-w / 2, -h / 2);
 
-      // Dim non-sibling cells when a sibling group is active so the
-      // highlighted cluster stands out on the die.
-      const dimmed = !state.selected && !isSibling?.(cell.id) && siblingActive?.();
-      if (dimmed) ctx.globalAlpha = 0.1;
+      // Only the selected cell (or every instance of a selected cell type)
+      // changes colour; all other cells keep their normal look.
+      const selected = state.selected || isTypeSelected?.(cell.id) === true;
 
       const isMl = cell.mlDetected === true;
 
@@ -294,27 +288,16 @@ export function buildCellAnnotation(
       } else {
         // Solid block so placement structure stays legible (when zoomed out,
         // or for cells that carry no inner shapes at all).
-        if (isMl && !state.selected) {
+        if (isMl && !selected) {
           ctx.fillStyle = "rgba(100, 180, 255, 0.18)";
         } else {
-          ctx.fillStyle = state.selected ? SELECT_FILL : withAlpha(color, CELL_FILL_ALPHA);
+          ctx.fillStyle = selected ? SELECT_FILL : withAlpha(color, CELL_FILL_ALPHA);
         }
         ctx.fillRect(0, 0, w, h);
       }
 
-      // Sibling glow: cells sharing a cellTypeId with the selection get a
-      // cyan halo before the regular outline so the group is visible at a glance.
-      if (!state.selected && isSibling?.(cell.id)) {
-        ctx.strokeStyle = "rgba(0, 200, 255, 0.45)";
-        ctx.lineWidth = (CELL_OUTLINE_PX + 10) / bounds.zoom;
-        ctx.strokeRect(0, 0, w, h);
-        ctx.strokeStyle = "rgba(0, 230, 255, 0.7)";
-        ctx.lineWidth = (CELL_OUTLINE_PX + 3) / bounds.zoom;
-        ctx.strokeRect(0, 0, w, h);
-      }
-
       // Strong outline, always — this is what makes cell boundaries readable.
-      if (state.selected) {
+      if (selected) {
         ctx.strokeStyle = SELECT_COLOR;
         ctx.lineWidth = (CELL_OUTLINE_PX + 1) / bounds.zoom;
       } else if (isMl) {

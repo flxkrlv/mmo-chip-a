@@ -894,29 +894,13 @@ function DieViewer({ dieId }: { dieId: string }) {
       netNodeConnectionPoint: isDeviceConnectionPoint,
       netNodeJunctionCross: () =>
         usePreferences.getState().netNodeJunctionCross,
-      isSibling: (cellId: string) => {
+      // Selecting a cell type (outline tree) highlights all its instances.
+      isTypeSelected: (cellId: string) => {
         if (!annotations) return false;
         const sel = useDieViewerStore.getState().selectedIds;
         if (sel.size === 0) return false;
-        let ctId: string | undefined;
-        for (const s of sel) {
-          if (s.startsWith("cellType:")) { ctId = s.slice(9); break; }
-          if (s.startsWith("cell:")) {
-            const c = annotations.cells.find((c) => c.id === s.slice(5));
-            if (c) { ctId = c.cellTypeId; break; }
-          }
-        }
-        if (!ctId) return false;
         const c = annotations.cells.find((c) => c.id === cellId);
-        return c?.cellTypeId === ctId;
-      },
-      siblingActive: () => {
-        const sel = useDieViewerStore.getState().selectedIds;
-        if (sel.size === 0) return false;
-        for (const s of sel) {
-          if (s.startsWith("cell:") || s.startsWith("cellType:")) return true;
-        }
-        return false;
+        return c != null && sel.has(`cellType:${c.cellTypeId}`);
       }
     });
   }, [annotationLayer, annotations]);
@@ -1556,22 +1540,6 @@ function DieViewer({ dieId }: { dieId: string }) {
     if (annotations) for (const c of annotations.cells ?? []) m.set(c.id, c.cellTypeId);
     return m;
   }, [annotations]);
-
-  // Cell sibling set: when a cell or cellType is selected, all cells sharing
-  // that cellTypeId get a glow highlight on the die view.
-  const siblingIds = useMemo(() => {
-    if (!annotations || selectedIds.size === 0) return new Set<string>();
-    let ctId: string | undefined;
-    for (const s of selectedIds) {
-      if (s.startsWith("cellType:")) { ctId = s.slice(9); break; }
-      if (s.startsWith("cell:")) {
-        const c = annotations.cells.find((c) => c.id === s.slice(5));
-        if (c) { ctId = c.cellTypeId; break; }
-      }
-    }
-    if (!ctId) return new Set<string>();
-    return new Set(annotations.cells.filter((c) => c.cellTypeId === ctId).map((c) => c.id));
-  }, [annotations, selectedIds]);
 
   const totalProblems = useMemo(() => {
     if (!annotations || !analogDevices.length && !analogWarnings.length) return 0;
@@ -2474,8 +2442,8 @@ function DieViewer({ dieId }: { dieId: string }) {
       const vp = viewportLive.get();
       if (!vp || !annotationLayer) return "pan";
 
-      // Dragging a side of the selected cell resizes its cell type (every
-      // linked instance follows; see cellResize.ts). Checked before the
+      // Dragging a side of the selected cell resizes just that cell (split
+      // onto its own type if the type is shared; see cellResize.ts). Checked before the
       // hit-test since the grab zone straddles the cell outline.
       const edgeGrab = selectedCellSideAt(e.worldPoint, vp.zoom);
       if (edgeGrab) {
@@ -2504,13 +2472,11 @@ function DieViewer({ dieId }: { dieId: string }) {
               : side === "top" ? sn.y
               : sn.y + sn.height;
           }
-          return resizeCellType(ann0, rCell, rType, side as CellSide, pos);
+          return resizeCellType(ann0, rCell, rType, side as CellSide, pos, splitId);
         };
-        const instances = ann0.cells.filter((c) => c.cellTypeId === rType.id);
+        const splitId = uuid();
         const restore = () => {
-          for (const c of instances) {
-            annotationLayer.update(buildCellAnnotation(c, rType, getCellC, getCellShapes));
-          }
+          annotationLayer.update(buildCellAnnotation(rCell, rType, getCellC, getCellShapes));
           editPreviewLive.set(null);
         };
         const handler: DragHandler = {
@@ -2520,18 +2486,15 @@ function DieViewer({ dieId }: { dieId: string }) {
               restore();
               return;
             }
-            for (const { cell: c } of res.cells) {
-              annotationLayer.update(buildCellAnnotation(c, res.cellType, getCellC, getCellShapes));
-            }
-            const moved = res.cells.find((x) => x.cell.id === rCell.id)!.cell;
+            annotationLayer.update(buildCellAnnotation(res.cell, res.cellType, getCellC, getCellShapes));
             const { width, height } = res.cellType.cropRect;
-            editPreviewLive.set({ kind: "cellRect", rect: cellWorldRect(moved, width, height) });
+            editPreviewLive.set({ kind: "cellRect", rect: cellWorldRect(res.cell, width, height) });
           },
           onPointerUp: ({ dragged, worldPoint }) => {
             editPreviewLive.set(null);
             if (!dragged) return; // plain click on the edge keeps the selection
             const res = compute(worldPoint);
-            if (res) void dispatcher.dispatch(cellResizeAction(rType, res));
+            if (res) void dispatcher.dispatch(cellResizeAction(res));
             else restore();
           },
           onCancel: restore
