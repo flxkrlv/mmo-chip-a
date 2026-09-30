@@ -30,6 +30,7 @@ import {
   type MergeCanvasHandle
 } from "../components/mergeCells/MergeCanvas";
 import { MergeLeftPanel } from "../components/mergeCells/MergeLeftPanel";
+import { MultiOverlayPanel } from "../components/mergeCells/MultiOverlayPanel";
 import { PanelToggle, usePanelCollapsed } from "../components/shell/PanelToggle";
 import { Filmstrip } from "../components/mergeCells/Filmstrip";
 import { MergeBottomBar } from "../components/mergeCells/MergeBottomBar";
@@ -241,6 +242,42 @@ function Merge({ dieId }: { dieId: string }) {
     [annotations, specimenType]
   );
 
+  // ── Multi overlay (Alt+6): every instance of the specimen type ────
+  // Instances are included by default; `multiExcluded` holds the ones the
+  // user switched off. Keyed by cell id, so it survives type switches.
+  const [multiExcluded, setMultiExcluded] = useState<ReadonlySet<string>>(
+    () => new Set()
+  );
+  const typeMembers = useMemo(
+    () => (annotations && specimenTypeId ? membersOf(annotations, specimenTypeId) : []),
+    [annotations, specimenTypeId]
+  );
+  const multiViews: CellView[] = useMemo(
+    () =>
+      specimenType
+        ? typeMembers
+            .filter((c) => !multiExcluded.has(c.id))
+            .map((c) => ({
+              cellType: specimenType,
+              cell: c,
+              imageUrl: cellCropUrl(dieId, c, previewOverlaySourceId),
+              mlVias: null
+            }))
+        : [],
+    [typeMembers, multiExcluded, specimenType, dieId, previewOverlaySourceId]
+  );
+  const setMultiIncluded = useCallback((ids: string[], included: boolean) => {
+    setMultiExcluded((prev) => {
+      const next = new Set(prev);
+      for (const id of ids) {
+        if (included) next.delete(id);
+        else next.add(id);
+      }
+      return next;
+    });
+  }, []);
+  const multiPct = multiViews.length > 0 ? 100 / multiViews.length : 0;
+
   // When the specimen *type* changes, jump the selection to the most likely
   // candidate (the closest-size not-yet-matched one — candidates are sorted
   // done-first then by ascending size distance). Only fires on a real type
@@ -438,7 +475,7 @@ function Merge({ dieId }: { dieId: string }) {
   }, [dispatcher]);
 
   // ── Keyboard: merge workflow shortcuts ──────────────────────────────
-  //   Alt+1/2/3/4/5  switch merge modes (from MERGE_HOTKEYS)
+  //   Alt+1..6  switch merge modes (from MERGE_HOTKEYS)
   //   ←/↑ prev · →/↓ next candidate
   //   f flip H · g flip V · h rotate · j auto-align
   //   y accept & merge
@@ -460,7 +497,7 @@ function Merge({ dieId }: { dieId: string }) {
       }
       if (e.metaKey || e.ctrlKey) return;
       if (isTypingTarget(e.target)) return;
-      // Merge mode shortcuts (Alt+1..Alt+5)
+      // Merge mode shortcuts (Alt+1..Alt+6)
       if (e.altKey && !e.shiftKey && !e.metaKey && !e.ctrlKey) {
         const mode = MERGE_HOTKEYS[`Alt+${e.key}`];
         if (mode) {
@@ -599,6 +636,14 @@ function Merge({ dieId }: { dieId: string }) {
         >
           <Kb>Alt+5</Kb> candidate
         </span>
+        <span
+          className={"chip" + (mode === "multi" ? " on" : "")}
+          style={{ cursor: "pointer" }}
+          onClick={() => setMode("multi")}
+          title="Overlay every instance of the type, each at 100/N % (Alt+6)"
+        >
+          <Kb>Alt+6</Kb> multiple overlay
+        </span>
         {mode === "overlay" && (
           <>
             <span
@@ -690,8 +735,20 @@ function Merge({ dieId }: { dieId: string }) {
             showMlVias={showMlVias}
             specimen={specimenView}
             candidate={candidateView}
+            multi={mode === "multi" ? multiViews : undefined}
             onAlign={onAlign}
-          />
+          >
+            {mode === "multi" && specimenType && (
+              <MultiOverlayPanel
+                dieId={dieId}
+                overlaySourceId={previewOverlaySourceId}
+                cells={typeMembers}
+                excluded={multiExcluded}
+                referenceId={specimenCell?.id ?? null}
+                onSetIncluded={setMultiIncluded}
+              />
+            )}
+          </MergeCanvas>
           <Filmstrip
             dieId={dieId}
             candidates={candidates}
@@ -728,7 +785,11 @@ function Merge({ dieId }: { dieId: string }) {
                 ? "specimen only"
                 : mode === "candidate"
                   ? "candidate only"
-                  : "side-by-side",
+                  : mode === "multi"
+                    ? `multiple overlay · ${multiViews.length}/${typeMembers.length} · ${
+                        multiViews.length > 0 ? `${+multiPct.toFixed(1)}% each` : "none"
+                      }`
+                    : "side-by-side",
           specimenType ? `specimen ${specimenType.name}` : "no specimen",
           candidateCell ? `candidate ${candidateCell.id.slice(0, 6)}` : "no candidate"
         ]}

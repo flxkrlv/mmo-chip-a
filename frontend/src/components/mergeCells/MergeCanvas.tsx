@@ -37,7 +37,8 @@ export type MergeMode =
   | "sxs"
   | "diff"
   | "specimen"
-  | "candidate";
+  | "candidate"
+  | "multi";
 
 interface Props {
   mode: MergeMode;
@@ -50,8 +51,13 @@ interface Props {
   showMlVias: boolean;
   specimen: CellView | null;
   candidate: CellView | null;
+  /** Multi-overlay mode: every enabled instance of the specimen type, each
+   *  drawn at 1/N opacity so the stack averages to a single mean image. */
+  multi?: CellView[];
   /** Commit a drag-align: source-pixel delta to apply to the candidate x/y. */
   onAlign: (dxSrc: number, dySrc: number) => void;
+  /** Floating UI rendered over the canvas (e.g. the multi-overlay list). */
+  children?: React.ReactNode;
 }
 
 const GAP = 24; // world-unit gap between the two boxes in side-by-side
@@ -94,7 +100,7 @@ function contentExtent(
   sp: { w: number; h: number } | null,
   cd: { w: number; h: number } | null
 ): { w: number; h: number } {
-  if (mode === "specimen") {
+  if (mode === "specimen" || mode === "multi") {
     return { w: Math.max(sp?.w ?? 0, 1), h: Math.max(sp?.h ?? 0, 1) };
   }
   if (mode === "candidate") {
@@ -111,7 +117,7 @@ function contentExtent(
 }
 
 export const MergeCanvas = forwardRef<MergeCanvasHandle, Props>(function MergeCanvas(
-  { mode, opacity, showAnno, showMlVias, specimen, candidate, onAlign },
+  { mode, opacity, showAnno, showMlVias, specimen, candidate, multi, onAlign, children },
   ref
 ) {
   const hostRef = useRef<HTMLDivElement | null>(null);
@@ -426,7 +432,42 @@ export const MergeCanvas = forwardRef<MergeCanvasHandle, Props>(function MergeCa
     };
 
     const v = viewRef.current;
-    if (mode === "sxs") {
+    if (mode === "multi") {
+      // Every enabled instance of the type, oriented into the canonical frame
+      // and summed with "lighter" at alpha 1/N — i.e. each contributes
+      // 100/N %, so the result is the per-pixel mean of the stack. Aligned
+      // features stay sharp; misaligned instances show up as ghosting.
+      setWorld(v, 0);
+      const views = multi ?? [];
+      const n = views.length;
+      if (sp && n > 0) {
+        for (const cv of views) {
+          const img = getImage(cv.imageUrl);
+          if (!img) continue;
+          ctx.save();
+          ctx.globalCompositeOperation = "lighter";
+          ctx.globalAlpha = 1 / n;
+          applyOrient(ctx, cv.cell, sp, 0, 0);
+          ctx.imageSmoothingEnabled = v.zoom < 3;
+          ctx.drawImage(img, 0, 0, sp.w, sp.h);
+          ctx.restore();
+        }
+      }
+      // Annotations + outline once, in the reference instance's frame.
+      if (sp && specimen) {
+        ctx.save();
+        applyOrient(ctx, specimen.cell, sp, 0, 0);
+        if (showAnno) {
+          drawCellLayers(ctx, specimen.cellType?.layers, mkBounds(v.zoom), {
+            outline: false
+          });
+        }
+        ctx.strokeStyle = "rgba(245,214,138,0.5)";
+        ctx.lineWidth = 1 / v.zoom;
+        ctx.strokeRect(0, 0, sp.w, sp.h);
+        ctx.restore();
+      }
+    } else if (mode === "sxs") {
       // Two independent panes: specimen left, candidate right. Each clipped
       // to its half, each with its own pan/zoom view.
       const half = cw / 2;
@@ -529,7 +570,10 @@ export const MergeCanvas = forwardRef<MergeCanvasHandle, Props>(function MergeCa
     // candidate to judge it); side-by-side just pans the shared view.
     const m = propsRef.current.mode;
     const canAlign =
-      m !== "sxs" && !!propsRef.current.candidate && m !== "specimen";
+      m !== "sxs" &&
+      m !== "multi" &&
+      !!propsRef.current.candidate &&
+      m !== "specimen";
     dragRef.current = {
       kind: panMode || !canAlign ? "pan" : "align",
       sx: e.clientX,
@@ -654,7 +698,7 @@ export const MergeCanvas = forwardRef<MergeCanvasHandle, Props>(function MergeCa
     ? "grab"
     : mode === "sxs"
       ? "grab"
-      : candidate && mode !== "specimen"
+      : candidate && mode !== "specimen" && mode !== "multi"
         ? "move"
       : "default";
 
@@ -710,6 +754,7 @@ export const MergeCanvas = forwardRef<MergeCanvasHandle, Props>(function MergeCa
           />
         </>
       )}
+      {children}
       {!specimen && (
         <div
           className="m"
@@ -731,6 +776,22 @@ export const MergeCanvas = forwardRef<MergeCanvasHandle, Props>(function MergeCa
     </div>
   );
 });
+
+/** Place the local frame so a `box`-sized crop drawn at (0, 0) appears with
+ *  `cell`'s flip/rotation, centred on the box at (originX, originY). */
+function applyOrient(
+  ctx: CanvasRenderingContext2D,
+  cell: Cell | null,
+  box: { w: number; h: number },
+  originX: number,
+  originY: number
+): void {
+  const o = cell ? orientOf(cell) : { flippedH: false, flippedV: false, rotation: 0 as const };
+  ctx.translate(originX + box.w / 2, originY + box.h / 2);
+  ctx.rotate((o.rotation * Math.PI) / 180);
+  ctx.scale(o.flippedH ? -1 : 1, o.flippedV ? -1 : 1);
+  ctx.translate(-box.w / 2, -box.h / 2);
+}
 
 /** Screen-px sizes for the ML-via markers — kept constant on screen by
  *  dividing by zoom so they stay legible at every magnification. */

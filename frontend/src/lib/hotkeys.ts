@@ -103,7 +103,7 @@ export const VIA_HOTKEYS: Record<string, number> = {
 // ── Merge Cells mode hotkeys ────────────────────────────────────
 // Alt+1..Alt+5 to switch merge view mode (Alt prefix avoids conflict
 // with NAV_HOTKEYS which uses bare digits for tab switching).
-export type MergeModeId = "overlay" | "sxs" | "diff" | "specimen" | "candidate";
+export type MergeModeId = "overlay" | "sxs" | "diff" | "specimen" | "candidate" | "multi";
 
 export const MERGE_HOTKEYS: Record<string, MergeModeId> = {
   "Alt+1": "overlay",
@@ -111,6 +111,7 @@ export const MERGE_HOTKEYS: Record<string, MergeModeId> = {
   "Alt+3": "diff",
   "Alt+4": "specimen",
   "Alt+5": "candidate",
+  "Alt+6": "multi",
 };
 
 // ── Pin Planner (IC Package) tool hotkeys ────────────────────────

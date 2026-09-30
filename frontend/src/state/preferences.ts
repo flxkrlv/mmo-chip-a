@@ -113,7 +113,7 @@ interface PreferencesState {
   /** Outline tree sections that should render expanded. */
   expandedSections: AnnotationKind[];
   /** Merge-cells canvas mode. */
-  mergeMode: "overlay" | "sxs" | "diff" | "specimen" | "candidate";
+  mergeMode: "overlay" | "sxs" | "diff" | "specimen" | "candidate" | "multi";
   /** Candidate opacity 0..1 in merge-cells overlay mode. */
   mergeOpacity: number;
   /** Show cell-type layer annotations over the merge-cells crops. */
@@ -351,7 +351,7 @@ interface PreferencesActions {
   setBaseImageHidden: (id: string, hidden: boolean) => void;
   setBaseImageOpacity: (id: string, opacity: number) => void;
   setMergeMode: (
-    mode: "overlay" | "sxs" | "diff" | "specimen" | "candidate"
+    mode: "overlay" | "sxs" | "diff" | "specimen" | "candidate" | "multi"
   ) => void;
   setMergeOpacity: (opacity: number) => void;
   setMergeShowAnno: (show: boolean) => void;

@@ -98,6 +98,7 @@ const SHORTCUT_GROUPS: ShortcutGroup[] = [
       { key: "Alt+3", label: "Difference" },
       { key: "Alt+4", label: "Specimen only" },
       { key: "Alt+5", label: "Candidate only" },
+      { key: "Alt+6", label: "Multiple overlay (all cells of the type)" },
       { key: "← →", label: "Navigate candidates" },
       { key: "F / G / H", label: "Flip H / Flip V / Rotate" },
       { key: "J", label: "Auto-align" },

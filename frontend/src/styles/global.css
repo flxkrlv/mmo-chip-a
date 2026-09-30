@@ -544,6 +544,45 @@ input[type="range"] {
   box-shadow: 0 0 0 2px var(--accent);
 }
 
+/* Pill toggle switch. Usage: <input type="checkbox" role="switch" class="switch" /> */
+input.switch[type="checkbox"] {
+  appearance: none;
+  -webkit-appearance: none;
+  flex: none;
+  position: relative;
+  width: 24px;
+  height: 14px;
+  margin: 0;
+  border: 1px solid var(--l3);
+  border-radius: 7px;
+  background: var(--card);
+  cursor: pointer;
+  transition: background 0.1s, border-color 0.1s;
+}
+input.switch[type="checkbox"]::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--ink3);
+  transition: transform 0.1s ease-out, background 0.1s;
+}
+input.switch[type="checkbox"]:checked {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+input.switch[type="checkbox"]:checked::after {
+  transform: translateX(10px);
+  background: var(--card);
+}
+input.switch[type="checkbox"]:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--accent);
+}
+
 /* Tree rows */
 .tree {
   padding: 2px 0;
