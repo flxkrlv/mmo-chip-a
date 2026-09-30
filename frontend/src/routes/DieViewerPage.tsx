@@ -4058,6 +4058,7 @@ function DieViewer({ dieId }: { dieId: string }) {
             annotations={annotations}
             viewportStore={viewportLive}
             dieId={dieId}
+            dispatcher={dispatcher}
             pendingNewComment={pendingNewComment}
             onConsumePendingComment={() => setPendingNewComment(null)}
             onAnnotationChange={() => canvasHandle.current?.invalidate()}

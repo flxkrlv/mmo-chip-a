@@ -1,78 +1,74 @@
-import { useCallback, useState } from "react";
-import type { CommentAnnotation, CommentReply } from "shared";
+import { useCallback, useState, type KeyboardEvent } from "react";
+import type { CommentAnnotation } from "shared";
 import { useAuth } from "../../state/auth";
-import { uuid } from "../../lib/uuid";
-import { upsertComment } from "../../api/comments";
 
 interface Props {
+  /** Live comment (re-rendered as annotations change), or the unsaved draft. */
   comment: CommentAnnotation;
-  dieId: string;
   onClose: () => void;
-  onSaved: () => void;
+  /** Persist the draft with its first text (undoable). */
+  onCreate: (text: string) => Promise<void>;
+  /** Append a reply by the current user (undoable). */
+  onReply: (text: string) => Promise<void>;
+  /** Delete the comment and its replies (undoable). */
+  onDelete: () => Promise<void>;
+  /** Die undo / redo, for ⌘Z / ⌘⇧Z typed into an empty input. */
+  onUndo: () => void;
+  onRedo: () => void;
 }
 
-export function CommentPopover({ comment, dieId, onClose, onSaved }: Props) {
+export function CommentPopover({ comment, onClose, onCreate, onReply, onDelete, onUndo, onRedo }: Props) {
   const { userId, username } = useAuth();
   const [replyText, setReplyText] = useState("");
   // For a new (unsaved) comment, we show an initial text input.
   const [initialText, setInitialText] = useState(comment.text || "");
   const [saving, setSaving] = useState(false);
-  // True once the initial text has been saved — switches to display + reply mode.
-  const [saved, setSaved] = useState(!!comment.text);
+  // A comment with text is persisted — display + reply mode. Derived from the
+  // live comment, so undo / redo of the creation flips it back and forth.
+  const saved = !!comment.text;
 
   const handleSaveInitial = useCallback(async () => {
     if (!initialText.trim() || !userId || !username) return;
     setSaving(true);
     try {
-      const updated: CommentAnnotation = {
-        ...comment,
-        text: initialText.trim()
-      };
-      await upsertComment(dieId, updated);
-      setSaved(true);
-      onSaved();
+      await onCreate(initialText.trim());
     } finally {
       setSaving(false);
     }
-  }, [initialText, userId, username, comment, dieId, onSaved]);
+  }, [initialText, userId, username, onCreate]);
 
   const handleReply = useCallback(async () => {
     if (!replyText.trim() || !userId || !username) return;
     setSaving(true);
     try {
-      const reply: CommentReply = {
-        id: uuid(),
-        text: replyText.trim(),
-        authorId: userId,
-        authorName: username,
-        createdAt: new Date().toISOString()
-      };
-      const updated: CommentAnnotation = {
-        ...comment,
-        replies: [...(comment.replies ?? []), reply]
-      };
-      await upsertComment(dieId, updated);
+      await onReply(replyText.trim());
       setReplyText("");
-      onSaved();
     } finally {
       setSaving(false);
     }
-  }, [replyText, userId, username, comment, dieId, onSaved]);
+  }, [replyText, userId, username, onReply]);
 
   const handleDelete = useCallback(async () => {
     if (!userId || userId !== comment.authorId) return;
     setSaving(true);
     try {
-      // Re-add without this comment = delete (PUT with empty/deleted state isn't
-      // a true delete from the array — we need the DELETE endpoint)
-      const { deleteComment } = await import("../../api/comments");
-      await deleteComment(dieId, comment.id);
-      onSaved();
+      await onDelete();
       onClose();
     } finally {
       setSaving(false);
     }
-  }, [userId, comment, dieId, onSaved, onClose]);
+  }, [userId, comment.authorId, onDelete, onClose]);
+
+  // Inputs keep native text undo; once empty (e.g. right after sending a
+  // reply) ⌘Z / ⌘⇧Z go to the die's undo stack instead.
+  const undoKeys = (e: KeyboardEvent<HTMLInputElement>) => {
+    if (!(e.metaKey || e.ctrlKey) || (e.key !== "z" && e.key !== "Z")) return;
+    if (e.currentTarget.value !== "") return;
+    e.preventDefault();
+    e.stopPropagation();
+    if (e.shiftKey) onRedo();
+    else onUndo();
+  };
 
   return (
     <>
@@ -133,6 +129,7 @@ export function CommentPopover({ comment, dieId, onClose, onSaved }: Props) {
                   style={{ flex: 1, height: 28, fontSize: 11 }}
                   autoFocus
                   onKeyDown={(e) => {
+                    undoKeys(e);
                     if (e.key === "Enter" && !e.shiftKey) {
                       e.preventDefault();
                       handleSaveInitial();
@@ -224,6 +221,7 @@ export function CommentPopover({ comment, dieId, onClose, onSaved }: Props) {
               className="input"
               style={{ flex: 1, height: 26, fontSize: 11 }}
               onKeyDown={(e) => {
+                undoKeys(e);
                 if (e.key === "Enter" && !e.shiftKey) {
                   e.preventDefault();
                   handleReply();

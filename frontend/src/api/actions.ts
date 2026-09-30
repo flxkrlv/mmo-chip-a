@@ -3,6 +3,8 @@ import { useQueryClient } from "@tanstack/react-query";
 import type {
   AnnotationNet,
   Cell,
+  CommentAnnotation,
+  CommentReply,
   CellLayers,
   CellType,
   DieAnnotations,
@@ -68,6 +70,12 @@ export type AnnotationAction =
   | { kind: "upsertAnalogLayers"; layers: CellLayers; prevLayers: CellLayers | null }
   // One user gesture that touches several nets atomically (cross-net merge,
   // graph-splitting delete). Applied/persisted in order; undone in reverse.
+  // Comments. A reply is its own action (not a whole-comment upsert) so
+  // undoing it can't clobber replies other users posted in the meantime.
+  | { kind: "upsertComment"; comment: CommentAnnotation; prevComment: CommentAnnotation | null }
+  | { kind: "removeComment"; comment: CommentAnnotation }
+  | { kind: "addCommentReply"; commentId: string; reply: CommentReply }
+  | { kind: "removeCommentReply"; commentId: string; reply: CommentReply }
   | { kind: "batch"; actions: AnnotationAction[] };
 
 export function inverseOf(action: AnnotationAction): AnnotationAction {
@@ -150,6 +158,16 @@ export function inverseOf(action: AnnotationAction): AnnotationAction {
         : { kind: "upsertRuler", ruler: action.prevRuler, prevRuler: action.ruler };
     case "removeRuler":
       return { kind: "upsertRuler", ruler: action.ruler, prevRuler: null };
+    case "upsertComment":
+      return action.prevComment === null
+        ? { kind: "removeComment", comment: action.comment }
+        : { kind: "upsertComment", comment: action.prevComment, prevComment: action.comment };
+    case "removeComment":
+      return { kind: "upsertComment", comment: action.comment, prevComment: null };
+    case "addCommentReply":
+      return { kind: "removeCommentReply", commentId: action.commentId, reply: action.reply };
+    case "removeCommentReply":
+      return { kind: "addCommentReply", commentId: action.commentId, reply: action.reply };
     case "batch":
       return { kind: "batch", actions: [...action.actions].reverse().map(inverseOf) };
     case "upsertAnalogLayers":
@@ -257,11 +275,44 @@ export function applyAction(annotations: DieAnnotations, action: AnnotationActio
         ...annotations,
         rulers: removeById(annotations.rulers ?? [], action.ruler.id)
       };
+    case "upsertComment":
+      return {
+        ...annotations,
+        comments: upsertById(annotations.comments ?? [], action.comment)
+      };
+    case "removeComment":
+      return {
+        ...annotations,
+        comments: removeById(annotations.comments ?? [], action.comment.id)
+      };
+    case "addCommentReply":
+    case "removeCommentReply":
+      return {
+        ...annotations,
+        comments: (annotations.comments ?? []).map((c) =>
+          c.id === action.commentId ? applyReplyAction(c, action) : c
+        )
+      };
     case "batch":
       return action.actions.reduce(applyAction, annotations);
     case "upsertAnalogLayers":
       return { ...annotations, analogLayers: action.layers };
   }
+}
+
+/**
+ * Add / remove one reply. Adding keeps replies in `createdAt` order (an undone
+ * reply that is redone goes back to its original place) and is idempotent.
+ */
+export function applyReplyAction(
+  comment: CommentAnnotation,
+  action: Extract<AnnotationAction, { kind: "addCommentReply" | "removeCommentReply" }>
+): CommentAnnotation {
+  const replies = (comment.replies ?? []).filter((r) => r.id !== action.reply.id);
+  if (action.kind === "removeCommentReply") return { ...comment, replies };
+  replies.push(action.reply);
+  replies.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  return { ...comment, replies };
 }
 
 /** Persist the action against the backend. Returns the new revision. */
@@ -321,6 +372,19 @@ export async function requestAction(
       return apiPut(`/api/dies/${dieId}/rulers/${action.ruler.id}`, action.ruler);
     case "removeRuler":
       return apiDelete(`/api/dies/${dieId}/rulers/${action.ruler.id}`);
+    case "upsertComment":
+      return apiPut(`/api/dies/${dieId}/comments/${action.comment.id}`, action.comment);
+    case "removeComment":
+      return apiDelete(`/api/dies/${dieId}/comments/${action.comment.id}`);
+    case "addCommentReply":
+    case "removeCommentReply": {
+      // The server stores whole comments: read the current one (with any
+      // replies other users added since) and write it back with this change.
+      const current = await apiGet<DieAnnotations>(`/api/dies/${dieId}/annotations`);
+      const comment = (current.comments ?? []).find((c) => c.id === action.commentId);
+      if (!comment) throw new Error("Comment no longer exists");
+      return apiPut(`/api/dies/${dieId}/comments/${comment.id}`, applyReplyAction(comment, action));
+    }
     case "batch": {
       // Single read → apply all mutations locally → single write.
       // Avoids N individual HTTP requests (each with its own disk read/write).

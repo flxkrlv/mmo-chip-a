@@ -1,10 +1,10 @@
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
-import type { CommentAnnotation, DieAnnotations } from "shared";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { CommentAnnotation, CommentReply, DieAnnotations } from "shared";
 import type { LiveValue } from "../../lib/liveValue";
 import { useLiveValue } from "../../lib/liveValue";
 import { useAuth } from "../../state/auth";
 import { uuid } from "../../lib/uuid";
-import { upsertComment } from "../../api/comments";
+import type { ActionDispatcher } from "../../api/actions";
 import { CommentPopover } from "./CommentPopover";
 import type { Viewport } from "../../renderer/types";
 
@@ -12,6 +12,8 @@ interface Props {
   annotations: DieAnnotations | undefined;
   viewportStore: LiveValue<Viewport | null>;
   dieId: string;
+  /** Comment create / reply / delete go through it, so they are undoable. */
+  dispatcher: ActionDispatcher;
   /** Called when annotations have changed (to trigger a refetch). */
   onAnnotationChange?: () => void;
   /**
@@ -31,7 +33,7 @@ const COMMENT_SIZE = 24;
  * Renders comment pin markers on the canvas + popover on click.
  * Handles adding new comments via a simple prompt when comment tool is active.
  */
-export function CommentOverlay({ annotations, viewportStore, dieId, onAnnotationChange, pendingNewComment, onConsumePendingComment }: Props) {
+export function CommentOverlay({ annotations, viewportStore, dispatcher, onAnnotationChange, pendingNewComment, onConsumePendingComment }: Props) {
   const viewport = useLiveValue(viewportStore);
   const { userId, username } = useAuth();
   const [selectedComment, setSelectedComment] = useState<{
@@ -101,13 +103,76 @@ export function CommentOverlay({ annotations, viewportStore, dieId, onAnnotation
     setSelectedComment({ comment: newComment, x: newComment.x, y: newComment.y });
   }, [comments, userId, username]);
 
-  const handlePopoverSaved = useCallback(() => {
-    onAnnotationChange?.();
-  }, [onAnnotationChange]);
-
   const handlePopoverClose = useCallback(() => {
     setSelectedComment(null);
   }, []);
+
+  // The popover shows the LIVE comment (so replies, undo and redo — local or
+  // from other users — show up at once); `selectedComment.comment` is only
+  // the snapshot / unsaved draft to fall back on.
+  const liveComment = selectedComment
+    ? comments.find((c) => c.id === selectedComment.comment.id) ?? null
+    : null;
+  const shownComment = liveComment ?? selectedComment?.comment ?? null;
+  // Close once a comment that existed goes away (deleted, or its creation
+  // undone). A brand-new draft that was never saved stays open.
+  const seenRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!selectedComment) {
+      seenRef.current = null;
+      return;
+    }
+    const id = selectedComment.comment.id;
+    if (liveComment) seenRef.current = id;
+    else if (seenRef.current === id || selectedComment.comment.text) setSelectedComment(null);
+  }, [selectedComment, liveComment]);
+
+  const dispatchThen = useCallback(
+    async (action: Parameters<ActionDispatcher["dispatch"]>[0]) => {
+      await dispatcher.dispatch(action);
+      onAnnotationChange?.();
+    },
+    [dispatcher, onAnnotationChange]
+  );
+
+  const handleCreate = useCallback(
+    (text: string) => {
+      if (!selectedComment) return Promise.resolve();
+      return dispatchThen({
+        kind: "upsertComment",
+        comment: { ...selectedComment.comment, text },
+        prevComment: null
+      });
+    },
+    [selectedComment, dispatchThen]
+  );
+
+  const handleReply = useCallback(
+    (text: string) => {
+      if (!shownComment || !userId || !username) return Promise.resolve();
+      const reply: CommentReply = {
+        id: uuid(),
+        text,
+        authorId: userId,
+        authorName: username,
+        createdAt: new Date().toISOString()
+      };
+      return dispatchThen({ kind: "addCommentReply", commentId: shownComment.id, reply });
+    },
+    [shownComment, userId, username, dispatchThen]
+  );
+
+  const handleDelete = useCallback(() => {
+    if (!shownComment) return Promise.resolve();
+    return dispatchThen({ kind: "removeComment", comment: shownComment });
+  }, [shownComment, dispatchThen]);
+
+  const handleUndo = useCallback(() => {
+    void dispatcher.undo().then(() => onAnnotationChange?.());
+  }, [dispatcher, onAnnotationChange]);
+  const handleRedo = useCallback(() => {
+    void dispatcher.redo().then(() => onAnnotationChange?.());
+  }, [dispatcher, onAnnotationChange]);
 
   return (
     <>
@@ -150,7 +215,7 @@ export function CommentOverlay({ annotations, viewportStore, dieId, onAnnotation
       })}
 
       {/* Popover — positioned near the comment pin, clamped to viewport. */}
-      {selectedComment && viewport && (() => {
+      {selectedComment && shownComment && viewport && (() => {
         const cssX = (selectedComment.x - viewport.originX) * viewport.zoom;
         const cssY = (selectedComment.y - viewport.originY) * viewport.zoom;
         const popW = 360;
@@ -173,10 +238,14 @@ export function CommentOverlay({ annotations, viewportStore, dieId, onAnnotation
         return (
           <div style={{ position: "fixed", left, top, zIndex: 1000 }}>
             <CommentPopover
-              comment={selectedComment.comment}
-              dieId={dieId}
+              key={shownComment.id}
+              comment={shownComment}
               onClose={handlePopoverClose}
-              onSaved={handlePopoverSaved}
+              onCreate={handleCreate}
+              onReply={handleReply}
+              onDelete={handleDelete}
+              onUndo={handleUndo}
+              onRedo={handleRedo}
             />
           </div>
         );
