@@ -50,6 +50,49 @@ export function CursorReadout({
   );
 }
 
+/** What the cursor is currently over: the net a hovered wire/vertex belongs
+ *  to and the floorplan type(s) of any regions containing the cursor. */
+export interface HoverInfo {
+  net: string | null;
+  floorplans: string[];
+}
+
+export function sameHoverInfo(a: HoverInfo | null, b: HoverInfo | null): boolean {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  return (
+    a.net === b.net &&
+    a.floorplans.length === b.floorplans.length &&
+    a.floorplans.every((f, i) => f === b.floorplans[i])
+  );
+}
+
+/** Renders its own leading separators so it can sit inside the cursor item
+ *  without leaving a dangling "·" in the status bar when nothing is hovered. */
+export function HoverReadout({ store }: { store: LiveValue<HoverInfo | null> }) {
+  const h = useLiveValue(store);
+  if (!h) return null;
+  const sep = <span style={{ color: "var(--muted)", margin: "0 6px" }}>·</span>;
+  return (
+    <>
+      {h.net != null && (
+        <>
+          {sep}
+          <span>net <span style={{ color: "var(--ink)" }}>{h.net}</span></span>
+        </>
+      )}
+      {h.floorplans.length > 0 && (
+        <>
+          {sep}
+          <span>
+            floorplan <span style={{ color: "var(--ink)" }}>{h.floorplans.join(", ")}</span>
+          </span>
+        </>
+      )}
+    </>
+  );
+}
+
 export function annotationsSummary(a: DieAnnotations): string | null {
   const counts: string[] = [];
   if (a.cells.length) counts.push(`${a.cells.length} cells`);

@@ -45,11 +45,14 @@ import { SettingsPanel } from "../components/dieViewer/SettingsPanel";
 import {
   CenteredStatus,
   CursorReadout,
+  HoverReadout,
   MarqueeOverlay,
   ZoomChip,
   ZoomReadout,
   annotationsSummary,
-  panelStyle
+  panelStyle,
+  sameHoverInfo,
+  type HoverInfo
 } from "../components/dieViewer/DieViewerUI";
 import { DieToolbar, IssuesChip } from "../components/dieViewer/DieToolbar";
 import {
@@ -124,6 +127,7 @@ import {
   closestPointOnSegment,
   normalizeRect,
   distancePointToSegment,
+  pointInPolygon,
   pointInRect,
   rectCornerAt,
   rectCorners,
@@ -312,6 +316,10 @@ function DieViewer({ dieId }: { dieId: string }) {
   const viewportLive = useMemo(() => createLiveValue<Viewport | null>(null), []);
   const cursorLive = useMemo(
     () => createLiveValue<{ x: number; y: number } | null>(null),
+    []
+  );
+  const hoverInfoLive = useMemo(
+    () => createLiveValue<HoverInfo | null>(null),
     []
   );
   const marqueeLive = useMemo(() => createLiveValue<Rect | null>(null), []);
@@ -1925,6 +1933,44 @@ function DieViewer({ dieId }: { dieId: string }) {
 
   // ── Pointer move / leave ────────────────────────────────────────
 
+  /** Status-bar hover readout: the net under the cursor (via the annotation
+   *  hit-test, so hidden nets are skipped) and the type names of the visible
+   *  floorplan regions containing it. Region bodies are pointer-transparent,
+   *  so they're tested geometrically rather than via DOM events. */
+  const resolveHoverInfo = useCallback(
+    (world: Point, zoom: number): HoverInfo | null => {
+      let net: string | null = null;
+      if (annotationLayer) {
+        const tol = HIT_TOLERANCE_PX / zoom;
+        const hit = annotationLayer.hitTest(world, tol, Math.max(tol, netNodePickWorldRadius(zoom)));
+        const parsed = hit ? parseNetPartId(hit.partId) : null;
+        if (parsed) {
+          const n = annotationsRef.current?.nets.find((x) => x.id === parsed.netId);
+          net = n ? n.name || n.id : parsed.netId;
+        }
+      }
+      const floorplans: string[] = [];
+      const prefs = usePreferences.getState();
+      if (prefs.floorplanOverlayOn) {
+        const globallyHidden = prefs.hiddenKinds.includes("floorplan");
+        for (const r of useFloorplanStore.getState().regions) {
+          const typeName = r.name || "(unnamed)";
+          const override = prefs.hiddenFloorplanTypeNames[typeName];
+          if (override === undefined ? globallyHidden : override) continue;
+          const pts = r.geometry;
+          if (pts.length < 2) continue;
+          const inside =
+            r.kind === "rect" || pts.length === 2
+              ? pointInRect(world, rectFromPoints(pts[0], pts[pts.length - 1]))
+              : pointInPolygon(world, pts);
+          if (inside && !floorplans.includes(typeName)) floorplans.push(typeName);
+        }
+      }
+      return net == null && floorplans.length === 0 ? null : { net, floorplans };
+    },
+    [annotationLayer]
+  );
+
   const onPointerMove = useCallback(
     (event: React.PointerEvent<HTMLDivElement>) => {
       const c = containerRef.current?.querySelector("canvas") as
@@ -1941,6 +1987,8 @@ function DieViewer({ dieId }: { dieId: string }) {
         y: vp.originY + cssY / vp.zoom
       };
       cursorLive.set(world);
+      const hoverInfo = resolveHoverInfo(world, vp.zoom);
+      if (!sameHoverInfo(hoverInfo, hoverInfoLive.get())) hoverInfoLive.set(hoverInfo);
       shiftRef.current = event.shiftKey;
       shiftLive.set(event.shiftKey);
       wire.computeWirePreview(world, event.shiftKey, vp.zoom);
@@ -2003,6 +2051,8 @@ function DieViewer({ dieId }: { dieId: string }) {
     },
     [
       cursorLive,
+      hoverInfoLive,
+      resolveHoverInfo,
       shiftLive,
       wireSnapLive,
       wire,
@@ -2019,12 +2069,14 @@ function DieViewer({ dieId }: { dieId: string }) {
 
   const onPointerLeave = useCallback(() => {
     cursorLive.set(null);
+    hoverInfoLive.set(null);
     viaPolyPreviewLive.set(null);
     multiWireSnapLive.set(null);
     multiWireEndSnapLive.set(null);
     wireSnapLive.set(null);
   }, [
     cursorLive,
+    hoverInfoLive,
     viaPolyPreviewLive,
     multiWireSnapLive,
     multiWireEndSnapLive,
@@ -3915,7 +3967,10 @@ function DieViewer({ dieId }: { dieId: string }) {
       <StatusBar
         items={[
           die?.name,
-          <CursorReadout key="cursor" store={cursorLive} />,
+          <span key="cursor">
+            <CursorReadout store={cursorLive} />
+            <HoverReadout store={hoverInfoLive} />
+          </span>,
           <ZoomReadout key="zoom" store={viewportLive} />,
           liveRenderStatusText,
           annotations ? annotationsSummary(annotations) : null,
