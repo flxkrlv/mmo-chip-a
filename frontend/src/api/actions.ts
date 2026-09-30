@@ -1,4 +1,4 @@
-import { useCallback } from "react";
+import { useCallback, useEffect } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import type {
   AnnotationNet,
@@ -452,6 +452,13 @@ export function useActionDispatcher(dieId: string): ActionDispatcher {
   const pushRedo = useDieViewerStore((s) => s.pushRedo);
   const popRedo = useDieViewerStore((s) => s.popRedo);
   const clearRedo = useDieViewerStore((s) => s.clearRedo);
+  const ensureHistoryFor = useDieViewerStore((s) => s.ensureHistoryFor);
+  const historyDieId = useDieViewerStore((s) => s.historyDieId);
+  // One history per die, shared by every page of that die.
+  useEffect(() => {
+    ensureHistoryFor(dieId);
+  }, [dieId, ensureHistoryFor]);
+  const ownsHistory = historyDieId === dieId;
 
   const apply = useCallback(
     async (action: AnnotationAction): Promise<boolean> => {
@@ -478,33 +485,37 @@ export function useActionDispatcher(dieId: string): ActionDispatcher {
     async (action) => {
       const ok = await apply(action);
       if (!ok) return false;
+      ensureHistoryFor(dieId);
       pushUndo(action);
       clearRedo();
       return true;
     },
-    [apply, pushUndo, clearRedo]
+    [apply, pushUndo, clearRedo, ensureHistoryFor, dieId]
   );
 
   const undo = useCallback<ActionDispatcher["undo"]>(async () => {
+    // Never replay another die's history on this one.
+    if (useDieViewerStore.getState().historyDieId !== dieId) return;
     const action = popUndo();
     if (!action) return;
     const ok = await apply(inverseOf(action));
     if (ok) pushRedo(action);
     // best-effort: on failure the action is already off the stack.
-  }, [apply, popUndo, pushRedo]);
+  }, [apply, popUndo, pushRedo, dieId]);
 
   const redo = useCallback<ActionDispatcher["redo"]>(async () => {
+    if (useDieViewerStore.getState().historyDieId !== dieId) return;
     const action = popRedo();
     if (!action) return;
     const ok = await apply(action);
     if (ok) pushUndo(action);
-  }, [apply, popRedo, pushUndo]);
+  }, [apply, popRedo, pushUndo, dieId]);
 
   return {
     dispatch,
     undo,
     redo,
-    canUndo: undoStack.length > 0,
-    canRedo: redoStack.length > 0
+    canUndo: ownsHistory && undoStack.length > 0,
+    canRedo: ownsHistory && redoStack.length > 0
   };
 }

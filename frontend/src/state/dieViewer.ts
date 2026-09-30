@@ -78,6 +78,10 @@ interface DieViewerState {
   undoStack: AnnotationAction[];
   /** Actions that were undone and can be redone, newest at the end. */
   redoStack: AnnotationAction[];
+  /** Die the undo / redo stacks belong to. The history is shared by the die
+   *  viewer, Merge cells and RE cell pages of that die (switching between them
+   *  keeps it); opening another die starts a fresh one. */
+  historyDieId: string | null;
   /** When set, the global ⌘Z/⌘⇧Z handler defers to this instead of the
    *  action dispatcher (e.g. per-point undo while drawing a wire). */
   undoOverride: UndoOverride | null;
@@ -121,6 +125,9 @@ interface DieViewerActions {
   pushRedo: (action: AnnotationAction) => void;
   popRedo: () => AnnotationAction | undefined;
   clearRedo: () => void;
+  /** Make `dieId` the owner of the undo history, clearing it if it belonged
+   *  to another die (its actions must never be replayed on this one). */
+  ensureHistoryFor: (dieId: string) => void;
   /** Register / clear the global-undo override (see `UndoOverride`). */
   setUndoOverride: (override: UndoOverride | null) => void;
   setActiveMetalId: (id: string | null) => void;
@@ -151,6 +158,7 @@ const INITIAL_STATE: DieViewerState = {
   activeAnalogLayer: "nwell",
   undoStack: [],
   redoStack: [],
+  historyDieId: null,
   undoOverride: null,
   activeMetalId: null,
   activeViaId: null,
@@ -233,6 +241,10 @@ export const useDieViewerStore = create<DieViewerState & DieViewerActions>()((se
     return top;
   },
   clearRedo: () => set({ redoStack: [] }),
+  ensureHistoryFor: (dieId) => {
+    if (get().historyDieId === dieId) return;
+    set({ historyDieId: dieId, undoStack: [], redoStack: [] });
+  },
   setUndoOverride: (override) => set({ undoOverride: override }),
   setActiveAnalogLayer: (layer) => set({ activeAnalogLayer: layer }),
   setActiveMetalId: (id) => set({ activeMetalId: id }),
@@ -252,7 +264,16 @@ export const useDieViewerStore = create<DieViewerState & DieViewerActions>()((se
   clearWireClipboard: () => set({ clipboardWires: null }),
   clearCellClipboard: () => set({ clipboardCells: [] }),
 
-  reset: () => set(INITIAL_STATE)
+  // The undo history is left alone: it is per die (see ensureHistoryFor), and
+  // the die viewer resets on every mount — coming back from Merge / RE cell
+  // must not lose what was done there.
+  reset: () =>
+    set((state) => ({
+      ...INITIAL_STATE,
+      undoStack: state.undoStack,
+      redoStack: state.redoStack,
+      historyDieId: state.historyDieId
+    }))
 }));
 
 function setsEqual(a: ReadonlySet<string>, b: ReadonlySet<string>): boolean {

@@ -465,6 +465,7 @@ function Merge({ dieId }: { dieId: string }) {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "z") {
+        if (isTypingTarget(e.target)) return; // native text undo in inputs
         e.preventDefault();
         if (e.shiftKey) void dispatcher.redo();
         else void dispatcher.undo();
