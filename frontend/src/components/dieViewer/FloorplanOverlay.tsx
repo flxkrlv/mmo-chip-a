@@ -15,6 +15,7 @@ import { usePreferences } from "../../state/preferences";
 import type { Viewport } from "../../renderer/types";
 import { FloorplanRegionPopover } from "./FloorplanRegionPopover";
 import { FloorplanEditHandles } from "./FloorplanEditHandles";
+import { FloorplanPolyDraft } from "./FloorplanPolyDraft";
 import type { ActionDispatcher } from "../../api/actions";
 import { useAuth } from "../../state/auth";
 import { useToast } from "../Toast";
@@ -22,6 +23,8 @@ import { useToast } from "../Toast";
 interface Props {
   annotations: DieAnnotations | undefined;
   viewportStore: LiveValue<Viewport | null>;
+  /** World-space cursor, for the polygon draft's rubber band. */
+  cursorStore: LiveValue<{ x: number; y: number } | null>;
   dieId: string;
   /** Floorplan edits go through it, so they are undoable. */
   dispatcher: ActionDispatcher;
@@ -43,6 +46,7 @@ const FLOORPLAN_DRAFT_STROKE_WIDTH = 2.2;
 export function FloorplanOverlay({
   annotations,
   viewportStore,
+  cursorStore,
   dieId,
   dispatcher,
   showIO,
@@ -104,7 +108,9 @@ export function FloorplanOverlay({
     }
 
     // Draft (in-progress rect drag or poly)
-    if (draft && draft.active && draft.points.length >= 2) {
+    // Polygon drafts are drawn by FloorplanPolyDraft (from the first click,
+    // with a rubber band to the cursor); only the rect drag lives here.
+    if (draft && draft.active && draft.kind === "rect" && draft.points.length >= 2) {
       const pts = draft.points;
       const minX = Math.min(...pts.map((p) => p.x));
       const minY = Math.min(...pts.map((p) => p.y));
@@ -376,6 +382,11 @@ export function FloorplanOverlay({
           </svg>
         );
       })}
+
+      {/* Polygon being drawn */}
+      {draft && draft.active && draft.kind === "poly" && viewport && (
+        <FloorplanPolyDraft draft={draft} viewport={viewport} cursorStore={cursorStore} />
+      )}
 
       {/* Geometry edit handles */}
       {canEdit && editingRegion && viewport && (

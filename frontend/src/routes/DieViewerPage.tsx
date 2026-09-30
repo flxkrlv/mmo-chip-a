@@ -431,6 +431,21 @@ function DieViewer({ dieId }: { dieId: string }) {
     }
   }, [annotations?.floorplanRegions, setFloorplanRegions]);
 
+  // Esc abandons a floorplan polygon while it is being drawn (vertices
+  // placed, not yet finished with a double-click). Nothing is saved.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape" || isTypingTarget(e.target)) return;
+      if (useDieViewerStore.getState().activeTool !== "floorplan") return;
+      const fp = useFloorplanStore.getState();
+      if (fp.draft?.kind !== "poly" || !fp.draft.active) return;
+      e.preventDefault();
+      fp.setDraft(null);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
   // Hold-Space momentary pan. The ref is read by the (stable) pointer-down
   // router without re-binding; the state only drives the cursor.
   const [spacePan, setSpacePan] = useState(false);
@@ -4071,6 +4086,7 @@ function DieViewer({ dieId }: { dieId: string }) {
             <FloorplanOverlay
               annotations={annotations}
               viewportStore={viewportLive}
+              cursorStore={cursorLive}
               dieId={dieId}
               showIO={showFloorplanIO}
               dispatcher={dispatcher}
