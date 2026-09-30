@@ -66,6 +66,7 @@ import { AnalogDeviceHighlights } from "../components/dieViewer/AnalogDeviceHigh
 import { SubcircuitHighlightsOverlay } from "../components/dieViewer/SubcircuitHighlightsOverlay";
 import { DeviceInspector } from "../components/dieViewer/DeviceInspector";
 import { DeviceInstancePanel } from "../components/dieViewer/DeviceInstancePanel";
+import { CellTypePickerDialog } from "../components/dieViewer/CellTypePickerDialog";
 import { useDieExtraction } from "../hooks/useDieExtraction";
 import { setActiveProject, flushProjectDeviceNames } from "../state/analogDeviceNames";
 import { useExtractionProgress } from "../state/extractionProgress";
@@ -393,6 +394,8 @@ function DieViewer({ dieId }: { dieId: string }) {
   // Right-click context menu. Null = closed. Position is viewport-relative
   // (clientX/clientY) so the menu renders fixed at the cursor regardless of
   // canvas pan/zoom.
+  // Cell whose type is being changed via the double-click picker.
+  const [cellTypePickerCellId, setCellTypePickerCellId] = useState<string | null>(null);
   const [contextMenu, setContextMenu] = useState<DieContextMenuState | null>(
     null
   );
@@ -2083,6 +2086,55 @@ function DieViewer({ dieId }: { dieId: string }) {
     wireSnapLive
   ]);
 
+  // ── Cell type reassignment (double-click picker) ─────────────────
+
+  // Moving the last instance off an unmatched, never-RE'd placeholder type
+  // would leave it orphaned — drop it in the same undo step.
+  const orphanCleanup = useCallback((cell: Cell): AnnotationAction[] => {
+    const ann = annotationsRef.current;
+    const old = ann?.cellTypes.find((t) => t.id === cell.cellTypeId);
+    if (!ann || !old || old.matched || old.layers) return [];
+    const others = ann.cells.some((c) => c.cellTypeId === old.id && c.id !== cell.id);
+    return others ? [] : [{ kind: "removeCellType", cellType: old }];
+  }, []);
+
+  const reassignCellType = useCallback(
+    (cellId: string, cellType: CellType) => {
+      setCellTypePickerCellId(null);
+      const cell = annotationsRef.current?.cells.find((c) => c.id === cellId);
+      if (!cell || cell.cellTypeId === cellType.id) return;
+      void dispatcher.dispatch({
+        kind: "batch",
+        actions: [
+          { kind: "upsertCell", cell: { ...cell, cellTypeId: cellType.id }, prevCell: cell },
+          ...orphanCleanup(cell)
+        ]
+      });
+    },
+    [dispatcher, orphanCleanup]
+  );
+
+  // Split: clone the current type (crop + RE'd layers carry over) under a
+  // new id, and move just this instance onto it.
+  const splitCellType = useCallback(
+    (cellId: string, name: string) => {
+      setCellTypePickerCellId(null);
+      const ann = annotationsRef.current;
+      const cell = ann?.cells.find((c) => c.id === cellId);
+      const old = cell && ann?.cellTypes.find((t) => t.id === cell.cellTypeId);
+      if (!cell || !old) return;
+      const cellType: CellType = { ...structuredClone(old), id: uuid(), name, matched: false };
+      void dispatcher.dispatch({
+        kind: "batch",
+        actions: [
+          { kind: "upsertCellType", cellType, prevCellType: null },
+          { kind: "upsertCell", cell: { ...cell, cellTypeId: cellType.id }, prevCell: cell }
+        ]
+      });
+    },
+    [dispatcher]
+  );
+
   // ── Canvas pointer-down router ──────────────────────────────────
 
   // Last plain (non-drag) click on an I/O pin, for double-click → rename.
@@ -3485,7 +3537,8 @@ function DieViewer({ dieId }: { dieId: string }) {
         if (mlHit) startWireAt({ x: mlHit.x, y: mlHit.y }, null);
       }
 
-      // Double-click on ANY cell annotation → open in RE Cell
+      // Double-click on ANY cell annotation → change its cell type;
+      // Ctrl/Cmd+double-click → open in RE Cell.
       // Checks: analog device first, then annotation layer for cells.
       let cellId: string | null = null;
       let cellTypeId: string | null = null;
@@ -3513,7 +3566,9 @@ function DieViewer({ dieId }: { dieId: string }) {
           }
         }
       }
-      if (cellId && cellTypeId) {
+      if (cellId && cellTypeId && !(event.ctrlKey || event.metaKey)) {
+        setCellTypePickerCellId(cellId);
+      } else if (cellId && cellTypeId) {
         navigate(`/re?die=${encodeURIComponent(dieId)}&type=${encodeURIComponent(cellTypeId)}&cell=${encodeURIComponent(cellId)}`);
       }
     },
@@ -4029,6 +4084,18 @@ function DieViewer({ dieId }: { dieId: string }) {
             : null
         ].filter(Boolean)}
       />
+      {cellTypePickerCellId && annotations && (() => {
+        const pickerCell = annotations.cells.find((c) => c.id === cellTypePickerCellId);
+        return pickerCell ? (
+          <CellTypePickerDialog
+            cell={pickerCell}
+            annotations={annotations}
+            onPick={(ct) => reassignCellType(pickerCell.id, ct)}
+            onSplit={(name) => splitCellType(pickerCell.id, name)}
+            onClose={() => setCellTypePickerCellId(null)}
+          />
+        ) : null;
+      })()}
       {contextMenu && (
         <DieContextMenu
           menu={contextMenu}
