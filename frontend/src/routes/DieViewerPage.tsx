@@ -1928,8 +1928,21 @@ function DieViewer({ dieId }: { dieId: string }) {
       if (!overlays.baseImageVisible) overlays.toggleBaseImage();
     }
   }, [dieId]);
-  const toggleKindForDie = useCallback((kind: "cell" | "net") => {
-    usePreferences.getState().toggleKindVisibility(kind);
+  const toggleKindForDie = useCallback((kind: "cell" | "net" | "floorplan") => {
+    const prefs = usePreferences.getState();
+    if (kind !== "floorplan") {
+      prefs.toggleKindVisibility(kind);
+      return;
+    }
+    // Same as the outline's Floorplans eye: all-or-nothing, clearing per-name
+    // overrides. If the whole overlay is off (Settings), Space+H shows it.
+    prefs.resetHiddenFloorplanTypes();
+    if (!prefs.floorplanOverlayOn) {
+      prefs.setFloorplanOverlayOn(true);
+      if (prefs.hiddenKinds.includes("floorplan")) prefs.toggleKindVisibility("floorplan");
+      return;
+    }
+    prefs.toggleKindVisibility("floorplan");
   }, []);
   useOverlayHotkeys(toggleBaseImageForDie, toggleKindForDie);
 

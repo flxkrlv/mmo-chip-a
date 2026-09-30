@@ -46,6 +46,7 @@ const SHORTCUT_GROUPS: ShortcutGroup[] = [
       { key: "Alt+1–5", label: "Select via VIA12–VIA56" },
       { key: "Space+C", label: "Toggle cells visibility" },
       { key: "Space+N", label: "Toggle nets visibility" },
+      { key: "Space+H", label: "Toggle floorplans visibility" },
       { key: "E", label: "Via up (wire-end preview)" },
       { key: "Q", label: "Via down (wire-end preview)" },
     ],

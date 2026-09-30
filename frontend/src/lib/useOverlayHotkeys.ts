@@ -6,6 +6,7 @@
  *   Space+B         — toggle base image visibility
  *   Space+C         — toggle cell visibility (die viewer only)
  *   Space+N         — toggle net visibility (die viewer only)
+ *   Space+H         — toggle floorplan visibility (die viewer only)
  *   ]               — show only the NEXT overlay layer (N+1), hide others
  *   [               — show only the PREVIOUS overlay layer (N-1), hide others
  *   Space+1..8      — show only overlay layer #1..#8, hide others; repeat to hide it
@@ -16,9 +17,10 @@ import { useOverlayLayers } from "../state/overlayLayers";
 
 export function useOverlayHotkeys(
   onToggleBaseImage?: () => void,
-  /** Die-viewer only: Space+C / Space+N toggle cell / net visibility.
-   *  Omit on pages where annotation-kind visibility is not meaningful. */
-  toggleKindVisibility?: (kind: "cell" | "net") => void,
+  /** Die-viewer only: Space+C / Space+N / Space+H toggle cell / net /
+   *  floorplan visibility. Omit on pages where annotation-kind visibility is
+   *  not meaningful. */
+  toggleKindVisibility?: (kind: "cell" | "net" | "floorplan") => void,
 ): void {
   useEffect(() => {
     let spaceHeld = false;
@@ -44,12 +46,14 @@ export function useOverlayHotkeys(
         return;
       }
 
-      // Space+C / Space+N → toggle cell / net annotation visibility.
+      // Space+C / Space+N / Space+H → toggle cell / net / floorplan visibility.
       if (space && !ctrl && !shift && !e.altKey && toggleKindVisibility) {
-        const kindKey = e.key.toLowerCase();
-        if (kindKey === "c" || kindKey === "n") {
+        const kind = ({ c: "cell", n: "net", h: "floorplan" } as const)[
+          e.key.toLowerCase() as "c" | "n" | "h"
+        ];
+        if (kind) {
           e.preventDefault();
-          toggleKindVisibility(kindKey === "c" ? "cell" : "net");
+          toggleKindVisibility(kind);
           return;
         }
       }
