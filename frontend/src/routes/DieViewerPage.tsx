@@ -2500,11 +2500,20 @@ function DieViewer({ dieId }: { dieId: string }) {
             editPreviewLive.set({ kind: "cellRect", rect: cellWorldRect(dragged, width, height) });
           },
           onPointerUp: ({ dragged, worldPoint }) => {
-            editPreviewLive.set(null);
-            if (!dragged) return; // plain click on the edge keeps the selection
+            if (!dragged) {
+              editPreviewLive.set(null);
+              return; // plain click on the edge keeps the selection
+            }
             const res = compute(worldPoint);
-            if (res) void dispatcher.dispatch(cellTypeResizeAction(res));
-            else restore();
+            if (!res) {
+              restore();
+              return;
+            }
+            // Preview stays on the final rect until the optimistic update
+            // lands, so the handles don't flash back (see cell move).
+            void dispatcher
+              .dispatch(cellTypeResizeAction(res))
+              .finally(() => editPreviewLive.set(null));
           },
           onCancel: restore
         };
@@ -2890,6 +2899,13 @@ function DieViewer({ dieId }: { dieId: string }) {
             const y = round ? Math.round(source.y + dy) : source.y + dy;
             return { ...source, x, y };
           };
+          // A lone moving cell carries its resize handles along: push its live
+          // footprint to the handles overlay (multi-cell moves show none).
+          const previewHandles = (moved: typeof original) => {
+            if (movingCells.length !== 1) return;
+            const { width, height } = movingCells[0].cellType.cropRect;
+            editPreviewLive.set({ kind: "cellRect", rect: cellWorldRect(moved, width, height) });
+          };
           const handler: DragHandler = {
             onDragStart: () => {
               if (movingCells.length === 1) {
@@ -2898,14 +2914,11 @@ function DieViewer({ dieId }: { dieId: string }) {
             },
             onDragMove: ({ worldPoint, startWorld, modifiers }) => {
               for (const entry of movingCells) {
+                const moved = moveCell(entry.cell, worldPoint, startWorld, modifiers.shift, false);
                 annotationLayer.update(
-                  buildCellAnnotation(
-                    moveCell(entry.cell, worldPoint, startWorld, modifiers.shift, false),
-                    entry.cellType,
-                    getCellC,
-                    getCellShapes
-                  )
+                  buildCellAnnotation(moved, entry.cellType, getCellC, getCellShapes)
                 );
+                previewHandles(moved);
               }
             },
             onPointerUp: ({ dragged, worldPoint, startWorld, modifiers }) => {
@@ -2913,14 +2926,18 @@ function DieViewer({ dieId }: { dieId: string }) {
                 selectFromHit(hit, modifiers.shift);
                 return;
               }
-              void dispatcher.dispatch({
-                kind: "batch",
-                actions: movingCells.map((entry) => ({
-                  kind: "upsertCell" as const,
-                  cell: moveCell(entry.cell, worldPoint, startWorld, modifiers.shift, true),
-                  prevCell: entry.cell
-                }))
-              });
+              const moved = movingCells.map((entry) => ({
+                kind: "upsertCell" as const,
+                cell: moveCell(entry.cell, worldPoint, startWorld, modifiers.shift, true),
+                prevCell: entry.cell
+              }));
+              // Keep the handles on the final spot until the optimistic
+              // update lands (dispatch applies it a tick later), else they'd
+              // flash back to the old position.
+              previewHandles(moved[0].cell);
+              void dispatcher
+                .dispatch({ kind: "batch", actions: moved })
+                .finally(() => editPreviewLive.set(null));
             },
             onCancel: () => {
               for (const entry of movingCells) {
@@ -2928,6 +2945,7 @@ function DieViewer({ dieId }: { dieId: string }) {
                   buildCellAnnotation(entry.cell, entry.cellType, getCellC, getCellShapes)
                 );
               }
+              editPreviewLive.set(null);
             }
           };
           return handler;
