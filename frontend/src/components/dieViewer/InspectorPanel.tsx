@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, type ReactNode } from "react";
-import { cellBox } from "../../lib/cellFootprint";
+import { cellWorldRect } from "../../lib/cellFootprint";
 import { useDialog } from "../Dialog";
 import { useQueryClient } from "@tanstack/react-query";
 import type { AnalogDevice, AssistantFinding, DieAnnotations, FloorplanRegion, MLInferenceJob, WireLayer } from "shared";
@@ -279,8 +279,8 @@ function resolve(
       ];
       if (c.rotation) rows.push(["rotation", `${c.rotation}°`]);
       if (ct) {
-        // Instance footprint; a resized cell differs from its type's box.
-        const box = cellBox(c, ct.cropRect.width, ct.cropRect.height);
+        // Die footprint (oriented); a resized cell differs from its type's box.
+        const box = cellWorldRect(c, ct.cropRect.width, ct.cropRect.height);
         rows.push([
           "size",
           c.bounds

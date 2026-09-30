@@ -3919,6 +3919,10 @@ function DieViewer({ dieId }: { dieId: string }) {
               onDeviceSelect={(id) => { const d = analogDevices.find((x:any) => x._cellId === id || (x as any)._cellId === id); if(d) setSelectedDevice(d) }}
               onOpenInRE={dieId ? (cellId, cellTypeId) => navigate(`/re?die=${encodeURIComponent(dieId)}&type=${encodeURIComponent(cellTypeId)}&cell=${encodeURIComponent(cellId)}`) : undefined}
               searchOpenRef={outlineSearchRef}
+              onSetCellTypeColor={(cellTypeId, color) => {
+                const ct = annotations?.cellTypes.find((t) => t.id === cellTypeId);
+                if (ct) void dispatcher.dispatch({ kind: "upsertCellType", cellType: { ...ct, color }, prevCellType: ct });
+              }}
             />
           </aside>
         )}

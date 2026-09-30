@@ -716,6 +716,10 @@ function Merge({ dieId }: { dieId: string }) {
           <MergeLeftPanel
             dieId={dieId}
             annotations={annotations}
+            onSetCellTypeColor={(cellTypeId, color) => {
+              const ct = cellTypeById(annotations, cellTypeId);
+              if (ct) void dispatcher.dispatch({ kind: "upsertCellType", cellType: { ...ct, color }, prevCellType: ct });
+            }}
             onCandidateContextMenu={(cell, x, y) => {
               const canUnmatch =
                 membersOf(annotations, cell.cellTypeId).length > 1;

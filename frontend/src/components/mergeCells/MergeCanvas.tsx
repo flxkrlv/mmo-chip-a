@@ -13,6 +13,7 @@ import { drawCellLayers } from "../../renderer/annotations/shapes";
 import { COLOR_VIA, COLOR_VIA_FILL } from "../../renderer/annotations/style";
 import type { TileBounds } from "../../renderer/types";
 import { orientOf } from "../../lib/mergeCells";
+import { withAlpha } from "../../lib/color";
 import { useOverlayLayers } from "../../state/overlayLayers";
 
 export interface CellView {
@@ -423,9 +424,9 @@ export const MergeCanvas = forwardRef<MergeCanvasHandle, Props>(function MergeCa
       if (showMlVias && view.mlVias && view.cell) {
         drawMlVias(ctx, view.mlVias, view.cell.x, view.cell.y, zoom);
       }
-      // Box outline.
+      // Box outline (in the type's own color when it has one).
       ctx.globalAlpha = 1;
-      ctx.strokeStyle = "rgba(245,214,138,0.5)";
+      ctx.strokeStyle = outlineColor(view.cellType);
       ctx.lineWidth = 1 / zoom;
       ctx.strokeRect(0, 0, box.w, box.h);
       ctx.restore();
@@ -462,7 +463,7 @@ export const MergeCanvas = forwardRef<MergeCanvasHandle, Props>(function MergeCa
             outline: false
           });
         }
-        ctx.strokeStyle = "rgba(245,214,138,0.5)";
+        ctx.strokeStyle = outlineColor(specimen.cellType);
         ctx.lineWidth = 1 / v.zoom;
         ctx.strokeRect(0, 0, sp.w, sp.h);
         ctx.restore();
@@ -776,6 +777,10 @@ export const MergeCanvas = forwardRef<MergeCanvasHandle, Props>(function MergeCa
     </div>
   );
 });
+
+function outlineColor(ct: CellType | null): string {
+  return ct?.color ? withAlpha(ct.color, 0.8) : "rgba(245,214,138,0.5)";
+}
 
 /** Place the local frame so a `box`-sized crop drawn at (0, 0) appears with
  *  `cell`'s flip/rotation, centred on the box at (originX, originY). */

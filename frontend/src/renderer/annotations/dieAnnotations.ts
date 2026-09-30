@@ -225,8 +225,8 @@ export function buildCellAnnotation(
 ): Annotation {
   const w = cellType.cropRect.width;
   const h = cellType.cropRect.height;
-  // Footprint: a die-axis rect at (cell.x, cell.y) — per-instance `bounds`,
-  // else the type's w×h. Orientation never moves it (see cellFootprint.ts).
+  // Footprint: the type box (or per-instance `bounds`) oriented like the
+  // content, so the outline wraps what's drawn (see cellFootprint.ts).
   const bbox: Rect = cellWorldRect(cell, w, h);
   const layers = cellType.layers ?? {};
   // A cell with no inner layer shapes has nothing to draw at high zoom — keep
@@ -243,7 +243,8 @@ export function buildCellAnnotation(
       // AND there are shapes; otherwise the cell renders as a solid block.
       const showShapes =
         getShowShapes() && bounds.zoom >= CELL_DETAIL_ZOOM && hasShapes;
-      const color = getColor();
+      // A per-type color wins over the global cell color.
+      const color = cellType.color ?? getColor();
 
       // Only the selected cell (or every instance of a selected cell type)
       // changes colour; all other cells keep their normal look.

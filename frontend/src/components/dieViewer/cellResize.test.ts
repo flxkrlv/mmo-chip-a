@@ -10,6 +10,18 @@ const type = (id: string, width: number, height: number): CellType =>
 const rotations = [0, 90, 180, 270] as const;
 const sides: CellSide[] = ["left", "right", "top", "bottom"];
 
+const NORMAL: Record<CellSide, { x: number; y: number }> = {
+  left: { x: -1, y: 0 },
+  right: { x: 1, y: 0 },
+  top: { x: 0, y: -1 },
+  bottom: { x: 0, y: 1 }
+};
+/** Die side that type-local side `s` lands on for cell `c`. */
+const dieSide = (c: Cell, s: CellSide) => {
+  const n = applyOrientation(NORMAL[s], c, 0, 0);
+  return sides.find((k) => NORMAL[k].x === n.x && NORMAL[k].y === n.y)!;
+};
+
 const world = (p: { x: number; y: number }, c: Cell, w: number, h: number) => {
   const q = applyOrientation(p, c, w, h);
   return { x: c.x + q.x, y: c.y + q.y };
@@ -19,7 +31,7 @@ describe("resizeCellType", () => {
   for (const rotation of rotations)
     for (const flippedH of [false, true])
       for (const side of sides)
-        it(`resizes every instance the same, content fixed (rot ${rotation}, flipH ${flippedH}, ${side})`, () => {
+        it(`resizes every instance the same from its own frame, content fixed (rot ${rotation}, flipH ${flippedH}, ${side})`, () => {
           const ct = {
             ...type("t", 40, 20),
             layers: { metal1: [{ id: "s", kind: "point", x: 6, y: 4, size: 1 }] }
@@ -40,7 +52,9 @@ describe("resizeCellType", () => {
           expect(res.cellType.id).toBe("t");
           expect(res.cells.map((c) => c.cell.id)).toEqual(["a", "b"]);
 
-          const grow = (fp: ReturnType<typeof cellWorldRect>) =>
+          // Dragged die side → type side → each instance's own die side.
+          const typeSide = sides.find((k) => dieSide(cell, k) === side)!;
+          const grow = (fp: ReturnType<typeof cellWorldRect>, side: CellSide) =>
             ({
               left: { ...fp, x: fp.x - 6, width: fp.width + 6 },
               right: { ...fp, width: fp.width + 6 },
@@ -50,8 +64,8 @@ describe("resizeCellType", () => {
           const s = res.cellType.layers!.metal1![0] as { x: number; y: number };
           for (const [i, prev] of [cell, other].entries()) {
             const next = res.cells[i].cell;
-            // Same die-axis change for every instance.
-            expect(cellWorldRect(next, nw, nh)).toEqual(grow(cellWorldRect(prev, 40, 20)));
+            // Same change for every instance, as seen through its orientation.
+            expect(cellWorldRect(next, nw, nh)).toEqual(grow(cellWorldRect(prev, 40, 20), dieSide(prev, typeSide)));
             // Content stays put (±0.5 px rounding on odd half-shifts).
             const a = world(s, next, nw, nh);
             const b = world({ x: 6, y: 4 }, prev, 40, 20);

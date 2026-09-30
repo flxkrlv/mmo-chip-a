@@ -21,6 +21,7 @@ import {
   NET_NODE_RADIUS_MULT
 } from "../../renderer/annotations/style";
 import { ColorSwatches, SettingsPopover } from "./SettingsPopover";
+import { CellTypeColorPicker } from "./CellTypeColorPicker";
 import {
   ANNOTATION_KIND_VALUES,
   type AnnotationKind
@@ -49,6 +50,8 @@ type Props = {
   onOpenInRE?: (cellId: string, cellTypeId: string) => void;
   /** Mutable ref — parent can set .current to a function that opens search. */
   searchOpenRef?: React.MutableRefObject<(() => void) | null>;
+  /** Set / clear (undefined) a cell type's own color. Absent ⇒ no picker. */
+  onSetCellTypeColor?: (cellTypeId: string, color: string | undefined) => void;
 };
 
 /** Session-group key for the "ML Regions" parent (it spans two annotation
@@ -70,7 +73,7 @@ const BASE_IMAGES_KEY = "base-images";
 /** Session-group key for the "Overlay Layers" section. */
 const OVERLAY_LAYERS_KEY = "overlay-layers";
 
-export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabels, onDeviceSelect, onOpenInRE, searchOpenRef }: Props) {
+export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabels, onDeviceSelect, onOpenInRE, searchOpenRef, onSetCellTypeColor }: Props) {
   const toast = useToast();
   const expandedSections = usePreferences((s) => s.expandedSections);
   const hiddenKinds = usePreferences((s) => s.hiddenKinds);
@@ -103,6 +106,7 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
   const setNetHidden = usePreferences((s) => s.setNetHidden);
   const resetHiddenNets = usePreferences((s) => s.resetHiddenNets);
   const hiddenCellTypeIds = usePreferences((s) => s.hiddenCellTypeIds);
+  const cellColor = usePreferences((s) => s.cellColor);
   const setCellTypeHidden = usePreferences((s) => s.setCellTypeHidden);
   const resetHiddenCellTypes = usePreferences((s) => s.resetHiddenCellTypes);
   const hiddenFloorplanTypeNames = usePreferences((s) => s.hiddenFloorplanTypeNames);
@@ -447,6 +451,14 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
                 expand={open ? "open" : "closed"}
                 label={group.cellType.name || group.cellType.id}
                 meta={group.cells.length}
+                controls={onSetCellTypeColor ? (
+                  <CellTypeColorPicker
+                    cellType={group.cellType}
+                    cellTypes={annotations.cellTypes}
+                    fallbackColor={cellColor}
+                    onPick={(c) => onSetCellTypeColor(group.cellType.id, c)}
+                  />
+                ) : undefined}
                 visibility={{
                   visible: cellTypeVisible,
                   onToggle: () => setCellTypeHidden(group.cellType.id, cellTypeVisible)

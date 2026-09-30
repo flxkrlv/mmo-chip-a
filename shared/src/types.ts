@@ -386,6 +386,9 @@ export interface CellType {
    *  D and S are swapped so the forced contact shows "S".
    *  Empty/absent = no overrides. */
   forcedSourceContacts?: string[];
+  /** Per-type display color (#rrggbb) for the cell outline / block fill.
+   *  Unique across the die's cell types. Absent ⇒ the global cell color. */
+  color?: string;
 }
 
 export interface Cell {
