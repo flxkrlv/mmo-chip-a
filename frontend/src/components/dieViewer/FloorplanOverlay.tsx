@@ -6,7 +6,7 @@
  * This leaves single-click free for cell/wire drawing on the canvas.
  */
 
-import { useCallback, useMemo } from "react";
+import { useCallback, useMemo, useState } from "react";
 import type { DieAnnotations, FloorplanRegion } from "shared";
 import type { LiveValue } from "../../lib/liveValue";
 import { useLiveValue } from "../../lib/liveValue";
@@ -14,6 +14,10 @@ import { useFloorplanStore } from "../../state/floorplan";
 import { usePreferences } from "../../state/preferences";
 import type { Viewport } from "../../renderer/types";
 import { FloorplanRegionPopover } from "./FloorplanRegionPopover";
+import { FloorplanEditHandles } from "./FloorplanEditHandles";
+import { apiPut } from "../../api/client";
+import { useAuth } from "../../state/auth";
+import { useToast } from "../Toast";
 
 interface Props {
   annotations: DieAnnotations | undefined;
@@ -46,6 +50,12 @@ export function FloorplanOverlay({
   const selectedRegionId = useFloorplanStore((s) => s.selectedRegionId);
   const selectRegion = useFloorplanStore((s) => s.selectRegion);
   const draft = useFloorplanStore((s) => s.draft);
+  const editingRegionId = useFloorplanStore((s) => s.editingRegionId);
+  const upsertRegion = useFloorplanStore((s) => s.upsertRegion);
+  const userId = useAuth((s) => s.userId);
+  const toast = useToast();
+  /** Geometry of the region being reshaped, while a handle drag is live. */
+  const [liveEdit, setLiveEdit] = useState<{ id: string; geometry: FloorplanRegion["geometry"] } | null>(null);
   const floorplanGloballyHidden = usePreferences((s) => s.hiddenKinds.includes("floorplan"));
   const hiddenFloorplanTypeNames = usePreferences((s) => s.hiddenFloorplanTypeNames);
   const isRegionVisible = useCallback(
@@ -72,8 +82,9 @@ export function FloorplanOverlay({
     if (!viewport) return [];
     const items: { region: FloorplanRegion; cssLeft: number; cssTop: number; cssW: number; cssH: number; isDraft: boolean }[] = [];
 
-    for (const r of regions) {
-      if (!isRegionVisible(r)) continue;
+    for (const saved of regions) {
+      if (!isRegionVisible(saved)) continue;
+      const r = liveEdit?.id === saved.id ? { ...saved, geometry: liveEdit.geometry } : saved;
       const pts = r.geometry;
       const minX = Math.min(...pts.map((p) => p.x));
       const minY = Math.min(...pts.map((p) => p.y));
@@ -120,7 +131,32 @@ export function FloorplanOverlay({
     }
 
     return items;
-  }, [regions, draft, viewport, isRegionVisible]);
+  }, [regions, draft, viewport, isRegionVisible, liveEdit]);
+
+  // ── Geometry editing ────────────────────────────────────
+  // Regions reserved by someone else keep their shape.
+  const editingRegion = editingRegionId
+    ? regions.find((r) => r.id === editingRegionId) ?? null
+    : null;
+  const canEdit =
+    !!editingRegion &&
+    isRegionVisible(editingRegion) &&
+    (!editingRegion.reservedBy || editingRegion.reservedBy === userId);
+
+  const commitGeometry = useCallback(
+    (updated: FloorplanRegion) => {
+      const previous = regions.find((r) => r.id === updated.id);
+      upsertRegion(updated);
+      setLiveEdit(null);
+      apiPut(`/api/dies/${dieId}/floorplan/${updated.id}`, updated)
+        .then(() => onAnnotationChange?.())
+        .catch((e) => {
+          if (previous) upsertRegion(previous);
+          toast.error("Failed to save floorplan", e instanceof Error ? e.message : String(e));
+        });
+    },
+    [regions, upsertRegion, dieId, onAnnotationChange, toast],
+  );
 
   // Selected region for popover
   const selectedRegion = selectedRegionId
@@ -332,6 +368,17 @@ export function FloorplanOverlay({
           </svg>
         );
       })}
+
+      {/* Geometry edit handles */}
+      {canEdit && editingRegion && viewport && (
+        <FloorplanEditHandles
+          region={editingRegion}
+          viewport={viewport}
+          live={liveEdit?.id === editingRegion.id ? liveEdit.geometry : null}
+          setLive={(geometry) => setLiveEdit(geometry ? { id: editingRegion.id, geometry } : null)}
+          onCommit={commitGeometry}
+        />
+      )}
 
       {/* Popover */}
       {selectedRegion && viewport && (

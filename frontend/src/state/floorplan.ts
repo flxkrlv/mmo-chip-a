@@ -22,6 +22,9 @@ interface FloorplanState {
   regions: FloorplanRegion[];
   /** Currently selected region id (for popover). */
   selectedRegionId: string | null;
+  /** Region showing geometry edit handles. Set whenever a region is
+   *  selected, but outlives the popover (dragging a handle closes it). */
+  editingRegionId: string | null;
   /** Active drawing sub-mode when the floorplan tool is selected. */
   toolMode: FloorplanToolMode;
   /** In-progress draft region (not yet saved). */
@@ -35,8 +38,10 @@ interface FloorplanActions {
   upsertRegion: (region: FloorplanRegion) => void;
   /** Remove a region by id. */
   removeRegion: (id: string) => void;
-  /** Select a region for popover display. */
+  /** Select a region for popover display (also starts geometry editing). */
   selectRegion: (id: string | null) => void;
+  /** Start / stop showing geometry edit handles on a region. */
+  setEditingRegion: (id: string | null) => void;
   /** Set the drawing sub-mode. */
   setToolMode: (mode: FloorplanToolMode) => void;
   /** Start or update a draft region. */
@@ -48,6 +53,7 @@ interface FloorplanActions {
 const INITIAL: FloorplanState = {
   regions: [],
   selectedRegionId: null,
+  editingRegionId: null,
   toolMode: "rect",
   draft: null,
 };
@@ -71,8 +77,11 @@ export const useFloorplanStore = create<FloorplanState & FloorplanActions>()((se
     set((state) => ({
       regions: state.regions.filter((r) => r.id !== id),
       selectedRegionId: state.selectedRegionId === id ? null : state.selectedRegionId,
+      editingRegionId: state.editingRegionId === id ? null : state.editingRegionId,
     })),
-  selectRegion: (id) => set({ selectedRegionId: id }),
+  selectRegion: (id) =>
+    set(id === null ? { selectedRegionId: null } : { selectedRegionId: id, editingRegionId: id }),
+  setEditingRegion: (id) => set({ editingRegionId: id }),
   setToolMode: (mode) => set({ toolMode: mode }),
   setDraft: (draft) => set({ draft }),
   reset: () => set(INITIAL),

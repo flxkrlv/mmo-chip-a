@@ -141,6 +141,8 @@ export function FloorplanRegionPopover({
   // Click outside → close
   useEffect(() => {
     const handler = (e: MouseEvent) => {
+      // Grabbing a geometry edit handle of this region keeps the popover open.
+      if ((e.target as Element | null)?.closest?.("[data-fp-edit]")) return;
       if (popoverRef.current && !popoverRef.current.contains(e.target as Node)) {
         onClose();
       }
@@ -389,6 +391,7 @@ export function FloorplanRegionPopover({
   return (
     <div
       ref={popoverRef}
+      data-fp-popover
       style={{
         position: "fixed",
         left,
