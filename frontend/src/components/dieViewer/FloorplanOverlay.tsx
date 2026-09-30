@@ -15,7 +15,7 @@ import { usePreferences } from "../../state/preferences";
 import type { Viewport } from "../../renderer/types";
 import { FloorplanRegionPopover } from "./FloorplanRegionPopover";
 import { FloorplanEditHandles } from "./FloorplanEditHandles";
-import { apiPut } from "../../api/client";
+import type { ActionDispatcher } from "../../api/actions";
 import { useAuth } from "../../state/auth";
 import { useToast } from "../Toast";
 
@@ -23,6 +23,8 @@ interface Props {
   annotations: DieAnnotations | undefined;
   viewportStore: LiveValue<Viewport | null>;
   dieId: string;
+  /** Floorplan edits go through it, so they are undoable. */
+  dispatcher: ActionDispatcher;
   /** When true, show port dot markers on all region blocks */
   showIO?: boolean;
   /** Called when annotations have changed (to trigger a refetch). */
@@ -42,6 +44,7 @@ export function FloorplanOverlay({
   annotations,
   viewportStore,
   dieId,
+  dispatcher,
   showIO,
   onAnnotationChange,
 }: Props) {
@@ -146,16 +149,21 @@ export function FloorplanOverlay({
   const commitGeometry = useCallback(
     (updated: FloorplanRegion) => {
       const previous = regions.find((r) => r.id === updated.id);
+      if (!previous) return;
+      // Instant feedback; the store re-syncs from annotations (incl. rollback).
       upsertRegion(updated);
       setLiveEdit(null);
-      apiPut(`/api/dies/${dieId}/floorplan/${updated.id}`, updated)
-        .then(() => onAnnotationChange?.())
-        .catch((e) => {
-          if (previous) upsertRegion(previous);
-          toast.error("Failed to save floorplan", e instanceof Error ? e.message : String(e));
+      void dispatcher
+        .dispatch({ kind: "upsertFloorplan", region: updated, prevRegion: previous })
+        .then((ok) => {
+          if (ok) onAnnotationChange?.();
+          else {
+            upsertRegion(previous);
+            toast.error("Failed to save floorplan");
+          }
         });
     },
-    [regions, upsertRegion, dieId, onAnnotationChange, toast],
+    [regions, upsertRegion, dispatcher, onAnnotationChange, toast],
   );
 
   // Selected region for popover
@@ -385,6 +393,7 @@ export function FloorplanOverlay({
         <FloorplanRegionPopover
           region={selectedRegion}
           dieId={dieId}
+          dispatcher={dispatcher}
           viewport={viewport}
           annotations={annotations}
           onClose={handlePopoverClose}

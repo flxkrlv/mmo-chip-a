@@ -5,6 +5,7 @@ import type {
   Cell,
   CommentAnnotation,
   CommentReply,
+  FloorplanRegion,
   CellLayers,
   CellType,
   DieAnnotations,
@@ -76,6 +77,8 @@ export type AnnotationAction =
   | { kind: "removeComment"; comment: CommentAnnotation }
   | { kind: "addCommentReply"; commentId: string; reply: CommentReply }
   | { kind: "removeCommentReply"; commentId: string; reply: CommentReply }
+  | { kind: "upsertFloorplan"; region: FloorplanRegion; prevRegion: FloorplanRegion | null }
+  | { kind: "removeFloorplan"; region: FloorplanRegion }
   | { kind: "batch"; actions: AnnotationAction[] };
 
 export function inverseOf(action: AnnotationAction): AnnotationAction {
@@ -168,6 +171,12 @@ export function inverseOf(action: AnnotationAction): AnnotationAction {
       return { kind: "removeCommentReply", commentId: action.commentId, reply: action.reply };
     case "removeCommentReply":
       return { kind: "addCommentReply", commentId: action.commentId, reply: action.reply };
+    case "upsertFloorplan":
+      return action.prevRegion === null
+        ? { kind: "removeFloorplan", region: action.region }
+        : { kind: "upsertFloorplan", region: action.prevRegion, prevRegion: action.region };
+    case "removeFloorplan":
+      return { kind: "upsertFloorplan", region: action.region, prevRegion: null };
     case "batch":
       return { kind: "batch", actions: [...action.actions].reverse().map(inverseOf) };
     case "upsertAnalogLayers":
@@ -293,6 +302,16 @@ export function applyAction(annotations: DieAnnotations, action: AnnotationActio
           c.id === action.commentId ? applyReplyAction(c, action) : c
         )
       };
+    case "upsertFloorplan":
+      return {
+        ...annotations,
+        floorplanRegions: upsertById(annotations.floorplanRegions ?? [], action.region)
+      };
+    case "removeFloorplan":
+      return {
+        ...annotations,
+        floorplanRegions: removeById(annotations.floorplanRegions ?? [], action.region.id)
+      };
     case "batch":
       return action.actions.reduce(applyAction, annotations);
     case "upsertAnalogLayers":
@@ -385,6 +404,10 @@ export async function requestAction(
       if (!comment) throw new Error("Comment no longer exists");
       return apiPut(`/api/dies/${dieId}/comments/${comment.id}`, applyReplyAction(comment, action));
     }
+    case "upsertFloorplan":
+      return apiPut(`/api/dies/${dieId}/floorplan/${action.region.id}`, action.region);
+    case "removeFloorplan":
+      return apiDelete(`/api/dies/${dieId}/floorplan/${action.region.id}`);
     case "batch": {
       // Single read → apply all mutations locally → single write.
       // Avoids N individual HTTP requests (each with its own disk read/write).
@@ -400,8 +423,10 @@ export async function requestAction(
 // ── Dispatcher ───────────────────────────────────────────────────────
 
 export interface ActionDispatcher {
-  /** Apply an action as the user's intent — pushes onto the undo stack. */
-  dispatch: (action: AnnotationAction) => Promise<void>;
+  /** Apply an action as the user's intent — pushes onto the undo stack.
+   *  Resolves false if the server rejected it (the optimistic update is
+   *  rolled back and nothing is pushed). */
+  dispatch: (action: AnnotationAction) => Promise<boolean>;
   /** Pop the most recent action and apply its inverse. Best-effort: if the
    *  inverse can't be applied (e.g. a remote client already removed the
    *  entity), the entry is dropped from history. */
@@ -452,9 +477,10 @@ export function useActionDispatcher(dieId: string): ActionDispatcher {
   const dispatch = useCallback<ActionDispatcher["dispatch"]>(
     async (action) => {
       const ok = await apply(action);
-      if (!ok) return;
+      if (!ok) return false;
       pushUndo(action);
       clearRedo();
+      return true;
     },
     [apply, pushUndo, clearRedo]
   );

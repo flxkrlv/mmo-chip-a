@@ -2305,10 +2305,12 @@ function DieViewer({ dieId }: { dieId: string }) {
                 reservedByName: null,
                 reservedAt: null,
               };
-              apiPut(`/api/dies/${dieId}/floorplan/${region.id}`, region).catch((e) => toast.error("Failed to save floorplan", e instanceof Error ? e.message : String(e)));
+              // Undoable; the store mirrors annotations, upsert now for instant feedback.
               useFloorplanStore.getState().upsertRegion(region);
               useFloorplanStore.getState().selectRegion(region.id);
-              queryClient.invalidateQueries({ queryKey: annotationKeys.forDie(dieId) });
+              void dispatcherRef.current
+                .dispatch({ kind: "upsertFloorplan", region, prevRegion: null })
+                .then((ok) => { if (!ok) toast.error("Failed to save floorplan"); });
             },
             onCancel: () => {
               useFloorplanStore.getState().setDraft(null);
@@ -3544,11 +3546,13 @@ function DieViewer({ dieId }: { dieId: string }) {
             reservedByName: null,
             reservedAt: null,
           };
-          apiPut(`/api/dies/${dieId}/floorplan/${region.id}`, region).catch((e) => toast.error("Failed to save floorplan", e instanceof Error ? e.message : String(e)));
+          // Undoable; the store mirrors annotations, upsert now for instant feedback.
           useFloorplanStore.getState().upsertRegion(region);
           useFloorplanStore.getState().setDraft(null);
           useFloorplanStore.getState().selectRegion(region.id);
-          queryClient.invalidateQueries({ queryKey: annotationKeys.forDie(dieId) });
+          void dispatcherRef.current
+            .dispatch({ kind: "upsertFloorplan", region, prevRegion: null })
+            .then((ok) => { if (!ok) toast.error("Failed to save floorplan"); });
         }
         return;
       }
@@ -4069,6 +4073,7 @@ function DieViewer({ dieId }: { dieId: string }) {
               viewportStore={viewportLive}
               dieId={dieId}
               showIO={showFloorplanIO}
+              dispatcher={dispatcher}
               onAnnotationChange={() => canvasHandle.current?.invalidate()}
             />
           )}
