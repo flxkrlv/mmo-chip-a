@@ -67,6 +67,15 @@ import { SubcircuitHighlightsOverlay } from "../components/dieViewer/SubcircuitH
 import { DeviceInspector } from "../components/dieViewer/DeviceInspector";
 import { DeviceInstancePanel } from "../components/dieViewer/DeviceInstancePanel";
 import { CellTypePickerDialog } from "../components/dieViewer/CellTypePickerDialog";
+import {
+  cellResizeAction,
+  cellSideAt,
+  cellWorldRect,
+  resizeCellType,
+  resolveSelectedCell,
+  sideCursor,
+  type CellSide
+} from "../components/dieViewer/cellResize";
 import { useDieExtraction } from "../hooks/useDieExtraction";
 import { setActiveProject, flushProjectDeviceNames } from "../state/analogDeviceNames";
 import { useExtractionProgress } from "../state/extractionProgress";
@@ -160,6 +169,8 @@ const NO_DRAFT_POINTS: Point[] = [];
  *  vertices that are real device-electrode connections. Kept tight so a node
  *  merely *near* a terminal is not mistaken for a connection. */
 const DEVICE_CONN_GRID_PX = 1;
+/** Screen-px grab zone either side of a selected cell's outline for resize. */
+const CELL_EDGE_GRAB_PX = 6;
 
 /** Broad-phase pick radius (world units) covering the rendered net-vertex
  *  dots. A vertex dot is drawn wider than the net's node bbox (screen-clamped),
@@ -394,6 +405,8 @@ function DieViewer({ dieId }: { dieId: string }) {
   // Right-click context menu. Null = closed. Position is viewport-relative
   // (clientX/clientY) so the menu renders fixed at the cursor regardless of
   // canvas pan/zoom.
+  // Resize cursor while hovering a side of the single selected cell.
+  const [cellResizeCursor, setCellResizeCursor] = useState<string | null>(null);
   // Cell whose type is being changed via the double-click picker.
   const [cellTypePickerCellId, setCellTypePickerCellId] = useState<string | null>(null);
   const [contextMenu, setContextMenu] = useState<DieContextMenuState | null>(
@@ -1934,6 +1947,28 @@ function DieViewer({ dieId }: { dieId: string }) {
   }, []);
   useOverlayHotkeys(toggleBaseImageForDie, toggleKindForDie);
 
+  // ── Cell edge resize (GIMP-style side handles) ──────────────────
+
+  /** Side of the single selected (unlocked) cell under `world`, if any. */
+  const selectedCellSideAt = useCallback(
+    (world: Point, zoom: number) => {
+      if (usePreferences.getState().cellsLocked) return null;
+      const sel = resolveSelectedCell(
+        useDieViewerStore.getState().selectedIds,
+        annotationsRef.current
+      );
+      if (!sel) return null;
+      const { width, height } = sel.cellType.cropRect;
+      const side = cellSideAt(
+        cellWorldRect(sel.cell, width, height),
+        world,
+        CELL_EDGE_GRAB_PX / zoom
+      );
+      return side ? { ...sel, side } : null;
+    },
+    []
+  );
+
   // ── Pointer move / leave ────────────────────────────────────────
 
   /** Status-bar hover readout: the net under the cursor (via the annotation
@@ -1990,6 +2025,11 @@ function DieViewer({ dieId }: { dieId: string }) {
         y: vp.originY + cssY / vp.zoom
       };
       cursorLive.set(world);
+      const edge =
+        useDieViewerStore.getState().activeTool === "select" && !spacePanRef.current
+          ? selectedCellSideAt(world, vp.zoom)
+          : null;
+      setCellResizeCursor(edge ? sideCursor(edge.side) : null);
       const hoverInfo = resolveHoverInfo(world, vp.zoom);
       if (!sameHoverInfo(hoverInfo, hoverInfoLive.get())) hoverInfoLive.set(hoverInfo);
       shiftRef.current = event.shiftKey;
@@ -2066,7 +2106,8 @@ function DieViewer({ dieId }: { dieId: string }) {
       annotationLayer,
       findNearestVia,
       findMultiWireEndpointViaSnap,
-      findMultiWireAutoEndSnaps
+      findMultiWireAutoEndSnaps,
+      selectedCellSideAt
     ]
   );
 
@@ -2432,6 +2473,72 @@ function DieViewer({ dieId }: { dieId: string }) {
       // Select tool — broad+narrow hit-test, then dispatch click vs marquee.
       const vp = viewportLive.get();
       if (!vp || !annotationLayer) return "pan";
+
+      // Dragging a side of the selected cell resizes its cell type (every
+      // linked instance follows; see cellResize.ts). Checked before the
+      // hit-test since the grab zone straddles the cell outline.
+      const edgeGrab = selectedCellSideAt(e.worldPoint, vp.zoom);
+      if (edgeGrab) {
+        const { cell: rCell, cellType: rType, side } = edgeGrab;
+        const ann0 = annotationsRef.current!;
+        const horizontal = side === "left" || side === "right";
+        const snapTol = 32 / vp.zoom;
+        const compute = (wp: Point) => {
+          let pos = horizontal ? wp.x : wp.y;
+          const guides = ann0.guides;
+          if (usePreferences.getState().cellSnapToGuides && guides && guides.length > 0) {
+            // Snap only the dragged edge; the others stay where they are.
+            const r = cellWorldRect(rCell, rType.cropRect.width, rType.cropRect.height);
+            const moved: Rect =
+              side === "left"
+                ? { ...r, x: pos, width: r.x + r.width - pos }
+                : side === "right"
+                  ? { ...r, width: pos - r.x }
+                  : side === "top"
+                    ? { ...r, y: pos, height: r.y + r.height - pos }
+                    : { ...r, height: pos - r.y };
+            const sn = snapRectToGuides(moved, guides, snapTol);
+            pos =
+              side === "left" ? sn.x
+              : side === "right" ? sn.x + sn.width
+              : side === "top" ? sn.y
+              : sn.y + sn.height;
+          }
+          return resizeCellType(ann0, rCell, rType, side as CellSide, pos);
+        };
+        const instances = ann0.cells.filter((c) => c.cellTypeId === rType.id);
+        const restore = () => {
+          for (const c of instances) {
+            annotationLayer.update(buildCellAnnotation(c, rType, getCellC, getCellShapes));
+          }
+          editPreviewLive.set(null);
+        };
+        const handler: DragHandler = {
+          onDragMove: ({ worldPoint }) => {
+            const res = compute(worldPoint);
+            if (!res) {
+              restore();
+              return;
+            }
+            for (const { cell: c } of res.cells) {
+              annotationLayer.update(buildCellAnnotation(c, res.cellType, getCellC, getCellShapes));
+            }
+            const moved = res.cells.find((x) => x.cell.id === rCell.id)!.cell;
+            const { width, height } = res.cellType.cropRect;
+            editPreviewLive.set({ kind: "cellRect", rect: cellWorldRect(moved, width, height) });
+          },
+          onPointerUp: ({ dragged, worldPoint }) => {
+            editPreviewLive.set(null);
+            if (!dragged) return; // plain click on the edge keeps the selection
+            const res = compute(worldPoint);
+            if (res) void dispatcher.dispatch(cellResizeAction(rType, res));
+            else restore();
+          },
+          onCancel: restore
+        };
+        return handler;
+      }
+
       const tolerance = HIT_TOLERANCE_PX / vp.zoom;
       const hit = annotationLayer.hitTest(
         e.worldPoint,
@@ -3134,6 +3241,7 @@ function DieViewer({ dieId }: { dieId: string }) {
       mlViasLayer,
       marqueeLive,
       selectFromHit,
+      selectedCellSideAt,
       dialog,
       selectFromMarquee,
       clearSelectionFromEmpty,
@@ -3847,7 +3955,7 @@ function DieViewer({ dieId }: { dieId: string }) {
                 spacePan || activeTool === "pan"
                   ? "grab"
                   : activeTool === "select"
-                    ? "default"
+                    ? (cellResizeCursor ?? "default")
                     : "crosshair"
               }
               handleRef={canvasHandle}
