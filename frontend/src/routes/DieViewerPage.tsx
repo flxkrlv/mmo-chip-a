@@ -2085,6 +2085,9 @@ function DieViewer({ dieId }: { dieId: string }) {
 
   // ── Canvas pointer-down router ──────────────────────────────────
 
+  // Last plain (non-drag) click on an I/O pin, for double-click → rename.
+  const lastPinClickRef = useRef<{ pinId: string; time: number } | null>(null);
+
   const onCanvasPointerDown = useCallback(
     (e: PointerEventData): Interaction => {
       // Holding Space (or middle-drag, handled in the canvas) momentarily
@@ -2838,8 +2841,34 @@ function DieViewer({ dieId }: { dieId: string }) {
               onPointerUp: ({ dragged, worldPoint, startWorld, modifiers }) => {
                 if (!dragged) {
                   selectFromHit(hit, modifiers.shift);
+                  // Second click on the same pin within 300ms → rename prompt.
+                  const last = lastPinClickRef.current;
+                  const now = Date.now();
+                  if (last && last.pinId === pinId && now - last.time < 300) {
+                    lastPinClickRef.current = null;
+                    void (async () => {
+                      const input = await dialog.prompt(
+                        `Rename pin ${original.pin}:`,
+                        original.name,
+                        "I/O pin"
+                      );
+                      if (input === null) return;
+                      const name = input.trim();
+                      const current =
+                        annotationsRef.current?.pins?.find((p) => p.id === pinId) ?? original;
+                      if (!name || name === current.name) return;
+                      void dispatcher.dispatch({
+                        kind: "upsertPin",
+                        pin: { ...current, name },
+                        prevPin: current
+                      });
+                    })();
+                  } else {
+                    lastPinClickRef.current = { pinId, time: now };
+                  }
                   return;
                 }
+                lastPinClickRef.current = null;
                 void dispatcher.dispatch({
                   kind: "upsertPin",
                   pin: movePin(worldPoint, startWorld, modifiers.shift, true),
@@ -3053,6 +3082,7 @@ function DieViewer({ dieId }: { dieId: string }) {
       mlViasLayer,
       marqueeLive,
       selectFromHit,
+      dialog,
       selectFromMarquee,
       clearSelectionFromEmpty,
       viewportLive,
