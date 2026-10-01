@@ -5,14 +5,7 @@ import sharp from "sharp";
 import { writeDieRecord } from "../store.js";
 import { ensurePreviewImage } from "../imagePreview.js";
 import type { DieLevelMetadata, DieRecord } from "../types.js";
-import {
-  detectSourceLevels,
-  getSourceLevels,
-  isTiffPath,
-  openSourceLevel,
-  pickSourceLevel,
-  regionInLevel
-} from "./tiffPyramid.js";
+import { detectSourceLevels, extractForScale } from "./tiffPyramid.js";
 
 const VALID_MIME_TYPES = new Set(["image/png", "image/jpeg", "image/tiff", "image/x-tiff"]);
 // Browsers report the MIME type from the extension and some leave TIFF blank.
@@ -266,24 +259,15 @@ export async function ensureTileForRecord(params: {
 
   // A pyramidal TIFF already holds downscaled copies: cut coarse tiles from
   // the closest one instead of decoding the full-resolution area.
-  const sourceLevel = isTiffPath(sourcePath)
-    ? pickSourceLevel(await getSourceLevels(sourcePath), level.scale)
-    : null;
-  const region = sourceLevel
-    ? regionInLevel(sourceLevel, {
-        left: sourceLeft,
-        top: sourceTop,
-        width: sourceWidth,
-        height: sourceHeight
-      })
-    : { left: sourceLeft, top: sourceTop, width: sourceWidth, height: sourceHeight };
+  const source = await extractForScale(
+    sourcePath,
+    level.scale,
+    { left: sourceLeft, top: sourceTop, width: sourceWidth, height: sourceHeight },
+    { limitInputPixels: false, sequentialRead: true }
+  );
 
   await pipelineToFileAtomic(
-    openSourceLevel(sourcePath, sourceLevel, {
-      limitInputPixels: false,
-      sequentialRead: true
-    })
-      .extract(region)
+    source
       .resize({
         width,
         height,

@@ -166,3 +166,23 @@ export function getSourceLevels(filePath: string): Promise<SourceLevel[]> {
   }
   return pending;
 }
+
+/**
+ * Pipeline extracting `rect` (base-image pixels) for output at `scale`. For a
+ * TIFF the region comes from the closest stored level, so callers only
+ * resize the result; any other file is read from the base image as before.
+ */
+export async function extractForScale(
+  filePath: string,
+  scale: number,
+  rect: { left: number; top: number; width: number; height: number },
+  options: sharp.SharpOptions = {}
+): Promise<sharp.Sharp> {
+  const level = isTiffPath(filePath) ? pickSourceLevel(await getSourceLevels(filePath), scale) : null;
+  return openSourceLevel(filePath, level, options).extract(level ? regionInLevel(level, rect) : rect);
+}
+
+/** Whether `filePath` is a TIFF that stores more than one resolution. */
+export async function isPyramidalTiff(filePath: string): Promise<boolean> {
+  return isTiffPath(filePath) && (await getSourceLevels(filePath)).length > 1;
+}

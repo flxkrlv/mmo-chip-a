@@ -905,7 +905,7 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
           <input
             ref={serverFileInputRef}
             type="file"
-            accept="image/png,image/jpeg,image/webp"
+            accept="image/png,image/jpeg,image/webp,image/tiff,.tif,.tiff"
             multiple
             style={{ display: "none" }}
             onChange={onUploadToServer}
@@ -913,7 +913,7 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
           <input
             ref={localFileInputRef}
             type="file"
-            accept="image/png,image/jpeg"
+            accept="image/png,image/jpeg,image/tiff,.tif,.tiff"
             multiple
             style={{ display: "none" }}
             onChange={onLocalFilePick}

@@ -227,7 +227,7 @@ export function LibraryPage() {
         <input
           ref={fileInputRef}
           type="file"
-          accept="image/png,image/jpeg"
+          accept="image/png,image/jpeg,image/tiff,.tif,.tiff"
           style={{ display: "none" }}
           onChange={handleFileChange}
         />
@@ -241,7 +241,7 @@ export function LibraryPage() {
         <input
           ref={folderImageInputRef}
           type="file"
-          accept="image/png,image/jpeg"
+          accept="image/png,image/jpeg,image/tiff,.tif,.tiff"
           style={{ display: "none" }}
           onChange={handleFolderImageChange}
         />
