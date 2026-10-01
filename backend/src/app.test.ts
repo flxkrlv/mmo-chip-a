@@ -96,7 +96,7 @@ test("rejects unsupported file types", async () => {
   assert.equal(response.status, 202);
   const failedJob = await waitForCompletedJob(app, response.body.id);
   assert.equal(failedJob.status, "failed");
-  assert.match(failedJob.error, /PNG and JPEG/);
+  assert.match(failedJob.error, /PNG, JPEG and TIFF/);
 });
 
 test("deletes a die and its stored data", async () => {

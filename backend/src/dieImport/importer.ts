@@ -5,8 +5,19 @@ import sharp from "sharp";
 import { writeDieRecord } from "../store.js";
 import { ensurePreviewImage } from "../imagePreview.js";
 import type { DieLevelMetadata, DieRecord } from "../types.js";
+import {
+  detectSourceLevels,
+  getSourceLevels,
+  isTiffPath,
+  openSourceLevel,
+  pickSourceLevel,
+  regionInLevel
+} from "./tiffPyramid.js";
 
-const VALID_MIME_TYPES = new Set(["image/png", "image/jpeg"]);
+const VALID_MIME_TYPES = new Set(["image/png", "image/jpeg", "image/tiff", "image/x-tiff"]);
+// Browsers report the MIME type from the extension and some leave TIFF blank.
+const VALID_EXTENSIONS = /\.(?:png|jpe?g|tiff?)$/i;
+const EXTENSION_BY_FORMAT: Record<string, string> = { png: "png", jpeg: "jpg", tiff: "tif" };
 
 export interface ImportProgressUpdate {
   phase: "analyzing" | "tiling" | "persisting" | "completed" | "failed";
@@ -35,8 +46,8 @@ export async function importDieShot(params: {
   onProgress?: (update: ImportProgressUpdate) => Promise<void> | void;
   logger?: (message: string) => void;
 }): Promise<DieRecord> {
-  if (!VALID_MIME_TYPES.has(params.mimeType)) {
-    throw new Error("Only PNG and JPEG imports are supported.");
+  if (!VALID_MIME_TYPES.has(params.mimeType) && !VALID_EXTENSIONS.test(params.originalFilename)) {
+    throw new Error("Only PNG, JPEG and TIFF imports are supported.");
   }
 
   const metadata = await sharp(params.filePath, {
@@ -46,11 +57,25 @@ export async function importDieShot(params: {
   if (!metadata.width || !metadata.height) {
     throw new Error("Failed to read image dimensions.");
   }
+  // Trust the decoded format over the client-supplied MIME type.
+  const extension = metadata.format ? EXTENSION_BY_FORMAT[metadata.format] : undefined;
+  if (!extension) {
+    throw new Error("Only PNG, JPEG and TIFF imports are supported.");
+  }
 
   params.logger?.(`analyzed ${params.originalFilename} at ${metadata.width}x${metadata.height}`);
+  if (metadata.format === "tiff") {
+    const sourceLevels = await detectSourceLevels(params.filePath);
+    params.logger?.(
+      sourceLevels.length > 1
+        ? `pyramidal TIFF with ${sourceLevels.length} levels: ${sourceLevels
+            .map((level) => `${level.width}x${level.height}`)
+            .join(", ")}`
+        : "single-resolution TIFF"
+    );
+  }
 
   const id = params.targetDir ? params.targetId ?? crypto.randomUUID() : crypto.randomUUID();
-  const extension = params.mimeType === "image/png" ? "png" : "jpg";
   const dieDir = params.targetDir ? path.resolve(params.targetDir) : path.join(params.dataRoot, "dies", id);
   const originalDir = path.join(dieDir, "original");
   const tilesDir = path.join(dieDir, "tiles");
@@ -239,17 +264,26 @@ export async function ensureTileForRecord(params: {
 
   const sourcePath = await resolveBaseOriginalPath(params.record, projectDir);
 
-  await pipelineToFileAtomic(
-    sharp(sourcePath, {
-      limitInputPixels: false,
-      sequentialRead: true
-    })
-      .extract({
+  // A pyramidal TIFF already holds downscaled copies: cut coarse tiles from
+  // the closest one instead of decoding the full-resolution area.
+  const sourceLevel = isTiffPath(sourcePath)
+    ? pickSourceLevel(await getSourceLevels(sourcePath), level.scale)
+    : null;
+  const region = sourceLevel
+    ? regionInLevel(sourceLevel, {
         left: sourceLeft,
         top: sourceTop,
         width: sourceWidth,
         height: sourceHeight
       })
+    : { left: sourceLeft, top: sourceTop, width: sourceWidth, height: sourceHeight };
+
+  await pipelineToFileAtomic(
+    openSourceLevel(sourcePath, sourceLevel, {
+      limitInputPixels: false,
+      sequentialRead: true
+    })
+      .extract(region)
       .resize({
         width,
         height,
