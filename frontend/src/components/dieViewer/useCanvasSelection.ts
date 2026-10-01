@@ -7,10 +7,17 @@ const DOUBLE_CLICK_MS = 300;
 
 /**
  * Selection gestures against the dieViewer store. `selectFromHit` promotes a
- * sub-part selection (a wire segment / vertex) to the whole element on a quick
- * second click; the marquee/empty-click helpers round out the set.
+ * sub-part selection to the whole element on a quick second click — except
+ * for nets, where the double-click calls `onNetDoubleClick` (rename) and the
+ * clicked segment / vertex stays selected. The marquee/empty-click helpers
+ * round out the set.
  */
-export function useCanvasSelection() {
+export function useCanvasSelection(opts?: {
+  /** Double-click on a net; receives the net id (without the `net:` prefix). */
+  onNetDoubleClick?: (netId: string) => void;
+}) {
+  const onNetDoubleClickRef = useRef(opts?.onNetDoubleClick);
+  onNetDoubleClickRef.current = opts?.onNetDoubleClick;
   // Previous click, for the sub-part → whole-element double-click promotion.
   const lastClickRef = useRef<{ time: number; wholeId: string } | null>(null);
 
@@ -23,8 +30,13 @@ export function useCanvasSelection() {
       now - prev.time < DOUBLE_CLICK_MS &&
       prev.wholeId === hit.annotation.id;
 
+    if (isDouble && hit.annotation.kind === "net" && onNetDoubleClickRef.current) {
+      lastClickRef.current = null; // don't let a 3rd click re-trigger
+      onNetDoubleClickRef.current(hit.annotation.id.replace(/^net:/, ""));
+      return;
+    }
     if (isDouble) {
-      // Double-click → select the whole element (e.g. the entire net).
+      // Double-click → select the whole element.
       select([hit.annotation.id], shift ? "toggle" : "replace");
       lastClickRef.current = null; // don't let a 3rd click re-trigger
       return;

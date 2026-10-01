@@ -1227,8 +1227,39 @@ function DieViewer({ dieId }: { dieId: string }) {
     containerRef
   });
 
+  // Double-click on a net (select tool) → rename it in a prompt. Undoable.
+  const renameNet = useCallback(
+    async (netId: string) => {
+      const original = annotationsRef.current?.nets.find((n) => n.id === netId);
+      if (!original) return;
+      const input = await dialog.prompt("Rename net:", original.name, "Net");
+      if (input === null) return;
+      const name = input.trim();
+      // Re-read: the net may have changed while the prompt was open.
+      const current = annotationsRef.current?.nets.find((n) => n.id === netId);
+      if (!current || !name || name === current.name) return;
+      const clash = annotationsRef.current?.nets.some((n) => n.id !== netId && n.name === name);
+      if (
+        clash &&
+        !(await dialog.confirm(
+          `Another net is already named "${name}". Netlists and exports identify nets by name, so the two may be treated as one. Use this name anyway?`,
+          "Duplicate net name"
+        ))
+      ) {
+        return;
+      }
+      const ok = await dispatcherRef.current.dispatch({
+        kind: "upsertNet",
+        net: { ...current, name },
+        prevNet: current
+      });
+      if (!ok) toast.error("Failed to rename net");
+    },
+    [dialog, toast]
+  );
+
   const { selectFromHit, clearSelectionFromEmpty, selectFromMarquee } =
-    useCanvasSelection();
+    useCanvasSelection({ onNetDoubleClick: (id) => void renameNet(id) });
 
   // Snap-to-vias plumbing (wire + multi-wire). Combines the user's manually-
   // placed vias (`annotations.annotations` of class point/irregular via, with
@@ -3545,8 +3576,8 @@ function DieViewer({ dieId }: { dieId: string }) {
    * Double-click on the canvas. In the wire tool this commits the in-flight
    * draft (dropping the spurious dbl-click second point). In the select tool
    * it's a shortcut for "start wiring from this via" — only fires when the
-   * dbl-click lands on a via (manual or ML), so net-vertex dbl-clicks keep
-   * their existing "promote sub-selection to whole net" meaning.
+   * dbl-click lands on a via (manual or ML), so net dbl-clicks keep their
+   * own meaning (rename the net — see `renameNet` / useCanvasSelection).
    */
   const onCanvasDoubleClick = useCallback(
     async (event: React.MouseEvent<HTMLDivElement>) => {
