@@ -5,9 +5,55 @@
 **A fork of [mmo-chip](https://github.com/giulioz/mmo-chip) for reverse engineering analog and mixed-signal ICs.**  
 Extends the original digital CMOS pipeline to **BJTs, BiCMOS, resistors, capacitors, diodes** — transistor-level extraction with SPICE/CDL/Spectre netlist export.
 
+## What's different in this fork ([lytex/mmo-chip](https://github.com/lytex/mmo-chip))
+
+This fork tracks [flxkrlv/mmo-chip-a](https://github.com/flxkrlv/mmo-chip-a) (itself a fork of [giulioz/mmo-chip](https://github.com/giulioz/mmo-chip)) and adds the following on top. Everything else in this README applies to all three.
+
+### Large images
+
+- **Pyramidal TIFF import** — dies and overlays can be imported as pyramidal / tiled TIFF (libvips `tiffsave --pyramid`, SubIFD/OME-TIFF, SVS). Coarse zoom levels are cut from the matching stored resolution and full-resolution tiles only decode the region they cover, so tiling huge mosaics is far faster than from PNG.
+- **Resumable tiling** — background tile generation resumes after a backend restart, only renders tiles missing on disk, and the progress counter is seeded from the tiles already present (no more "tiling" again for an already-tiled die).
+
+### Nets and wires
+
+- **Per-net colors** — assign colors to one or many nets at once from the Outline Tree; a switch flips between custom net colors and per-layer colors without losing the assignments.
+- **Per-net / per-cell visibility** — hide individual nets or cells while keeping the global visibility toggles.
+- **Net width per die** — wire width is stored per die instead of globally.
+- **Multi-wire (`B`) with multiple turning points** — route a bus through several bends; staggered start points end on a common aligned front.
+- **Hold to zoom** — hold the pointer for 2 s on a net (in the tree or on the canvas) to zoom to it.
+- **Double-click to rename** nets, cells and I/O pins directly on the canvas.
+- Toggleable crosses on net vertices.
+
+### Cells and I/O points
+
+- **Resize handles** — resize cells after placing them; resizing applies to all cells of the same type, with correct transforms.
+- **Cell type colors** and cell type shown on hover.
+- **Draggable I/O points** — I/O points are always visible; their names toggle with a switch.
+- **Hover info** — the bottom panel shows details of the object under the cursor.
+
+### Merge Cells
+
+- **Multi overlay** — stack every cell of the same type into a single overlaid image to spot outliers.
+- Faster cell thumbnails by reusing the die viewer's tiles.
+- Fixed undo/redo history.
+
+### Floorplans
+
+- **Edit geometry after drawing** — move/reshape rectangle and polygon regions after creation.
+- **Undo/redo** for floorplan regions (and for layout comments).
+- Custom color picker and per-region visibility in the floorplan hierarchy.
+- `Esc` exits the floorplan tool; the first click already places a point; `Space+H` toggles floorplans.
+
+### Other
+
+- **Editable code pages** — the generated netlist on the Code / Analog Netlist pages can be edited by hand and re-parsed into the schematic.
+- **Toggleable rulers** — show/hide rulers from the Outline Tree.
+- Scrollable popovers.
+- Compatibility with older `data/` formats.
+
 ## Acknowledgments
 
-Many thanks to the developers of the original [mmo-chip](https://github.com/giulioz/mmo-chip) for the clean architecture and clear interfaces that made this analog extension possible.
+Many thanks to the developers of the original [mmo-chip](https://github.com/giulioz/mmo-chip) and fork [flxkrlv/mmo-chip-a](https://github.com/flxkrlv/mmo-chip-a) for the clean architecture and clear interfaces that made this analog extension possible.
 
 The original CMOS pipeline (standard cells, logic, Verilog) is **untouched** — analog extraction works as an add-on.
 
@@ -364,6 +410,7 @@ Set the scale with double-click or right-click → **Set scale from ruler**. Aft
 | `Space+B` | Toggle base image |
 | `Space+C` | Toggle cell visibility |
 | `Space+N` | Toggle net visibility |
+| `Space+H` | Toggle floorplan visibility |
 | `]` / `[` | Next / previous overlay layer only |
 | `Space+1..8` | Show only overlay layer N; repeat to hide it |
 
