@@ -83,7 +83,12 @@ export function HoverReadout({ store }: { store: LiveValue<HoverInfo | null> }) 
       {h.net != null && (
         <>
           {sep}
-          <span>net <span style={{ color: "var(--ink)" }}>{h.net}</span></span>
+          <span>
+            net <span style={{ color: "var(--ink)" }}>{h.net}</span>
+            <span style={{ color: "var(--muted)", marginLeft: 6 }}>
+              (double-click: rename · hold 2s: select &amp; fit)
+            </span>
+          </span>
         </>
       )}
       {h.cells.length > 0 && (
@@ -103,6 +108,39 @@ export function HoverReadout({ store }: { store: LiveValue<HoverInfo | null> }) 
         </>
       )}
     </>
+  );
+}
+
+/**
+ * Progress ring at the cursor while a net is press-and-held on the canvas
+ * (same look and timing as the outline eye's long press). `store` holds the
+ * canvas-relative position; `key` restarts the CSS animation per press.
+ */
+export function NetHoldRing({
+  store,
+  delayMs
+}: {
+  store: LiveValue<{ x: number; y: number; key: number } | null>;
+  delayMs: number;
+}) {
+  const at = useLiveValue(store);
+  if (!at) return null;
+  return (
+    <div
+      style={{ position: "absolute", left: at.x, top: at.y, width: 0, height: 0, zIndex: 20, pointerEvents: "none" }}
+    >
+      <svg
+        key={at.key}
+        className="trow-eye-ring"
+        viewBox="0 0 20 20"
+        aria-hidden
+        // The ring appears `delayMs` into the hold; start its fill there so it
+        // completes exactly when the hold fires.
+        style={{ width: 28, height: 28, ["--ring-delay" as string]: `-${delayMs}ms` }}
+      >
+        <circle cx="10" cy="10" r="8.5" pathLength={1} />
+      </svg>
+    </div>
   );
 }
 

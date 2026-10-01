@@ -52,6 +52,7 @@ import {
   annotationsSummary,
   panelStyle,
   sameHoverInfo,
+  NetHoldRing,
   type HoverInfo
 } from "../components/dieViewer/DieViewerUI";
 import { DieToolbar, IssuesChip } from "../components/dieViewer/DieToolbar";
@@ -172,6 +173,9 @@ const NO_DRAFT_POINTS: Point[] = [];
 const DEVICE_CONN_GRID_PX = 1;
 /** Screen-px grab zone either side of a selected cell's outline for resize. */
 const CELL_EDGE_GRAB_PX = 6;
+/** Press & hold on a net: same timing as the outline eye's long press. */
+const NET_HOLD_MS = 2000;
+const NET_HOLD_RING_DELAY_MS = 500;
 
 /** Broad-phase pick radius (world units) covering the rendered net-vertex
  *  dots. A vertex dot is drawn wider than the net's node bbox (screen-clamped),
@@ -2231,7 +2235,7 @@ function DieViewer({ dieId }: { dieId: string }) {
   // Last plain (non-drag) click on an I/O pin, for double-click → rename.
   const lastPinClickRef = useRef<{ pinId: string; time: number } | null>(null);
 
-  const onCanvasPointerDown = useCallback(
+  const routeCanvasPointerDown = useCallback(
     (e: PointerEventData): Interaction => {
       // Holding Space (or middle-drag, handled in the canvas) momentarily
       // forces pan regardless of the active tool.
@@ -3823,6 +3827,67 @@ function DieViewer({ dieId }: { dieId: string }) {
     [annotationLayer]
   );
 
+  // ── Press & hold on a net (select tool) ─────────────────────────
+  // Same gesture as long-pressing a net's eye in the outline: holding still
+  // for NET_HOLD_MS selects the whole net and zoom-fits it edge-to-edge. A
+  // progress ring at the cursor shows from NET_HOLD_RING_DELAY_MS. Moving
+  // first (a drag) or releasing early keeps the normal click / drag.
+  const netHoldLive = useMemo(
+    () => createLiveValue<{ x: number; y: number; key: number } | null>(null),
+    []
+  );
+  const onCanvasPointerDown = useCallback(
+    (e: PointerEventData): Interaction => {
+      const result = routeCanvasPointerDown(e);
+      if (typeof result !== "object" || e.button !== 0 || !annotationLayer) return result;
+      if (useDieViewerStore.getState().activeTool !== "select") return result;
+      const vp = viewportLive.get();
+      if (!vp) return result;
+      const tol = HIT_TOLERANCE_PX / vp.zoom;
+      const hit = annotationLayer.hitTest(e.worldPoint, tol, Math.max(tol, netNodePickWorldRadius(vp.zoom)));
+      if (!hit || hit.annotation.kind !== "net") return result;
+
+      const netAnnotationId = hit.annotation.id;
+      let fired = false;
+      const ringTimer = window.setTimeout(
+        () => netHoldLive.set({ ...e.screenPoint, key: performance.now() }),
+        NET_HOLD_RING_DELAY_MS
+      );
+      const holdTimer = window.setTimeout(() => {
+        fired = true;
+        netHoldLive.set(null);
+        useDieViewerStore.getState().select([netAnnotationId], "replace");
+        focusOnIds([netAnnotationId], { tight: true });
+      }, NET_HOLD_MS);
+      const stop = () => {
+        window.clearTimeout(ringTimer);
+        window.clearTimeout(holdTimer);
+        netHoldLive.set(null);
+      };
+      // Once the hold fired, the rest of the gesture is swallowed (the view
+      // just changed under the pointer, so a late drag would be garbage).
+      return {
+        onDragStart: (d) => {
+          if (fired) return;
+          stop();
+          result.onDragStart?.(d);
+        },
+        onDragMove: (d) => {
+          if (!fired) result.onDragMove?.(d);
+        },
+        onPointerUp: (d) => {
+          stop();
+          if (!fired) result.onPointerUp(d);
+        },
+        onCancel: () => {
+          stop();
+          if (!fired) result.onCancel?.();
+        }
+      };
+    },
+    [routeCanvasPointerDown, annotationLayer, viewportLive, netHoldLive, focusOnIds]
+  );
+
   // ── Cross-tab focus: analog netlist → frame cell on die ──
   // Uses URL query params (?focusCell=&focusDevice=) which survive
   // any SPA navigation and page refreshes. Cleaned up after consumption.
@@ -4040,6 +4105,7 @@ function DieViewer({ dieId }: { dieId: string }) {
               onCanvasClick={onCanvasClick}
             />
           )}
+          <NetHoldRing store={netHoldLive} delayMs={NET_HOLD_RING_DELAY_MS} />
           <RulerOverlay
             rulers={visibleRulers}
             draftStore={rulerDraftLive}
