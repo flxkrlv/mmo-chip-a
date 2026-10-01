@@ -19,6 +19,7 @@ import { createAssistantRouter } from "./api/assistant.js";
 import { createTilesRouter } from "./api/tiles.js";
 import { enqueueOverlayPrebuilds } from "./api/overlayImages.js";
 import { listDieRecords } from "./store.js";
+import { resolveProjectDir } from "./projectLayout.js";
 
 import { createTileScheduler } from "./tileScheduler.js";
 import type { AnnotationBroadcaster } from "./ws.js";
@@ -116,6 +117,21 @@ export function createApp(config: {
         }
       })
       .catch((error) => console.warn("Failed to enqueue overlay tile prebuilds", error));
+  });
+
+  // The base-tile queue lives in memory, so a restart during the background
+  // prebuild left the pyramid half built: missing tiles were then rendered
+  // lazily on every visit and the card flipped back to "tiling". Resume it;
+  // enqueueBackground skips tiles on disk and is a no-op for complete dies.
+  setImmediate(() => {
+    void listDieRecords(config.dataRoot)
+      .then(async (records) => {
+        for (const record of records) {
+          if (!(await resolveProjectDir(config.dataRoot, record.id)).available) continue;
+          tileScheduler.enqueueBackground(record);
+        }
+      })
+      .catch((error) => console.warn("Failed to resume base tile prebuilds", error));
   });
 
   app.use(
