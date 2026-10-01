@@ -5,16 +5,18 @@ import type { Viewport } from "../../renderer/types";
 import { usePreferences, selectNetWidth } from "../../state/preferences";
 import { useSession } from "../../state/session";
 import { drawSnapHalo, snapRingRadiusPx } from "./snapHalo";
-import { multiParallelEnd, multiWireEndpoint } from "./useMultiWireTool";
+import { previewEnds, tipOf, type Draft } from "./useMultiWireTool";
 
 const COLOR = "#7fb2ff";
 const DOT_PX = 3.5;
 
 /**
  * Transient overlay for the multi-wire tool. Phase 1: the collected start
- * points. Phase 2: a parallel 45°-snapped segment swept out of every start
- * point toward the cursor (the actual nets are created on click). Own canvas
- * above the tiled canvas (no tile-cache churn).
+ * points. Phase 2: each wire's committed path (start → turns → via end), the
+ * corners already clicked in the current turn round, and — for wires still
+ * waiting for their corner — the live parallel segment toward the cursor,
+ * the one the next click places drawn thicker (nets are created on Enter /
+ * double-click). Own canvas above the tiled canvas (no tile-cache churn).
  */
 /** Phase-2 endpoint snap: which sweeping wire would lock onto a via, and
  *  the via's position. Drives the overlay to redraw that wire ending on the
@@ -28,7 +30,7 @@ export interface MultiWireEndSnap {
 export function MultiWireOverlay({
   points,
   phase,
-  ends,
+  draft,
   cursorStore,
   snapStore,
   endSnapStore,
@@ -37,8 +39,8 @@ export function MultiWireOverlay({
 }: {
   points: Point[];
   phase: 1 | 2;
-  /** Phase-2: locked endpoint per start (null = still sweeping). */
-  ends: (Point | null)[];
+  /** Full multi-wire draft (paths, pending corners, round direction). */
+  draft: Draft;
   cursorStore: LiveValue<Point | null>;
   /** Phase-1 hover: the existing vertex the next start would snap to. */
   snapStore: LiveValue<Point | null>;
@@ -95,79 +97,77 @@ export function MultiWireOverlay({
       ctx.fillStyle = COLOR;
       ctx.lineCap = "round";
 
-      // Reference bus endpoint from the live cursor (Shift = free angle).
-      // Every wire ends on the front line perpendicular to the bus direction
-      // through this point, so staggered starts still finish aligned.
-      const cur = phase === 2 ? cursorStore.get() : null;
-      const busEnd = cur
-        ? multiParallelEnd(points[0], cur, shiftStore.get() ?? false)
-        : null;
-      const sweeping =
-        !!busEnd && (busEnd.x !== points[0].x || busEnd.y !== points[0].y);
+      const ringR = () =>
+        snapRingRadiusPx(vp.zoom, selectNetWidth(useSession.getState().dieId)(usePreferences.getState()));
+      const dot = (p: Point) => {
+        ctx.beginPath();
+        ctx.arc(sx(p.x), sy(p.y), DOT_PX, 0, Math.PI * 2);
+        ctx.fill();
+      };
+      const seg = (a: Point, b: Point) => {
+        ctx.beginPath();
+        ctx.moveTo(sx(a.x), sy(a.y));
+        ctx.lineTo(sx(b.x), sy(b.y));
+        ctx.stroke();
+      };
 
-      // The still-sweeping wire nearest the cursor — the one a click locks.
-      let nearest = -1;
-      if (cur && busEnd && sweeping) {
+      // Live ends of the wires still waiting for their corner (null for the
+      // rest) — the very projection a click uses, so preview == result.
+      const cur = phase === 2 ? cursorStore.get() : null;
+      const live = cur ? previewEnds(draft, cur, shiftStore.get() ?? false) : points.map(() => null);
+      // The waiting wire the next click would place (nearest to the cursor).
+      let next = -1;
+      if (cur) {
         let bestDist = Infinity;
-        points.forEach((p, i) => {
-          if (ends[i]) return;
-          const d = distancePointToSegment(
-            cur,
-            p,
-            multiWireEndpoint(p, points[0], busEnd)
-          );
+        live.forEach((end, i) => {
+          if (!end) return;
+          const d = distancePointToSegment(cur, tipOf(draft, i), end);
           if (d < bestDist) {
             bestDist = d;
-            nearest = i;
+            next = i;
           }
         });
       }
 
-      // Phase-2 via snaps: each sweeping wire that would lock onto a via.
+      // Phase-2 via snaps: each waiting wire that would end on a via.
       const endSnaps = phase === 2 ? endSnapStore.get() : null;
       const snapByIndex = new Map<number, MultiWireEndSnap>();
       if (endSnaps) for (const s of endSnaps) snapByIndex.set(s.lockIndex, s);
 
       points.forEach((p, i) => {
-        const a = { x: sx(p.x), y: sy(p.y) };
         if (phase === 2) {
-          const locked = ends[i];
-          // A still-sweeping wire that would snap to a via ends ON the
-          // via, not at the swept 45° endpoint — so the preview shows
-          // exactly what a click commits.
-          const hit = !locked ? snapByIndex.get(i) : undefined;
-          const snapVia = hit ? { x: hit.x, y: hit.y } : null;
-          const end =
-            locked ??
-            snapVia ??
-            (sweeping && busEnd
-              ? multiWireEndpoint(p, points[0], busEnd)
-              : null);
-          if (end) {
-            const b = { x: sx(end.x), y: sy(end.y) };
-            ctx.lineWidth = !locked && (snapVia || i === nearest) ? 3.5 : 2;
-            ctx.beginPath();
-            ctx.moveTo(a.x, a.y);
-            ctx.lineTo(b.x, b.y);
-            ctx.stroke();
-            ctx.beginPath();
-            ctx.arc(b.x, b.y, DOT_PX, 0, Math.PI * 2);
-            ctx.fill();
-            if (snapVia) {
-              drawSnapHalo(
-                ctx,
-                b.x,
-                b.y,
-                snapRingRadiusPx(vp.zoom, selectNetWidth(useSession.getState().dieId)(usePreferences.getState()))
-              );
+          // Committed path.
+          ctx.lineWidth = 2;
+          let prev: Point = p;
+          for (const v of draft.paths[i] ?? []) {
+            seg(prev, v);
+            dot(v);
+            prev = v;
+          }
+          // Corner clicked in this round.
+          const corner = draft.pending[i];
+          if (corner) {
+            seg(prev, corner);
+            dot(corner);
+          }
+          // Live segment of a waiting wire. One that would snap to a via
+          // previews ending ON it — exactly what a click does.
+          const hit = snapByIndex.get(i);
+          const end = hit ? { x: hit.x, y: hit.y } : live[i];
+          if (end && !draft.locked[i] && !corner) {
+            const emphasised = !!hit || i === next;
+            ctx.lineWidth = emphasised ? 3.5 : 2;
+            ctx.globalAlpha = emphasised ? 1 : 0.55;
+            seg(prev, end);
+            ctx.globalAlpha = 1;
+            if (hit) {
+              drawSnapHalo(ctx, sx(end.x), sy(end.y), ringR());
               ctx.fillStyle = COLOR;
               ctx.strokeStyle = COLOR;
             }
           }
         }
-        ctx.beginPath();
-        ctx.arc(a.x, a.y, DOT_PX, 0, Math.PI * 2);
-        ctx.fill();
+        dot(p);
       });
     };
 
@@ -195,7 +195,7 @@ export function MultiWireOverlay({
   }, [
     points,
     phase,
-    ends,
+    draft,
     cursorStore,
     snapStore,
     endSnapStore,

@@ -101,8 +101,8 @@ import { buildInstanceTerminalMap } from "../lib/extraction/terminalDetect";
 import { useCellTool } from "../components/dieViewer/useCellTool";
 import { useViaPolyTool } from "../components/dieViewer/useViaPolyTool";
 import {
-  multiParallelEnd,
-  multiWireEndpoint,
+  previewEnds,
+  tipOf,
   useMultiWireTool
 } from "../components/dieViewer/useMultiWireTool";
 import { MultiWireOverlay } from "../components/dieViewer/MultiWireOverlay";
@@ -173,6 +173,9 @@ const NO_DRAFT_POINTS: Point[] = [];
 const DEVICE_CONN_GRID_PX = 1;
 /** Screen-px grab zone either side of a selected cell's outline for resize. */
 const CELL_EDGE_GRAB_PX = 6;
+/** Bus turns shorter than this (screen px) are ignored — e.g. the 2nd click
+ *  of the double-click that finishes the bus. */
+const MULTI_WIRE_MIN_TURN_PX = 4;
 /** Press & hold on a net: same timing as the outline eye's long press. */
 const NET_HOLD_MS = 2000;
 const NET_HOLD_RING_DELAY_MS = 500;
@@ -1671,9 +1674,15 @@ function DieViewer({ dieId }: { dieId: string }) {
         ? "click bus start points, then Enter"
         : `${n} start${n > 1 ? "s" : ""} · Enter to continue · Esc to cancel`;
     }
-    const left = multiWire.ends.reduce((a, e) => a + (e ? 0 : 1), 0);
-    return `click each wire to end · ${left} left`;
-  }, [multiWire.phase, multiWire.points, multiWire.ends]);
+    const d = multiWire.draft;
+    const running = d.points.filter((_, i) => !d.locked[i]).length;
+    const placed = d.pending.filter(Boolean).length;
+    const ended = d.locked.filter(Boolean).length;
+    const round = placed > 0
+      ? `corner ${placed + 1} of ${running}`
+      : `click near each wire to place its corner (${running})`;
+    return `${round} · Enter / double-click to finish${ended ? ` · ${ended} ended on vias` : ""} · Esc to cancel`;
+  }, [multiWire.phase, multiWire.points, multiWire.draft]);
 
   /**
    * Multi-wire phase-2 helper: find the via the cursor is pointing at and
@@ -1702,8 +1711,7 @@ function DieViewer({ dieId }: { dieId: string }) {
         !vp ||
         shift ||
         !usePreferences.getState().snapToVias ||
-        multiWire.phase !== 2 ||
-        multiWire.points.length === 0
+        multiWire.phase !== 2
       ) {
         return null;
       }
@@ -1711,15 +1719,13 @@ function DieViewer({ dieId }: { dieId: string }) {
       const via = findNearestVia(world, tol);
       if (!via) return null;
       const V: Point = { x: Math.round(via.x), y: Math.round(via.y) };
-      // Pick which wire to lock: the still-sweeping one whose projected
-      // endpoint (under the current bus geometry) is closest to the via.
-      const ref = multiWire.points[0];
-      const projected = snapTo45(ref, world);
+      // Pick which wire to end: the one still waiting for its corner whose
+      // live end (exactly what the overlay draws) is closest to the via.
+      const ends = previewEnds(multiWire.draft, world, false);
       let best = -1;
       let bestDist = Infinity;
-      multiWire.points.forEach((p, i) => {
-        if (multiWire.ends[i]) return; // already locked
-        const wireEnd = multiWireEndpoint(p, ref, projected);
+      ends.forEach((wireEnd, i) => {
+        if (!wireEnd) return; // ended, or corner already placed this round
         const d = Math.hypot(wireEnd.x - V.x, wireEnd.y - V.y);
         if (d < bestDist) {
           bestDist = d;
@@ -1751,19 +1757,15 @@ function DieViewer({ dieId }: { dieId: string }) {
         !vp ||
         shift ||
         !usePreferences.getState().wireAutoEndOnVia ||
-        multiWire.phase !== 2 ||
-        multiWire.points.length === 0
+        multiWire.phase !== 2
       ) {
         return [];
       }
       const tol = viaSnapTolerance(vp.zoom, usePreferences.getState().viaSize);
-      const ref = multiWire.points[0];
-      const projected = multiParallelEnd(ref, world, false);
-      if (projected.x === ref.x && projected.y === ref.y) return [];
       const out: Array<{ endpoint: Point; lockIndex: number }> = [];
-      multiWire.points.forEach((p, i) => {
-        if (multiWire.ends[i]) return;
-        const end = multiWireEndpoint(p, ref, projected);
+      previewEnds(multiWire.draft, world, false).forEach((end, i) => {
+        if (!end) return;
+        const p = tipOf(multiWire.draft, i);
         if (end.x === p.x && end.y === p.y) return;
         const via = findViaOnSegment(p, end, tol);
         if (via) {
@@ -3415,8 +3417,8 @@ function DieViewer({ dieId }: { dieId: string }) {
         } else {
           // Phase 2: auto-end-on-via wins when any wire's projection crosses
           // a via — all such wires lock in one click (they may target
-          // different vias). Then the snap-to-vias-near-cursor path; finally
-          // the normal nearest-preview lock on the parallel front.
+          // different vias). Then the snap-to-vias-near-cursor path (ends
+          // that one wire); otherwise the click places one wire's corner.
           const autos = findMultiWireAutoEndSnaps({ x, y }, shiftRef.current);
           if (autos.length > 0) {
             multiWire.endWires(autos);
@@ -3426,12 +3428,14 @@ function DieViewer({ dieId }: { dieId: string }) {
               shiftRef.current
             );
             if (snap) {
-              multiWire.endWire({ x, y }, false, {
-                endpoint: snap.endpoint,
-                lockIndex: snap.lockIndex
-              });
+              multiWire.endWire(snap.endpoint, snap.lockIndex);
             } else {
-              multiWire.endWire({ x, y }, shiftRef.current);
+              // Plain click: staggered turn — places the corner of the wire
+              // nearest the click; after one click per wire the bus keeps
+              // routing from the corners. Clicks within a few screen px of
+              // the previous one (a double-click's 2nd click) are ignored.
+              const zoom = viewportLive.get()?.zoom ?? 1;
+              multiWire.placeCorner({ x, y }, shiftRef.current, MULTI_WIRE_MIN_TURN_PX / zoom);
             }
           }
         }
@@ -3609,6 +3613,11 @@ function DieViewer({ dieId }: { dieId: string }) {
         wire.commitWire({ dropLast: true });
         return;
       }
+      // Bus: double-click finishes it (its 1st click placed the last turn).
+      if (tool === "multiWire" && multiWire.phase === 2) {
+        multiWire.finish();
+        return;
+      }
       // Floorplan poly: double-click to finish polygon
       if (tool === "floorplan") {
         const fs = useFloorplanStore.getState();
@@ -3756,7 +3765,7 @@ function DieViewer({ dieId }: { dieId: string }) {
         navigate(`/re?die=${encodeURIComponent(dieId)}&type=${encodeURIComponent(cellTypeId)}&cell=${encodeURIComponent(cellId)}`);
       }
     },
-    [annotationLayer, mlViasLayer, wire, startWireAt, navigate, dieId, dialog]
+    [annotationLayer, mlViasLayer, wire, multiWire, startWireAt, navigate, dieId, dialog]
   );
 
   // Zoom button handlers read the latest viewport from the live store at
@@ -4131,7 +4140,7 @@ function DieViewer({ dieId }: { dieId: string }) {
           <MultiWireOverlay
             points={multiWire.points}
             phase={multiWire.phase}
-            ends={multiWire.ends}
+            draft={multiWire.draft}
             cursorStore={cursorLive}
             snapStore={multiWireSnapLive}
             endSnapStore={multiWireEndSnapLive}
