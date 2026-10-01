@@ -2017,8 +2017,25 @@ function DieViewer({ dieId }: { dieId: string }) {
           net = n ? n.name || n.id : parsed.netId;
         }
       }
-      const floorplans: string[] = [];
       const prefs = usePreferences.getState();
+      // Cell type(s) of the visible cells whose footprint contains the cursor
+      // (same oriented footprint the canvas draws; overlapping cells → all).
+      const cells: string[] = [];
+      const anns = annotationsRef.current;
+      if (anns) {
+        const cellsHidden = prefs.hiddenKinds.includes("cell");
+        const typeById = new Map(anns.cellTypes.map((t) => [t.id, t]));
+        for (const c of anns.cells) {
+          const override = prefs.hiddenCellTypeIds[c.cellTypeId];
+          if (override === undefined ? cellsHidden : override) continue;
+          const t = typeById.get(c.cellTypeId);
+          if (!t) continue;
+          if (!pointInRect(world, cellWorldRect(c, t.cropRect.width, t.cropRect.height))) continue;
+          const name = t.name || "(unnamed)";
+          if (!cells.includes(name)) cells.push(name);
+        }
+      }
+      const floorplans: string[] = [];
       if (prefs.floorplanOverlayOn) {
         const globallyHidden = prefs.hiddenKinds.includes("floorplan");
         for (const r of useFloorplanStore.getState().regions) {
@@ -2034,7 +2051,9 @@ function DieViewer({ dieId }: { dieId: string }) {
           if (inside && !floorplans.includes(typeName)) floorplans.push(typeName);
         }
       }
-      return net == null && floorplans.length === 0 ? null : { net, floorplans };
+      return net == null && cells.length === 0 && floorplans.length === 0
+        ? null
+        : { net, cells, floorplans };
     },
     [annotationLayer]
   );

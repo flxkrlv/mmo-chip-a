@@ -51,19 +51,24 @@ export function CursorReadout({
 }
 
 /** What the cursor is currently over: the net a hovered wire/vertex belongs
- *  to and the floorplan type(s) of any regions containing the cursor. */
+ *  to, the cell type(s) of any visible cells under the cursor and the
+ *  floorplan type(s) of any regions containing it. */
 export interface HoverInfo {
   net: string | null;
+  cells: string[];
   floorplans: string[];
 }
+
+const sameList = (a: string[], b: string[]) =>
+  a.length === b.length && a.every((x, i) => x === b[i]);
 
 export function sameHoverInfo(a: HoverInfo | null, b: HoverInfo | null): boolean {
   if (a === b) return true;
   if (!a || !b) return false;
   return (
     a.net === b.net &&
-    a.floorplans.length === b.floorplans.length &&
-    a.floorplans.every((f, i) => f === b.floorplans[i])
+    sameList(a.cells, b.cells) &&
+    sameList(a.floorplans, b.floorplans)
   );
 }
 
@@ -79,6 +84,14 @@ export function HoverReadout({ store }: { store: LiveValue<HoverInfo | null> }) 
         <>
           {sep}
           <span>net <span style={{ color: "var(--ink)" }}>{h.net}</span></span>
+        </>
+      )}
+      {h.cells.length > 0 && (
+        <>
+          {sep}
+          <span>
+            cell <span style={{ color: "var(--ink)" }}>{h.cells.join(", ")}</span>
+          </span>
         </>
       )}
       {h.floorplans.length > 0 && (
