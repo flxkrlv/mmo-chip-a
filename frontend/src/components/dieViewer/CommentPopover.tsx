@@ -1,5 +1,6 @@
 import { useCallback, useState, type KeyboardEvent } from "react";
 import type { CommentAnnotation } from "shared";
+import { Ic } from "../../icons";
 import { useAuth } from "../../state/auth";
 
 interface Props {
@@ -156,12 +157,23 @@ export function CommentPopover({ comment, onClose, onCreate, onReply, onDelete, 
             <button
               className="btn ghost"
               onClick={handleDelete}
-              style={{ color: "var(--err)", fontSize: 10.5, flexShrink: 0, height: 20 }}
-              title="Delete comment"
+              disabled={saving}
+              style={{ color: "var(--err)", flexShrink: 0, height: 20, padding: "0 4px" }}
+              title="Delete comment and its replies"
+              aria-label="Delete comment"
             >
-              ✕
+              {Ic.trash}
             </button>
           )}
+          <button
+            className="btn ghost"
+            onClick={onClose}
+            style={{ color: "var(--ink3)", fontSize: 10.5, flexShrink: 0, height: 20 }}
+            title="Close"
+            aria-label="Close"
+          >
+            ✕
+          </button>
         </div>
 
         {/* Replies */}
