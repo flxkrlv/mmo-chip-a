@@ -12,7 +12,7 @@ interface Props {
   annotations: DieAnnotations | undefined;
   viewportStore: LiveValue<Viewport | null>;
   dieId: string;
-  /** Comment create / reply / delete go through it, so they are undoable. */
+  /** Comment create / reply / edit / move / delete go through it, so they are undoable. */
   dispatcher: ActionDispatcher;
   /** Called when annotations have changed (to trigger a refetch). */
   onAnnotationChange?: () => void;
@@ -175,6 +175,31 @@ export function CommentOverlay({ annotations, viewportStore, dispatcher, onAnnot
     [shownComment, userId, username, dispatchThen]
   );
 
+  const handleEdit = useCallback(
+    (text: string) => {
+      if (!shownComment) return Promise.resolve();
+      return dispatchThen({
+        kind: "upsertComment",
+        comment: { ...shownComment, text },
+        prevComment: shownComment
+      });
+    },
+    [shownComment, dispatchThen]
+  );
+
+  const handleEditReply = useCallback(
+    (reply: CommentReply, text: string) => {
+      if (!shownComment) return Promise.resolve();
+      return dispatchThen({
+        kind: "updateCommentReply",
+        commentId: shownComment.id,
+        reply: { ...reply, text },
+        prevReply: reply
+      });
+    },
+    [shownComment, dispatchThen]
+  );
+
   const handleDelete = useCallback(() => {
     if (!shownComment) return Promise.resolve();
     return dispatchThen({ kind: "removeComment", comment: shownComment });
@@ -307,6 +332,8 @@ export function CommentOverlay({ annotations, viewportStore, dispatcher, onAnnot
               onClose={handlePopoverClose}
               onCreate={handleCreate}
               onReply={handleReply}
+              onEdit={handleEdit}
+              onEditReply={handleEditReply}
               onDelete={handleDelete}
               onUndo={handleUndo}
               onRedo={handleRedo}

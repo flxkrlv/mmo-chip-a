@@ -81,4 +81,33 @@ describe("comment actions", () => {
     expect(after.comments![0].text).toBe("changed");
     expect(undone.comments![0]).toEqual(comment);
   });
+
+  it("editing a reply undoes to its previous text, keeping others' new replies", () => {
+    const prev = comment.replies[0];
+    const action: AnnotationAction = {
+      kind: "updateCommentReply",
+      commentId: "c1",
+      reply: { ...prev, text: "fixed typo" },
+      prevReply: prev
+    };
+    const after = applyAction(die([comment]), action);
+    expect(after.comments![0].replies.map((r) => r.text)).toEqual(["fixed typo"]);
+
+    const theirs = reply("r3", "2026-10-01T10:03:00.000Z", "carol");
+    const withTheirs = applyAction(after, { kind: "addCommentReply", commentId: "c1", reply: theirs });
+    const undone = applyAction(withTheirs, inverseOf(action));
+    expect(undone.comments![0].replies).toEqual([prev, theirs]);
+  });
+
+  it("editing a reply that was deleted meanwhile doesn't resurrect it", () => {
+    const prev = comment.replies[0];
+    const gone = applyAction(die([comment]), { kind: "removeCommentReply", commentId: "c1", reply: prev });
+    const after = applyAction(gone, {
+      kind: "updateCommentReply",
+      commentId: "c1",
+      reply: { ...prev, text: "late edit" },
+      prevReply: prev
+    });
+    expect(after.comments![0].replies).toEqual([]);
+  });
 });

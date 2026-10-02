@@ -77,6 +77,8 @@ export type AnnotationAction =
   | { kind: "removeComment"; comment: CommentAnnotation }
   | { kind: "addCommentReply"; commentId: string; reply: CommentReply }
   | { kind: "removeCommentReply"; commentId: string; reply: CommentReply }
+  // Edit one reply's text in place; undo swaps `reply` and `prevReply`.
+  | { kind: "updateCommentReply"; commentId: string; reply: CommentReply; prevReply: CommentReply }
   | { kind: "upsertFloorplan"; region: FloorplanRegion; prevRegion: FloorplanRegion | null }
   | { kind: "removeFloorplan"; region: FloorplanRegion }
   | { kind: "batch"; actions: AnnotationAction[] };
@@ -171,6 +173,8 @@ export function inverseOf(action: AnnotationAction): AnnotationAction {
       return { kind: "removeCommentReply", commentId: action.commentId, reply: action.reply };
     case "removeCommentReply":
       return { kind: "addCommentReply", commentId: action.commentId, reply: action.reply };
+    case "updateCommentReply":
+      return { kind: "updateCommentReply", commentId: action.commentId, reply: action.prevReply, prevReply: action.reply };
     case "upsertFloorplan":
       return action.prevRegion === null
         ? { kind: "removeFloorplan", region: action.region }
@@ -296,6 +300,7 @@ export function applyAction(annotations: DieAnnotations, action: AnnotationActio
       };
     case "addCommentReply":
     case "removeCommentReply":
+    case "updateCommentReply":
       return {
         ...annotations,
         comments: (annotations.comments ?? []).map((c) =>
@@ -320,13 +325,21 @@ export function applyAction(annotations: DieAnnotations, action: AnnotationActio
 }
 
 /**
- * Add / remove one reply. Adding keeps replies in `createdAt` order (an undone
- * reply that is redone goes back to its original place) and is idempotent.
+ * Add / remove / edit one reply. Adding keeps replies in `createdAt` order (an
+ * undone reply that is redone goes back to its original place) and is
+ * idempotent. Editing replaces the reply in place; a reply that is gone
+ * (deleted meanwhile) stays gone.
  */
 export function applyReplyAction(
   comment: CommentAnnotation,
-  action: Extract<AnnotationAction, { kind: "addCommentReply" | "removeCommentReply" }>
+  action: Extract<AnnotationAction, { kind: "addCommentReply" | "removeCommentReply" | "updateCommentReply" }>
 ): CommentAnnotation {
+  if (action.kind === "updateCommentReply") {
+    return {
+      ...comment,
+      replies: (comment.replies ?? []).map((r) => (r.id === action.reply.id ? action.reply : r))
+    };
+  }
   const replies = (comment.replies ?? []).filter((r) => r.id !== action.reply.id);
   if (action.kind === "removeCommentReply") return { ...comment, replies };
   replies.push(action.reply);
@@ -396,7 +409,8 @@ export async function requestAction(
     case "removeComment":
       return apiDelete(`/api/dies/${dieId}/comments/${action.comment.id}`);
     case "addCommentReply":
-    case "removeCommentReply": {
+    case "removeCommentReply":
+    case "updateCommentReply": {
       // The server stores whole comments: read the current one (with any
       // replies other users added since) and write it back with this change.
       const current = await apiGet<DieAnnotations>(`/api/dies/${dieId}/annotations`);

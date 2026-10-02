@@ -1,5 +1,5 @@
 import { useCallback, useState, type KeyboardEvent } from "react";
-import type { CommentAnnotation } from "shared";
+import type { CommentAnnotation, CommentReply } from "shared";
 import { Ic } from "../../icons";
 import { useAuth } from "../../state/auth";
 
@@ -11,6 +11,10 @@ interface Props {
   onCreate: (text: string) => Promise<void>;
   /** Append a reply by the current user (undoable). */
   onReply: (text: string) => Promise<void>;
+  /** Replace the comment's text (undoable). */
+  onEdit: (text: string) => Promise<void>;
+  /** Replace one reply's text (undoable). */
+  onEditReply: (reply: CommentReply, text: string) => Promise<void>;
   /** Delete the comment and its replies (undoable). */
   onDelete: () => Promise<void>;
   /** Die undo / redo, for ⌘Z / ⌘⇧Z typed into an empty input. */
@@ -18,7 +22,7 @@ interface Props {
   onRedo: () => void;
 }
 
-export function CommentPopover({ comment, onClose, onCreate, onReply, onDelete, onUndo, onRedo }: Props) {
+export function CommentPopover({ comment, onClose, onCreate, onReply, onEdit, onEditReply, onDelete, onUndo, onRedo }: Props) {
   const { userId, username } = useAuth();
   const [replyText, setReplyText] = useState("");
   // For a new (unsaved) comment, we show an initial text input.
@@ -27,6 +31,11 @@ export function CommentPopover({ comment, onClose, onCreate, onReply, onDelete, 
   // A comment with text is persisted — display + reply mode. Derived from the
   // live comment, so undo / redo of the creation flips it back and forth.
   const saved = !!comment.text;
+  const isAuthor = !!userId && userId === comment.authorId;
+  // Editing the saved text (author only); null when not editing.
+  const [editText, setEditText] = useState<string | null>(null);
+  // The reply being edited (own replies only) and its draft text.
+  const [replyEdit, setReplyEdit] = useState<{ id: string; text: string } | null>(null);
 
   const handleSaveInitial = useCallback(async () => {
     if (!initialText.trim() || !userId || !username) return;
@@ -48,6 +57,40 @@ export function CommentPopover({ comment, onClose, onCreate, onReply, onDelete, 
       setSaving(false);
     }
   }, [replyText, userId, username, onReply]);
+
+  const handleSaveEdit = useCallback(async () => {
+    const text = editText?.trim();
+    if (!text || !isAuthor) return;
+    if (text === comment.text) {
+      setEditText(null);
+      return;
+    }
+    setSaving(true);
+    try {
+      await onEdit(text);
+      setEditText(null);
+    } finally {
+      setSaving(false);
+    }
+  }, [editText, isAuthor, comment.text, onEdit]);
+
+  const handleSaveReplyEdit = useCallback(async () => {
+    if (!replyEdit) return;
+    const reply = (comment.replies ?? []).find((r) => r.id === replyEdit.id);
+    const text = replyEdit.text.trim();
+    if (!reply || !text || reply.authorId !== userId) return;
+    if (text === reply.text) {
+      setReplyEdit(null);
+      return;
+    }
+    setSaving(true);
+    try {
+      await onEditReply(reply, text);
+      setReplyEdit(null);
+    } finally {
+      setSaving(false);
+    }
+  }, [replyEdit, comment.replies, userId, onEditReply]);
 
   const handleDelete = useCallback(async () => {
     if (!userId || userId !== comment.authorId) return;
@@ -115,7 +158,42 @@ export function CommentPopover({ comment, onClose, onCreate, onReply, onDelete, 
             <div style={{ fontSize: 10.5, color: "var(--ink3)", marginBottom: 4 }}>
               {new Date(comment.createdAt).toLocaleString()}
             </div>
-            {saved ? (
+            {saved && editText !== null ? (
+              <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                <input
+                  type="text"
+                  value={editText}
+                  onChange={(e) => setEditText(e.target.value)}
+                  className="input"
+                  style={{ flex: 1, height: 28, fontSize: 11 }}
+                  autoFocus
+                  onKeyDown={(e) => {
+                    undoKeys(e);
+                    if (e.key === "Enter" && !e.shiftKey) {
+                      e.preventDefault();
+                      handleSaveEdit();
+                    } else if (e.key === "Escape") {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      setEditText(null);
+                    }
+                  }}
+                />
+                <div style={{ display: "flex", gap: 6, justifyContent: "flex-end" }}>
+                  <button className="btn ghost" onClick={() => setEditText(null)} style={{ height: 24, fontSize: 10.5 }}>
+                    Cancel
+                  </button>
+                  <button
+                    className="btn"
+                    onClick={handleSaveEdit}
+                    disabled={saving || !editText.trim()}
+                    style={{ height: 24, fontSize: 10.5 }}
+                  >
+                    {saving ? "Saving…" : "Save"}
+                  </button>
+                </div>
+              </div>
+            ) : saved ? (
               <div style={{ color: "var(--ink2)", lineHeight: 1.5, whiteSpace: "pre-wrap" }}>
                 {comment.text}
               </div>
@@ -153,7 +231,18 @@ export function CommentPopover({ comment, onClose, onCreate, onReply, onDelete, 
               </div>
             )}
           </div>
-          {saved && userId === comment.authorId && (
+          {saved && isAuthor && editText === null && (
+            <button
+              className="btn ghost"
+              onClick={() => setEditText(comment.text)}
+              style={{ color: "var(--ink3)", fontSize: 11, flexShrink: 0, height: 20, padding: "0 4px" }}
+              title="Edit comment"
+              aria-label="Edit comment"
+            >
+              ✎
+            </button>
+          )}
+          {saved && isAuthor && (
             <button
               className="btn ghost"
               onClick={handleDelete}
@@ -206,17 +295,65 @@ export function CommentPopover({ comment, onClose, onCreate, onReply, onDelete, 
                 >
                   {reply.authorName[0].toUpperCase()}
                 </div>
-                <div style={{ minWidth: 0 }}>
+                <div style={{ flex: 1, minWidth: 0 }}>
                   <span style={{ fontWeight: 600, color: "var(--ink)" }}>
                     {reply.authorName}
                   </span>
                   <span style={{ fontSize: 10, color: "var(--ink3)", marginLeft: 6 }}>
                     {new Date(reply.createdAt).toLocaleString()}
                   </span>
-                  <div style={{ color: "var(--ink2)", marginTop: 1, whiteSpace: "pre-wrap" }}>
-                    {reply.text}
-                  </div>
+                  {replyEdit?.id === reply.id ? (
+                    <div style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 2 }}>
+                      <input
+                        type="text"
+                        value={replyEdit.text}
+                        onChange={(e) => setReplyEdit({ id: reply.id, text: e.target.value })}
+                        className="input"
+                        style={{ flex: 1, height: 26, fontSize: 11 }}
+                        autoFocus
+                        onKeyDown={(e) => {
+                          undoKeys(e);
+                          if (e.key === "Enter" && !e.shiftKey) {
+                            e.preventDefault();
+                            handleSaveReplyEdit();
+                          } else if (e.key === "Escape") {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            setReplyEdit(null);
+                          }
+                        }}
+                      />
+                      <div style={{ display: "flex", gap: 6, justifyContent: "flex-end" }}>
+                        <button className="btn ghost" onClick={() => setReplyEdit(null)} style={{ height: 22, fontSize: 10.5 }}>
+                          Cancel
+                        </button>
+                        <button
+                          className="btn"
+                          onClick={handleSaveReplyEdit}
+                          disabled={saving || !replyEdit.text.trim()}
+                          style={{ height: 22, fontSize: 10.5 }}
+                        >
+                          {saving ? "Saving…" : "Save"}
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div style={{ color: "var(--ink2)", marginTop: 1, whiteSpace: "pre-wrap" }}>
+                      {reply.text}
+                    </div>
+                  )}
                 </div>
+                {userId === reply.authorId && replyEdit?.id !== reply.id && (
+                  <button
+                    className="btn ghost"
+                    onClick={() => setReplyEdit({ id: reply.id, text: reply.text })}
+                    style={{ color: "var(--ink3)", fontSize: 11, flexShrink: 0, height: 18, padding: "0 4px" }}
+                    title="Edit reply"
+                    aria-label="Edit reply"
+                  >
+                    ✎
+                  </button>
+                )}
               </div>
             ))}
           </div>
