@@ -28,6 +28,9 @@ interface Props {
 
 const COMMENT_COLOR = "#fcc419";
 const COMMENT_SIZE = 24;
+/** Screen pixels a pin must travel before a press counts as a drag (move)
+ *  rather than a click (open). */
+const DRAG_THRESHOLD_PX = 4;
 
 /**
  * Renders comment pin markers on the canvas + popover on click.
@@ -75,6 +78,16 @@ export function CommentOverlay({ annotations, viewportStore, dispatcher, onAnnot
   const handlePinClick = useCallback((comment: CommentAnnotation, worldX: number, worldY: number) => {
     setSelectedComment({ comment, x: worldX, y: worldY });
   }, []);
+
+  // Dragging a pin moves the comment. The ref tracks the press; `dragOffset`
+  // (screen px) only drives the live marker position while dragging.
+  const dragRef = useRef<{ id: string; sx: number; sy: number; moved: boolean } | null>(null);
+  const [dragOffset, setDragOffset] = useState<{ id: string; dx: number; dy: number } | null>(null);
+  // Dropped position (world), shown until the move dispatch settles so the
+  // pin doesn't flash back to its old spot before the optimistic update.
+  const [dropped, setDropped] = useState<{ id: string; x: number; y: number } | null>(null);
+  // The click that follows a drag's pointerup must not open the popover.
+  const suppressClickRef = useRef(false);
 
   const handleCanvasClick = useCallback((worldX: number, worldY: number) => {
     if (!userId || !username) return;
@@ -167,6 +180,16 @@ export function CommentOverlay({ annotations, viewportStore, dispatcher, onAnnot
     return dispatchThen({ kind: "removeComment", comment: shownComment });
   }, [shownComment, dispatchThen]);
 
+  const handleMove = useCallback(
+    (comment: CommentAnnotation, x: number, y: number) => {
+      if (x === comment.x && y === comment.y) return;
+      setDropped({ id: comment.id, x, y });
+      void dispatchThen({ kind: "upsertComment", comment: { ...comment, x, y }, prevComment: comment })
+        .finally(() => setDropped((d) => (d?.id === comment.id ? null : d)));
+    },
+    [dispatchThen]
+  );
+
   const handleUndo = useCallback(() => {
     void dispatcher.undo().then(() => onAnnotationChange?.());
   }, [dispatcher, onAnnotationChange]);
@@ -179,18 +202,58 @@ export function CommentOverlay({ annotations, viewportStore, dispatcher, onAnnot
       {/* Pin markers */}
       {markers.map((m) => {
         const replyCount = m.comment.replies?.length ?? 0;
+        const offset = dragOffset?.id === m.comment.id ? dragOffset : null;
+        const drop = dropped?.id === m.comment.id && viewport ? dropped : null;
+        const baseX = drop ? (drop.x - viewport!.originX) * viewport!.zoom : m.cssX;
+        const baseY = drop ? (drop.y - viewport!.originY) * viewport!.zoom : m.cssY;
         return (
           <div
             key={m.comment.id}
+            onPointerDown={(e) => {
+              if (e.button !== 0) return;
+              e.stopPropagation();
+              e.currentTarget.setPointerCapture(e.pointerId);
+              dragRef.current = { id: m.comment.id, sx: e.clientX, sy: e.clientY, moved: false };
+            }}
+            onPointerMove={(e) => {
+              const d = dragRef.current;
+              if (!d || d.id !== m.comment.id) return;
+              const dx = e.clientX - d.sx;
+              const dy = e.clientY - d.sy;
+              if (!d.moved && Math.hypot(dx, dy) < DRAG_THRESHOLD_PX) return;
+              d.moved = true;
+              setDragOffset({ id: d.id, dx, dy });
+            }}
+            onPointerUp={(e) => {
+              const d = dragRef.current;
+              dragRef.current = null;
+              setDragOffset(null);
+              if (!d || d.id !== m.comment.id || !d.moved || !viewport) return;
+              suppressClickRef.current = true;
+              handleMove(
+                m.comment,
+                Math.round(m.comment.x + (e.clientX - d.sx) / viewport.zoom),
+                Math.round(m.comment.y + (e.clientY - d.sy) / viewport.zoom)
+              );
+            }}
+            onPointerCancel={() => {
+              dragRef.current = null;
+              setDragOffset(null);
+            }}
             onClick={(e) => {
               e.stopPropagation();
+              if (suppressClickRef.current) {
+                suppressClickRef.current = false;
+                return;
+              }
               handlePinClick(m.comment, m.comment.x, m.comment.y);
             }}
-            title={`${m.comment.authorName}: ${m.comment.text.slice(0, 60)}${m.comment.text.length > 60 ? "…" : ""}`}
+            title={`${m.comment.authorName}: ${m.comment.text.slice(0, 60)}${m.comment.text.length > 60 ? "…" : ""}\n(drag to move)`}
             style={{
               position: "absolute",
-              left: m.cssX - COMMENT_SIZE / 2,
-              top: m.cssY - COMMENT_SIZE / 2,
+              left: baseX + (offset?.dx ?? 0) - COMMENT_SIZE / 2,
+              top: baseY + (offset?.dy ?? 0) - COMMENT_SIZE / 2,
+              touchAction: "none",
               width: COMMENT_SIZE,
               height: COMMENT_SIZE,
               borderRadius: "50%",
@@ -201,8 +264,8 @@ export function CommentOverlay({ annotations, viewportStore, dispatcher, onAnnot
               justifyContent: "center",
               fontSize: 11,
               fontWeight: 700,
-              cursor: "pointer",
-              zIndex: 10,
+              cursor: offset ? "grabbing" : "grab",
+              zIndex: offset ? 11 : 10,
               boxShadow: "0 2px 6px rgba(0,0,0,0.4)",
               transition: "transform 0.1s",
               pointerEvents: "auto",
@@ -216,8 +279,9 @@ export function CommentOverlay({ annotations, viewportStore, dispatcher, onAnnot
 
       {/* Popover — positioned near the comment pin, clamped to viewport. */}
       {selectedComment && shownComment && viewport && (() => {
-        const cssX = (selectedComment.x - viewport.originX) * viewport.zoom;
-        const cssY = (selectedComment.y - viewport.originY) * viewport.zoom;
+        // Live position, so the popover follows a moved comment (and undo).
+        const cssX = (shownComment.x - viewport.originX) * viewport.zoom;
+        const cssY = (shownComment.y - viewport.originY) * viewport.zoom;
         const popW = 360;
         const popH = 200;
         const margin = 12;
