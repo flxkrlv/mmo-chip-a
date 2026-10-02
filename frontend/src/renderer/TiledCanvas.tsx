@@ -77,6 +77,9 @@ export function TiledCanvas({
   const onCanvasClickRef = useRef(onCanvasClick);
   onCanvasClickRef.current = onCanvasClick;
 
+  // Set once `gestures` exists below; lets an in-progress drag follow any
+  // viewport change (wheel, keyboard zoom, auto-pan).
+  const viewportChangedRef = useRef<(() => void) | null>(null);
   const setViewport = useCallback(
     (v: Viewport) => {
       const clamped: Viewport = {
@@ -87,6 +90,7 @@ export function TiledCanvas({
       viewportRef.current = clamped;
       rendererRef.current?.setViewport(clamped);
       onViewportChangeRef.current?.(clamped);
+      viewportChangedRef.current?.();
     },
     [minZoom, maxZoom]
   );
@@ -161,6 +165,7 @@ export function TiledCanvas({
     minZoom,
     maxZoom
   });
+  viewportChangedRef.current = gestures.viewportChanged;
 
   return (
     <canvas

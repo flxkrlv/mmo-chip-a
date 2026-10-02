@@ -39,6 +39,10 @@ export interface DragHandler {
   onPointerUp: (e: DragEventData & { dragged: boolean }) => void;
   /** Pointer cancellation (e.g. browser-initiated capture release). */
   onCancel?: () => void;
+  /** Pan the view while the pointer is held near / past the canvas edge
+   *  (after the drag threshold), so the drag can continue off-screen. Each
+   *  pan step re-fires `onDragMove` with the new world point. */
+  autoPan?: boolean;
 }
 
 /**

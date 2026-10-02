@@ -3271,15 +3271,23 @@ function DieViewer({ dieId }: { dieId: string }) {
         }
       }
 
-      // Click on empty → marquee.
-      const startScreen = { x: e.screenPoint.x, y: e.screenPoint.y };
+      // Click on empty → marquee. The start corner is anchored in WORLD
+      // space and re-projected each move, so scrolling / zooming / edge
+      // auto-pan mid-drag stretches the rectangle instead of sliding it.
       const startWorld = { x: e.worldPoint.x, y: e.worldPoint.y };
+      const startOnScreen = () => {
+        const vp = viewportLive.get();
+        return vp
+          ? { x: (startWorld.x - vp.originX) * vp.zoom, y: (startWorld.y - vp.originY) * vp.zoom }
+          : e.screenPoint;
+      };
       const handler: DragHandler = {
+        autoPan: true,
         onDragStart: ({ screenPoint }) => {
-          marqueeLive.set(rectFromPoints(startScreen, screenPoint));
+          marqueeLive.set(rectFromPoints(startOnScreen(), screenPoint));
         },
         onDragMove: ({ screenPoint }) => {
-          marqueeLive.set(rectFromPoints(startScreen, screenPoint));
+          marqueeLive.set(rectFromPoints(startOnScreen(), screenPoint));
         },
         onPointerUp: ({ dragged, worldPoint, modifiers }) => {
           marqueeLive.set(null);
