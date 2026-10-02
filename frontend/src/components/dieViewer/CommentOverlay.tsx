@@ -200,6 +200,14 @@ export function CommentOverlay({ annotations, viewportStore, dispatcher, onAnnot
     [shownComment, dispatchThen]
   );
 
+  const handleDeleteReply = useCallback(
+    (reply: CommentReply) => {
+      if (!shownComment) return Promise.resolve();
+      return dispatchThen({ kind: "removeCommentReply", commentId: shownComment.id, reply });
+    },
+    [shownComment, dispatchThen]
+  );
+
   const handleDelete = useCallback(() => {
     if (!shownComment) return Promise.resolve();
     return dispatchThen({ kind: "removeComment", comment: shownComment });
@@ -334,6 +342,7 @@ export function CommentOverlay({ annotations, viewportStore, dispatcher, onAnnot
               onReply={handleReply}
               onEdit={handleEdit}
               onEditReply={handleEditReply}
+              onDeleteReply={handleDeleteReply}
               onDelete={handleDelete}
               onUndo={handleUndo}
               onRedo={handleRedo}

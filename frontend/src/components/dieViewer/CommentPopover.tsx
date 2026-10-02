@@ -15,6 +15,8 @@ interface Props {
   onEdit: (text: string) => Promise<void>;
   /** Replace one reply's text (undoable). */
   onEditReply: (reply: CommentReply, text: string) => Promise<void>;
+  /** Delete one reply (undoable). */
+  onDeleteReply: (reply: CommentReply) => Promise<void>;
   /** Delete the comment and its replies (undoable). */
   onDelete: () => Promise<void>;
   /** Die undo / redo, for ⌘Z / ⌘⇧Z typed into an empty input. */
@@ -22,7 +24,7 @@ interface Props {
   onRedo: () => void;
 }
 
-export function CommentPopover({ comment, onClose, onCreate, onReply, onEdit, onEditReply, onDelete, onUndo, onRedo }: Props) {
+export function CommentPopover({ comment, onClose, onCreate, onReply, onEdit, onEditReply, onDeleteReply, onDelete, onUndo, onRedo }: Props) {
   const { userId, username } = useAuth();
   const [replyText, setReplyText] = useState("");
   // For a new (unsaved) comment, we show an initial text input.
@@ -91,6 +93,17 @@ export function CommentPopover({ comment, onClose, onCreate, onReply, onEdit, on
       setSaving(false);
     }
   }, [replyEdit, comment.replies, userId, onEditReply]);
+
+  const handleDeleteReply = useCallback(async (reply: CommentReply) => {
+    if (!userId || reply.authorId !== userId) return;
+    setSaving(true);
+    try {
+      await onDeleteReply(reply);
+      setReplyEdit((e) => (e?.id === reply.id ? null : e));
+    } finally {
+      setSaving(false);
+    }
+  }, [userId, onDeleteReply]);
 
   const handleDelete = useCallback(async () => {
     if (!userId || userId !== comment.authorId) return;
@@ -352,6 +365,18 @@ export function CommentPopover({ comment, onClose, onCreate, onReply, onEdit, on
                     aria-label="Edit reply"
                   >
                     ✎
+                  </button>
+                )}
+                {userId === reply.authorId && (
+                  <button
+                    className="btn ghost"
+                    onClick={() => handleDeleteReply(reply)}
+                    disabled={saving}
+                    style={{ color: "var(--err)", flexShrink: 0, height: 18, padding: "0 4px" }}
+                    title="Delete reply"
+                    aria-label="Delete reply"
+                  >
+                    {Ic.trash}
                   </button>
                 )}
               </div>
