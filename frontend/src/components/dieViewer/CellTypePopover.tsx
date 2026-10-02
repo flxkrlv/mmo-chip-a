@@ -1,22 +1,25 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { Cell, CellType, DieAnnotations } from "shared";
 import type { LiveValue } from "../../lib/liveValue";
-import { useLiveValue } from "../../lib/liveValue";
+import { cellAnchorPoints, windowAnchorKey } from "../../lib/windowAnchor";
 import type { Viewport } from "../../renderer/types";
 import { CellTypeColorBody } from "./CellTypeColorPicker";
+import { useElementWindow } from "./useElementWindow";
 
 /**
  * Non-modal window opened by double-clicking a placed cell on the die (styled
- * like FloorplanRegionPopover, anchored at the double-click so it follows pan
- * / zoom). Reassigns that cell to another existing cell type, splits it off
- * into a fresh type (a clone of its current one, so the RE'd layers carry
- * over), or recolors its current type. Rendered inside the canvas container.
+ * like FloorplanRegionPopover; opens beside the double-click, or where it was
+ * last dragged to relative to the nearest cell corner — see useElementWindow).
+ * Reassigns that cell to another existing cell type, splits it off into a
+ * fresh type (a clone of its current one, so the RE'd layers carry over), or
+ * recolors its current type. Rendered inside the canvas container.
  *
  * Enter picks the highlighted row, ↑/↓ move, Escape / Close / clicking
  * outside closes. A color pick applies at once (undoable) and keeps the
  * window open; picking a type or splitting closes it.
  */
 export function CellTypePopover({
+  dieId,
   cell,
   annotations,
   anchor,
@@ -26,6 +29,7 @@ export function CellTypePopover({
   onSetColor,
   onClose
 }: {
+  dieId: string;
   cell: Cell;
   annotations: DieAnnotations;
   /** World point the window is anchored to. */
@@ -37,17 +41,15 @@ export function CellTypePopover({
   onSetColor: (cellType: CellType, color: string | undefined) => void;
   onClose: () => void;
 }) {
-  const viewport = useLiveValue(viewportStore);
-  const popoverRef = useRef<HTMLDivElement>(null);
+  const popoverRef = useRef<HTMLDivElement | null>(null);
   const [query, setQuery] = useState("");
   const [active, setActive] = useState(0);
-
-  // Size of the positioned canvas container (our absolute coords' frame).
-  const [bounds, setBounds] = useState({ w: window.innerWidth, h: window.innerHeight });
-  useLayoutEffect(() => {
-    const parent = popoverRef.current?.offsetParent as HTMLElement | null;
-    if (parent) setBounds({ w: parent.clientWidth, h: parent.clientHeight });
-  }, [viewport]);
+  const { windowProps } = useElementWindow({
+    anchorKey: windowAnchorKey(dieId, "cell", cell.id),
+    points: cellAnchorPoints(cell, annotations.cellTypes.find((t) => t.id === cell.cellTypeId)),
+    fallback: { ...anchor, dx: 12, dy: 12 },
+    viewportStore
+  });
 
   // Another cell opened in the same window → start over.
   useEffect(() => {
@@ -123,28 +125,21 @@ export function CellTypePopover({
     }
   };
 
-  const cssX = viewport ? (anchor.x - viewport.originX) * viewport.zoom : 0;
-  const cssY = viewport ? (anchor.y - viewport.originY) * viewport.zoom : 0;
   const popW = 300;
-  const margin = 12;
-  let left = cssX + margin;
-  let top = cssY + margin;
-  if (left + popW + 24 > bounds.w - margin) left = cssX - popW - 24 - margin;
-  left = Math.max(margin, left);
-  top = Math.max(margin, Math.min(top, bounds.h - 420));
 
   const label = { fontSize: 10, color: "#888", textTransform: "uppercase", marginBottom: 4, display: "block" } as const;
 
   return (
     <div
-      ref={popoverRef}
+      {...windowProps}
+      ref={(el) => {
+        popoverRef.current = el;
+        windowProps.ref.current = el;
+      }}
       className="dark"
       onKeyDown={onKeyDown}
       style={{
-        position: "absolute",
-        visibility: viewport ? "visible" : "hidden",
-        left,
-        top,
+        ...windowProps.style,
         zIndex: 1000,
         background: "#2a2a2e",
         border: "1px solid #444",
@@ -176,7 +171,7 @@ export function CellTypePopover({
         }}
         style={{ width: "100%", boxSizing: "border-box", marginBottom: 8 }}
       />
-      <div className="cell-type-picker-list" style={{ maxHeight: 200, marginBottom: 12 }}>
+      <div className="cell-type-picker-list" data-no-drag style={{ maxHeight: 200, marginBottom: 12 }}>
         {types.map((t, i) => (
           <div
             key={t.id}

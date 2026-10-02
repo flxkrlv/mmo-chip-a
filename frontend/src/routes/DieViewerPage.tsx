@@ -108,6 +108,7 @@ import {
 import { MultiWireOverlay } from "../components/dieViewer/MultiWireOverlay";
 import { CommentOverlay } from "../components/dieViewer/CommentOverlay";
 import { NetRenamePopover } from "../components/dieViewer/NetRenamePopover";
+import { useWindowAnchorMaintenance } from "../components/dieViewer/useElementWindow";
 import { FloorplanOverlay } from "../components/dieViewer/FloorplanOverlay";
 import { useFloorplanStore, type FloorplanDraft } from "../state/floorplan";
 import { apiPut } from "../api/client";
@@ -1271,6 +1272,8 @@ function DieViewer({ dieId }: { dieId: string }) {
   );
   const closeNetRename = useCallback(() => setNetRename(null), []);
   const closeCellTypePicker = useCallback(() => setCellTypePicker(null), []);
+  // Dragged element windows re-anchor when their anchor point is deleted.
+  useWindowAnchorMaintenance(dieId, annotations);
   const netColorOverrides = usePreferences((s) => s.netColors);
   const globalNetColor = usePreferences((s) => s.netColor);
   const customNetColorsEnabled = usePreferences((s) => s.customNetColorsEnabled);
@@ -4233,6 +4236,7 @@ function DieViewer({ dieId }: { dieId: string }) {
             const pickerCell = annotations.cells.find((c) => c.id === cellTypePicker.cellId);
             return pickerCell ? (
               <CellTypePopover
+                dieId={dieId}
                 cell={pickerCell}
                 annotations={annotations}
                 anchor={cellTypePicker.at}
@@ -4251,6 +4255,7 @@ function DieViewer({ dieId }: { dieId: string }) {
             const override = netColorOverrides[`net:${netRename.netId}`];
             return net ? (
               <NetRenamePopover
+                dieId={dieId}
                 net={net}
                 anchor={netRename.at}
                 viewportStore={viewportLive}

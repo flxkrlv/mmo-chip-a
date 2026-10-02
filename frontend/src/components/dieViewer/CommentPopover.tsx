@@ -131,13 +131,14 @@ export function CommentPopover({ comment, onClose, onCreate, onReply, onEdit, on
     <>
       {/* Backdrop */}
       <div
+        data-no-drag
         style={{ position: "fixed", inset: 0, zIndex: 999 }}
         onClick={onClose}
       />
       <div
         className="popover"
         style={{
-          position: "absolute",
+          position: "relative",
           zIndex: 1000,
           minWidth: 240,
           maxWidth: 360,

@@ -1,7 +1,8 @@
 /**
  * NetRenamePopover.tsx — Non-modal window for renaming / recoloring a net,
- * styled like FloorplanRegionPopover. Anchored at a world point (where the net was
- * double-clicked) so it follows pan / zoom; the canvas stays usable.
+ * styled like FloorplanRegionPopover. Opens beside the double-click (or where
+ * it was last dragged to, re-anchored to the nearest net node — see
+ * useElementWindow) and follows pan / zoom; the canvas stays usable.
  *
  * Name and color are a draft applied together on Save (like the floorplan
  * popover). The color is the per-user net color override (preferences), the
@@ -11,14 +12,16 @@
  * by another net shows a live inline warning and the button reads "Save anyway".
  */
 
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { AnnotationNet } from "shared";
 import type { LiveValue } from "../../lib/liveValue";
-import { useLiveValue } from "../../lib/liveValue";
+import { netAnchorPoints, windowAnchorKey } from "../../lib/windowAnchor";
 import type { Viewport } from "../../renderer/types";
 import { NetColorPickerBody } from "./NetColorPickerBody";
+import { useElementWindow } from "./useElementWindow";
 
 interface Props {
+  dieId: string;
   /** Live net (re-rendered as annotations change). */
   net: AnnotationNet;
   /** World point the window is anchored to. */
@@ -41,6 +44,7 @@ interface Props {
 }
 
 export function NetRenamePopover({
+  dieId,
   net,
   anchor,
   viewportStore,
@@ -52,19 +56,17 @@ export function NetRenamePopover({
   onSave,
   onClose
 }: Props) {
-  const viewport = useLiveValue(viewportStore);
-  const popoverRef = useRef<HTMLDivElement>(null);
+  const popoverRef = useRef<HTMLDivElement | null>(null);
+  const { windowProps } = useElementWindow({
+    anchorKey: windowAnchorKey(dieId, "net", net.id),
+    points: netAnchorPoints(net),
+    fallback: { ...anchor, dx: 12, dy: 12 },
+    viewportStore
+  });
   const [name, setName] = useState(net.name);
   const [saving, setSaving] = useState(false);
   // Picked color draft: undefined = untouched, null = reset to default.
   const [colorDraft, setColorDraft] = useState<string | null | undefined>(undefined);
-  // Size of the positioned canvas container we're rendered in (canvas CSS
-  // coords = our absolute coords), used to keep the window on screen.
-  const [bounds, setBounds] = useState({ w: window.innerWidth, h: window.innerHeight });
-  useLayoutEffect(() => {
-    const parent = popoverRef.current?.offsetParent as HTMLElement | null;
-    if (parent) setBounds({ w: parent.clientWidth, h: parent.clientHeight });
-  }, [viewport]);
 
   // Another net opened in the same window → start over with its name.
   useEffect(() => {
@@ -104,24 +106,17 @@ export function NetRenamePopover({
     };
   }, [onClose]);
 
-  const cssX = viewport ? (anchor.x - viewport.originX) * viewport.zoom : 0;
-  const cssY = viewport ? (anchor.y - viewport.originY) * viewport.zoom : 0;
   const popW = 260;
-  const margin = 12;
-  let left = cssX + margin;
-  let top = cssY + margin;
-  if (left + popW + 24 > bounds.w - margin) left = cssX - popW - 24 - margin;
-  left = Math.max(margin, left);
-  top = Math.max(margin, Math.min(top, bounds.h - 150));
 
   return (
     <div
-      ref={popoverRef}
+      {...windowProps}
+      ref={(el) => {
+        popoverRef.current = el;
+        windowProps.ref.current = el;
+      }}
       style={{
-        position: "absolute",
-        visibility: viewport ? "visible" : "hidden",
-        left,
-        top,
+        ...windowProps.style,
         zIndex: 1000,
         background: "#2a2a2e",
         border: "1px solid #444",

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { CommentAnnotation, CommentReply, DieAnnotations } from "shared";
 import type { LiveValue } from "../../lib/liveValue";
 import { useLiveValue } from "../../lib/liveValue";
@@ -7,6 +7,8 @@ import { uuid } from "../../lib/uuid";
 import type { ActionDispatcher } from "../../api/actions";
 import { CommentPopover } from "./CommentPopover";
 import type { Viewport } from "../../renderer/types";
+import { commentAnchorPoints, windowAnchorKey } from "../../lib/windowAnchor";
+import { useElementWindow } from "./useElementWindow";
 
 interface Props {
   annotations: DieAnnotations | undefined;
@@ -36,7 +38,7 @@ const DRAG_THRESHOLD_PX = 4;
  * Renders comment pin markers on the canvas + popover on click.
  * Handles adding new comments via a simple prompt when comment tool is active.
  */
-export function CommentOverlay({ annotations, viewportStore, dispatcher, onAnnotationChange, pendingNewComment, onConsumePendingComment }: Props) {
+export function CommentOverlay({ annotations, viewportStore, dieId, dispatcher, onAnnotationChange, pendingNewComment, onConsumePendingComment }: Props) {
   const viewport = useLiveValue(viewportStore);
   const { userId, username } = useAuth();
   const [selectedComment, setSelectedComment] = useState<{
@@ -310,46 +312,50 @@ export function CommentOverlay({ annotations, viewportStore, dispatcher, onAnnot
         );
       })}
 
-      {/* Popover — positioned near the comment pin, clamped to viewport. */}
-      {selectedComment && shownComment && viewport && (() => {
-        // Live position, so the popover follows a moved comment (and undo).
-        const cssX = (shownComment.x - viewport.originX) * viewport.zoom;
-        const cssY = (shownComment.y - viewport.originY) * viewport.zoom;
-        const popW = 360;
-        const popH = 200;
-        const margin = 12;
-        // Default: below and to the right of the pin.
-        let left = cssX + margin;
-        let top = cssY + margin;
-        // Clamp right edge
-        if (left + popW > window.innerWidth - margin) {
-          left = cssX - popW - margin;
-        }
-        // Clamp bottom edge
-        if (top + popH > window.innerHeight - margin) {
-          top = window.innerHeight - popH - margin;
-        }
-        // Clamp left/top
-        left = Math.max(margin, left);
-        top = Math.max(margin, top);
-        return (
-          <div style={{ position: "fixed", left, top, zIndex: 1000 }}>
-            <CommentPopover
-              key={shownComment.id}
-              comment={shownComment}
-              onClose={handlePopoverClose}
-              onCreate={handleCreate}
-              onReply={handleReply}
-              onEdit={handleEdit}
-              onEditReply={handleEditReply}
-              onDeleteReply={handleDeleteReply}
-              onDelete={handleDelete}
-              onUndo={handleUndo}
-              onRedo={handleRedo}
-            />
-          </div>
-        );
-      })()}
+      {/* Popover — beside the pin, or where it was last dragged to. */}
+      {selectedComment && shownComment && (
+        <CommentWindow dieId={dieId} comment={shownComment} viewportStore={viewportStore}>
+          <CommentPopover
+            key={shownComment.id}
+            comment={shownComment}
+            onClose={handlePopoverClose}
+            onCreate={handleCreate}
+            onReply={handleReply}
+            onEdit={handleEdit}
+            onEditReply={handleEditReply}
+            onDeleteReply={handleDeleteReply}
+            onDelete={handleDelete}
+            onUndo={handleUndo}
+            onRedo={handleRedo}
+          />
+        </CommentWindow>
+      )}
     </>
+  );
+}
+
+/** Draggable frame of the comment popover: anchored to the comment position
+ *  (it has no other geometry), reopening where it was last dropped. */
+function CommentWindow({
+  dieId,
+  comment,
+  viewportStore,
+  children
+}: {
+  dieId: string;
+  comment: CommentAnnotation;
+  viewportStore: LiveValue<Viewport | null>;
+  children: ReactNode;
+}) {
+  const { windowProps } = useElementWindow({
+    anchorKey: windowAnchorKey(dieId, "comment", comment.id),
+    points: commentAnchorPoints(comment),
+    fallback: { x: comment.x, y: comment.y, dx: 12, dy: 12 },
+    viewportStore
+  });
+  return (
+    <div {...windowProps} style={{ ...windowProps.style, zIndex: 1000 }}>
+      {children}
+    </div>
   );
 }

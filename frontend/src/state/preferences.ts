@@ -13,6 +13,7 @@ import {
   NET_NODE_RADIUS_MULT
 } from "../renderer/annotations/style";
 import type { Viewport } from "../renderer/types";
+import type { WindowAnchor } from "../lib/windowAnchor";
 import type { InspectorTab } from "./dieViewer";
 import {
   ANNOTATION_KIND_VALUES,
@@ -52,6 +53,9 @@ interface PreferencesState {
   cellSnapToGuides: boolean;
   /** Per-net color overrides, keyed by `net:<netId>`. Absent = use `netColor`. */
   netColors: Record<string, string>;
+  /** Where each dragged element window (net / cell / floorplan / comment)
+   *  reopens, keyed by `windowAnchorKey(dieId, kind, id)`. */
+  windowAnchors: Record<string, WindowAnchor>;
   /** When true, per-net color overrides (`netColors`) render on the canvas.
    *  When false, they're kept (nothing is lost) but every net falls back to
    *  its per-conductor-layer color, so the die reads by metal/silicon type
@@ -287,6 +291,8 @@ interface PreferencesActions {
   /** Override color for several nets at once (multi-select bulk assign).
    *  null = clear all of them back to the global/layer default. */
   setNetColorsForIds: (netIds: string[], color: string | null) => void;
+  /** Store (or with `null`, forget) an element window's placement. */
+  setWindowAnchor: (key: string, anchor: WindowAnchor | null) => void;
   /** Show/hide one net (keyed by `net:<netId>`), independent of the others. */
   setNetHidden: (netId: string, hidden: boolean) => void;
   /** Clear all individual net hidden overrides (back to "all visible"). Used
@@ -426,6 +432,7 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
         netWidthByDie: {},
         netColor: NET_COLOR,
         netColors: {},
+        windowAnchors: {},
         hiddenNetIds: {},
         hiddenCellTypeIds: {},
         hiddenFloorplanTypeNames: {},
@@ -535,6 +542,15 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
           set({ netNodeJunctionsOnly: junctionsOnly }),
         setNetNodeJunctionCross: (cross) => set({ netNodeJunctionCross: cross }),
         setViaColor: (color) => set({ viaColor: color }),
+        setWindowAnchor: (key, anchor) =>
+          set((state) => {
+            if (anchor === null) {
+              if (!(key in state.windowAnchors)) return state;
+              const { [key]: _, ...rest } = state.windowAnchors;
+              return { windowAnchors: rest };
+            }
+            return { windowAnchors: { ...state.windowAnchors, [key]: anchor } };
+          }),
         setNetColorOverride: (netId, color) =>
           set((state) => {
             if (color === null || color === state.netColor) {
@@ -823,6 +839,7 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
           reLayerHidden: state.reLayerHidden,
           reLayerSelectable: state.reLayerSelectable,
           netColors: state.netColors,
+          windowAnchors: state.windowAnchors,
           hiddenNetIds: state.hiddenNetIds,
           hiddenCellTypeIds: state.hiddenCellTypeIds,
           hiddenFloorplanTypeNames: state.hiddenFloorplanTypeNames,

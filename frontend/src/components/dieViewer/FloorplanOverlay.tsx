@@ -405,7 +405,7 @@ export function FloorplanOverlay({
           region={selectedRegion}
           dieId={dieId}
           dispatcher={dispatcher}
-          viewport={viewport}
+          viewportStore={viewportStore}
           annotations={annotations}
           onClose={handlePopoverClose}
           onSaved={onAnnotationChange}

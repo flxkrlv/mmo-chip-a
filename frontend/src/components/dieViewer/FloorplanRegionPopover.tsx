@@ -18,13 +18,16 @@ import {
   resolveGlobalPortAliases,
 } from "../../lib/export/hierarchical";
 import type { Viewport } from "../../renderer/types";
+import type { LiveValue } from "../../lib/liveValue";
+import { floorplanAnchorPoints, windowAnchorKey } from "../../lib/windowAnchor";
+import { useElementWindow } from "./useElementWindow";
 
 interface Props {
   region: FloorplanRegion;
   dieId: string;
   /** Saves / deletes / reserves go through it, so they are undoable. */
   dispatcher: ActionDispatcher;
-  viewport: Viewport;
+  viewportStore: LiveValue<Viewport | null>;
   annotations?: DieAnnotations;
   onClose: () => void;
   onSaved?: () => void;
@@ -86,8 +89,9 @@ function detectRegionPorts(
 
 export function FloorplanRegionPopover({
   region,
+  dieId,
   dispatcher,
-  viewport,
+  viewportStore,
   annotations,
   onClose,
   onSaved,
@@ -109,7 +113,18 @@ export function FloorplanRegionPopover({
   const [saveWarnings, setSaveWarnings] = useState<string[]>([]);
   const selectRegion = useFloorplanStore((s) => s.selectRegion);
   const toast = useToast();
-  const popoverRef = useRef<HTMLDivElement>(null);
+  const popoverRef = useRef<HTMLDivElement | null>(null);
+  // Draggable; reopens where last dropped, relative to the nearest vertex
+  // (polygon) or corner (rect). Before the first drag: beside vertex 0.
+  const anchorPoints = floorplanAnchorPoints(region);
+  const firstP = region.geometry[0] || { x: 0, y: 0 };
+  const { windowProps } = useElementWindow({
+    anchorKey: windowAnchorKey(dieId, "floorplan", region.id),
+    points: anchorPoints.points,
+    sig: anchorPoints.sig,
+    fallback: { ...firstP, dx: 12, dy: -100 },
+    viewportStore
+  });
 
   // ── Port detection (B3) ───────────────────────────────────
   const detectedPorts = useMemo(
@@ -373,28 +388,18 @@ export function FloorplanRegionPopover({
     }
   }, [region, deleting, dispatcher, selectRegion, onSaved, toast]);
 
-  // Compute popover position from region's first point
-  const firstP = region.geometry[0] || { x: 0, y: 0 };
-  const cssX = (firstP.x - viewport.originX) * viewport.zoom;
-  const cssY = (firstP.y - viewport.originY) * viewport.zoom;
   const popW = 280;
-  const margin = 12;
-  let left = cssX + margin;
-  let top = cssY - 100;
-  if (left + popW > window.innerWidth - margin) {
-    left = cssX - popW - margin;
-  }
-  left = Math.max(margin, left);
-  top = Math.max(margin, top);
 
   return (
     <div
-      ref={popoverRef}
+      {...windowProps}
+      ref={(el) => {
+        popoverRef.current = el;
+        windowProps.ref.current = el;
+      }}
       data-fp-popover
       style={{
-        position: "fixed",
-        left,
-        top,
+        ...windowProps.style,
         zIndex: 1000,
         background: "#2a2a2e",
         border: "1px solid #444",
