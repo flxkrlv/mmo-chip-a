@@ -1,6 +1,7 @@
 import { Fragment, type ReactNode } from "react";
 import type { CellType, LayerType } from "shared";
 import { Ic } from "../../icons";
+import { CELL_RE_HOTKEYS, hotkeyFor } from "../../lib/hotkeys";
 import { TOOL_LAYERS, type ReToolKind, useCellREStore } from "../../state/cellRE";
 import { usePreferences } from "../../state/preferences";
 import { BigToolDivider, Tool } from "../dieViewer/DieViewerUI";
@@ -32,17 +33,17 @@ interface ToolGroup {
 const TOOL_GROUPS: ToolGroup[] = [
   {
     items: [
-      { kind: "select", icon: Ic.cursor, label: "Select / marquee - V" },
-      { kind: "pan", icon: Ic.pan, label: "Pan / zoom - hold Space or middle-drag" }
+      { kind: "select", icon: Ic.cursor, label: "Select / marquee" },
+      { kind: "pan", icon: Ic.pan, label: "Pan / zoom — hold Space or middle-drag" }
     ]
   },
   {
     label: "annotations",
     items: [
-      { kind: "rect", icon: Ic.cellRect, label: "Draw layer rectangle — R" },
-      { kind: "polygon", icon: Ic.viaPolygon, label: "Draw layer polygon — P" },
-      { kind: "point", icon: Ic.viaPoint, label: "Place via/contact point — O" },
-      { kind: "polyline", icon: Ic.wire, label: "Draw polyline (resistor) - L" }
+      { kind: "rect", icon: Ic.cellRect, label: "Draw layer rectangle" },
+      { kind: "polygon", icon: Ic.viaPolygon, label: "Draw layer polygon" },
+      { kind: "point", icon: Ic.viaPoint, label: "Place via/contact point" },
+      { kind: "polyline", icon: Ic.wire, label: "Draw polyline (resistor)" }
     ]
   }
 ];
@@ -188,6 +189,7 @@ export function CellREToolbar({
               key={item.kind}
               icon={item.icon}
               label={item.label}
+              shortcut={hotkeyFor(CELL_RE_HOTKEYS, item.kind)}
               on={activeTool === item.kind}
               onClick={() => setActiveTool(item.kind)}
             />

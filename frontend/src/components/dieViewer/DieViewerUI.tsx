@@ -1,6 +1,7 @@
 import type { DieAnnotations } from "shared";
 import type { Rect } from "../../lib/geometry";
 import { formatPercent } from "../../lib/format";
+import { withShortcut } from "../../lib/hotkeys";
 import { useLiveValue, type LiveValue } from "../../lib/liveValue";
 import type { Viewport } from "../../renderer/types";
 
@@ -172,12 +173,15 @@ export function Tool({
   icon,
   on,
   label,
+  shortcut,
   todo,
   onClick
 }: {
   icon: React.ReactNode;
   on?: boolean;
   label?: string;
+  /** Keyboard shortcut appended to the tooltip, e.g. "W". */
+  shortcut?: string;
   /** Not implemented yet — renders disabled with a "(coming soon)" hint. */
   todo?: boolean;
   onClick?: () => void;
@@ -186,7 +190,7 @@ export function Tool({
     <button
       type="button"
       className={"tool" + (on ? " on" : "") + (todo ? " todo" : "")}
-      title={todo ? `${label ?? ""} (coming soon)` : label}
+      title={todo ? `${label ?? ""} (coming soon)` : withShortcut(label ?? "", shortcut) || undefined}
       disabled={todo}
       onClick={todo ? undefined : onClick}
     >

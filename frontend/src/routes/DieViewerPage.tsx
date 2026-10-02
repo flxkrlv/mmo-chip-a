@@ -4013,14 +4013,14 @@ function DieViewer({ dieId }: { dieId: string }) {
               style={{ width: 1, height: 18, background: "var(--l2)", margin: "0 2px" }}
             />
 
-            <button className="btn ghost" title="Zoom out" onClick={zoomOut}>
+            <button className="btn ghost" title="Zoom out (−)" onClick={zoomOut}>
               {Ic.zoomOut}
             </button>
-            <button className="btn ghost" title="Zoom in" onClick={zoomIn}>
+            <button className="btn ghost" title="Zoom in (+)" onClick={zoomIn}>
               {Ic.zoomIn}
             </button>
             <ZoomChip store={viewportLive} />
-            <button className="btn ghost" title="Fit to screen" onClick={fitToScreen}>
+            <button className="btn ghost" title="Fit to screen (F)" onClick={fitToScreen}>
               {Ic.fit}
             </button>
             <button className="btn ghost" title="100%" onClick={oneToOne}>

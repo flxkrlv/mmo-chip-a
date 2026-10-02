@@ -1,6 +1,7 @@
 import { useCallback, useState } from "react";
 import { NavLink, useNavigate } from "react-router-dom";
 import { BrandMark, Ic } from "../../icons";
+import { withShortcut } from "../../lib/hotkeys";
 import { useAuth } from "../../state/auth";
 import { useSession } from "../../state/session";
 import { OnlineUsersPanel } from "./OnlineUsersPanel";
@@ -9,13 +10,14 @@ import { OnlineUsersPanel } from "./OnlineUsersPanel";
 //   "none"  — never (Library is the chooser)
 //   "param" — path param (/die/:dieId)
 //   "query" — ?die=<id> (other phases; harmless if unused yet)
+// `hotkey` mirrors NAV_HOTKEYS (handled in App.tsx) for the tab tooltip.
 const PHASE_TABS = [
   { path: "/", label: "Library", end: true, die: "none" as const },
-  { path: "/die", label: "Die viewer", die: "param" as const },
-  { path: "/merge", label: "Merge cells", die: "query" as const },
-  { path: "/re", label: "RE cell", die: "query" as const },
-  { path: "/code", label: "Code", die: "query" as const },
-  { path: "/analog-netlist", label: "Netlist (Analog)", die: "query" as const },
+  { path: "/die", label: "Die viewer", die: "param" as const, hotkey: "Shift+1" },
+  { path: "/merge", label: "Merge cells", die: "query" as const, hotkey: "Shift+2" },
+  { path: "/re", label: "RE cell", die: "query" as const, hotkey: "Shift+3" },
+  { path: "/code", label: "Code", die: "query" as const, hotkey: "Shift+4" },
+  { path: "/analog-netlist", label: "Netlist (Analog)", die: "query" as const, hotkey: "Shift+5" },
   { path: "/spice-sim", label: "Spice Sim", die: "query" as const },
   { path: "/ic-package", label: "Pin planner", die: "query" as const }
 ];
@@ -81,6 +83,7 @@ export function TopBar({ breadcrumb, meta, savedAgo, onUndo, onRedo, canUndo, ca
             key={t.path}
             to={tabTarget(t, dieId)}
             end={t.end}
+            title={"hotkey" in t ? withShortcut(t.label, t.hotkey) : undefined}
             className={({ isActive }) => "tab" + (isActive ? " on" : "")}
           >
             {t.label}
@@ -112,7 +115,7 @@ export function TopBar({ breadcrumb, meta, savedAgo, onUndo, onRedo, canUndo, ca
         <>
           <button
             className="btn ghost"
-            title="Undo"
+            title="Undo (Ctrl+Z)"
             onClick={onUndo}
             disabled={!onUndo || canUndo === false}
           >
@@ -120,7 +123,7 @@ export function TopBar({ breadcrumb, meta, savedAgo, onUndo, onRedo, canUndo, ca
           </button>
           <button
             className="btn ghost"
-            title="Redo"
+            title="Redo (Ctrl+Shift+Z)"
             onClick={onRedo}
             disabled={!onRedo || canRedo === false}
           >

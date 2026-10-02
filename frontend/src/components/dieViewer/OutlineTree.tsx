@@ -258,7 +258,9 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
   const isOpen = (k: AnnotationKind) => expandedSections.includes(k);
   const visibilityFor = (k: AnnotationKind) => ({
     visible: !hiddenKinds.includes(k),
-    onToggle: () => toggleKindVisibility(k)
+    onToggle: () => toggleKindVisibility(k),
+    // Space+C / N / H in useOverlayHotkeys toggle these sections' eyes.
+    shortcut: ({ cell: "Space+C", net: "Space+N", floorplan: "Space+H" } as Partial<Record<AnnotationKind, string>>)[k]
   });
 
   // "ML Regions" is one collapsible parent over both ML kinds. Its eye toggles
@@ -861,7 +863,8 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
               controls={<BaseImageSettings id={img.id} />}
               visibility={{
                 visible,
-                onToggle: () => setBaseImageHidden(img.id, visible)
+                onToggle: () => setBaseImageHidden(img.id, visible),
+                shortcut: "Space+B"
               }}
             />
           );
@@ -967,7 +970,9 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
               visibility={{
                 visible: !layer.hidden,
                 onToggle: () =>
-                  setLayerHidden(layer.id, !layer.hidden)
+                  setLayerHidden(layer.id, !layer.hidden),
+                // Space+1..8 solos layer #1..#8 (repeat to hide); [ / ] step through.
+                shortcut: index < 8 ? `Space+${index + 1} shows only this layer` : undefined
               }}
             />
           ))}

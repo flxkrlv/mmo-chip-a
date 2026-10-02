@@ -1,5 +1,6 @@
 import { Fragment, type ReactNode } from "react";
 import { Ic } from "../../icons";
+import { DIE_VIEWER_HOTKEYS, hotkeyFor, withShortcut } from "../../lib/hotkeys";
 import { useDieViewerStore, type ToolKind } from "../../state/dieViewer";
 import { useFloorplanStore } from "../../state/floorplan";
 import { usePreferences } from "../../state/preferences";
@@ -108,6 +109,9 @@ export function DieToolbar({
                 key={item.kind}
                 icon={item.icon}
                 label={item.label}
+                // "f" is bound to "pan" in the registry but actually fits the
+                // view; the pan label already explains Space / middle-drag.
+                shortcut={item.kind === "pan" ? undefined : hotkeyFor(DIE_VIEWER_HOTKEYS, item.kind)}
                 on={activeTool === item.kind}
                 onClick={() => setActiveTool(item.kind)}
               />
@@ -295,7 +299,7 @@ function WireOptions({ hint }: { hint?: string }) {
       <span className="u" style={{ fontSize: 10 }}>
         Layer
       </span>
-      <WireLayerSelect metals={metals} value={activeMetalId != null ? metals.find(m => m.id === activeMetalId)?.layer ?? null : null} onChange={(layer) => { const m = metals.find(m => m.layer === layer); setActiveMetalId(m?.id ?? null); }} />
+      <WireLayerSelect metals={metals} showHotkeys value={activeMetalId != null ? metals.find(m => m.id === activeMetalId)?.layer ?? null : null} onChange={(layer) => { const m = metals.find(m => m.layer === layer); setActiveMetalId(m?.id ?? null); }} />
       <label
         className="check"
         title="Snap click positions to the nearest via (ML or manually placed)"
@@ -373,12 +377,13 @@ function ViaOptions() {
         Via layer
       </span>
       <span className="row" style={{ gap: 4 }}>
-        {vias.map((v) => (
+        {vias.map((v, i) => (
           <button
             key={v.id}
             type="button"
             className={"chip" + (activeViaId === v.id ? " on" : "")}
             style={{ cursor: "pointer" }}
+            title={withShortcut(v.id, i < 9 ? `Alt+${i + 1}` : undefined)}
             onClick={() => setActiveViaId(v.id)}
           >
             {v.id.toLowerCase()}

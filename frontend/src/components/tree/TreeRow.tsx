@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { ReactNode, DragEventHandler } from "react";
 import { Ic } from "../../icons";
+import { withShortcut } from "../../lib/hotkeys";
 
 export type ExpandState = "open" | "closed" | "leaf";
 
@@ -30,8 +31,9 @@ export type TreeRowProps = {
   onDragEnd?: DragEventHandler<HTMLDivElement>;
   /** Render an eye / eye-off button at the right end; click toggles visibility.
    *  Optional `onLongPress` fires after holding the eye for LONG_PRESS_MS
-   *  (the click that follows the release is swallowed, so it doesn't toggle). */
-  visibility?: { visible: boolean; onToggle: () => void; onLongPress?: () => void };
+   *  (the click that follows the release is swallowed, so it doesn't toggle).
+   *  Optional `shortcut` names the keyboard equivalent in the eye's tooltip. */
+  visibility?: { visible: boolean; onToggle: () => void; onLongPress?: () => void; shortcut?: string };
   /** Render a lock / unlock button next to the eye; click toggles selectability. */
   selectable?: { selectable: boolean; onToggle: () => void };
   /** Extra controls (small action buttons) rendered before the visibility eye. */
@@ -202,7 +204,8 @@ export function TreeRow({
 function EyeButton({
   visible,
   onToggle,
-  onLongPress
+  onLongPress,
+  shortcut
 }: NonNullable<TreeRowProps["visibility"]>) {
   const pressTimer = useRef<number | null>(null);
   const ringTimer = useRef<number | null>(null);
@@ -246,6 +249,7 @@ function EyeButton({
       className="trow-eye"
       aria-label={visible ? "hide" : "show"}
       aria-pressed={!visible}
+      title={shortcut ? withShortcut(visible ? "Hide" : "Show", shortcut) : undefined}
       onPointerEnter={
         onLongPress
           ? (e) => {

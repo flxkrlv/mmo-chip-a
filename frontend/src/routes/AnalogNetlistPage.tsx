@@ -466,7 +466,7 @@ function AnalogNetlist({ dieId }: { dieId: string }) {
                 className={"btn sm" + (rightView === "code" ? " on" : "")}
                 onClick={() => setRightView("code")}
                 style={{ fontSize: 10, fontWeight: 600 }}
-                title="Code view [G]"
+                title="Code view (Alt+1 · G cycles Code / Graph / Schematic)"
               >
                 Code
               </button>
@@ -475,7 +475,7 @@ function AnalogNetlist({ dieId }: { dieId: string }) {
                 className={"btn sm" + (rightView === "graph" ? " on" : "")}
                 onClick={() => setRightView("graph")}
                 style={{ fontSize: 10, fontWeight: 600 }}
-                title="Graph view [G]"
+                title="Graph view (Alt+2 · G cycles Code / Graph / Schematic)"
               >
                 Graph
               </button>
@@ -484,7 +484,7 @@ function AnalogNetlist({ dieId }: { dieId: string }) {
                 className={"btn sm" + (rightView === "schematic" ? " on" : "")}
                 onClick={() => setRightView("schematic")}
                 style={{ fontSize: 10, fontWeight: 600 }}
-                title="Schematic view"
+                title="Schematic view (Alt+3 · G cycles Code / Graph / Schematic)"
               >
                 Schematic
               </button>
@@ -493,7 +493,7 @@ function AnalogNetlist({ dieId }: { dieId: string }) {
                 className={"btn sm" + (rightView === "lvs" ? " on" : "")}
                 onClick={() => setRightView("lvs")}
                 style={{ fontSize: 10, fontWeight: 600 }}
-                title="LVS compare [Alt+4]"
+                title="LVS compare (Alt+4)"
               >
                 LVS
               </button>
@@ -527,7 +527,7 @@ function AnalogNetlist({ dieId }: { dieId: string }) {
                   cursor: "pointer",
                   userSelect: "none",
                 }}
-                title="Partition by floorplan regions → .SUBCKT per region [H]"
+                title="Partition by floorplan regions → .SUBCKT per region (H)"
               >
                 <input
                   type="checkbox"
@@ -600,7 +600,7 @@ function AnalogNetlist({ dieId }: { dieId: string }) {
                 className={"btn sm" + (resistorFormat === "ohms" ? " on" : "")}
                 onClick={() => setResistorFormat("ohms")}
                 style={{ fontSize: 10, fontWeight: 600 }}
-                title="Resistor: resolved ohms value [R]"
+                title="Resistor: resolved ohms value (R toggles)"
               >
                 R=Ω
               </button>
@@ -609,7 +609,7 @@ function AnalogNetlist({ dieId }: { dieId: string }) {
                 className={"btn sm" + (resistorFormat === "sqRs" ? " on" : "")}
                 onClick={() => setResistorFormat("sqRs")}
                 style={{ fontSize: 10, fontWeight: 600 }}
-                title="Resistor: squares × sheetR expression [R]"
+                title="Resistor: squares × sheetR expression (R toggles)"
               >
                 R=sq·Rs
               </button>
@@ -622,7 +622,7 @@ function AnalogNetlist({ dieId }: { dieId: string }) {
                 className={"btn sm" + (matchEnabled ? " on" : "")}
                 onClick={() => setMatchEnabled((v) => !v)}
                 style={{ fontSize: 10, fontWeight: 600 }}
-                title="Match & average similar device geometry [M]"
+                title="Match & average similar device geometry (M)"
               >
                 Match
               </button>
