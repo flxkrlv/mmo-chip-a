@@ -67,7 +67,7 @@ import { AnalogDeviceHighlights } from "../components/dieViewer/AnalogDeviceHigh
 import { SubcircuitHighlightsOverlay } from "../components/dieViewer/SubcircuitHighlightsOverlay";
 import { DeviceInspector } from "../components/dieViewer/DeviceInspector";
 import { DeviceInstancePanel } from "../components/dieViewer/DeviceInstancePanel";
-import { CellTypePickerDialog } from "../components/dieViewer/CellTypePickerDialog";
+import { CellTypePopover } from "../components/dieViewer/CellTypePopover";
 import { retypeCell } from "../lib/cellFootprint";
 import {
   cellSideAt,
@@ -107,6 +107,7 @@ import {
 } from "../components/dieViewer/useMultiWireTool";
 import { MultiWireOverlay } from "../components/dieViewer/MultiWireOverlay";
 import { CommentOverlay } from "../components/dieViewer/CommentOverlay";
+import { NetRenamePopover } from "../components/dieViewer/NetRenamePopover";
 import { FloorplanOverlay } from "../components/dieViewer/FloorplanOverlay";
 import { useFloorplanStore, type FloorplanDraft } from "../state/floorplan";
 import { apiPut } from "../api/client";
@@ -416,7 +417,8 @@ function DieViewer({ dieId }: { dieId: string }) {
   // Resize cursor while hovering a side of the single selected cell.
   const [cellResizeCursor, setCellResizeCursor] = useState<string | null>(null);
   // Cell whose type is being changed via the double-click picker.
-  const [cellTypePickerCellId, setCellTypePickerCellId] = useState<string | null>(null);
+  // Double-clicked cell → non-modal CellTypePopover anchored at the click.
+  const [cellTypePicker, setCellTypePicker] = useState<{ cellId: string; at: { x: number; y: number } } | null>(null);
   const [contextMenu, setContextMenu] = useState<DieContextMenuState | null>(
     null
   );
@@ -1234,39 +1236,47 @@ function DieViewer({ dieId }: { dieId: string }) {
     containerRef
   });
 
-  // Double-click on a net (select tool) → rename it in a prompt. Undoable.
+  // Double-click on a net (select tool) → non-modal rename window anchored
+  // at the cursor (NetRenamePopover). The rename itself is undoable.
+  const [netRename, setNetRename] = useState<{ netId: string; at: { x: number; y: number } } | null>(null);
   const renameNet = useCallback(
-    async (netId: string) => {
-      const original = annotationsRef.current?.nets.find((n) => n.id === netId);
-      if (!original) return;
-      const input = await dialog.prompt("Rename net:", original.name, "Net");
-      if (input === null) return;
-      const name = input.trim();
-      // Re-read: the net may have changed while the prompt was open.
-      const current = annotationsRef.current?.nets.find((n) => n.id === netId);
-      if (!current || !name || name === current.name) return;
-      const clash = annotationsRef.current?.nets.some((n) => n.id !== netId && n.name === name);
-      if (
-        clash &&
-        !(await dialog.confirm(
-          `Another net is already named "${name}". Netlists and exports identify nets by name, so the two may be treated as one. Use this name anyway?`,
-          "Duplicate net name"
-        ))
-      ) {
-        return;
-      }
-      const ok = await dispatcherRef.current.dispatch({
-        kind: "upsertNet",
-        net: { ...current, name },
-        prevNet: current
-      });
-      if (!ok) toast.error("Failed to rename net");
+    (netId: string) => {
+      if (!annotationsRef.current?.nets.some((n) => n.id === netId)) return;
+      const at = cursorLive.get() ?? { x: 0, y: 0 };
+      setNetRename({ netId, at: { x: at.x, y: at.y } });
     },
-    [dialog, toast]
+    [cursorLive]
   );
+  const commitNetRename = useCallback(
+    async (netId: string, name: string, color: string | null | undefined) => {
+      // Re-read: the net may have changed while the window was open.
+      const current = annotationsRef.current?.nets.find((n) => n.id === netId);
+      if (!current) return false;
+      if (name !== current.name) {
+        const ok = await dispatcherRef.current.dispatch({
+          kind: "upsertNet",
+          net: { ...current, name },
+          prevNet: current
+        });
+        if (!ok) {
+          toast.error("Failed to rename net");
+          return false;
+        }
+      }
+      // Per-user color override (preferences, same as the outline swatch).
+      if (color !== undefined) usePreferences.getState().setNetColorsForIds([`net:${netId}`], color);
+      return true;
+    },
+    [toast]
+  );
+  const closeNetRename = useCallback(() => setNetRename(null), []);
+  const closeCellTypePicker = useCallback(() => setCellTypePicker(null), []);
+  const netColorOverrides = usePreferences((s) => s.netColors);
+  const globalNetColor = usePreferences((s) => s.netColor);
+  const customNetColorsEnabled = usePreferences((s) => s.customNetColorsEnabled);
 
   const { selectFromHit, clearSelectionFromEmpty, selectFromMarquee } =
-    useCanvasSelection({ onNetDoubleClick: (id) => void renameNet(id) });
+    useCanvasSelection({ onNetDoubleClick: renameNet });
 
   // Snap-to-vias plumbing (wire + multi-wire). Combines the user's manually-
   // placed vias (`annotations.annotations` of class point/irregular via, with
@@ -2196,7 +2206,7 @@ function DieViewer({ dieId }: { dieId: string }) {
 
   const reassignCellType = useCallback(
     (cellId: string, cellType: CellType) => {
-      setCellTypePickerCellId(null);
+      setCellTypePicker(null);
       const cell = annotationsRef.current?.cells.find((c) => c.id === cellId);
       if (!cell || cell.cellTypeId === cellType.id) return;
       void dispatcher.dispatch({
@@ -2215,7 +2225,7 @@ function DieViewer({ dieId }: { dieId: string }) {
   // new id, and move just this instance onto it.
   const splitCellType = useCallback(
     (cellId: string, name: string) => {
-      setCellTypePickerCellId(null);
+      setCellTypePicker(null);
       const ann = annotationsRef.current;
       const cell = ann?.cells.find((c) => c.id === cellId);
       const old = cell && ann?.cellTypes.find((t) => t.id === cell.cellTypeId);
@@ -3768,7 +3778,7 @@ function DieViewer({ dieId }: { dieId: string }) {
         }
       }
       if (cellId && cellTypeId && !(event.ctrlKey || event.metaKey)) {
-        setCellTypePickerCellId(cellId);
+        setCellTypePicker({ cellId, at: { x: world.x, y: world.y } });
       } else if (cellId && cellTypeId) {
         navigate(`/re?die=${encodeURIComponent(dieId)}&type=${encodeURIComponent(cellTypeId)}&cell=${encodeURIComponent(cellId)}`);
       }
@@ -4219,6 +4229,41 @@ function DieViewer({ dieId }: { dieId: string }) {
               viewportStore={viewportLive}
             />
           )}
+          {cellTypePicker && annotations && (() => {
+            const pickerCell = annotations.cells.find((c) => c.id === cellTypePicker.cellId);
+            return pickerCell ? (
+              <CellTypePopover
+                cell={pickerCell}
+                annotations={annotations}
+                anchor={cellTypePicker.at}
+                viewportStore={viewportLive}
+                onPick={(ct) => reassignCellType(pickerCell.id, ct)}
+                onSplit={(name) => splitCellType(pickerCell.id, name)}
+                onSetColor={(ct, color) =>
+                  void dispatcher.dispatch({ kind: "upsertCellType", cellType: { ...ct, color }, prevCellType: ct })
+                }
+                onClose={closeCellTypePicker}
+              />
+            ) : null;
+          })()}
+          {netRename && (() => {
+            const net = annotations?.nets.find((n) => n.id === netRename.netId);
+            const override = netColorOverrides[`net:${netRename.netId}`];
+            return net ? (
+              <NetRenamePopover
+                net={net}
+                anchor={netRename.at}
+                viewportStore={viewportLive}
+                nameTaken={(name) => !!annotations?.nets.some((n) => n.id !== net.id && n.name === name)}
+                color={override ?? globalNetColor}
+                hasOverride={override !== undefined}
+                defaultColor={globalNetColor}
+                customColorsEnabled={customNetColorsEnabled}
+                onSave={(name, color) => commitNetRename(net.id, name, color)}
+                onClose={closeNetRename}
+              />
+            ) : null;
+          })()}
           <CommentOverlay
             annotations={annotations}
             viewportStore={viewportLive}
@@ -4354,18 +4399,6 @@ function DieViewer({ dieId }: { dieId: string }) {
             : null
         ].filter(Boolean)}
       />
-      {cellTypePickerCellId && annotations && (() => {
-        const pickerCell = annotations.cells.find((c) => c.id === cellTypePickerCellId);
-        return pickerCell ? (
-          <CellTypePickerDialog
-            cell={pickerCell}
-            annotations={annotations}
-            onPick={(ct) => reassignCellType(pickerCell.id, ct)}
-            onSplit={(name) => splitCellType(pickerCell.id, name)}
-            onClose={() => setCellTypePickerCellId(null)}
-          />
-        ) : null;
-      })()}
       {contextMenu && (
         <DieContextMenu
           menu={contextMenu}

@@ -23,6 +23,42 @@ export function CellTypeColorPicker({
   onPick: (color: string | undefined) => void;
 }) {
   const current = normHex(cellType.color);
+  const trigger = (
+    <span
+      style={{
+        width: 10,
+        height: 10,
+        borderRadius: 2,
+        display: "block",
+        flex: "0 0 auto",
+        background: current ?? fallbackColor,
+        border: current ? "1px solid rgba(0,0,0,0.25)" : "1px dashed var(--ink3)"
+      }}
+    />
+  );
+
+  return (
+    <SettingsPopover label={`Color of ${cellType.name || cellType.id}`} triggerContent={trigger}>
+      <div className="u" style={{ marginBottom: 6, fontSize: 10 }}>
+        Cell type color · {cellType.name || cellType.id}
+      </div>
+      <CellTypeColorBody cellType={cellType} cellTypes={cellTypes} onPick={onPick} />
+    </SettingsPopover>
+  );
+}
+
+/** Palette swatches (ones another type uses are disabled) + custom color +
+ *  reset. Shared by the outline swatch popover and the cell-type window. */
+export function CellTypeColorBody({
+  cellType,
+  cellTypes,
+  onPick
+}: {
+  cellType: CellType;
+  cellTypes: readonly CellType[];
+  onPick: (color: string | undefined) => void;
+}) {
+  const current = normHex(cellType.color);
   const suggestion = nextFreeColor(cellTypes, cellType.id);
   const [draft, setDraft] = useState(current ?? suggestion ?? "#ffffff");
   useEffect(() => setDraft(current ?? suggestion ?? "#ffffff"), [current, suggestion]);
@@ -44,25 +80,8 @@ export function CellTypeColorPicker({
     return () => el.removeEventListener("change", onChange);
   });
 
-  const trigger = (
-    <span
-      style={{
-        width: 10,
-        height: 10,
-        borderRadius: 2,
-        display: "block",
-        flex: "0 0 auto",
-        background: current ?? fallbackColor,
-        border: current ? "1px solid rgba(0,0,0,0.25)" : "1px dashed var(--ink3)"
-      }}
-    />
-  );
-
   return (
-    <SettingsPopover label={`Color of ${cellType.name || cellType.id}`} triggerContent={trigger}>
-      <div className="u" style={{ marginBottom: 6, fontSize: 10 }}>
-        Cell type color · {cellType.name || cellType.id}
-      </div>
+    <>
       <div className="row" style={{ gap: 6, flexWrap: "wrap" }}>
         {CELL_TYPE_PALETTE.map((p) => {
           const owner = colorOwner(cellTypes, p.value, cellType.id);
@@ -117,6 +136,6 @@ export function CellTypeColorPicker({
           </button>
         )}
       </div>
-    </SettingsPopover>
+    </>
   );
 }
