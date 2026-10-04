@@ -68,6 +68,8 @@ import { useCellREStore } from "../../state/cellRE";
 import { useOverlayLayers } from "../../state/overlayLayers";
 import { usePreferences } from "../../state/preferences";
 import { createProgressiveImageCache } from "../../lib/progressiveImage";
+import { cellWorldRect, dieToTypeMatrix } from "../../lib/cellFootprint";
+import { drawCellCrop } from "../../lib/cellCrop";
 
 export interface CellRECanvasHandle {
   /** Re-fit the cell into the viewport. */
@@ -1136,7 +1138,7 @@ export const CellRECanvas = forwardRef<CellRECanvasHandle, Props>(function CellR
     if (hovering) ctx.globalAlpha = DIM_ALPHA;
     if (baseVisible && img) {
       ctx.imageSmoothingEnabled = v.zoom < 3;
-      ctx.drawImage(img, 0, 0, box.w, box.h);
+      drawCellCrop(ctx, img, cell, box);
     } else if (img) {
       // Base image hidden via Space+B — show only overlays below.
     } else {
@@ -1144,19 +1146,11 @@ export const CellRECanvas = forwardRef<CellRECanvasHandle, Props>(function CellR
       ctx.fillRect(0, 0, box.w, box.h);
     }
     // Die-viewer overlay (wires, vias) — lives in die-world coordinates,
-    // so apply instance orientation to match the physical layout.
+    // so un-orient it into the type frame, like the crop.
     if (cell && annotations) {
-      const cellDieRect: Rect = {
-        x: cell.x,
-        y: cell.y,
-        width: box.w,
-        height: box.h
-      };
+      const cellDieRect: Rect = cellWorldRect(cell, box.w, box.h);
       ctx.save();
-      ctx.translate(box.w / 2, box.h / 2);
-      ctx.rotate(((cell.rotation ?? 0) * Math.PI) / 180);
-      ctx.scale(cell.flippedH ? -1 : 1, cell.flippedV ? -1 : 1);
-      ctx.translate(-box.w / 2, -box.h / 2);
+      ctx.transform(...dieToTypeMatrix(cell, box.w, box.h));
       ctx.translate(-cell.x, -cell.y);
       drawDieOverlay(ctx, annotations, cellDieRect, v.zoom, {
         hideWires: layerHidden["_dvWires"] === true,

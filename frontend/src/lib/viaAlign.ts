@@ -1,4 +1,5 @@
-import type { Point } from "./geometry";
+import { applyOrientation, type Point } from "./geometry";
+import { unorient } from "./cellFootprint";
 import type { Orient, Rotation } from "./mergeCells";
 
 /**
@@ -51,26 +52,14 @@ const ORIENTATIONS: OrientCombo[] = [
 
 // ── Geometry helpers ─────────────────────────────────────────────────
 
-/** Map a raw (uncentred) local cell-coord point through an orientation to
- *  the canonical-frame position. Mirrors the canvas display transform:
- *  centre → flip → rotate → uncentre. */
-function applyOrient(p: Point, o: OrientCombo, W: number, H: number): Point {
-  const cx = p.x - W / 2;
-  const cy = p.y - H / 2;
-  // Flip H first to match the canvas's `scale(±1, ±1)` after the rotate.
-  const fx = o.flippedH ? -cx : cx;
-  const fy = cy;
-  const θ = (o.rotation * Math.PI) / 180;
-  const c = Math.cos(θ);
-  const s = Math.sin(θ);
-  // Canvas convention: math-CCW (visually CW under canvas's y-down).
-  return {
-    x: c * fx - s * fy + W / 2,
-    y: s * fx + c * fy + H / 2
-  };
+/** Map a raw local cell-coord point (die coords minus `cell.x, cell.y`) into
+ *  the type frame the merge canvas shows: the inverse of how the type content
+ *  is oriented onto the die (see `dieToTypeMatrix`). */
+function toTypeFrame(p: Point, o: OrientCombo, W: number, H: number): Point {
+  return unorient(p, o, W, H);
 }
 
-/** Project specimen vias into the specimen's canonical frame. Exported so
+/** Project specimen vias into the specimen's type frame. Exported so
  *  the page can compute once and reuse. `vias` are raw local (already
  *  shifted by `-cell.x, -cell.y`). */
 export function viasToCanonical(
@@ -79,9 +68,7 @@ export function viasToCanonical(
   W: number,
   H: number
 ): Point[] {
-  return vias.map((v) =>
-    applyOrient(v, { flippedH: o.flippedH, rotation: o.rotation }, W, H)
-  );
+  return vias.map((v) => unorient(v, o, W, H));
 }
 
 // ── Voting ───────────────────────────────────────────────────────────
@@ -201,7 +188,7 @@ export function alignVias(
     matched: number;
   } | null = null;
   for (const o of ORIENTATIONS) {
-    const canon = candidateRawVias.map((v) => applyOrient(v, o, cellW, cellH));
+    const canon = candidateRawVias.map((v) => toTypeFrame(v, o, cellW, cellH));
     const result = bestTranslation(specimenCanonVias, canon, binSize);
     if (!best || result.matched > best.matched) {
       best = { o, dx: result.dx, dy: result.dy, matched: result.matched };
@@ -209,24 +196,16 @@ export function alignVias(
   }
   if (!best || best.matched < minMatches) return null;
 
-  // Canonical translation → raw die-coord delta to apply to cell.x / cell.y.
-  // Same inverse-orientation math as drag-align (the displayed shift wants
-  // the crop bbox to move oppositely in raw coords), but parameterised by
-  // the NEW orientation we're committing to — not the old one.
-  const θ = (best.o.rotation * Math.PI) / 180;
-  const c = Math.cos(θ);
-  const s = Math.sin(θ);
-  // R(-θ) · (dx, dy)
-  const ax = c * best.dx + s * best.dy;
-  const ay = -s * best.dx + c * best.dy;
-  const sx = best.o.flippedH ? -1 : 1;
-  const sy = 1; // flippedV is always false in our orientation set
+  // Type-frame translation → die-coord delta to apply to cell.x / cell.y.
+  // Same math as drag-align: shifting the shown content by t needs the cell
+  // origin to move by −M·t on the die, M being the NEW orientation.
+  const m = applyOrientation({ x: best.dx, y: best.dy }, best.o, 0, 0);
   return {
     flippedH: best.o.flippedH,
     flippedV: false,
     rotation: best.o.rotation,
-    dx: Math.round(-sx * ax),
-    dy: Math.round(-sy * ay),
+    dx: Math.round(-m.x),
+    dy: Math.round(-m.y),
     matched: best.matched,
     ceiling
   };

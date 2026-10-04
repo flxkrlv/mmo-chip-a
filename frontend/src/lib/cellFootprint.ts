@@ -1,5 +1,5 @@
 import type { AnnotationRect, Cell } from "shared";
-import { applyOrientation, type Point, type Rect } from "./geometry";
+import { applyOrientation, type Orientation, type Point, type Rect } from "./geometry";
 
 /**
  * A placed cell's footprint on the die: its box in *type* coordinates — the
@@ -37,13 +37,31 @@ export function cellWorldRect(cell: Cell, typeW: number, typeH: number): Rect {
 }
 
 /** Inverse of `applyOrientation`: oriented cell-local → type coordinates. */
-function unorient(q: Point, cell: Cell, typeW: number, typeH: number): Point {
+export function unorient(q: Point, cell: Orientation, typeW: number, typeH: number): Point {
   // M is orthogonal, so M⁻¹v = Mᵀv = (Mx̂·v, Mŷ·v).
   const ex = applyOrientation({ x: 1, y: 0 }, cell, 0, 0);
   const ey = applyOrientation({ x: 0, y: 1 }, cell, 0, 0);
   const vx = q.x - typeW / 2;
   const vy = q.y - typeH / 2;
   return { x: ex.x * vx + ex.y * vy + typeW / 2, y: ey.x * vx + ey.y * vy + typeH / 2 };
+}
+
+/**
+ * Canvas matrix `[a, b, c, d, e, f]` (for `ctx.transform`) taking die
+ * coordinates relative to the cell origin `(x, y)` into the type frame — the
+ * inverse of how the type content is placed on the die. A crop of the die
+ * footprint drawn at its cell-relative rect under this matrix lands exactly
+ * on the type box, upright, whatever the instance orientation.
+ */
+export function dieToTypeMatrix(
+  cell: Orientation,
+  typeW: number,
+  typeH: number
+): [number, number, number, number, number, number] {
+  const o = unorient({ x: 0, y: 0 }, cell, typeW, typeH);
+  const ex = unorient({ x: 1, y: 0 }, cell, typeW, typeH);
+  const ey = unorient({ x: 0, y: 1 }, cell, typeW, typeH);
+  return [ex.x - o.x, ex.y - o.y, ey.x - o.x, ey.y - o.y, o.x, o.y];
 }
 
 /** Round to the half-pixel grid that centre rotation can land on. */

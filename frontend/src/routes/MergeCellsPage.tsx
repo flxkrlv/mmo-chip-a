@@ -48,9 +48,10 @@ import {
   cellTypeById,
   cellTypeCropUrl,
   membersOf,
+  orientInTypeFrame,
   orientOf,
   resolveSpecimenCell,
-  rotateCw
+  type OrientOp
 } from "../lib/mergeCells";
 import { alignVias, viasToCanonical } from "../lib/viaAlign";
 import { MERGE_HOTKEYS } from "../lib/hotkeys";
@@ -198,21 +199,11 @@ function Merge({ dieId }: { dieId: string }) {
   // so flipping between candidates instantly serves cached results.
   const specimenBbox: DieViasBbox | null =
     specimenCell && specimenType
-      ? [
-          specimenCell.x,
-          specimenCell.y,
-          specimenCell.x + specimenType.cropRect.width,
-          specimenCell.y + specimenType.cropRect.height
-        ]
+      ? rectBbox(cellWorldRect(specimenCell, specimenType.cropRect.width, specimenType.cropRect.height))
       : null;
   const candidateBbox: DieViasBbox | null =
     candidateCell && candidateType
-      ? [
-          candidateCell.x,
-          candidateCell.y,
-          candidateCell.x + candidateType.cropRect.width,
-          candidateCell.y + candidateType.cropRect.height
-        ]
+      ? rectBbox(cellWorldRect(candidateCell, candidateType.cropRect.width, candidateType.cropRect.height))
       : null;
   const specimenViasQ = useDieVias(dieId, specimenBbox, { enabled: showMlVias });
   const candidateViasQ = useDieVias(dieId, candidateBbox, { enabled: showMlVias });
@@ -318,18 +309,17 @@ function Merge({ dieId }: { dieId: string }) {
     [candidateCell, dispatcher]
   );
 
-  const onFlipH = useCallback(
-    () => orient({ flippedH: !(candidateCell?.flippedH === true) }),
+  // The canvas shows the candidate in its type frame (die crop un-oriented),
+  // so the buttons turn / mirror that view, not the cell on the die.
+  const orientView = useCallback(
+    (op: OrientOp) => {
+      if (candidateCell) orient(orientInTypeFrame(orientOf(candidateCell), op));
+    },
     [orient, candidateCell]
   );
-  const onFlipV = useCallback(
-    () => orient({ flippedV: !(candidateCell?.flippedV === true) }),
-    [orient, candidateCell]
-  );
-  const onRotateCw = useCallback(
-    () => orient({ rotation: rotateCw((candidateCell?.rotation ?? 0) as 0) }),
-    [orient, candidateCell]
-  );
+  const onFlipH = useCallback(() => orientView("flipH"), [orientView]);
+  const onFlipV = useCallback(() => orientView("flipV"), [orientView]);
+  const onRotateCw = useCallback(() => orientView("rotateCw"), [orientView]);
   const onAlign = useCallback(
     (dxSrc: number, dySrc: number) => {
       if (!candidateCell) return;
@@ -370,17 +360,21 @@ function Merge({ dieId }: { dieId: string }) {
     // Specimen vias projected into the specimen's canonical frame (once).
     // Candidate vias stay in raw cell-local coords — alignVias re-projects
     // them under every candidate orientation it tries.
+    // The canvas centres both type boxes on each other, so the specimen's
+    // type-frame vias are re-expressed in the candidate's box by centre.
     const W = candidateType.cropRect.width;
     const H = candidateType.cropRect.height;
+    const sW = specimenType.cropRect.width;
+    const sH = specimenType.cropRect.height;
     const specCanon = viasToCanonical(
       specimenVias.map((v) => ({
         x: v.x - specimenCell.x,
         y: v.y - specimenCell.y
       })),
       orientOf(specimenCell),
-      specimenType.cropRect.width,
-      specimenType.cropRect.height
-    );
+      sW,
+      sH
+    ).map((p) => ({ x: p.x + (W - sW) / 2, y: p.y + (H - sH) / 2 }));
     const candRaw = candidateVias.map((v) => ({
       x: v.x - candidateCell.x,
       y: v.y - candidateCell.y
@@ -928,4 +922,9 @@ function ConfirmDialog({
       </div>
     </div>
   );
+}
+
+/** `[x0, y0, x1, y1]` of a die rect, for the ML-via query. */
+function rectBbox(r: { x: number; y: number; width: number; height: number }): DieViasBbox {
+  return [r.x, r.y, r.x + r.width, r.y + r.height];
 }

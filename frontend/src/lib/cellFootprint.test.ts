@@ -53,7 +53,8 @@ describe("die footprint vs orientation", () => {
     const merged = upserted(plan.action);
     expect(merged.cellTypeId).toBe("s");
     expect(merged.bounds).toBeUndefined();
-    // Oriented about the type-box centre (111, 222): 44×22 on the die.
-    expect(cellWorldRect(merged, 22, 44)).toEqual({ x: 89, y: 211, width: 44, height: 22 });
+    // The candidate box centre (120, 210) is kept: 44×22 on the die around it.
+    expect(merged).toMatchObject({ x: 109, y: 188 });
+    expect(cellWorldRect(merged, 22, 44)).toEqual({ x: 98, y: 199, width: 44, height: 22 });
   });
 });

@@ -14,6 +14,9 @@ import { drawCellLayers } from "../../renderer/annotations/shapes";
 import { COLOR_VIA, COLOR_VIA_FILL } from "../../renderer/annotations/style";
 import type { TileBounds } from "../../renderer/types";
 import { orientOf } from "../../lib/mergeCells";
+import { dieToTypeMatrix } from "../../lib/cellFootprint";
+import { drawCellCrop } from "../../lib/cellCrop";
+import { applyOrientation } from "../../lib/geometry";
 import { withAlpha } from "../../lib/color";
 import { useOverlayLayers } from "../../state/overlayLayers";
 import { createProgressiveImageCache } from "../../lib/progressiveImage";
@@ -379,7 +382,6 @@ export const MergeCanvas = forwardRef<MergeCanvasHandle, Props>(function MergeCa
       composite: GlobalCompositeOperation = "source-over"
     ) => {
       const { img, offset: pendingOffset } = resolveImg(view);
-      const o = view.cell ? orientOf(view.cell) : { flippedH: false, flippedV: false, rotation: 0 as const };
       // `pendingOffset` is the canonical-canvas delta accumulated by a
       // drag-align commit whose fresh crop hasn't arrived yet. Composed
       // additively with the in-progress `live` offset so the user sees the
@@ -387,18 +389,15 @@ export const MergeCanvas = forwardRef<MergeCanvasHandle, Props>(function MergeCa
       // commit → load → swap cycle.
       const effDx = live.dx + pendingOffset.dx;
       const effDy = live.dy + pendingOffset.dy;
-      const cx = originX + effDx + box.w / 2;
-      const cy = originY + effDy + box.h / 2;
+      // Local frame = the cell type's frame (box at 0,0): the die crop is
+      // un-oriented into it, so every instance shows upright like its type.
       ctx.save();
       ctx.globalAlpha = alpha;
-      ctx.translate(cx, cy);
-      ctx.rotate((o.rotation * Math.PI) / 180);
-      ctx.scale(o.flippedH ? -1 : 1, o.flippedV ? -1 : 1);
-      ctx.translate(-box.w / 2, -box.h / 2);
+      ctx.translate(originX + effDx, originY + effDy);
       ctx.globalCompositeOperation = composite;
       if (img) {
         ctx.imageSmoothingEnabled = zoom < 3;
-        ctx.drawImage(img, 0, 0, box.w, box.h);
+        drawCellCrop(ctx, img, view.cell, box);
       } else if (composite === "source-over") {
         ctx.fillStyle = "rgba(255,255,255,0.04)";
         ctx.fillRect(0, 0, box.w, box.h);
@@ -417,7 +416,10 @@ export const MergeCanvas = forwardRef<MergeCanvasHandle, Props>(function MergeCa
       // die origin sits at the local frame's origin) so vias stay pinned to
       // the underlying image features and visibly move with a live drag.
       if (showMlVias && view.mlVias && view.cell) {
+        ctx.save();
+        ctx.transform(...dieToTypeMatrix(view.cell, box.w, box.h));
         drawMlVias(ctx, view.mlVias, view.cell.x, view.cell.y, zoom);
+        ctx.restore();
       }
       // Box outline (in the type's own color when it has one).
       ctx.globalAlpha = 1;
@@ -443,16 +445,14 @@ export const MergeCanvas = forwardRef<MergeCanvasHandle, Props>(function MergeCa
           ctx.save();
           ctx.globalCompositeOperation = "lighter";
           ctx.globalAlpha = 1 / n;
-          applyOrient(ctx, cv.cell, sp, 0, 0);
           ctx.imageSmoothingEnabled = v.zoom < 3;
-          ctx.drawImage(img, 0, 0, sp.w, sp.h);
+          drawCellCrop(ctx, img, cv.cell, sp);
           ctx.restore();
         }
       }
-      // Annotations + outline once, in the reference instance's frame.
+      // Annotations + outline once, in the type frame.
       if (sp && specimen) {
         ctx.save();
-        applyOrient(ctx, specimen.cell, sp, 0, 0);
         if (showAnno) {
           drawCellLayers(ctx, specimen.cellType?.layers, mkBounds(v.zoom), {
             outline: false
@@ -606,21 +606,13 @@ export const MergeCanvas = forwardRef<MergeCanvasHandle, Props>(function MergeCa
       // Drag vector in screen-aligned world units.
       const wx = d.dx / v.zoom;
       const wy = d.dy / v.zoom;
-      // The crop window (cell.x/cell.y) lives in *unrotated source* space,
-      // but the displayed image is rotate(θ)∘scale(flip) of that crop. To
-      // bake a screen-space drag Δ into the crop origin we apply the inverse
-      // orientation: δ = -S · R(-θ) · Δ  (S = flip, its own inverse).
+      // The view is the type frame, showing the die crop through M⁻¹ (M =
+      // the instance orientation). Shifting the shown content by Δ needs the
+      // cell origin to move by δ = −M·Δ on the die.
       const o = propsRef.current.candidate?.cell
         ? orientOf(propsRef.current.candidate.cell)
         : { flippedH: false, flippedV: false, rotation: 0 as const };
-      const t = (o.rotation * Math.PI) / 180;
-      const c = Math.cos(t);
-      const s = Math.sin(t);
-      // R(-θ) · Δ
-      const ax = c * wx + s * wy;
-      const ay = -s * wx + c * wy;
-      const sx = o.flippedH ? -1 : 1;
-      const sy = o.flippedV ? -1 : 1;
+      const m = applyOrientation({ x: wx, y: wy }, o, 0, 0);
       // Stash the canonical drag delta onto the candidate's cached image
       // BEFORE dispatching: the optimistic update fires next, switching the
       // `cellCropUrl` to one whose image isn't loaded yet — `resolveImg`
@@ -638,7 +630,7 @@ export const MergeCanvas = forwardRef<MergeCanvasHandle, Props>(function MergeCa
           };
         }
       }
-      onAlign(-sx * ax, -sy * ay);
+      onAlign(-m.x, -m.y);
     }
     redraw();
   };
@@ -775,22 +767,6 @@ export const MergeCanvas = forwardRef<MergeCanvasHandle, Props>(function MergeCa
 
 function outlineColor(ct: CellType | null): string {
   return ct?.color ? withAlpha(ct.color, 0.8) : "rgba(245,214,138,0.5)";
-}
-
-/** Place the local frame so a `box`-sized crop drawn at (0, 0) appears with
- *  `cell`'s flip/rotation, centred on the box at (originX, originY). */
-function applyOrient(
-  ctx: CanvasRenderingContext2D,
-  cell: Cell | null,
-  box: { w: number; h: number },
-  originX: number,
-  originY: number
-): void {
-  const o = cell ? orientOf(cell) : { flippedH: false, flippedV: false, rotation: 0 as const };
-  ctx.translate(originX + box.w / 2, originY + box.h / 2);
-  ctx.rotate((o.rotation * Math.PI) / 180);
-  ctx.scale(o.flippedH ? -1 : 1, o.flippedV ? -1 : 1);
-  ctx.translate(-box.w / 2, -box.h / 2);
 }
 
 /** Screen-px sizes for the ML-via markers — kept constant on screen by

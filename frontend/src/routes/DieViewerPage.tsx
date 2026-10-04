@@ -155,7 +155,7 @@ import { netNodeWorldRadius, viaSnapTolerance } from "../renderer/annotations/st
 import type { Layer, Viewport } from "../renderer/types";
 import { formatPercent } from "../lib/format";
 import { isTypingTarget } from "../lib/keyboard";
-import { buildMakeUniqueAction } from "../lib/mergeCells";
+import { buildMakeUniqueAction, buildOrientAction, orientOf, orientOnDie } from "../lib/mergeCells";
 import { createLiveValue } from "../lib/liveValue";
 import type { WirePreview } from "../components/dieViewer/WireDraftOverlay";
 import { ANNOTATION_KIND_VALUES } from "../state/annotationKinds";
@@ -4492,6 +4492,20 @@ function DieViewer({ dieId }: { dieId: string }) {
             const cell = ann.cells?.find((c) => c.id === contextMenu.hitCellId);
             if (!cell) return;
             void dispatcher.dispatch(buildMakeUniqueAction(ann, cell));
+          }}
+          cellsLocked={cellsLocked}
+          onOrientCell={(op) => {
+            const ann = annotationsRef.current;
+            if (!ann || !contextMenu.hitCellId || usePreferences.getState().cellsLocked) return;
+            // Like copy: the whole selection when the clicked cell is in it.
+            const selected = useDieViewerStore.getState().selectedIds;
+            const targets = selected.has(`cell:${contextMenu.hitCellId}`)
+              ? ann.cells.filter((c) => selected.has(`cell:${c.id}`))
+              : ann.cells.filter((c) => c.id === contextMenu.hitCellId);
+            // Each cell turns / mirrors about its own footprint centre.
+            const actions = targets.map((c) => buildOrientAction(c, orientOnDie(orientOf(c), op)));
+            if (actions.length === 1) void dispatcher.dispatch(actions[0]);
+            else if (actions.length > 1) void dispatcher.dispatch({ kind: "batch", actions });
           }}
           onDeleteRuler={() => {
             const ruler = annotationsRef.current?.rulers?.find((r) => r.id === contextMenu.hitRulerId);

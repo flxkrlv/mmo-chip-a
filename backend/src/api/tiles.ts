@@ -16,6 +16,7 @@ import {
 } from "../tileCrop.js";
 import type { createTileScheduler } from "../tileScheduler.js";
 import type { DieRecord } from "../types.js";
+import type { Cell } from "shared";
 
 const SAFE_ID = /^[a-zA-Z0-9_-]+$/;
 
@@ -167,7 +168,10 @@ export function createTilesRouter(config: {
         dieId,
         record,
         key: cellId,
-        rect: clampRect(record, cell.x, cell.y, cellType.cropRect.width, cellType.cropRect.height)
+        rect: (() => {
+          const r = cellDieRect(cell, cellType.cropRect.width, cellType.cropRect.height);
+          return clampRect(record, r.x, r.y, r.width, r.height);
+        })()
       });
     } catch (error) {
       if (error instanceof CropSourceMissing) {
@@ -279,4 +283,39 @@ export function createTilesRouter(config: {
   });
 
   return router;
+}
+
+/**
+ * A placed cell's footprint on the die (mirror of the frontend's
+ * `lib/cellFootprint.cellWorldRect`): its type-frame box (`bounds`, else the
+ * type box) mirrored, then rotated clockwise about the type-box centre, at
+ * the cell origin. A 90°/270° cell of a W×H type covers H×W. The crop is this
+ * region as it sits on the die; clients un-orient it for display.
+ */
+export function cellDieRect(
+  cell: Pick<Cell, "x" | "y" | "bounds" | "flippedH" | "flippedV" | "rotation">,
+  typeW: number,
+  typeH: number
+): { x: number; y: number; width: number; height: number } {
+  const b = cell.bounds ?? { x: 0, y: 0, width: typeW, height: typeH };
+  const map = (px: number, py: number): [number, number] => {
+    let qx = px - typeW / 2;
+    let qy = py - typeH / 2;
+    if (cell.flippedH) qx = -qx;
+    if (cell.flippedV) qy = -qy;
+    switch (cell.rotation ?? 0) {
+      case 90: [qx, qy] = [-qy, qx]; break;
+      case 180: [qx, qy] = [-qx, -qy]; break;
+      case 270: [qx, qy] = [qy, -qx]; break;
+    }
+    return [qx + typeW / 2, qy + typeH / 2];
+  };
+  const [ax, ay] = map(b.x, b.y);
+  const [bx, by] = map(b.x + b.width, b.y + b.height);
+  return {
+    x: cell.x + Math.min(ax, bx),
+    y: cell.y + Math.min(ay, by),
+    width: Math.abs(bx - ax),
+    height: Math.abs(by - ay)
+  };
 }
