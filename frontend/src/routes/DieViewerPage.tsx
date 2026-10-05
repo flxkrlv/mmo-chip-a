@@ -155,7 +155,12 @@ import { netNodeWorldRadius, viaSnapTolerance } from "../renderer/annotations/st
 import type { Layer, Viewport } from "../renderer/types";
 import { formatPercent } from "../lib/format";
 import { isTypingTarget } from "../lib/keyboard";
-import { clampScreenshotScale, maxScreenshotScale } from "../lib/screenshot";
+import {
+  maxScreenshotScale,
+  nativeScreenshotScale,
+  resolveScreenshotScale,
+  screenshotSize
+} from "../lib/screenshot";
 import { ScreenshotPanel } from "../components/dieViewer/ScreenshotPanel";
 import { buildMakeUniqueAction, buildOrientAction, orientOf, orientOnDie } from "../lib/mergeCells";
 import { createLiveValue } from "../lib/liveValue";
@@ -3975,10 +3980,16 @@ function DieViewer({ dieId }: { dieId: string }) {
   const [screenshotBusy, setScreenshotBusy] = useState<string | null>(null);
   const [screenshotPanel, setScreenshotPanel] = useState<DOMRect | null>(null);
   const screenshotBusyRef = useRef(false);
+  const screenshotAbortRef = useRef<AbortController | null>(null);
   const screenCanvasSize = useCallback(() => {
     const c = containerRef.current?.querySelector("canvas");
     return { width: c?.width ?? 0, height: c?.height ?? 0 };
   }, []);
+  /** Source px per pixel of the die's finest pyramid level (native detail). */
+  const finestLevelScale = useMemo(
+    () => (die?.levels?.length ? Math.min(...die.levels.map((l) => l.scale)) : 1),
+    [die]
+  );
   const takeScreenshot = useCallback(async () => {
     const section = containerRef.current;
     const handle = canvasHandle.current;
@@ -3988,35 +3999,46 @@ function DieViewer({ dieId }: { dieId: string }) {
     // First canvas = main tiled canvas; subsequent canvases are overlays.
     const { width: srcW, height: srcH } = canvases[0];
     if (srcW === 0 || srcH === 0) return;
-    const scale = clampScreenshotScale(
+    const native = nativeScreenshotScale(handle.getViewport().zoom, handle.getDpr(), finestLevelScale);
+    const scale = resolveScreenshotScale(
       usePreferences.getState().screenshotScale,
-      maxScreenshotScale(srcW, srcH)
+      native,
+      maxScreenshotScale(srcW, srcH, native)
     );
+    const abort = new AbortController();
+    screenshotAbortRef.current = abort;
     screenshotBusyRef.current = true;
     setScreenshotBusy("Rendering…");
     try {
-      const out = await handle.snapshot(scale, (n) => setScreenshotBusy(`Loading ${n} tile${n === 1 ? "" : "s"}…`));
-      if (!out) return;
-      setScreenshotBusy("Saving…");
-      const ctx = out.getContext("2d")!;
-      ctx.imageSmoothingEnabled = true;
-      ctx.imageSmoothingQuality = "high";
-      for (const c of canvases.slice(1)) ctx.drawImage(c, 0, 0, out.width, out.height);
-      const blob = await new Promise<Blob | null>((r) => out.toBlob(r, "image/png"));
+      const blob = await handle.snapshotPng(scale, {
+        overlays: canvases.slice(1),
+        signal: abort.signal,
+        onProgress: ({ band, bands, pendingTiles }) =>
+          setScreenshotBusy(
+            `${Math.floor((band / bands) * 100)}%` +
+              (pendingTiles > 0 ? ` · loading ${pendingTiles} tile${pendingTiles === 1 ? "" : "s"}` : "")
+          )
+      });
       if (!blob) return;
+      const { width, height } = screenshotSize(srcW, srcH, scale);
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = `${die?.name ?? "die"}_screenshot_${out.width}x${out.height}.png`;
+      a.download = `${die?.name ?? "die"}_screenshot_${width}x${height}.png`;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
-      URL.revokeObjectURL(url);
+      // Large files are still being read by the download when click() returns.
+      setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    } catch (error) {
+      console.error("[screenshot] failed", error);
+      void dialog.confirm(error instanceof Error ? error.message : String(error), "Screenshot failed");
     } finally {
+      screenshotAbortRef.current = null;
       screenshotBusyRef.current = false;
       setScreenshotBusy(null);
     }
-  }, [die?.name]);
+  }, [die?.name, finestLevelScale, dialog]);
 
   return (
     <AppShell
@@ -4060,7 +4082,9 @@ function DieViewer({ dieId }: { dieId: string }) {
               className="btn ghost"
               title={
                 screenshotBusy ??
-                `Screenshot ${+screenshotScale.toFixed(2)}× (Ctrl+Shift+S) · right-click for resolution`
+                `Screenshot ${
+                  screenshotScale === "native" ? "native" : `${+screenshotScale.toFixed(2)}×`
+                } (Ctrl+Shift+S) · right-click for resolution`
               }
               disabled={!!screenshotBusy}
               style={screenshotBusy ? { opacity: 0.6, cursor: "progress" } : undefined}
@@ -4600,17 +4624,19 @@ function DieViewer({ dieId }: { dieId: string }) {
       )}
       {screenshotPanel && (() => {
         const base = screenCanvasSize();
-        const max = maxScreenshotScale(base.width, base.height);
         return (
           <ScreenshotPanel
             anchor={screenshotPanel}
-            scale={clampScreenshotScale(screenshotScale, max)}
-            maxScale={max}
+            scale={screenshotScale}
+            viewport={viewportLive}
+            dpr={canvasHandle.current?.getDpr() ?? window.devicePixelRatio ?? 1}
+            finestLevelScale={finestLevelScale}
             baseWidth={base.width}
             baseHeight={base.height}
             busy={screenshotBusy}
             onScale={(v) => usePreferences.getState().setScreenshotScale(v)}
             onTake={() => void takeScreenshot()}
+            onCancel={() => screenshotAbortRef.current?.abort()}
             onClose={() => setScreenshotPanel(null)}
           />
         );

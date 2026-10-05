@@ -15,6 +15,7 @@ import {
 import type { Viewport } from "../renderer/types";
 import type { WindowAnchor } from "../lib/windowAnchor";
 import type { InspectorTab } from "./dieViewer";
+import type { ScreenshotScale } from "../lib/screenshot";
 import {
   ANNOTATION_KIND_VALUES,
   type AnnotationKind
@@ -102,8 +103,9 @@ interface PreferencesState {
   guidesLocked: boolean;
   /** Cells locked — can't be dragged/repositioned. */
   cellsLocked: boolean;
-  /** Die-viewer screenshot resolution, × the on-screen device pixels. */
-  screenshotScale: number;
+  /** Die-viewer screenshot resolution: × the on-screen device pixels, or
+   *  "native" (the die's full tile resolution for the current view). */
+  screenshotScale: ScreenshotScale;
   /** Classes a newly-drawn ML ROI fully labels (schema §1 — load-bearing).
    *  Editable in the ROI tool options; each new ROI is stamped with this. */
   roiClasses: AnnotationClass[];
@@ -356,7 +358,7 @@ interface PreferencesActions {
   setGuidesHidden: (hidden: boolean) => void;
   setGuidesLocked: (locked: boolean) => void;
   setCellsLocked: (locked: boolean) => void;
-  setScreenshotScale: (scale: number) => void;
+  setScreenshotScale: (scale: ScreenshotScale) => void;
   setBaseImageHidden: (id: string, hidden: boolean) => void;
   setBaseImageOpacity: (id: string, opacity: number) => void;
   setMergeMode: (

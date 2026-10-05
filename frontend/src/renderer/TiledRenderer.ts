@@ -1,7 +1,19 @@
 import type { Rect } from "../lib/geometry";
 import type { Layer, RenderFrame, Viewport } from "./types";
+import { PngStreamEncoder } from "../lib/pngStream";
 
 const DEFAULT_TILE_SIZE = 256;
+/** Output px per side of the tiles (and height of the bands) a snapshot is
+ *  rendered in. */
+const SNAPSHOT_TILE = 512;
+
+export interface SnapshotProgress {
+  /** Bands finished so far, of `bands`. */
+  band: number;
+  bands: number;
+  /** Image tiles the current band still waits for. */
+  pendingTiles: number;
+}
 const MAX_CACHED_TILES = 256;
 
 type TileKey = string; // "i,j"
@@ -171,40 +183,52 @@ export class TiledRenderer {
   }
 
   /**
-   * Render the current view offscreen at `scale` × the on-screen device
-   * resolution — same framing, same line widths relative to the picture,
-   * but image layers draw from the pyramid level that output size needs.
-   * Resolves once every image tile it needs has loaded (or failed), or after
-   * `timeoutMs` with whatever has arrived.
+   * The current view rendered at `scale` × the on-screen device resolution
+   * and encoded as a PNG — same framing, same line widths relative to the
+   * picture, but image layers draw from the pyramid level that output size
+   * needs. Rendered in horizontal bands of SNAPSHOT_TILE px streamed into
+   * the encoder, so the image may be far larger than any one canvas, and
+   * image tiles are only held for the band being drawn. Each band waits for
+   * its image tiles (or `timeoutMs` per band). `overlays` (screen-sized
+   * canvases) are stretched on top. Null when cancelled via `signal`.
    */
-  async renderSnapshot(
+  async renderSnapshotPng(
     scale: number,
-    options: { onProgress?: (pendingTiles: number) => void; timeoutMs?: number } = {}
-  ): Promise<HTMLCanvasElement> {
-    const { tileSize, viewport: vp } = this;
-    const dpr = this.dpr * scale;
-    const out = document.createElement("canvas");
-    out.width = Math.max(1, Math.round(this.cssWidth * dpr));
-    out.height = Math.max(1, Math.round(this.cssHeight * dpr));
-    const octx = out.getContext("2d");
-    if (!octx || vp.zoom <= 0) return out;
-    const tilePx = Math.round(tileSize * dpr);
+    options: {
+      overlays?: HTMLCanvasElement[];
+      onProgress?: (p: SnapshotProgress) => void;
+      signal?: AbortSignal;
+      timeoutMs?: number;
+    } = {}
+  ): Promise<Blob | null> {
+    const { viewport: vp } = this;
+    const dpr = this.dpr * scale; // output px per CSS px
+    const W = Math.max(1, Math.round(this.cssWidth * dpr));
+    const H = Math.max(1, Math.round(this.cssHeight * dpr));
+    const T = SNAPSHOT_TILE;
+    const k = vp.zoom * dpr; // output px per world unit
+    const tWorld = T / k;
     const tile = document.createElement("canvas");
-    tile.width = tilePx;
-    tile.height = tilePx;
-    const tctx = tile.getContext("2d");
-    if (!tctx) return out;
-
-    const tw = tileSize / vp.zoom;
-    const minI = Math.floor(vp.originX / tw);
-    const maxI = Math.floor((vp.originX + this.cssWidth / vp.zoom) / tw);
-    const minJ = Math.floor(vp.originY / tw);
-    const maxJ = Math.floor((vp.originY + this.cssHeight / vp.zoom) / tw);
-    const world = { x: vp.originX, y: vp.originY, width: this.cssWidth / vp.zoom, height: this.cssHeight / vp.zoom };
+    tile.width = T;
+    tile.height = T;
+    const tctx = tile.getContext("2d", { willReadFrequently: true });
+    if (!tctx || vp.zoom <= 0) return null;
+    const cols = Math.ceil(W / T);
+    const bands = Math.ceil(H / T);
+    const overlays = options.overlays ?? [];
     const pending = () => this.layers.reduce((n, l) => n + (l.pendingLoads?.() ?? 0), 0);
+    const cancelled = () => this.destroyed || options.signal?.aborted === true;
+    const encoder = new PngStreamEncoder(W, H);
+    const band = new Uint8ClampedArray(W * 4 * T);
 
-    const pass = () => {
-      const frame: RenderFrame = { id: ++this.frameCounter, world, viewport: vp, detail: dpr };
+    /** Draw band `b` (all its tiles) into `band`. */
+    const pass = (b: number, bandH: number) => {
+      const frame: RenderFrame = {
+        id: ++this.frameCounter,
+        world: { x: vp.originX, y: vp.originY + b * tWorld, width: W / k, height: bandH / k },
+        viewport: vp,
+        detail: dpr
+      };
       for (const layer of this.layers) {
         try {
           layer.beginFrame?.(frame);
@@ -212,69 +236,86 @@ export class TiledRenderer {
           console.error(`[renderer] layer "${layer.id}" beginFrame failed`, error);
         }
       }
-      octx.setTransform(1, 0, 0, 1, 0, 0);
-      if (this.background === "transparent") octx.clearRect(0, 0, out.width, out.height);
-      else {
-        octx.fillStyle = this.background;
-        octx.fillRect(0, 0, out.width, out.height);
-      }
-      for (let i = minI; i <= maxI; i++) {
-        for (let j = minJ; j <= maxJ; j++) {
-          tctx.setTransform(1, 0, 0, 1, 0, 0);
-          tctx.clearRect(0, 0, tilePx, tilePx);
-          tctx.scale(dpr * vp.zoom, dpr * vp.zoom);
-          tctx.translate(-i * tw, -j * tw);
-          const bounds = {
-            size: tileSize,
-            i,
-            j,
-            world: { x: i * tw, y: j * tw, width: tw, height: tw },
-            dpr,
-            zoom: vp.zoom,
-            detail: dpr
-          };
-          for (const layer of this.layers) {
-            tctx.save();
-            try {
-              layer.draw(tctx, bounds);
-            } catch (error) {
-              console.error(`[renderer] layer "${layer.id}" draw failed`, error);
-            }
-            tctx.restore();
+      for (let c = 0; c < cols; c++) {
+        const wx = vp.originX + c * tWorld;
+        const wy = vp.originY + b * tWorld;
+        tctx.setTransform(1, 0, 0, 1, 0, 0);
+        tctx.fillStyle = this.background === "transparent" ? "#000" : this.background;
+        tctx.fillRect(0, 0, T, T);
+        tctx.setTransform(k, 0, 0, k, -wx * k, -wy * k);
+        const bounds = {
+          size: T / dpr,
+          i: c,
+          j: b,
+          world: { x: wx, y: wy, width: tWorld, height: tWorld },
+          dpr,
+          zoom: vp.zoom,
+          detail: dpr
+        };
+        for (const layer of this.layers) {
+          tctx.save();
+          try {
+            layer.draw(tctx, bounds);
+          } catch (error) {
+            console.error(`[renderer] layer "${layer.id}" draw failed`, error);
           }
-          const x = Math.round((i * tw - vp.originX) * vp.zoom * dpr);
-          const y = Math.round((j * tw - vp.originY) * vp.zoom * dpr);
-          octx.drawImage(tile, x, y);
+          tctx.restore();
+        }
+        tctx.setTransform(1, 0, 0, 1, 0, 0);
+        tctx.imageSmoothingEnabled = true;
+        tctx.imageSmoothingQuality = "high";
+        for (const o of overlays) {
+          const fx = o.width / W;
+          const fy = o.height / H;
+          tctx.drawImage(o, c * T * fx, b * T * fy, T * fx, T * fy, 0, 0, T, T);
+        }
+        const w = Math.min(T, W - c * T);
+        const rows = tctx.getImageData(0, 0, w, bandH).data;
+        for (let r = 0; r < bandH; r++) {
+          band.set(rows.subarray(r * w * 4, (r + 1) * w * 4), (r * W + c * T) * 4);
         }
       }
     };
 
     this.snapshotting = true;
-    for (const layer of this.layers) layer.holdCache?.(true);
     try {
-      const deadline = performance.now() + (options.timeoutMs ?? 120_000);
-      // Drawing requests the missing tiles; wait for them and draw again,
-      // until a pass finds everything already there.
-      for (let round = 0; round < 50; round++) {
-        pass();
-        let left = pending();
-        if (left === 0 || this.destroyed) break;
-        while (left > 0 && performance.now() < deadline && !this.destroyed) {
-          options.onProgress?.(left);
-          await new Promise((r) => setTimeout(r, 100));
-          left = pending();
+      for (let b = 0; b < bands; b++) {
+        const bandH = Math.min(T, H - b * T);
+        for (const layer of this.layers) layer.holdCache?.(true);
+        try {
+          const deadline = performance.now() + (options.timeoutMs ?? 120_000);
+          // Drawing requests the missing tiles; wait for them and draw again,
+          // until a pass finds everything already there.
+          for (let round = 0; round < 50; round++) {
+            pass(b, bandH);
+            let left = pending();
+            if (left === 0) break;
+            while (left > 0 && performance.now() < deadline && !cancelled()) {
+              options.onProgress?.({ band: b, bands, pendingTiles: left });
+              await new Promise((r) => setTimeout(r, 100));
+              left = pending();
+            }
+            if (cancelled()) break;
+            if (performance.now() >= deadline) {
+              pass(b, bandH);
+              break;
+            }
+          }
+        } finally {
+          for (const layer of this.layers) layer.holdCache?.(false);
         }
-        if (performance.now() >= deadline) {
-          pass();
-          break;
+        if (cancelled()) {
+          encoder.abort();
+          return null;
         }
+        options.onProgress?.({ band: b + 1, bands, pendingTiles: 0 });
+        await encoder.addRows(band, bandH);
       }
+      return await encoder.finish();
     } finally {
       this.snapshotting = false;
-      for (const layer of this.layers) layer.holdCache?.(false);
       this.invalidate();
     }
-    return out;
   }
 
   private render() {
