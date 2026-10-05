@@ -31,6 +31,7 @@ import { InteractiveAnalogSchematic } from "./InteractiveAnalogSchematic";
 import { scopeKey as interactiveScopeKey } from "../../state/interactiveSchematic";
 import { useSession } from "../../state/session";
 import { usePreferences } from "../../state/preferences";
+import { floorplanNameInline } from "../../lib/floorplanName";
 
 // ── Props ───────────────────────────────────────────────────────
 
@@ -366,7 +367,7 @@ useEffect(() => {
     const cfg: SpiceConfig = { vdd: "VDD", gnd: "GND", ...spiceConfig };
     // region.name is the readable block label (not the raw regionId).
     const regionNames = new Map<string, string>();
-    for (const r of floorplanRegions) regionNames.set(r.id, r.name ?? r.id);
+    for (const r of floorplanRegions) regionNames.set(r.id, (r.name && floorplanNameInline(r.name)) || r.id);
     return regionExternalNets(
       regionDevices,
       unassignedDevices,

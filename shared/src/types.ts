@@ -555,6 +555,8 @@ export interface HumanAnnotation {
   source?: "human" | "approved";
   /** Via layer id (VIA12, VIA23, …) for via annotations. Absent = legacy. */
   layer?: string;
+  /** Per-via color override (CSS color). Absent = via layer / global color. */
+  color?: string;
 }
 
 export interface ROIRectangle {

@@ -108,6 +108,9 @@ import {
 import { MultiWireOverlay } from "../components/dieViewer/MultiWireOverlay";
 import { CommentOverlay } from "../components/dieViewer/CommentOverlay";
 import { NetRenamePopover } from "../components/dieViewer/NetRenamePopover";
+import { ViaColorPopover } from "../components/dieViewer/ViaColorPopover";
+import { viaBaseColor, viaColorAction, viaColorTargets, viaFromSelectionId } from "../lib/viaColor";
+import { floorplanNameInline } from "../lib/floorplanName";
 import { useWindowAnchorMaintenance } from "../components/dieViewer/useElementWindow";
 import { FloorplanOverlay } from "../components/dieViewer/FloorplanOverlay";
 import { useFloorplanStore, type FloorplanDraft } from "../state/floorplan";
@@ -449,16 +452,18 @@ function DieViewer({ dieId }: { dieId: string }) {
     }
   }, [annotations?.floorplanRegions, setFloorplanRegions]);
 
-  // Esc abandons a floorplan polygon while it is being drawn (vertices
-  // placed, not yet finished with a double-click). Nothing is saved.
+  // While a floorplan polygon is being drawn (vertices placed, not yet
+  // finished): Enter finishes it like a double-click (needs >= 3 vertices),
+  // Esc abandons it (nothing is saved).
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key !== "Escape" || isTypingTarget(e.target)) return;
+      if ((e.key !== "Escape" && e.key !== "Enter") || isTypingTarget(e.target)) return;
       if (useDieViewerStore.getState().activeTool !== "floorplan") return;
       const fp = useFloorplanStore.getState();
       if (fp.draft?.kind !== "poly" || !fp.draft.active) return;
       e.preventDefault();
-      fp.setDraft(null);
+      if (e.key === "Escape") fp.setDraft(null);
+      else finishFloorplanPolyRef.current();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -500,6 +505,34 @@ function DieViewer({ dieId }: { dieId: string }) {
   const fitToScreenRef = useRef<() => void>(() => {});
   const wireRef = useRef<WireTool>(null!);
   const dispatcherRef = useRef(dispatcher);
+  /** Save the floorplan polygon being drawn (>= 3 vertices) as a new region
+   *  and select it; no-op otherwise. Double-click and Enter both call it. */
+  const finishFloorplanPolyRef = useRef(() => {});
+  finishFloorplanPolyRef.current = () => {
+    const fs = useFloorplanStore.getState();
+    if (fs.toolMode !== "poly" || !fs.draft || !fs.draft.active || fs.draft.points.length < 3) return;
+    const au = useAuth.getState();
+    const region: import("shared").FloorplanRegion = {
+      id: uuid(),
+      name: "",
+      kind: "polygon",
+      geometry: fs.draft.points,
+      color: "#4dabf7",
+      createdBy: au.userId ?? null,
+      createdByName: au.username ?? null,
+      createdAt: new Date().toISOString(),
+      reservedBy: null,
+      reservedByName: null,
+      reservedAt: null,
+    };
+    // Undoable; the store mirrors annotations, upsert now for instant feedback.
+    fs.upsertRegion(region);
+    fs.setDraft(null);
+    fs.selectRegion(region.id);
+    void dispatcherRef.current
+      .dispatch({ kind: "upsertFloorplan", region, prevRegion: null })
+      .then((ok) => { if (!ok) toast.error("Failed to save floorplan"); });
+  };
   dispatcherRef.current = dispatcher;
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -1253,6 +1286,35 @@ function DieViewer({ dieId }: { dieId: string }) {
     [toast]
   );
   const closeNetRename = useCallback(() => setNetRename(null), []);
+
+  // Double-click on a placed via (select tool) → color window for it, or for
+  // every placed via in the selection when it is part of it. Undoable.
+  const [viaColorEdit, setViaColorEdit] = useState<{ viaId: string; targetIds: string[]; at: { x: number; y: number } } | null>(null);
+  const openViaColor = useCallback((selectionId: string, at: { x: number; y: number }) => {
+    const anns = annotationsRef.current;
+    if (!anns) return;
+    const targetIds = viaColorTargets(anns, useDieViewerStore.getState().selectedIds, selectionId);
+    if (targetIds.length === 0) return;
+    setViaColorEdit({ viaId: selectionId.slice(5), targetIds, at });
+  }, []);
+  const commitViaColor = useCallback(
+    async (targetIds: string[], color: string | null) => {
+      // Re-read: the vias may have changed while the window was open.
+      const anns = annotationsRef.current;
+      if (!anns) return false;
+      const vias = targetIds.map((id) => viaFromSelectionId(anns, id)).filter((a) => a !== null);
+      const action = viaColorAction(vias, color);
+      if (!action) return true;
+      const ok = await dispatcherRef.current.dispatch(action);
+      if (!ok) toast.error("Failed to change via color");
+      return ok;
+    },
+    [toast]
+  );
+  const closeViaColor = useCallback(() => setViaColorEdit(null), []);
+  const viaLayerColorPrefs = usePreferences((s) => s.viaLayerColors);
+  const globalViaColor = usePreferences((s) => s.viaColor);
+  const sessionMetalStack = useSession((s) => s.metalStack);
   const closeCellTypePicker = useCallback(() => setCellTypePicker(null), []);
   // Dragged element windows re-anchor when their anchor point is deleted.
   useWindowAnchorMaintenance(dieId, annotations);
@@ -2049,7 +2111,9 @@ function DieViewer({ dieId }: { dieId: string }) {
             r.kind === "rect" || pts.length === 2
               ? pointInRect(world, rectFromPoints(pts[0], pts[pts.length - 1]))
               : pointInPolygon(world, pts);
-          if (inside && !floorplans.includes(typeName)) floorplans.push(typeName);
+          if (!inside) continue;
+          const shown = floorplanNameInline(typeName) || typeName;
+          if (!floorplans.includes(shown)) floorplans.push(shown);
         }
       }
       return net == null && cells.length === 0 && floorplans.length === 0
@@ -3622,33 +3686,9 @@ function DieViewer({ dieId }: { dieId: string }) {
         multiWire.finish();
         return;
       }
-      // Floorplan poly: double-click to finish polygon
+      // Floorplan poly: double-click (or Enter) finishes the polygon.
       if (tool === "floorplan") {
-        const fs = useFloorplanStore.getState();
-        if (fs.toolMode === "poly" && fs.draft && fs.draft.active && fs.draft.points.length >= 3) {
-          const pts = fs.draft.points;
-          const au = useAuth.getState();
-          const region: import("shared").FloorplanRegion = {
-            id: uuid(),
-            name: "",
-            kind: "polygon",
-            geometry: pts,
-            color: "#4dabf7",
-            createdBy: au.userId ?? null,
-            createdByName: au.username ?? null,
-            createdAt: new Date().toISOString(),
-            reservedBy: null,
-            reservedByName: null,
-            reservedAt: null,
-          };
-          // Undoable; the store mirrors annotations, upsert now for instant feedback.
-          useFloorplanStore.getState().upsertRegion(region);
-          useFloorplanStore.getState().setDraft(null);
-          useFloorplanStore.getState().selectRegion(region.id);
-          void dispatcherRef.current
-            .dispatch({ kind: "upsertFloorplan", region, prevRegion: null })
-            .then((ok) => { if (!ok) toast.error("Failed to save floorplan"); });
-        }
+        finishFloorplanPolyRef.current();
         return;
       }
       // Measure tool double-click → prompt for known size to set scale.
@@ -3701,6 +3741,12 @@ function DieViewer({ dieId }: { dieId: string }) {
       // pickable region), then ML via as the fallback.
       const tol = HIT_TOLERANCE_PX / vp.zoom;
       const hit = annotationLayer?.hitTest(world, tol, Math.max(tol, netNodePickWorldRadius(vp.zoom))) ?? null;
+      // Plain double-click on a placed via → its color window;
+      // Ctrl/Cmd+double-click → start a wire from it.
+      if (hit && hit.annotation.kind === "via" && !(event.ctrlKey || event.metaKey)) {
+        openViaColor(hit.annotation.id, world);
+        return;
+      }
       if (hit && hit.annotation.kind === "via") {
         const annoId = hit.annotation.id.startsWith("anno:")
           ? hit.annotation.id.slice(5)
@@ -3769,7 +3815,7 @@ function DieViewer({ dieId }: { dieId: string }) {
         navigate(`/re?die=${encodeURIComponent(dieId)}&type=${encodeURIComponent(cellTypeId)}&cell=${encodeURIComponent(cellId)}`);
       }
     },
-    [annotationLayer, mlViasLayer, wire, multiWire, startWireAt, navigate, dieId, dialog]
+    [annotationLayer, mlViasLayer, wire, multiWire, startWireAt, navigate, dieId, dialog, openViaColor]
   );
 
   // Zoom button handlers read the latest viewport from the live store at
@@ -4285,6 +4331,25 @@ function DieViewer({ dieId }: { dieId: string }) {
                 customColorsEnabled={customNetColorsEnabled}
                 onSave={(name, color) => commitNetRename(net.id, name, color)}
                 onClose={closeNetRename}
+              />
+            ) : null;
+          })()}
+          {viaColorEdit && annotations && (() => {
+            const via = viaFromSelectionId(annotations, `anno:${viaColorEdit.viaId}`);
+            const targets = viaColorEdit.targetIds
+              .map((id) => viaFromSelectionId(annotations, id))
+              .filter((a) => a !== null);
+            const stackVias = (sessionMetalStack ?? DEFAULT_METAL_STACK).vias;
+            return via && targets.length > 0 ? (
+              <ViaColorPopover
+                dieId={dieId}
+                via={via}
+                targets={targets}
+                anchor={viaColorEdit.at}
+                viewportStore={viewportLive}
+                baseColorOf={(a) => viaBaseColor(a, viaLayerColorPrefs, stackVias, globalViaColor)}
+                onSave={(color) => commitViaColor(viaColorEdit.targetIds, color)}
+                onClose={closeViaColor}
               />
             ) : null;
           })()}

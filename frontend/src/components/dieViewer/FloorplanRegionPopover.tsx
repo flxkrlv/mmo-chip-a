@@ -8,6 +8,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { DieAnnotations, FloorplanRegion } from "shared";
 import type { ActionDispatcher, AnnotationAction } from "../../api/actions";
+import { normalizeFloorplanName } from "../../lib/floorplanName";
 import { collectDieWideAnalogDevices } from "../../api/dieWideAnalog";
 import { useAuth } from "../../state/auth";
 import { useToast } from "../Toast";
@@ -326,7 +327,7 @@ export function FloorplanRegionPopover({
           // Override newAliases for the save below
           const updated: FloorplanRegion = {
             ...region,
-            name,
+            name: normalizeFloorplanName(name),
             color,
             createdByName: region.createdByName ?? null,
             reservedByName: region.reservedByName ?? null,
@@ -351,7 +352,7 @@ export function FloorplanRegionPopover({
       // ── Save the region with aliases (no die rename needed) ──
       const updated: FloorplanRegion = {
         ...region,
-        name,
+        name: normalizeFloorplanName(name),
         color,
         createdByName: region.createdByName ?? null,
         reservedByName: region.reservedByName ?? null,
@@ -416,16 +417,25 @@ export function FloorplanRegionPopover({
         <span style={{ fontSize: 10, color: "#888", textTransform: "uppercase", marginBottom: 2, display: "block" }}>
           Name
         </span>
-        <input
+        <textarea
           className="input"
           value={name}
+          rows={Math.min(6, Math.max(1, name.split("\n").length))}
           onChange={(e) => {
             setName(e.target.value);
             setDirty(true);
             setSaveWarnings([]);
           }}
-          placeholder="e.g. VCC_UVLO"
-          style={{ width: "100%", boxSizing: "border-box" }}
+          onKeyDown={(e) => {
+            // Enter = new line; Ctrl/Cmd+Enter saves.
+            if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
+              e.preventDefault();
+              void handleSave();
+            }
+          }}
+          placeholder="e.g. VCC_UVLO (Enter: new line)"
+          title="Enter adds a line · Ctrl+Enter saves"
+          style={{ width: "100%", boxSizing: "border-box", resize: "vertical", fontFamily: "inherit", lineHeight: 1.35 }}
         />
       </label>
 
@@ -535,7 +545,7 @@ export function FloorplanRegionPopover({
               try {
                 const au = useAuth.getState();
                 const reserved: FloorplanRegion = {
-                  ...region, name, color,
+                  ...region, name: normalizeFloorplanName(name), color,
                   reservedBy: au.userId ?? null,
                   reservedByName: au.username ?? null,
                   reservedAt: new Date().toISOString(),

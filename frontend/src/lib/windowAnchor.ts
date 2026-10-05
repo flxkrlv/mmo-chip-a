@@ -13,7 +13,7 @@
  * window re-anchors to the neighbour of the deleted point.
  */
 
-import type { Cell, CellType, CommentAnnotation, DieAnnotations, FloorplanRegion } from "shared";
+import type { Cell, CellType, CommentAnnotation, DieAnnotations, FloorplanRegion, HumanAnnotation } from "shared";
 import { cellWorldRect } from "./cellFootprint";
 
 /** A candidate anchor point of an element, in world coordinates. */
@@ -38,7 +38,7 @@ export interface WindowAnchor {
 }
 
 /** Element kinds that own a window. */
-export type WindowElementKind = "net" | "cell" | "floorplan" | "comment";
+export type WindowElementKind = "net" | "cell" | "floorplan" | "comment" | "via";
 
 /** Preferences key of an element's window anchor. */
 export function windowAnchorKey(dieId: string, kind: WindowElementKind, id: string): string {
@@ -74,6 +74,14 @@ export function cellAnchorPoints(cell: Cell, cellType: CellType | undefined): An
   return rectCorners(r.x, r.y, r.x + r.width, r.y + r.height);
 }
 
+/** Point via: its position; rect via: corners; polygon via: vertices. */
+export function viaAnchorPoints(via: HumanAnnotation): { points: AnchorPoint[]; sig?: string } {
+  const g = via.geometry;
+  if (g.kind === "point") return { points: [{ key: "pos", x: g.x, y: g.y }] };
+  if (g.kind === "rectangle") return { points: rectCorners(g.x, g.y, g.x + g.width, g.y + g.height) };
+  return { points: g.points.map((p, i) => ({ key: `v${i}`, x: p.x, y: p.y })), sig: String(g.points.length) };
+}
+
 export function commentAnchorPoints(comment: CommentAnnotation): AnchorPoint[] {
   return [{ key: "pos", x: comment.x, y: comment.y }];
 }
@@ -104,6 +112,10 @@ export function anchorPointsFor(
     case "comment": {
       const comment = (annotations.comments ?? []).find((c) => c.id === id);
       return comment ? { points: commentAnchorPoints(comment) } : null;
+    }
+    case "via": {
+      const via = (annotations.annotations ?? []).find((a) => a.id === id);
+      return via ? viaAnchorPoints(via) : null;
     }
   }
 }

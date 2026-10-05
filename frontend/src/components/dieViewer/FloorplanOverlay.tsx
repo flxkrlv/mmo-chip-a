@@ -16,6 +16,7 @@ import type { Viewport } from "../../renderer/types";
 import { FloorplanRegionPopover } from "./FloorplanRegionPopover";
 import { FloorplanEditHandles } from "./FloorplanEditHandles";
 import { FloorplanPolyDraft } from "./FloorplanPolyDraft";
+import { floorplanNameLines } from "../../lib/floorplanName";
 import type { ActionDispatcher } from "../../api/actions";
 import { useAuth } from "../../state/auth";
 import { useToast } from "../Toast";
@@ -35,6 +36,20 @@ interface Props {
 }
 
 const FLOORPLAN_STROKE_WIDTH = 2.2;
+
+/** A (possibly multiline) region name as <tspan> rows; the first row sits on
+ *  the parent <text>'s y. Blank rows keep their height. */
+function NameLines({ name, x, fontSize }: { name: string; x: number; fontSize: number }) {
+  return (
+    <>
+      {floorplanNameLines(name).map((line, i) => (
+        <tspan key={i} x={x} dy={i === 0 ? 0 : fontSize * 1.2}>
+          {line || "\u00a0"}
+        </tspan>
+      ))}
+    </>
+  );
+}
 const FLOORPLAN_DRAFT_STROKE_WIDTH = 2.2;
 
 /**
@@ -298,7 +313,11 @@ export function FloorplanOverlay({
                   style={{ pointerEvents: "auto", cursor: "pointer", textShadow: "0 0 4px rgba(0,0,0,0.7)" }}
                   onClick={() => !isDraft && openPopover(region)}
                 >
-                  {region.name}
+                  <NameLines
+                    name={region.name}
+                    x={(region.geometry[0].x - viewport.originX) * viewport.zoom + 8}
+                    fontSize={Math.max(13, 14 * viewport.zoom / 1000)}
+                  />
                 </text>
               )}
               {/* Draft vertex dots */}
@@ -363,7 +382,7 @@ export function FloorplanOverlay({
                 style={{ pointerEvents: "auto", cursor: "pointer", textShadow: "0 0 4px rgba(0,0,0,0.8)" }}
                 onClick={() => openPopover(region)}
               >
-                {region.name}
+                <NameLines name={region.name} x={cssLeft + 6} fontSize={Math.max(13, 14 * viewport!.zoom / 1000)} />
               </text>
             )}
             {/* Draft size readout */}

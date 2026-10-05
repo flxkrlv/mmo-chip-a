@@ -363,7 +363,7 @@ export function buildAnnotation(
             ? viaScreenRadius(bounds.zoom, worldR) / bounds.zoom
             : VIA_RADIUS_PX / bounds.zoom;
         const r = state.selected ? baseR * SELECT_NODE_MULT : baseR;
-        const viaColor = (a.layer && getViaLayerColor?.(a.layer)) ?? getPointViaColor();
+        const viaColor = a.color ?? (a.layer && getViaLayerColor?.(a.layer)) ?? getPointViaColor();
         ctx.fillStyle = state.selected ? SELECT_COLOR : viaColor;
         ctx.beginPath();
         ctx.arc(g.x, g.y, r, 0, Math.PI * 2);
@@ -403,7 +403,7 @@ export function buildAnnotation(
           }
           return;
         }
-        const viaColor = (a.layer && getViaLayerColor?.(a.layer)) ?? getPointViaColor();
+        const viaColor = a.color ?? (a.layer && getViaLayerColor?.(a.layer)) ?? getPointViaColor();
         const viaFill = viaColorWithAlpha(viaColor, 0.25);
         ctx.fillStyle = state.selected ? SELECT_FILL : viaFill;
         ctx.strokeStyle = state.selected ? SELECT_COLOR : viaColor;
@@ -452,7 +452,7 @@ export function buildAnnotation(
           return;
         }
         if (pts.length < 2) return;
-        const viaColor = (a.layer && getViaLayerColor?.(a.layer)) ?? getPointViaColor();
+        const viaColor = a.color ?? (a.layer && getViaLayerColor?.(a.layer)) ?? getPointViaColor();
         const viaFill = viaColorWithAlpha(viaColor, 0.25);
         ctx.fillStyle = state.selected ? SELECT_FILL : viaFill;
         ctx.strokeStyle = state.selected ? SELECT_COLOR : viaColor;

@@ -258,6 +258,7 @@ function FloorplanOptions() {
           type="button"
           className={"chip" + (toolMode === "poly" ? " on" : "")}
           style={{ cursor: "pointer" }}
+          title="Click to add vertices · Enter / double-click to finish · Esc to cancel"
           onClick={() => setToolMode("poly")}
         >
           Poly

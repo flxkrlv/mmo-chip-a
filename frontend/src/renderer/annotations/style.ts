@@ -277,12 +277,16 @@ export function viaColorOpaque(color: string): string {
   return color;
 }
 
-/** Extract R,G,B from an rgba string and return a new rgba with a custom
- *  alpha (0..1). Returns the original string unchanged for hex inputs. */
+/** Extract R,G,B from an rgba / rgb / #rgb / #rrggbb string and return a new
+ *  rgba with a custom alpha (0..1). Other inputs are returned unchanged. */
 export function viaColorWithAlpha(color: string, alpha: number): string {
-  if (color.startsWith("rgba")) {
-    const m = color.match(/rgba\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/);
-    if (m) return `rgba(${m[1]}, ${m[2]}, ${m[3]}, ${alpha})`;
+  const m = color.match(/rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/);
+  if (m) return `rgba(${m[1]}, ${m[2]}, ${m[3]}, ${alpha})`;
+  const hex = color.match(/^#([0-9a-f]{3}|[0-9a-f]{6})$/i);
+  if (hex) {
+    const h = hex[1].length === 3 ? hex[1].replace(/./g, "$&$&") : hex[1];
+    const n = parseInt(h, 16);
+    return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${alpha})`;
   }
   return color;
 }

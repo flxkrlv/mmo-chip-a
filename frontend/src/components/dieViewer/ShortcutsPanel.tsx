@@ -34,6 +34,7 @@ const SHORTCUT_GROUPS: ShortcutGroup[] = [
       { key: "R", label: "Add Cell" },
       { key: "P", label: "I/O Point" },
       { key: "H", label: "Floorplan" },
+      { key: "Enter / Dbl-click", label: "Finish floorplan polygon (Esc: cancel)" },
       { key: "C", label: "Comment" },
       { key: "F", label: "Fit to Screen" },
       { key: "Space (hold)", label: "Pan" },
@@ -49,6 +50,8 @@ const SHORTCUT_GROUPS: ShortcutGroup[] = [
       { key: "Space+H", label: "Toggle floorplans visibility" },
       { key: "E", label: "Via up (wire-end preview)" },
       { key: "Q", label: "Via down (wire-end preview)" },
+      { key: "Dbl-click via", label: "Via color (all selected vias if it is selected)" },
+      { key: "Ctrl+Dbl-click via", label: "Start a wire from the via" },
     ],
   },
   {

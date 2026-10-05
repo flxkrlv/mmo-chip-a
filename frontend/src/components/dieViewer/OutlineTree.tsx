@@ -30,6 +30,7 @@ import { useDieViewerStore } from "../../state/dieViewer";
 import { usePreferences, selectNetWidth } from "../../state/preferences";
 import { TreeRow, TreeSep } from "../tree/TreeRow";
 import { NetColorPickerBody } from "./NetColorPickerBody";
+import { floorplanNameInline } from "../../lib/floorplanName";
 
 // Re-export so existing imports keep working.
 export { ANNOTATION_KIND_VALUES as ANNOTATION_KINDS };
@@ -540,7 +541,7 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
               <TreeRow
                 depth={1}
                 expand={open ? "open" : "closed"}
-                label={group.name}
+                label={floorplanNameInline(group.name) || group.name}
                 meta={group.regions.length}
                 visibility={{
                   visible: typeVisible,
@@ -558,7 +559,7 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
                       key={id}
                       depth={2}
                       icon={Ic.floorplan}
-                      label={region.name || region.id.slice(0, 8)}
+                      label={floorplanNameInline(region.name) || region.id.slice(0, 8)}
                       selected={selectedIds.has(id)}
                       onSelect={() => select([id])}
                     />
