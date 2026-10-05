@@ -2,6 +2,7 @@ import { create } from "zustand";
 import type { AnnotationRect, DieMLConfig } from "shared";
 import type { AnnotationAction } from "../api/actions";
 import type { WireClipboard } from "../lib/wireClipboard";
+import type { PinClip } from "../lib/pinClipboard";
 
 /** Which right-panel tab is showing. The ML tab also drives a render mode:
  *  traces/vias size from `mlConfig` instead of display preferences. */
@@ -112,6 +113,8 @@ interface DieViewerState {
   /** Copied cell data for paste (cellTypeId + orientation, no position). */
   clipboardCells: { cellTypeId: string; offsetX: number; offsetY: number; flippedV?: boolean; flippedH?: boolean; rotation?: 0 | 90 | 180 | 270; bounds?: AnnotationRect }[];
   clipboardWires: WireClipboard | null;
+  /** Copied I/O pads: pasted with the same pin number + name, new place. */
+  clipboardPins: PinClip[];
 }
 
 interface DieViewerActions {
@@ -145,6 +148,8 @@ interface DieViewerActions {
   clearWireClipboard: () => void;
   /** Clear cell clipboard. */
   clearCellClipboard: () => void;
+  /** Replace the pad clipboard (empty clears it). */
+  setPinClipboard: (pins: PinClip[]) => void;
   /** Wipe transient state — called when navigating to a different die. */
   reset: () => void;
 }
@@ -170,6 +175,7 @@ const INITIAL_STATE: DieViewerState = {
   mlConfig: { ...DEFAULT_ML_CONFIG },
   mlViasCount: 0,
   clipboardCells: [],
+  clipboardPins: [],
   clipboardWires: null
 };
 
@@ -263,6 +269,7 @@ export const useDieViewerStore = create<DieViewerState & DieViewerActions>()((se
   setWireClipboard: (clipboard) => set({ clipboardWires: clipboard }),
   clearWireClipboard: () => set({ clipboardWires: null }),
   clearCellClipboard: () => set({ clipboardCells: [] }),
+  setPinClipboard: (pins) => set({ clipboardPins: pins }),
 
   // The undo history is left alone: it is per die (see ensureHistoryFor), and
   // the die viewer resets on every mount — coming back from Merge / RE cell

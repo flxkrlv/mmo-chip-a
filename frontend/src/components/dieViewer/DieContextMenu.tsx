@@ -43,6 +43,9 @@ interface Props {
   onPasteNet?: () => void;
   hasWireClipboard?: boolean;
   hasCellClipboard?: boolean;
+  /** Copy the clicked I/O pad (or the selection it is part of). */
+  onCopyPin?: () => void;
+  hasPinClipboard?: boolean;
   onMakeUnique?: () => void;
   /** Rotate / mirror the clicked cell (or the selected cells it belongs to)
    *  in place on the die. */
@@ -74,6 +77,8 @@ export function DieContextMenu({
   onPasteNet,
   hasWireClipboard,
   hasCellClipboard,
+  onCopyPin,
+  hasPinClipboard,
   onMakeUnique,
   onOrientCell,
   cellsLocked,
@@ -176,6 +181,18 @@ export function DieContextMenu({
           )}
         </>
       )}
+      {!menu.hitCellId && onCopyPin && menu.hitPartId?.startsWith("pin:") && (
+        <>
+          <div className="menu-sep" />
+          <button
+            className="menu-item"
+            title="Paste makes another pad of the same pin (same number and name) elsewhere"
+            onClick={() => { onCopyPin(); onClose(); }}
+          >
+            Copy pad <span style={{ marginLeft: "auto", color: "var(--ink3)" }}>Ctrl+C</span>
+          </button>
+        </>
+      )}
       {!menu.hitCellId && onCopyNet && menu.hitPartId?.startsWith("net:") && (
         <>
           <div className="menu-sep" />
@@ -201,16 +218,20 @@ export function DieContextMenu({
           </button>
         </>
       )}
-      {!menu.hitCellId && onPasteCell && (hasCellClipboard || hasWireClipboard) && (
+      {!menu.hitCellId && onPasteCell && (hasCellClipboard || hasWireClipboard || hasPinClipboard) && (
         <>
           <div className="menu-sep" />
           <button className="menu-item" onClick={() => { onPasteCell(); onClose(); }}>
-            {hasCellClipboard && hasWireClipboard ? "Paste Selection" : "Paste Cell"}
+            {[hasCellClipboard, hasWireClipboard, hasPinClipboard].filter(Boolean).length > 1
+              ? "Paste Selection"
+              : hasPinClipboard
+                ? "Paste Pad"
+                : "Paste Cell"}
             <span style={{ marginLeft: "auto", color: "var(--ink3)" }}>Ctrl+V</span>
           </button>
         </>
       )}
-      {!menu.hitCellId && onPasteNet && hasWireClipboard && !hasCellClipboard && (
+      {!menu.hitCellId && onPasteNet && hasWireClipboard && !hasCellClipboard && !hasPinClipboard && (
         <>
           <div className="menu-sep" />
           <button className="menu-item" onClick={() => { onPasteNet(); onClose(); }}>

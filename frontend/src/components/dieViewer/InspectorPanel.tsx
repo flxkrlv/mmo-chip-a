@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect, type ReactNode } from "react";
 import { cellWorldRect } from "../../lib/cellFootprint";
+import { padCountByPin, renamePinActions } from "../../lib/pinClipboard";
 import { useDialog } from "../Dialog";
 import { useQueryClient } from "@tanstack/react-query";
 import type { AnalogDevice, AssistantFinding, DieAnnotations, FloorplanRegion, MLInferenceJob, WireLayer } from "shared";
@@ -301,18 +302,18 @@ function resolve(
     case "pin": {
       const p = ann.pins?.find((x) => x.id === eid);
       if (!p) return null;
+      const pads = padCountByPin(ann.pins).get(p.pin) ?? 1;
       return {
-        typeLabel: "I/O pin",
+        typeLabel: pads > 1 ? `I/O pin · ${pads} pads` : "I/O pin",
         displayName: p.name || `pin ${p.pin}`,
         uid: p.id,
         name: {
           value: p.name ?? "",
-          onCommit: (name) =>
-            void dispatcher.dispatch({
-              kind: "upsertPin",
-              pin: { ...p, name },
-              prevPin: p
-            })
+          // Every pad of this pin number (pasted copies) is renamed with it.
+          onCommit: (name) => {
+            const actions = renamePinActions(ann.pins, p.pin, name);
+            if (actions.length > 0) void dispatcher.dispatch({ kind: "batch", actions });
+          }
         }
       };
     }

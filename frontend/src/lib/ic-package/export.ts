@@ -115,7 +115,8 @@ export function buildPinTable(
     const diePadNames: string[] = [];
     for (const b of bs) {
       const pad = padById.get(b.diePadId);
-      if (pad) {
+      // Several pads can share one pin number (copies): list it once.
+      if (pad && !diePadNumbers.includes(pad.pin)) {
         diePadNumbers.push(pad.pin);
         if (pad.name) diePadNames.push(pad.name);
       }
