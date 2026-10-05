@@ -317,6 +317,43 @@ function resolve(
         }
       };
     }
+    case "floorplan": {
+      const f = ann.floorplanRegions?.find((x) => x.id === eid);
+      if (!f) return null;
+      const xs = f.geometry.map((p) => p.x);
+      const ys = f.geometry.map((p) => p.y);
+      const w = Math.round(Math.max(...xs) - Math.min(...xs));
+      const h = Math.round(Math.max(...ys) - Math.min(...ys));
+      const rows: [string, ReactNode][] = [
+        ["shape", f.kind === "rect" ? "rectangle" : `polygon · ${f.geometry.length} pts`],
+        ["position", `(${Math.round(Math.min(...xs))}, ${Math.round(Math.min(...ys))})`],
+        ["size", `${w}×${h}`],
+        [
+          "color",
+          <span key="color" style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+            <span style={{ width: 10, height: 10, borderRadius: 2, background: f.color || "#4dabf7" }} />
+            {f.color || "#4dabf7"}
+          </span>
+        ]
+      ];
+      if (f.createdByName) rows.push(["created by", f.createdByName]);
+      if (f.reservedByName) rows.push(["reserved by", f.reservedByName]);
+      return {
+        typeLabel: "Floorplan",
+        displayName: f.name || `Floorplan ${short(f.id)}`,
+        uid: f.id,
+        name: {
+          value: f.name ?? "",
+          onCommit: (name) =>
+            void dispatcher.dispatch({
+              kind: "upsertFloorplan",
+              region: { ...f, name },
+              prevRegion: f
+            })
+        },
+        rows
+      };
+    }
     case "anno": {
       const a = ann.annotations?.find((x) => x.id === eid);
       if (!a) return null;

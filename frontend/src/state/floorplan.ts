@@ -7,6 +7,7 @@
 
 import { create } from "zustand";
 import type { FloorplanRegion } from "shared";
+import { useDieViewerStore } from "./dieViewer";
 
 export type FloorplanToolMode = "idle" | "rect" | "poly";
 
@@ -38,7 +39,8 @@ interface FloorplanActions {
   upsertRegion: (region: FloorplanRegion) => void;
   /** Remove a region by id. */
   removeRegion: (id: string) => void;
-  /** Select a region for popover display (also starts geometry editing). */
+  /** Select a region for popover display (also starts geometry editing and
+   *  selects `floorplan:<id>` in the die viewer, for the Inspector). */
   selectRegion: (id: string | null) => void;
   /** Start / stop showing geometry edit handles on a region. */
   setEditingRegion: (id: string | null) => void;
@@ -79,8 +81,16 @@ export const useFloorplanStore = create<FloorplanState & FloorplanActions>()((se
       selectedRegionId: state.selectedRegionId === id ? null : state.selectedRegionId,
       editingRegionId: state.editingRegionId === id ? null : state.editingRegionId,
     })),
-  selectRegion: (id) =>
-    set(id === null ? { selectedRegionId: null } : { selectedRegionId: id, editingRegionId: id }),
+  selectRegion: (id) => {
+    if (id === null) {
+      set({ selectedRegionId: null });
+      return;
+    }
+    set({ selectedRegionId: id, editingRegionId: id });
+    // Mirror into the die-viewer selection (same id as the Outline row) so
+    // the Inspector shows the region.
+    useDieViewerStore.getState().select([`floorplan:${id}`]);
+  },
   setEditingRegion: (id) => set({ editingRegionId: id }),
   setToolMode: (mode) => set({ toolMode: mode }),
   setDraft: (draft) => set({ draft }),
