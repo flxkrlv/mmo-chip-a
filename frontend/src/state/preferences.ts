@@ -102,6 +102,8 @@ interface PreferencesState {
   guidesLocked: boolean;
   /** Cells locked — can't be dragged/repositioned. */
   cellsLocked: boolean;
+  /** Die-viewer screenshot resolution, × the on-screen device pixels. */
+  screenshotScale: number;
   /** Classes a newly-drawn ML ROI fully labels (schema §1 — load-bearing).
    *  Editable in the ROI tool options; each new ROI is stamped with this. */
   roiClasses: AnnotationClass[];
@@ -354,6 +356,7 @@ interface PreferencesActions {
   setGuidesHidden: (hidden: boolean) => void;
   setGuidesLocked: (locked: boolean) => void;
   setCellsLocked: (locked: boolean) => void;
+  setScreenshotScale: (scale: number) => void;
   setBaseImageHidden: (id: string, hidden: boolean) => void;
   setBaseImageOpacity: (id: string, opacity: number) => void;
   setMergeMode: (
@@ -445,6 +448,7 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
         guidesHidden: false,
         guidesLocked: false,
         cellsLocked: false,
+        screenshotScale: 1,
         baseImageHidden: {},
         baseImageOpacity: {},
         roiClasses: ["point_via", "irregular_via"],
@@ -650,6 +654,7 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
         setGuidesHidden: (hidden) => set({ guidesHidden: hidden }),
         setGuidesLocked: (locked) => set({ guidesLocked: locked }),
         setCellsLocked: (locked) => set({ cellsLocked: locked }),
+        setScreenshotScale: (scale) => set({ screenshotScale: scale }),
         setBaseImageHidden: (id, hidden) =>
           set((state) => ({
             baseImageHidden: { ...state.baseImageHidden, [id]: hidden }
@@ -822,6 +827,7 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
           guidesHidden: state.guidesHidden,
           guidesLocked: state.guidesLocked,
           cellsLocked: state.cellsLocked,
+          screenshotScale: state.screenshotScale,
           baseImageHidden: state.baseImageHidden,
           baseImageOpacity: state.baseImageOpacity,
           roiClasses: state.roiClasses,

@@ -155,6 +155,8 @@ import { netNodeWorldRadius, viaSnapTolerance } from "../renderer/annotations/st
 import type { Layer, Viewport } from "../renderer/types";
 import { formatPercent } from "../lib/format";
 import { isTypingTarget } from "../lib/keyboard";
+import { clampScreenshotScale, maxScreenshotScale } from "../lib/screenshot";
+import { ScreenshotPanel } from "../components/dieViewer/ScreenshotPanel";
 import { buildMakeUniqueAction, buildOrientAction, orientOf, orientOnDie } from "../lib/mergeCells";
 import { createLiveValue } from "../lib/liveValue";
 import type { WirePreview } from "../components/dieViewer/WireDraftOverlay";
@@ -654,10 +656,10 @@ function DieViewer({ dieId }: { dieId: string }) {
         }
       }
 
-      // Ctrl+Shift+S → screenshot (PNG download, 4K with overlays)
+      // Ctrl+Shift+S → screenshot (PNG at the chosen resolution, with overlays)
       if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === "s") {
         e.preventDefault();
-        takeScreenshot();
+        void takeScreenshot();
         return;
       }
 
@@ -3965,48 +3967,55 @@ function DieViewer({ dieId }: { dieId: string }) {
 
   const minZoom = die ? (1 / Math.max(die.width, die.height)) * 50 : 0.01;
 
-  // Screenshot: composite main canvas + analog overlay at 4K resolution.
-  const takeScreenshot = useCallback(() => {
+  // Screenshot: the view re-rendered offscreen at `screenshotScale` × the
+  // screen's device pixels (image layers load the finer pyramid tiles it
+  // needs), with the DOM overlay canvases (analog highlights, comments…)
+  // stretched on top. Right-click the button for the resolution slider.
+  const screenshotScale = usePreferences((s) => s.screenshotScale);
+  const [screenshotBusy, setScreenshotBusy] = useState<string | null>(null);
+  const [screenshotPanel, setScreenshotPanel] = useState<DOMRect | null>(null);
+  const screenshotBusyRef = useRef(false);
+  const screenCanvasSize = useCallback(() => {
+    const c = containerRef.current?.querySelector("canvas");
+    return { width: c?.width ?? 0, height: c?.height ?? 0 };
+  }, []);
+  const takeScreenshot = useCallback(async () => {
     const section = containerRef.current;
-    if (!section) return;
-    const canvases = section.querySelectorAll("canvas");
+    const handle = canvasHandle.current;
+    if (!section || !handle || screenshotBusyRef.current) return;
+    const canvases = [...section.querySelectorAll("canvas")];
     if (canvases.length === 0) return;
-    // First canvas = main tiled canvas; subsequent canvases are overlays
-    // (analog highlights, comment overlay, etc.)
-    const mainCanvas = canvases[0] as HTMLCanvasElement;
-    const srcW = mainCanvas.width;
-    const srcH = mainCanvas.height;
+    // First canvas = main tiled canvas; subsequent canvases are overlays.
+    const { width: srcW, height: srcH } = canvases[0];
     if (srcW === 0 || srcH === 0) return;
-
-    // Target: 4K (3840px on longest side, keep aspect ratio).
-    const TARGET_LONGEST = 3840;
-    const scale = Math.min(TARGET_LONGEST / srcW, TARGET_LONGEST / srcH, 1);
-    const outW = Math.round(srcW * scale);
-    const outH = Math.round(srcH * scale);
-
-    const out = document.createElement("canvas");
-    out.width = outW;
-    out.height = outH;
-    const ctx = out.getContext("2d")!;
-    ctx.imageSmoothingEnabled = true;
-    ctx.imageSmoothingQuality = "high";
-
-    // Draw each canvas layer in order.
-    for (const c of canvases) {
-      ctx.drawImage(c as HTMLCanvasElement, 0, 0, outW, outH);
-    }
-
-    out.toBlob((blob) => {
+    const scale = clampScreenshotScale(
+      usePreferences.getState().screenshotScale,
+      maxScreenshotScale(srcW, srcH)
+    );
+    screenshotBusyRef.current = true;
+    setScreenshotBusy("Rendering…");
+    try {
+      const out = await handle.snapshot(scale, (n) => setScreenshotBusy(`Loading ${n} tile${n === 1 ? "" : "s"}…`));
+      if (!out) return;
+      setScreenshotBusy("Saving…");
+      const ctx = out.getContext("2d")!;
+      ctx.imageSmoothingEnabled = true;
+      ctx.imageSmoothingQuality = "high";
+      for (const c of canvases.slice(1)) ctx.drawImage(c, 0, 0, out.width, out.height);
+      const blob = await new Promise<Blob | null>((r) => out.toBlob(r, "image/png"));
       if (!blob) return;
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = `${die?.name ?? "die"}_screenshot.png`;
+      a.download = `${die?.name ?? "die"}_screenshot_${out.width}x${out.height}.png`;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
-    }, "image/png");
+    } finally {
+      screenshotBusyRef.current = false;
+      setScreenshotBusy(null);
+    }
   }, [die?.name]);
 
   return (
@@ -4049,8 +4058,18 @@ function DieViewer({ dieId }: { dieId: string }) {
             </button>
             <button
               className="btn ghost"
-              title="Screenshot (Ctrl+Shift+S)"
-              onClick={takeScreenshot}
+              title={
+                screenshotBusy ??
+                `Screenshot ${+screenshotScale.toFixed(2)}× (Ctrl+Shift+S) · right-click for resolution`
+              }
+              disabled={!!screenshotBusy}
+              style={screenshotBusy ? { opacity: 0.6, cursor: "progress" } : undefined}
+              onClick={() => void takeScreenshot()}
+              onContextMenu={(e) => {
+                e.preventDefault();
+                const r = e.currentTarget.getBoundingClientRect();
+                setScreenshotPanel((open) => (open ? null : r));
+              }}
             >
               {Ic.download}
             </button>
@@ -4579,6 +4598,23 @@ function DieViewer({ dieId }: { dieId: string }) {
           hasCellClipboard={useDieViewerStore.getState().clipboardCells.length > 0}
         />
       )}
+      {screenshotPanel && (() => {
+        const base = screenCanvasSize();
+        const max = maxScreenshotScale(base.width, base.height);
+        return (
+          <ScreenshotPanel
+            anchor={screenshotPanel}
+            scale={clampScreenshotScale(screenshotScale, max)}
+            maxScale={max}
+            baseWidth={base.width}
+            baseHeight={base.height}
+            busy={screenshotBusy}
+            onScale={(v) => usePreferences.getState().setScreenshotScale(v)}
+            onTake={() => void takeScreenshot()}
+            onClose={() => setScreenshotPanel(null)}
+          />
+        );
+      })()}
       <ShortcutsPanel open={shortcutsOpen} onClose={() => setShortcutsOpen(false)} />
       <SettingsPanel
         open={settingsOpen}

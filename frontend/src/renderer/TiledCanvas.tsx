@@ -29,6 +29,12 @@ export interface TiledCanvasHandle {
   refresh: () => void;
   /** Center the view on a world point at the given zoom. */
   centerOn: (worldX: number, worldY: number, zoom?: number) => void;
+  /** The current view rendered offscreen at `scale` × screen resolution
+   *  (see TiledRenderer.renderSnapshot). Null before the renderer mounts. */
+  snapshot: (
+    scale: number,
+    onProgress?: (pendingTiles: number) => void
+  ) => Promise<HTMLCanvasElement | null>;
 }
 
 export interface TiledCanvasProps {
@@ -114,6 +120,8 @@ export function TiledCanvas({
         };
       },
       invalidate: () => rendererRef.current?.invalidate(),
+      snapshot: async (scale, onProgress) =>
+        rendererRef.current ? rendererRef.current.renderSnapshot(scale, { onProgress }) : null,
       refresh: () => rendererRef.current?.invalidate(),
       centerOn: (worldX, worldY, zoom) => {
         const cur = viewportRef.current;

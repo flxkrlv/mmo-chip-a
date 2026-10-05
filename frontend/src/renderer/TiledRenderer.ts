@@ -59,6 +59,9 @@ export class TiledRenderer {
   private frameCounter = 0;
   private rafId: number | null = null;
   private destroyed = false;
+  /** A snapshot is rendering: live frames pause so image layers keep the
+   *  snapshot's tile requests instead of cancelling them as off-screen. */
+  private snapshotting = false;
 
   constructor(canvas: HTMLCanvasElement, options: TiledRendererOptions = {}) {
     this.canvas = canvas;
@@ -167,8 +170,115 @@ export class TiledRenderer {
     });
   }
 
+  /**
+   * Render the current view offscreen at `scale` × the on-screen device
+   * resolution — same framing, same line widths relative to the picture,
+   * but image layers draw from the pyramid level that output size needs.
+   * Resolves once every image tile it needs has loaded (or failed), or after
+   * `timeoutMs` with whatever has arrived.
+   */
+  async renderSnapshot(
+    scale: number,
+    options: { onProgress?: (pendingTiles: number) => void; timeoutMs?: number } = {}
+  ): Promise<HTMLCanvasElement> {
+    const { tileSize, viewport: vp } = this;
+    const dpr = this.dpr * scale;
+    const out = document.createElement("canvas");
+    out.width = Math.max(1, Math.round(this.cssWidth * dpr));
+    out.height = Math.max(1, Math.round(this.cssHeight * dpr));
+    const octx = out.getContext("2d");
+    if (!octx || vp.zoom <= 0) return out;
+    const tilePx = Math.round(tileSize * dpr);
+    const tile = document.createElement("canvas");
+    tile.width = tilePx;
+    tile.height = tilePx;
+    const tctx = tile.getContext("2d");
+    if (!tctx) return out;
+
+    const tw = tileSize / vp.zoom;
+    const minI = Math.floor(vp.originX / tw);
+    const maxI = Math.floor((vp.originX + this.cssWidth / vp.zoom) / tw);
+    const minJ = Math.floor(vp.originY / tw);
+    const maxJ = Math.floor((vp.originY + this.cssHeight / vp.zoom) / tw);
+    const world = { x: vp.originX, y: vp.originY, width: this.cssWidth / vp.zoom, height: this.cssHeight / vp.zoom };
+    const pending = () => this.layers.reduce((n, l) => n + (l.pendingLoads?.() ?? 0), 0);
+
+    const pass = () => {
+      const frame: RenderFrame = { id: ++this.frameCounter, world, viewport: vp, detail: dpr };
+      for (const layer of this.layers) {
+        try {
+          layer.beginFrame?.(frame);
+        } catch (error) {
+          console.error(`[renderer] layer "${layer.id}" beginFrame failed`, error);
+        }
+      }
+      octx.setTransform(1, 0, 0, 1, 0, 0);
+      if (this.background === "transparent") octx.clearRect(0, 0, out.width, out.height);
+      else {
+        octx.fillStyle = this.background;
+        octx.fillRect(0, 0, out.width, out.height);
+      }
+      for (let i = minI; i <= maxI; i++) {
+        for (let j = minJ; j <= maxJ; j++) {
+          tctx.setTransform(1, 0, 0, 1, 0, 0);
+          tctx.clearRect(0, 0, tilePx, tilePx);
+          tctx.scale(dpr * vp.zoom, dpr * vp.zoom);
+          tctx.translate(-i * tw, -j * tw);
+          const bounds = {
+            size: tileSize,
+            i,
+            j,
+            world: { x: i * tw, y: j * tw, width: tw, height: tw },
+            dpr,
+            zoom: vp.zoom,
+            detail: dpr
+          };
+          for (const layer of this.layers) {
+            tctx.save();
+            try {
+              layer.draw(tctx, bounds);
+            } catch (error) {
+              console.error(`[renderer] layer "${layer.id}" draw failed`, error);
+            }
+            tctx.restore();
+          }
+          const x = Math.round((i * tw - vp.originX) * vp.zoom * dpr);
+          const y = Math.round((j * tw - vp.originY) * vp.zoom * dpr);
+          octx.drawImage(tile, x, y);
+        }
+      }
+    };
+
+    this.snapshotting = true;
+    for (const layer of this.layers) layer.holdCache?.(true);
+    try {
+      const deadline = performance.now() + (options.timeoutMs ?? 120_000);
+      // Drawing requests the missing tiles; wait for them and draw again,
+      // until a pass finds everything already there.
+      for (let round = 0; round < 50; round++) {
+        pass();
+        let left = pending();
+        if (left === 0 || this.destroyed) break;
+        while (left > 0 && performance.now() < deadline && !this.destroyed) {
+          options.onProgress?.(left);
+          await new Promise((r) => setTimeout(r, 100));
+          left = pending();
+        }
+        if (performance.now() >= deadline) {
+          pass();
+          break;
+        }
+      }
+    } finally {
+      this.snapshotting = false;
+      for (const layer of this.layers) layer.holdCache?.(false);
+      this.invalidate();
+    }
+    return out;
+  }
+
   private render() {
-    if (this.destroyed) return;
+    if (this.destroyed || this.snapshotting) return;
     const { tileSize, dpr, viewport: vp, ctx } = this;
     if (vp.zoom <= 0) return;
 

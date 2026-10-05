@@ -65,6 +65,7 @@ export class OverlayImageLayer implements Layer {
   private useCounter = 0;
   private scratch: HTMLCanvasElement | null = null;
   private lastFrameId = -1;
+  private cacheHeld = false;
   private viewportGeneration = 0;
   private desiredTileKeys = new Set<string>();
   private recentLoads: number[] = [];
@@ -100,7 +101,7 @@ export class OverlayImageLayer implements Layer {
       return;
     }
 
-    const level = this.pickLevel(source, frame.viewport.zoom);
+    const level = this.pickLevel(source, frame.viewport.zoom * (frame.detail ?? 1));
     const coordinates = this.visibleCoordinates(source, level, frame.world);
     const desired = new Set(
       coordinates.map(({ x, y }) => this.tileKey(source, level, x, y))
@@ -282,7 +283,7 @@ export class OverlayImageLayer implements Layer {
     source: OverlayImageSource,
     opacity: number
   ): void {
-    const targetLevel = this.pickLevel(source, bounds.zoom);
+    const targetLevel = this.pickLevel(source, bounds.zoom * (bounds.detail ?? 1));
 
     // Progressive enhancement: draw every coarser level whose tiles we already
     // have in cache, then overdraw the target level.  This means there's always
@@ -725,8 +726,19 @@ export class OverlayImageLayer implements Layer {
     performance.measure(name, { start: requestedAt, end: performance.now() });
   }
 
+  pendingLoads(): number {
+    let n = 0;
+    for (const t of this.cache.values()) if (t.state === "queued" || t.state === "loading") n++;
+    return n;
+  }
+
+  holdCache(hold: boolean): void {
+    this.cacheHeld = hold;
+    if (!hold) this.evictIfNeeded();
+  }
+
   private evictIfNeeded(): void {
-    if (this.cache.size <= MAX_IMAGE_TILES_CACHED) return;
+    if (this.cacheHeld || this.cache.size <= MAX_IMAGE_TILES_CACHED) return;
     const entries = [...this.cache.entries()].sort((a, b) => a[1].lastUsed - b[1].lastUsed);
     const drop = this.cache.size - MAX_IMAGE_TILES_CACHED;
     for (let i = 0; i < drop; i++) {
