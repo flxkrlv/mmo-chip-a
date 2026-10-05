@@ -361,12 +361,13 @@ export function buildMakeUniqueAction(
  *  translations (MergeCanvas un-rotates drags) and move the footprint. */
 export function buildOrientAction(
   cell: Cell,
-  patch: Partial<Pick<Cell, "flippedH" | "flippedV" | "rotation" | "x" | "y">>
+  patch: Partial<Pick<Cell, "flippedH" | "flippedV" | "rotation" | "x" | "y" | "warp">>
 ): AnnotationAction {
   const next: Cell = { ...cell, ...patch };
   // Normalise falsy orientation to absent so the JSON stays clean.
   if (next.flippedH === false) delete next.flippedH;
   if (next.flippedV === false) delete next.flippedV;
   if (next.rotation === 0) delete next.rotation;
+  if (next.warp === undefined) delete next.warp;
   return { kind: "upsertCell", cell: next, prevCell: cell };
 }

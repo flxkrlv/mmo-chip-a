@@ -415,6 +415,24 @@ export interface Cell {
    *  Orientation never affects the footprint — it only changes how the
    *  type's content is presented on the cell. */
   bounds?: AnnotationRect;
+  /** Piecewise-linear stretch of this instance's image, in its type frame
+   *  (after un-orienting), so it lines up exactly with the type in the
+   *  merge-cells tool. Absent ⇒ none. */
+  warp?: CellWarp;
+}
+
+/** One stretch line: image content at `src` (type-frame px along the axis)
+ *  is shown at `dst`. Between lines content is stretched linearly. */
+export interface WarpKnot {
+  src: number;
+  dst: number;
+}
+
+/** Per-axis stretch knots, sorted by `src`, first at 0 and last at the type
+ *  size (the box edges) — `x` from vertical lines, `y` from horizontal ones. */
+export interface CellWarp {
+  x?: WarpKnot[];
+  y?: WarpKnot[];
 }
 
 // ── Grid definitions ──────────────────────────────────────────────

@@ -8,7 +8,7 @@ import {
 } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { cellWorldRect } from "../lib/cellFootprint";
-import type { Cell } from "shared";
+import type { Cell, CellWarp } from "shared";
 import { AppShell } from "../components/shell/AppShell";
 import { StatusBar } from "../components/shell/StatusBar";
 import { SubBar, ToolDivider } from "../components/shell/SubBar";
@@ -302,7 +302,7 @@ function Merge({ dieId }: { dieId: string }) {
   }, [candidates, candidateCellId, setCandidate]);
 
   const orient = useCallback(
-    (patch: Partial<Pick<Cell, "flippedH" | "flippedV" | "rotation" | "x" | "y">>) => {
+    (patch: Partial<Pick<Cell, "flippedH" | "flippedV" | "rotation" | "x" | "y" | "warp">>) => {
       if (!candidateCell) return;
       void dispatcher.dispatch(buildOrientAction(candidateCell, patch));
     },
@@ -316,6 +316,13 @@ function Merge({ dieId }: { dieId: string }) {
       if (candidateCell) orient(orientInTypeFrame(orientOf(candidateCell), op));
     },
     [orient, candidateCell]
+  );
+  // Stretch-line editing on the candidate (S). Each finished gesture is one
+  // undoable upsertCell, so Ctrl+Z / Ctrl+Shift+Z step through the tweaks.
+  const [warpEdit, setWarpEdit] = useState(false);
+  const onWarp = useCallback(
+    (warp: CellWarp | undefined) => orient({ warp }),
+    [orient]
   );
   const onFlipH = useCallback(() => orientView("flipH"), [orientView]);
   const onFlipV = useCallback(() => orientView("flipV"), [orientView]);
@@ -473,7 +480,7 @@ function Merge({ dieId }: { dieId: string }) {
   //   Alt+1..6  switch merge modes (from MERGE_HOTKEYS)
   //   ←/↑ prev · →/↓ next candidate
   //   f flip H · g flip V · h rotate · j auto-align
-  //   y accept & merge
+  //   y accept & merge · s stretch lines
   useEffect(() => {
     const stepCandidate = (delta: number) => {
       if (candidates.length === 0) return;
@@ -536,6 +543,10 @@ function Merge({ dieId }: { dieId: string }) {
         case "y":
         case "Y":
           doMerge();
+          break;
+        case "s":
+        case "S":
+          setWarpEdit((v) => !v);
           break;
       }
     };
@@ -737,6 +748,8 @@ function Merge({ dieId }: { dieId: string }) {
             candidate={candidateView}
             multi={mode === "multi" ? multiViews : undefined}
             onAlign={onAlign}
+            warpEdit={warpEdit}
+            onWarp={onWarp}
           >
             {mode === "multi" && specimenType && (
               <MultiOverlayPanel
@@ -768,6 +781,11 @@ function Merge({ dieId }: { dieId: string }) {
             onFlipV={onFlipV}
             onRotateCw={onRotateCw}
             onAutoAlign={canAutoAlign ? doAutoAlign : null}
+            warpEdit={warpEdit}
+            warpAvailable={mode === "overlay" || mode === "diff" || mode === "candidate"}
+            onToggleWarp={() => setWarpEdit((v) => !v)}
+            hasWarp={!!candidateCell?.warp}
+            onResetWarp={() => onWarp(undefined)}
             onSkip={onSkip}
             onMerge={doMerge}
           />

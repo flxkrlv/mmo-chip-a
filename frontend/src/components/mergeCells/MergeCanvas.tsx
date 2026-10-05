@@ -9,13 +9,22 @@ import {
   forwardRef,
   type CSSProperties
 } from "react";
-import type { Cell, CellType, MLPrediction } from "shared";
+import type { Cell, CellType, CellWarp, MLPrediction } from "shared";
 import { drawCellLayers } from "../../renderer/annotations/shapes";
 import { COLOR_VIA, COLOR_VIA_FILL } from "../../renderer/annotations/style";
 import type { TileBounds } from "../../renderer/types";
 import { orientOf } from "../../lib/mergeCells";
 import { dieToTypeMatrix } from "../../lib/cellFootprint";
-import { drawCellCrop } from "../../lib/cellCrop";
+import { drawCellCrop, drawWarped } from "../../lib/cellCrop";
+import {
+  addWarpLine,
+  axisKnots,
+  moveWarpKnot,
+  normalizeWarp,
+  removeWarpKnot,
+  segmentScales,
+  type WarpAxis
+} from "../../lib/cellWarp";
 import { applyOrientation } from "../../lib/geometry";
 import { withAlpha } from "../../lib/color";
 import { useOverlayLayers } from "../../state/overlayLayers";
@@ -62,11 +71,28 @@ interface Props {
   multi?: CellView[];
   /** Commit a drag-align: source-pixel delta to apply to the candidate x/y. */
   onAlign: (dxSrc: number, dySrc: number) => void;
+  /** Stretch-line editing on the candidate: dragging draws a vertical /
+   *  horizontal line, lines and box edges get handles to stretch with. */
+  warpEdit?: boolean;
+  /** Commit a new candidate stretch (undefined = none). One call per gesture. */
+  onWarp?: (warp: CellWarp | undefined) => void;
   /** Floating UI rendered over the canvas (e.g. the multi-overlay list). */
   children?: React.ReactNode;
 }
 
 const GAP = 24; // world-unit gap between the two boxes in side-by-side
+/** Screen px within which a stretch line / edge is grabbed. */
+const WARP_HIT_PX = 6;
+/** Screen px a stroke must travel before it becomes a stretch line. */
+const WARP_MIN_STROKE_PX = 4;
+const WARP_COLOR = "rgba(96,200,255,0.95)";
+
+/** Modes where the candidate sits alone on the stacked canvas (editable). */
+const warpEditableMode = (m: MergeMode) => m === "overlay" || m === "diff" || m === "candidate";
+
+type WarpGesture =
+  | { kind: "knot"; axis: WarpAxis; index: number; warp: CellWarp | undefined; base: CellWarp | undefined }
+  | { kind: "line"; sx: number; sy: number; start: { x: number; y: number }; axis: WarpAxis | null };
 /** Matches the die viewer (useCanvasGestures) so trackpad zoom feels the same
  *  — the old 0.0015 was ~7× too slow. */
 const WHEEL_ZOOM_FACTOR = 0.01;
@@ -123,7 +149,7 @@ function contentExtent(
 }
 
 export const MergeCanvas = forwardRef<MergeCanvasHandle, Props>(function MergeCanvas(
-  { mode, opacity, showAnno, showMlVias, specimen, candidate, multi, onAlign, children },
+  { mode, opacity, showAnno, showMlVias, specimen, candidate, multi, onAlign, warpEdit = false, onWarp, children },
   ref
 ) {
   const hostRef = useRef<HTMLDivElement | null>(null);
@@ -148,8 +174,32 @@ export const MergeCanvas = forwardRef<MergeCanvasHandle, Props>(function MergeCa
 
   // Latest props mirrored into a ref so the canvas callbacks/effects can stay
   // referentially stable (no ResizeObserver churn during a pan/align drag).
-  const propsRef = useRef({ mode, opacity, showAnno, showMlVias, specimen, candidate, onAlign });
-  propsRef.current = { mode, opacity, showAnno, showMlVias, specimen, candidate, onAlign };
+  const propsRef = useRef({ mode, opacity, showAnno, showMlVias, specimen, candidate, onAlign, warpEdit, onWarp });
+  propsRef.current = { mode, opacity, showAnno, showMlVias, specimen, candidate, onAlign, warpEdit, onWarp };
+
+  // ── Stretch (warp) editing ─────────────────────────────────────────
+  const warpRef = useRef<WarpGesture | null>(null);
+  // A committed stretch, shown until the candidate's own `warp` changes
+  // (the optimistic update) so the release doesn't flash the old one.
+  const pendingWarpRef = useRef<{ cellId: string; base: CellWarp | undefined; warp: CellWarp | undefined } | null>(null);
+  const [hoverCursor, setHoverCursor] = useState<CSSProperties["cursor"] | null>(null);
+  const warpOn = warpEdit && warpEditableMode(mode) && !!candidate?.cell;
+
+  /** The stretch to draw for `cell`: a live drag, a pending commit, else its own. */
+  const warpOf = useCallback((cell: Cell | null): CellWarp | undefined => {
+    if (!cell) return undefined;
+    const g = warpRef.current;
+    const cand = propsRef.current.candidate?.cell;
+    if (cand && cell.id === cand.id) {
+      if (g?.kind === "knot") return g.warp;
+      const pend = pendingWarpRef.current;
+      if (pend && pend.cellId === cell.id) {
+        if (cell.warp === pend.base) return pend.warp;
+        pendingWarpRef.current = null;
+      }
+    }
+    return cell.warp;
+  }, []);
 
   // ── Image cache ────────────────────────────────────────────────────
   // Preview first, full resolution once it arrives (see lib/progressiveImage).
@@ -395,9 +445,10 @@ export const MergeCanvas = forwardRef<MergeCanvasHandle, Props>(function MergeCa
       ctx.globalAlpha = alpha;
       ctx.translate(originX + effDx, originY + effDy);
       ctx.globalCompositeOperation = composite;
+      const warp = warpOf(view.cell);
       if (img) {
         ctx.imageSmoothingEnabled = zoom < 3;
-        drawCellCrop(ctx, img, view.cell, box);
+        drawWarped(ctx, warp, box, () => drawCellCrop(ctx, img, view.cell, box));
       } else if (composite === "source-over") {
         ctx.fillStyle = "rgba(255,255,255,0.04)";
         ctx.fillRect(0, 0, box.w, box.h);
@@ -416,10 +467,13 @@ export const MergeCanvas = forwardRef<MergeCanvasHandle, Props>(function MergeCa
       // die origin sits at the local frame's origin) so vias stay pinned to
       // the underlying image features and visibly move with a live drag.
       if (showMlVias && view.mlVias && view.cell) {
-        ctx.save();
-        ctx.transform(...dieToTypeMatrix(view.cell, box.w, box.h));
-        drawMlVias(ctx, view.mlVias, view.cell.x, view.cell.y, zoom);
-        ctx.restore();
+        const { cell, mlVias } = view;
+        drawWarped(ctx, warp, box, () => {
+          ctx.save();
+          ctx.transform(...dieToTypeMatrix(cell, box.w, box.h));
+          drawMlVias(ctx, mlVias, cell.x, cell.y, zoom);
+          ctx.restore();
+        });
       }
       // Box outline (in the type's own color when it has one).
       ctx.globalAlpha = 1;
@@ -446,7 +500,7 @@ export const MergeCanvas = forwardRef<MergeCanvasHandle, Props>(function MergeCa
           ctx.globalCompositeOperation = "lighter";
           ctx.globalAlpha = 1 / n;
           ctx.imageSmoothingEnabled = v.zoom < 3;
-          drawCellCrop(ctx, img, cv.cell, sp);
+          drawWarped(ctx, warpOf(cv.cell), sp, () => drawCellCrop(ctx, img, cv.cell, sp));
           ctx.restore();
         }
       }
@@ -553,7 +607,88 @@ export const MergeCanvas = forwardRef<MergeCanvasHandle, Props>(function MergeCa
         ctx.restore();
       }
     }
+
+    // ── Stretch lines + handles (candidate frame, on top) ─────────────
+    const frame = warpFrame();
+    if (warpOn && frame && candidate?.cell) {
+      setWorld(v, 0);
+      ctx.save();
+      ctx.translate(frame.ox, frame.oy);
+      drawWarpHandles(ctx, warpOf(candidate.cell), frame.box, v.zoom, warpRef.current);
+      ctx.restore();
+    }
   });
+
+  /** Candidate type frame origin (world) + box while stretch editing applies. */
+  const warpFrame = useCallback((): { ox: number; oy: number; box: { w: number; h: number } } | null => {
+    const p = propsRef.current;
+    if (!warpEditableMode(p.mode) || !p.candidate?.cell) return null;
+    const cd = boxOf(p.candidate);
+    if (!cd) return null;
+    const ext = contentExtent(p.mode, boxOf(p.specimen), cd);
+    return { ox: (ext.w - cd.w) / 2, oy: (ext.h - cd.h) / 2, box: cd };
+  }, []);
+
+  /** Pointer → candidate type-frame point. */
+  const toCandidateLocal = useCallback(
+    (clientX: number, clientY: number) => {
+      const canvas = canvasRef.current;
+      const frame = warpFrame();
+      if (!canvas || !frame) return null;
+      const r = canvas.getBoundingClientRect();
+      const v = viewRef.current;
+      return {
+        x: v.ox + (clientX - r.left) / v.zoom - frame.ox,
+        y: v.oy + (clientY - r.top) / v.zoom - frame.oy,
+        frame
+      };
+    },
+    [warpFrame]
+  );
+
+  /** Stretch line / edge under the pointer, nearest first. */
+  const hitWarpKnot = useCallback(
+    (clientX: number, clientY: number): { axis: WarpAxis; index: number } | null => {
+      const cell = propsRef.current.candidate?.cell;
+      const l = toCandidateLocal(clientX, clientY);
+      if (!cell || !l) return null;
+      const zoom = viewRef.current.zoom;
+      const tol = WARP_HIT_PX / zoom;
+      const reach = WARP_HANDLE_OUT_PX / zoom + tol;
+      const warp = warpOf(cell);
+      let best: { axis: WarpAxis; index: number; d: number } | null = null;
+      const xs = axisKnots(warp?.x, l.frame.box.w);
+      const ys = axisKnots(warp?.y, l.frame.box.h);
+      const yLo = Math.min(ys[0].dst, 0) - reach;
+      const yHi = Math.max(ys[ys.length - 1].dst, l.frame.box.h) + reach;
+      const xLo = Math.min(xs[0].dst, 0) - reach;
+      const xHi = Math.max(xs[xs.length - 1].dst, l.frame.box.w) + reach;
+      if (l.y >= yLo && l.y <= yHi)
+        xs.forEach((k, index) => {
+          const d = Math.abs(l.x - k.dst);
+          if (d <= tol && (!best || d < best.d)) best = { axis: "x", index, d };
+        });
+      if (l.x >= xLo && l.x <= xHi)
+        ys.forEach((k, index) => {
+          const d = Math.abs(l.y - k.dst);
+          if (d <= tol && (!best || d < best.d)) best = { axis: "y", index, d };
+        });
+      const b = best as { axis: WarpAxis; index: number; d: number } | null;
+      return b ? { axis: b.axis, index: b.index } : null;
+    },
+    [toCandidateLocal, warpOf]
+  );
+
+  /** Hand a finished stretch to the page (skipping no-ops). */
+  const commitWarp = useCallback((next: CellWarp | undefined) => {
+    const p = propsRef.current;
+    const cell = p.candidate?.cell;
+    if (!cell || !p.onWarp) return;
+    const norm = normalizeWarp(next);
+    if (JSON.stringify(norm ?? null) === JSON.stringify(cell.warp ?? null)) return;
+    pendingWarpRef.current = { cellId: cell.id, base: cell.warp, warp: norm };
+    p.onWarp(norm);
+  }, []);
 
   // ── Pointer interaction ────────────────────────────────────────────
   const onPointerDown = (e: React.PointerEvent) => {
@@ -562,6 +697,20 @@ export const MergeCanvas = forwardRef<MergeCanvasHandle, Props>(function MergeCa
     canvas.setPointerCapture(e.pointerId);
     const v = viewRef.current;
     const panMode = spaceRef.current || e.button === 1 || e.button === 2;
+    // Stretch editing: grab a line / edge, else start drawing a new line.
+    if (warpOn && !panMode && e.button === 0) {
+      const cell = propsRef.current.candidate?.cell ?? null;
+      const hit = hitWarpKnot(e.clientX, e.clientY);
+      const l = toCandidateLocal(e.clientX, e.clientY);
+      if (hit) {
+        const base = warpOf(cell);
+        warpRef.current = { kind: "knot", axis: hit.axis, index: hit.index, warp: base, base };
+      } else if (l) {
+        warpRef.current = { kind: "line", sx: e.clientX, sy: e.clientY, start: { x: l.x, y: l.y }, axis: null };
+      }
+      redraw();
+      return;
+    }
     // Aligning is single-view only (you need the specimen behind the
     // candidate to judge it); side-by-side just pans the shared view.
     const m = propsRef.current.mode;
@@ -581,6 +730,29 @@ export const MergeCanvas = forwardRef<MergeCanvasHandle, Props>(function MergeCa
     };
   };
   const onPointerMove = (e: React.PointerEvent) => {
+    const g = warpRef.current;
+    if (g) {
+      if (g.kind === "knot") {
+        const l = toCandidateLocal(e.clientX, e.clientY);
+        if (l) {
+          const size = g.axis === "x" ? l.frame.box.w : l.frame.box.h;
+          g.warp = moveWarpKnot(g.base, g.axis, g.index, g.axis === "x" ? l.x : l.y, size);
+        }
+      } else {
+        const dx = e.clientX - g.sx;
+        const dy = e.clientY - g.sy;
+        // A stroke along x draws a horizontal line (splits y), and vice versa.
+        g.axis =
+          Math.hypot(dx, dy) < WARP_MIN_STROKE_PX ? null : Math.abs(dx) >= Math.abs(dy) ? "y" : "x";
+      }
+      redraw();
+      return;
+    }
+    if (warpOn && !dragRef.current) {
+      const hit = hitWarpKnot(e.clientX, e.clientY);
+      const cur = hit ? (hit.axis === "x" ? "col-resize" : "row-resize") : null;
+      if (cur !== hoverCursor) setHoverCursor(cur);
+    }
     const d = dragRef.current;
     if (!d) return;
     const v = viewRef.current;
@@ -597,6 +769,23 @@ export const MergeCanvas = forwardRef<MergeCanvasHandle, Props>(function MergeCa
     redraw();
   };
   const endDrag = (e: React.PointerEvent) => {
+    const g = warpRef.current;
+    if (g) {
+      warpRef.current = null;
+      canvasRef.current?.releasePointerCapture(e.pointerId);
+      const cell = propsRef.current.candidate?.cell;
+      const frame = warpFrame();
+      if (e.type === "pointerup" && cell && frame) {
+        if (g.kind === "knot") commitWarp(g.warp);
+        else if (g.axis) {
+          const size = g.axis === "x" ? frame.box.w : frame.box.h;
+          const next = addWarpLine(warpOf(cell), g.axis, g.axis === "x" ? g.start.x : g.start.y, size);
+          if (next) commitWarp(next);
+        }
+      }
+      redraw();
+      return;
+    }
     const d = dragRef.current;
     dragRef.current = null;
     if (!d) return;
@@ -684,6 +873,8 @@ export const MergeCanvas = forwardRef<MergeCanvasHandle, Props>(function MergeCa
 
   const cursor: CSSProperties["cursor"] = spaceRef.current
     ? "grab"
+    : warpOn
+      ? hoverCursor ?? "crosshair"
     : mode === "sxs"
       ? "grab"
       : candidate && mode !== "specimen" && mode !== "multi"
@@ -714,6 +905,17 @@ export const MergeCanvas = forwardRef<MergeCanvasHandle, Props>(function MergeCa
         onPointerMove={onPointerMove}
         onPointerUp={endDrag}
         onPointerCancel={endDrag}
+        onDoubleClick={(e) => {
+          // Double-click a line removes it; on a box edge, resets the edge.
+          if (!warpOn) return;
+          const hit = hitWarpKnot(e.clientX, e.clientY);
+          const cell = propsRef.current.candidate?.cell;
+          const frame = warpFrame();
+          if (!hit || !cell || !frame) return;
+          const size = hit.axis === "x" ? frame.box.w : frame.box.h;
+          commitWarp(removeWarpKnot(warpOf(cell), hit.axis, hit.index, size));
+          redraw();
+        }}
         onContextMenu={(e) => e.preventDefault()}
       />
       {mode === "sxs" && (
@@ -764,6 +966,96 @@ export const MergeCanvas = forwardRef<MergeCanvasHandle, Props>(function MergeCa
     </div>
   );
 });
+
+/** Screen px the line handles stick out past the box. */
+const WARP_HANDLE_OUT_PX = 10;
+
+/**
+ * Stretch lines of the candidate in its type frame: every knot (box edges
+ * included) as a line with a handle at both ends, the stretch factor of each
+ * segment that isn't 1, and the line being drawn.
+ */
+function drawWarpHandles(
+  ctx: CanvasRenderingContext2D,
+  warp: CellWarp | undefined,
+  box: { w: number; h: number },
+  zoom: number,
+  gesture: WarpGesture | null
+): void {
+  const px = 1 / zoom;
+  const out = WARP_HANDLE_OUT_PX * px;
+  const hs = 3.5 * px;
+  const xs = axisKnots(warp?.x, box.w);
+  const ys = axisKnots(warp?.y, box.h);
+  const top = Math.min(0, ys[0].dst);
+  const bottom = Math.max(box.h, ys[ys.length - 1].dst);
+  const left = Math.min(0, xs[0].dst);
+  const right = Math.max(box.w, xs[xs.length - 1].dst);
+  const active = gesture?.kind === "knot" ? gesture : null;
+  ctx.save();
+  ctx.lineWidth = px;
+  ctx.font = `${10 * px}px ui-monospace, monospace`;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  const line = (x0: number, y0: number, x1: number, y1: number, edge: boolean, on: boolean) => {
+    ctx.strokeStyle = WARP_COLOR;
+    ctx.globalAlpha = on ? 1 : edge ? 0.5 : 0.85;
+    ctx.setLineDash(edge ? [] : [4 * px, 3 * px]);
+    ctx.beginPath();
+    ctx.moveTo(x0, y0);
+    ctx.lineTo(x1, y1);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = on ? "#fff" : WARP_COLOR;
+    for (const [hx, hy] of [[x0, y0], [x1, y1]]) ctx.fillRect(hx - hs, hy - hs, hs * 2, hs * 2);
+  };
+  xs.forEach((k, i) =>
+    line(k.dst, top - out, k.dst, bottom + out, i === 0 || i === xs.length - 1, active?.axis === "x" && active.index === i)
+  );
+  ys.forEach((k, i) =>
+    line(left - out, k.dst, right + out, k.dst, i === 0 || i === ys.length - 1, active?.axis === "y" && active.index === i)
+  );
+  // Stretch factor per segment, outside the box (above / left of it).
+  ctx.globalAlpha = 1;
+  const label = (text: string, x: number, y: number) => {
+    const w = ctx.measureText(text).width + 6 * px;
+    ctx.fillStyle = "rgba(20,20,18,0.8)";
+    ctx.fillRect(x - w / 2, y - 7 * px, w, 14 * px);
+    ctx.fillStyle = WARP_COLOR;
+    ctx.fillText(text, x, y);
+  };
+  const fmt = (k: number) => `×${k.toFixed(3)}`;
+  segmentScales(xs).forEach((k, i) => {
+    if (Math.abs(k - 1) > 5e-4) label(fmt(k), (xs[i].dst + xs[i + 1].dst) / 2, top - out - 10 * px);
+  });
+  ctx.save();
+  segmentScales(ys).forEach((k, i) => {
+    if (Math.abs(k - 1) <= 5e-4) return;
+    const y = (ys[i].dst + ys[i + 1].dst) / 2;
+    ctx.save();
+    ctx.translate(left - out - 10 * px, y);
+    ctx.rotate(-Math.PI / 2);
+    label(fmt(k), 0, 0);
+    ctx.restore();
+  });
+  ctx.restore();
+  // Line being drawn: full span, where it will land.
+  if (gesture?.kind === "line" && gesture.axis) {
+    ctx.globalAlpha = 0.9;
+    ctx.strokeStyle = "#fff";
+    ctx.setLineDash([2 * px, 2 * px]);
+    ctx.beginPath();
+    if (gesture.axis === "x") {
+      ctx.moveTo(gesture.start.x, top - out);
+      ctx.lineTo(gesture.start.x, bottom + out);
+    } else {
+      ctx.moveTo(left - out, gesture.start.y);
+      ctx.lineTo(right + out, gesture.start.y);
+    }
+    ctx.stroke();
+  }
+  ctx.restore();
+}
 
 function outlineColor(ct: CellType | null): string {
   return ct?.color ? withAlpha(ct.color, 0.8) : "rgba(245,214,138,0.5)";

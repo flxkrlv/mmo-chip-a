@@ -104,6 +104,7 @@ const SHORTCUT_GROUPS: ShortcutGroup[] = [
       { key: "F / G / H", label: "Flip H / Flip V / Rotate" },
       { key: "J", label: "Auto-align" },
       { key: "Y", label: "Accept & merge" },
+      { key: "S", label: "Stretch lines (drag: draw · drag line/edge: stretch · dbl-click: remove)" },
     ],
   },
   {
