@@ -111,6 +111,8 @@ import { NetRenamePopover } from "../components/dieViewer/NetRenamePopover";
 import { ViaColorPopover } from "../components/dieViewer/ViaColorPopover";
 import { viaBaseColor, viaColorAction, viaColorTargets, viaFromSelectionId } from "../lib/viaColor";
 import { floorplanNameInline } from "../lib/floorplanName";
+import { constrainPoint } from "../lib/angleConstraint";
+import { currentAngleMode } from "../state/angleMode";
 import { useWindowAnchorMaintenance } from "../components/dieViewer/useElementWindow";
 import { FloorplanOverlay } from "../components/dieViewer/FloorplanOverlay";
 import { useFloorplanStore, type FloorplanDraft } from "../state/floorplan";
@@ -363,6 +365,11 @@ function DieViewer({ dieId }: { dieId: string }) {
     []
   );
   const viaPolyPreviewLive = useMemo(
+    () => createLiveValue<Point | null>(null),
+    []
+  );
+  /** Rubber-band tip of the floorplan polygon draft (angle-constrained cursor). */
+  const floorplanTipLive = useMemo(
     () => createLiveValue<Point | null>(null),
     []
   );
@@ -1715,6 +1722,24 @@ function DieViewer({ dieId }: { dieId: string }) {
   });
 
   const viaPoly = useViaPolyTool({ dispatcher, activeTool, setActiveTool });
+  const viaPolyPointsRef = useRef(viaPoly.points);
+  viaPolyPointsRef.current = viaPoly.points;
+  /** Next vertex of the floorplan / via polygon being drawn: `world`
+   *  constrained to that tool's angle mode from the previous vertex (free
+   *  for the first vertex or while Shift is held). */
+  const constrainPolyPoint = useCallback(
+    (tool: "floorplan" | "viaPoly", world: Point, shift: boolean): Point => {
+      let last: Point | undefined;
+      if (tool === "viaPoly") {
+        last = viaPolyPointsRef.current[viaPolyPointsRef.current.length - 1];
+      } else {
+        const d = useFloorplanStore.getState().draft;
+        if (d?.kind === "poly" && d.active) last = d.points[d.points.length - 1];
+      }
+      return last && !shift ? constrainPoint(last, world, currentAngleMode(tool)) : world;
+    },
+    []
+  );
   const guide = useGuideTool({ dispatcher, activeTool, setActiveTool });
   const multiWire = useMultiWireTool({
     dispatcher,
@@ -2150,7 +2175,8 @@ function DieViewer({ dieId }: { dieId: string }) {
       shiftLive.set(event.shiftKey);
       wire.computeWirePreview(world, event.shiftKey, vp.zoom);
       const tool = useDieViewerStore.getState().activeTool;
-      viaPolyPreviewLive.set(tool === "viaPoly" ? world : null);
+      viaPolyPreviewLive.set(tool === "viaPoly" ? constrainPolyPoint("viaPoly", world, event.shiftKey) : null);
+      floorplanTipLive.set(tool === "floorplan" ? constrainPolyPoint("floorplan", world, event.shiftKey) : world);
       // Multi-wire preview snap. Phase 1: the halo previews the vertex /
       // via a start would snap to. Phase 2: `multiWireEndSnapLive` carries
       // which wire would lock onto a via and where — the overlay redraws
@@ -2491,34 +2517,8 @@ function DieViewer({ dieId }: { dieId: string }) {
       // Ruler tool: measure distance. Draw on drag, commit on release.
       if (tool === "measure") {
         const origin = { x: e.worldPoint.x, y: e.worldPoint.y };
-        const snapOrtho = (wp: { x: number; y: number }) => {
-          const mode = useDieViewerStore.getState().measureMode;
-          const dx = wp.x - origin.x;
-          const dy = wp.y - origin.y;
-          if (mode === "h") return { x: wp.x, y: origin.y };
-          if (mode === "v") return { x: origin.x, y: wp.y };
-          if (mode === "ortho") {
-            // Snap to the dominant axis.
-            if (Math.abs(dx) >= Math.abs(dy)) {
-              return { x: wp.x, y: origin.y };
-            } else {
-              return { x: origin.x, y: wp.y };
-            }
-          }
-          if (mode === "diag") {
-            // Snap to nearest 45-degree angle.
-            const len = Math.sqrt(dx * dx + dy * dy);
-            if (len < 1) return wp;
-            const angle = Math.atan2(dy, dx);
-            // Round to nearest multiple of PI/4 (45°).
-            const rounded = Math.round(angle / (Math.PI / 4)) * (Math.PI / 4);
-            return {
-              x: origin.x + Math.cos(rounded) * len,
-              y: origin.y + Math.sin(rounded) * len
-            };
-          }
-          return wp;
-        };
+        const snapOrtho = (wp: { x: number; y: number }) =>
+          constrainPoint(origin, wp, currentAngleMode("measure"));
         const setLive = (wp: { x: number; y: number }) => {
           const s = snapOrtho(wp);
           rulerPendingLive.set({ x1: origin.x, y1: origin.y, x2: s.x, y2: s.y });
@@ -3440,7 +3440,8 @@ function DieViewer({ dieId }: { dieId: string }) {
         if (fs.toolMode === "poly") {
           const draft = fs.draft;
           if (draft && draft.active) {
-            draft.points.push({ x: Math.round(x), y: Math.round(y) });
+            const p = constrainPolyPoint("floorplan", { x, y }, shiftRef.current);
+            draft.points.push({ x: Math.round(p.x), y: Math.round(p.y) });
             useFloorplanStore.getState().setDraft({ ...draft });
           } else {
             useFloorplanStore.getState().setDraft({
@@ -3454,7 +3455,7 @@ function DieViewer({ dieId }: { dieId: string }) {
         return;
       }
       if (tool === "viaPoly") {
-        viaPoly.addPoint({ x, y });
+        viaPoly.addPoint(constrainPolyPoint("viaPoly", { x, y }, shiftRef.current));
         return;
       }
       if (tool === "multiWire") {
@@ -4366,7 +4367,7 @@ function DieViewer({ dieId }: { dieId: string }) {
             <FloorplanOverlay
               annotations={annotations}
               viewportStore={viewportLive}
-              cursorStore={cursorLive}
+              cursorStore={floorplanTipLive}
               dieId={dieId}
               showIO={showFloorplanIO}
               dispatcher={dispatcher}

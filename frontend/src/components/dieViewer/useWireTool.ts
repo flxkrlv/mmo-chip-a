@@ -4,7 +4,6 @@ import { netChangesToAction, type ActionDispatcher } from "../../api/actions";
 import {
   closestPointOnSegment,
   orthoElbow,
-  snapTo45,
   type Point
 } from "../../lib/geometry";
 import {
@@ -35,6 +34,8 @@ import { usePreferences } from "../../state/preferences";
 import type { WirePreview } from "./WireDraftOverlay";
 import type { WireLayer, MetalStack } from "shared";
 import { uuid } from "../../lib/uuid";
+import { constrainPoint } from "../../lib/angleConstraint";
+import { currentAngleMode } from "../../state/angleMode";
 
 // ── Metal-stack helpers ────────────────────────────────────────
 
@@ -309,7 +310,7 @@ export function useWireTool(opts: {
       const { findViaOnSegment, autoEndOnViaEnabled, getViaSizeWorld } =
         snapRef.current;
       if (shift || !findViaOnSegment || !autoEndOnViaEnabled?.()) return null;
-      const end = snapTo45(last, world);
+      const end = constrainPoint(last, world, currentAngleMode("wire"));
       if (end.x === last.x && end.y === last.y) return null;
       const tol = viaSnapTolerance(zoom, getViaSizeWorld?.() ?? VIA_DEFAULT_SIZE);
       return findViaOnSegment(last, end, tol);
@@ -744,7 +745,7 @@ export function useWireTool(opts: {
           return;
         }
       }
-      const snapped45 = snapTo45(last, world);
+      const snapped45 = constrainPoint(last, world, currentAngleMode("wire"));
       const via = shift ? null : viaSnap(snapped45, vp.zoom);
       const rawNode = snapNode(world, via, vp.zoom, !shift);
       if (rawNode) {
@@ -906,7 +907,7 @@ export function useWireTool(opts: {
         });
         return;
       }
-      const snapped45 = snapTo45(last, world);
+      const snapped45 = constrainPoint(last, world, currentAngleMode("wire"));
       const via = shiftKey ? null : viaSnap(snapped45, zoom);
       const rawNode = snapNode(world, via, zoom, !shiftKey);
       const node = rawNode ? checkLayerCompat(rawNode, zoom) : null;

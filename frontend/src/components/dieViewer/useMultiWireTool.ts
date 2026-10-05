@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { AnnotationNet, DieAnnotations } from "shared";
 import type { ActionDispatcher, AnnotationAction } from "../../api/actions";
-import { distancePointToSegment, snapTo45, type Point } from "../../lib/geometry";
+import { distancePointToSegment, type Point } from "../../lib/geometry";
+import { constrainPoint } from "../../lib/angleConstraint";
+import { currentAngleMode } from "../../state/angleMode";
 import { isTypingTarget } from "../../lib/keyboard";
 import type { DrawAnchor } from "../../lib/netGraph";
 import { useDieViewerStore, type ToolKind } from "../../state/dieViewer";
@@ -17,8 +19,9 @@ function activeLayer(): WireLayer | null {
   return (m?.layer ?? null) as WireLayer | null;
 }
 
-/** Phase-2 endpoint for the reference start point. 45°-snapped to the cursor
- *  by default; `free` (Shift held) lets the bus take any angle. Every wire
+/** Phase-2 endpoint for the reference start point. Constrained to the wire
+ *  angle mode (default 45° steps, see state/angleMode); `free` (Shift held)
+ *  lets the bus take any angle. Every wire
  *  uses the same delta (end − ref) so they stay parallel. */
 export function multiParallelEnd(
   ref: Point,
@@ -26,7 +29,7 @@ export function multiParallelEnd(
   free = false
 ): Point {
   if (free) return { x: Math.round(world.x), y: Math.round(world.y) };
-  return snapTo45(ref, world);
+  return constrainPoint(ref, world, currentAngleMode("wire"));
 }
 
 /** Endpoint of a wire that starts at `start` and travels parallel to the bus

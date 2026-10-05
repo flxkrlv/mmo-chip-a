@@ -96,7 +96,6 @@ interface DieViewerState {
   guideAxis: "x" | "y";
   /** Ruler tool measurement mode. "free" = draw at any angle;
    *  "h" = horizontal only; "v" = vertical only. */
-  measureMode: "free" | "h" | "v" | "ortho" | "diag";
   /** Ruler label display preferences. */
   showRulerPx: boolean;
   showRulerUm: boolean;
@@ -136,7 +135,6 @@ interface DieViewerActions {
   setActiveMetalId: (id: string | null) => void;
   setActiveViaId: (id: string | null) => void;
   setGuideAxis: (axis: "x" | "y") => void;
-  setMeasureMode: (mode: "free" | "h" | "v" | "ortho" | "diag") => void;
   setRulerDisplay: (patch: Partial<Pick<DieViewerState, "showRulerPx" | "showRulerUm" | "showRulerNm">>) => void;
   /** Patch the draft ML config (one or more fields). */
   setMlConfig: (patch: Partial<DieMLConfig>) => void;
@@ -168,7 +166,6 @@ const INITIAL_STATE: DieViewerState = {
   activeMetalId: null,
   activeViaId: null,
   guideAxis: "x",
-  measureMode: "ortho",
   showRulerPx: false,
   showRulerUm: true,
   showRulerNm: false,
@@ -256,7 +253,6 @@ export const useDieViewerStore = create<DieViewerState & DieViewerActions>()((se
   setActiveMetalId: (id) => set({ activeMetalId: id }),
   setActiveViaId: (id) => set({ activeViaId: id }),
   setGuideAxis: (axis) => set({ guideAxis: axis }),
-  setMeasureMode: (mode) => set({ measureMode: mode }),
   setRulerDisplay: (patch) => set(patch),
   setMlConfig: (patch) =>
     set((state) => ({ mlConfig: { ...state.mlConfig, ...patch } })),

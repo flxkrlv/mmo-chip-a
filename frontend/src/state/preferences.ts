@@ -16,6 +16,7 @@ import type { Viewport } from "../renderer/types";
 import type { WindowAnchor } from "../lib/windowAnchor";
 import type { InspectorTab } from "./dieViewer";
 import type { ScreenshotScale } from "../lib/screenshot";
+import type { AngleMode, AngleTool } from "../lib/angleConstraint";
 import {
   ANNOTATION_KIND_VALUES,
   type AnnotationKind
@@ -42,6 +43,9 @@ interface PreferencesState {
    *  `netWidth`. Each die has its own magnification/scale, so a single
    *  global width doesn't read well on every chip. */
   netWidthByDie: Record<string, number>;
+  /** Per-die angle mode of each drawing tool (ruler, wire / bus, floorplan
+   *  polygon, via polygon). Absent = DEFAULT_ANGLE_MODES (lib/angleConstraint). */
+  angleModesByDie: Record<string, Partial<Record<AngleTool, AngleMode>>>;
   /** Base color for unselected wires + vertices (one of NET_COLOR_OPTIONS). */
   netColor: string;
   /** Cell outline + block-fill color (one of CELL_COLOR_OPTIONS). */
@@ -289,6 +293,7 @@ interface PreferencesState {
 interface PreferencesActions {
   /** Set the net wire width for a specific die (each chip has its own scale). */
   setNetWidth: (dieId: string, width: number) => void;
+  setAngleMode: (dieId: string, tool: AngleTool, mode: AngleMode) => void;
   setNetColor: (color: string) => void;
   /** Override color for a specific net (id like "net:abc"). null = clear. */
   setNetColorOverride: (netId: string, color: string | null) => void;
@@ -435,6 +440,7 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
       (set) => ({
         netWidth: NET_DEFAULT_WIDTH,
         netWidthByDie: {},
+        angleModesByDie: {},
         netColor: NET_COLOR,
         netColors: {},
         windowAnchors: {},
@@ -523,6 +529,13 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
 
         setNetWidth: (dieId, width) =>
           set((state) => ({ netWidthByDie: { ...state.netWidthByDie, [dieId]: width } })),
+        setAngleMode: (dieId, tool, mode) =>
+          set((state) => ({
+            angleModesByDie: {
+              ...state.angleModesByDie,
+              [dieId]: { ...state.angleModesByDie[dieId], [tool]: mode }
+            }
+          })),
         setNetColor: (color) => set({ netColor: color }),
         setWireLayerColor: (layer, color) =>
           set((state) => ({
@@ -822,6 +835,7 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
         partialize: (state) => ({
           netWidth: state.netWidth,
           netWidthByDie: state.netWidthByDie,
+          angleModesByDie: state.angleModesByDie,
           netColor: state.netColor,
           cellColor: state.cellColor,
           cellShowShapes: state.cellShowShapes,

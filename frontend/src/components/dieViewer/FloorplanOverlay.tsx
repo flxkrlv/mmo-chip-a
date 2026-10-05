@@ -24,7 +24,8 @@ import { useToast } from "../Toast";
 interface Props {
   annotations: DieAnnotations | undefined;
   viewportStore: LiveValue<Viewport | null>;
-  /** World-space cursor, for the polygon draft's rubber band. */
+  /** Rubber-band tip of the polygon draft (world; the cursor constrained to
+   *  the floorplan angle mode — see DieViewerPage.constrainPolyPoint). */
   cursorStore: LiveValue<{ x: number; y: number } | null>;
   dieId: string;
   /** Floorplan edits go through it, so they are undoable. */
