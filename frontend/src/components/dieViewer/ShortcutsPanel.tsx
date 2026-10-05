@@ -67,8 +67,9 @@ const SHORTCUT_GROUPS: ShortcutGroup[] = [
   {
     title: "Die Viewer — Editing",
     items: [
-      { key: "Ctrl+C", label: "Copy cell" },
-      { key: "Ctrl+V", label: "Paste cell" },
+      { key: "Ctrl+C", label: "Copy selection (cells, wires, pads, floorplans)" },
+      { key: "Ctrl+V", label: "Paste at the cursor" },
+      { key: "Shift+click label", label: "Add a floorplan to the selection" },
       { key: "Shift+U", label: "Make unique" },
       { key: "Delete", label: "Delete selection" },
       { key: "Ctrl+Z", label: "Undo" },

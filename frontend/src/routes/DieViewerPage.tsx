@@ -139,7 +139,7 @@ import {
 import { useSelectionDelete } from "../components/dieViewer/useSelectionDelete";
 import { useUndoRedoHotkeys } from "../components/dieViewer/useUndoRedoHotkeys";
 import { useOverlayHotkeys } from "../lib/useOverlayHotkeys";
-import type { AnnotationAction } from "../api/actions";
+import type { ActionDispatcher, AnnotationAction } from "../api/actions";
 import { parseNetPartId, splitNetAtNode, weldNetAtEdge, weldNetAtNode, type DrawAnchor } from "../lib/netGraph";
 import { pasteWireClipboard, snapshotWireClipboard, wireSelectionBounds } from "../lib/wireClipboard";
 import {
@@ -168,6 +168,7 @@ import {
 } from "../lib/screenshot";
 import { ScreenshotPanel } from "../components/dieViewer/ScreenshotPanel";
 import { padCountByPin, pastePinActions, pinClips, renamePinActions, selectedPins } from "../lib/pinClipboard";
+import { floorplanBounds, floorplanClips, pasteFloorplanActions, selectedFloorplans } from "../lib/floorplanClipboard";
 import { buildMakeUniqueAction, buildOrientAction, orientOf, orientOnDie } from "../lib/mergeCells";
 import { createLiveValue } from "../lib/liveValue";
 import type { WirePreview } from "../components/dieViewer/WireDraftOverlay";
@@ -535,7 +536,7 @@ function DieViewer({ dieId }: { dieId: string }) {
     // Undoable; the store mirrors annotations, upsert now for instant feedback.
     fs.upsertRegion(region);
     fs.setDraft(null);
-    fs.selectRegion(region.id);
+    fs.openRegion(region.id); // new region: open its window to name it
     void dispatcherRef.current
       .dispatch({ kind: "upsertFloorplan", region, prevRegion: null })
       .then((ok) => { if (!ok) toast.error("Failed to save floorplan"); });
@@ -580,32 +581,10 @@ function DieViewer({ dieId }: { dieId: string }) {
             const ann = annotationsRef.current;
             if (!ann) return;
             const store = useDieViewerStore.getState();
-            const clips = store.clipboardCells;
-            const wireClipboard = store.clipboardWires;
-            if (clips.length === 0 && !wireClipboard && store.clipboardPins.length === 0) return;
+            if (!clipboardHasContent(store)) return;
             e.preventDefault();
             const cursor = cursorLive.get();
-            const baseX = Math.round(cursor?.x ?? 0);
-            const baseY = Math.round(cursor?.y ?? 0);
-            const actions: AnnotationAction[] = clips.map((clip) => ({
-                kind: "upsertCell" as const,
-                cell: {
-                  id: uuid(), cellTypeId: clip.cellTypeId,
-                  x: baseX + clip.offsetX, y: baseY + clip.offsetY,
-                  flippedV: clip.flippedV, flippedH: clip.flippedH,
-                  rotation: clip.rotation,
-                  ...(clip.bounds ? { bounds: clip.bounds } : {}),
-                },
-                prevCell: null,
-              }));
-            actions.push(...pastePinActions(store.clipboardPins, { x: baseX, y: baseY }));
-            if (wireClipboard) {
-              const wireAction = netChangesToAction(
-                pasteWireClipboard(ann.nets, wireClipboard, { x: baseX, y: baseY }),
-              );
-              if (wireAction?.kind === "batch") actions.push(...wireAction.actions);
-              else if (wireAction) actions.push(wireAction);
-            }
+            const actions = pasteClipboardActions(ann, { x: Math.round(cursor?.x ?? 0), y: Math.round(cursor?.y ?? 0) });
             if (actions.length > 0) void dispatcherRef.current.dispatch({ kind: "batch", actions });
             return;
           }
@@ -2476,7 +2455,7 @@ function DieViewer({ dieId }: { dieId: string }) {
               };
               // Undoable; the store mirrors annotations, upsert now for instant feedback.
               useFloorplanStore.getState().upsertRegion(region);
-              useFloorplanStore.getState().selectRegion(region.id);
+              useFloorplanStore.getState().openRegion(region.id);
               void dispatcherRef.current
                 .dispatch({ kind: "upsertFloorplan", region, prevRegion: null })
                 .then((ok) => { if (!ok) toast.error("Failed to save floorplan"); });
@@ -4506,33 +4485,10 @@ function DieViewer({ dieId }: { dieId: string }) {
           onCopyCell={() => {
             const ann = annotationsRef.current;
             if (!ann || !contextMenu.hitCellId) return;
+            // The whole selection when the clicked cell is part of it.
             const selected = useDieViewerStore.getState().selectedIds;
-            const includeSelection = selected.has(`cell:${contextMenu.hitCellId}`);
-            const selectedCells = includeSelection
-              ? ann.cells.filter((c) => selected.has(`cell:${c.id}`))
-              : ann.cells.filter((c) => c.id === contextMenu.hitCellId);
-            if (selectedCells.length === 0) return;
-            const wireSelection = includeSelection ? selected : new Set<string>();
-            const wireBounds = wireSelectionBounds(ann.nets, wireSelection);
-            const pins = includeSelection ? selectedPins(ann.pins, selected) : [];
-            const minX = Math.min(...selectedCells.map((c) => c.x), ...pins.map((p) => p.x), wireBounds?.minX ?? Infinity);
-            const minY = Math.min(...selectedCells.map((c) => c.y), ...pins.map((p) => p.y), wireBounds?.minY ?? Infinity);
-            const viewerStore = useDieViewerStore.getState();
-            viewerStore.setPinClipboard(pinClips(pins, minX, minY));
-            viewerStore.copyCells(
-              selectedCells.map((c) => ({
-                cellTypeId: c.cellTypeId,
-                offsetX: c.x - minX, offsetY: c.y - minY,
-                flippedV: c.flippedV,
-                flippedH: c.flippedH,
-                rotation: c.rotation,
-              }))
-            );
-            if (wireBounds) {
-              viewerStore.setWireClipboard(snapshotWireClipboard(ann.nets, wireSelection, { x: minX, y: minY })!);
-            } else {
-              viewerStore.clearWireClipboard();
-            }
+            const id = `cell:${contextMenu.hitCellId}`;
+            copySelectionToClipboard(ann, selected.has(id) ? selected : new Set([id]));
           }}
           onCopyNet={() => {
             const ann = annotationsRef.current;
@@ -4544,27 +4500,8 @@ function DieViewer({ dieId }: { dieId: string }) {
               : contextMenu.hitPartId
                 ? new Set([contextMenu.hitPartId])
                 : selected;
-            const wires = snapshotWireClipboard(ann.nets, wireSelection);
-            if (wires && contextMenu.hitPartId) {
-              const selectedCells = includeSelection
-                ? ann.cells.filter((c) => selected.has(`cell:${c.id}`))
-                : [];
-              const wireBounds = wireSelectionBounds(ann.nets, wireSelection);
-              const pins = includeSelection ? selectedPins(ann.pins, selected) : [];
-              const minX = Math.min(...selectedCells.map((c) => c.x), ...pins.map((p) => p.x), wireBounds?.minX ?? Infinity);
-              const minY = Math.min(...selectedCells.map((c) => c.y), ...pins.map((p) => p.y), wireBounds?.minY ?? Infinity);
-              const viewerStore = useDieViewerStore.getState();
-              viewerStore.setPinClipboard(pinClips(pins, minX, minY));
-              if (selectedCells.length > 0) {
-                viewerStore.copyCells(selectedCells.map((c) => ({
-                  cellTypeId: c.cellTypeId,
-                  offsetX: c.x - minX, offsetY: c.y - minY,
-                  flippedV: c.flippedV, flippedH: c.flippedH, rotation: c.rotation,
-                })));
-              } else {
-                viewerStore.clearCellClipboard();
-              }
-              viewerStore.setWireClipboard(snapshotWireClipboard(ann.nets, wireSelection, { x: minX, y: minY })!);
+            if (contextMenu.hitPartId && snapshotWireClipboard(ann.nets, wireSelection)) {
+              copySelectionToClipboard(ann, wireSelection);
             }
           }}
           onSplitNetAtNode={() => {
@@ -4616,59 +4553,12 @@ function DieViewer({ dieId }: { dieId: string }) {
             if (!Number.isFinite(um) || um <= 0) return;
             void dispatcher.dispatch({ kind: "setUmPerPx", umPerPx: um / ruler.lengthPx, prevUmPerPx: annotationsRef.current?.umPerPx ?? null });
           }}
-          onPasteCell={() => {
-            const ann = annotationsRef.current;
-            if (!ann) return;
-            const store = useDieViewerStore.getState();
-            const clips = store.clipboardCells;
-            if (clips.length === 0 && !store.clipboardWires && store.clipboardPins.length === 0) return;
-            const baseX = Math.round(contextMenu.hitPoint.x);
-            const baseY = Math.round(contextMenu.hitPoint.y);
-            const actions: AnnotationAction[] = clips.map((clip) => ({
-                kind: "upsertCell" as const,
-                cell: {
-                  id: uuid(),
-                  cellTypeId: clip.cellTypeId,
-                  x: baseX + clip.offsetX,
-                  y: baseY + clip.offsetY,
-                  flippedV: clip.flippedV,
-                  flippedH: clip.flippedH,
-                  rotation: clip.rotation,
-                },
-                prevCell: null,
-              }));
-            actions.push(...pastePinActions(store.clipboardPins, { x: baseX, y: baseY }));
-            if (store.clipboardWires) {
-              const wireAction = netChangesToAction(
-                pasteWireClipboard(ann.nets, store.clipboardWires, { x: baseX, y: baseY }),
-              );
-              if (wireAction?.kind === "batch") actions.push(...wireAction.actions);
-              else if (wireAction) actions.push(wireAction);
-            }
-            if (actions.length > 0) void dispatcher.dispatch({ kind: "batch", actions });
-          }}
-          onPasteNet={() => {
-            const ann = annotationsRef.current;
-            const store = useDieViewerStore.getState();
-            if (!ann || (!store.clipboardWires && store.clipboardCells.length === 0 && store.clipboardPins.length === 0)) return;
-            const baseX = Math.round(contextMenu.hitPoint.x);
-            const baseY = Math.round(contextMenu.hitPoint.y);
-            const actions: AnnotationAction[] = store.clipboardCells.map((clip) => ({
-              kind: "upsertCell" as const,
-              cell: { id: uuid(), cellTypeId: clip.cellTypeId, x: baseX + clip.offsetX, y: baseY + clip.offsetY, flippedV: clip.flippedV, flippedH: clip.flippedH, rotation: clip.rotation },
-              prevCell: null,
-            }));
-            actions.push(...pastePinActions(store.clipboardPins, { x: baseX, y: baseY }));
-            if (store.clipboardWires) {
-              const wireAction = netChangesToAction(pasteWireClipboard(ann.nets, store.clipboardWires, { x: baseX, y: baseY }));
-              if (wireAction?.kind === "batch") actions.push(...wireAction.actions);
-              else if (wireAction) actions.push(wireAction);
-            }
-            if (actions.length > 0) void dispatcher.dispatch({ kind: "batch", actions });
-          }}
+          onPasteCell={() => dispatchPaste(dispatcher, annotationsRef.current, contextMenu.hitPoint)}
+          onPasteNet={() => dispatchPaste(dispatcher, annotationsRef.current, contextMenu.hitPoint)}
           hasWireClipboard={useDieViewerStore.getState().clipboardWires !== null}
           hasCellClipboard={useDieViewerStore.getState().clipboardCells.length > 0}
           hasPinClipboard={useDieViewerStore.getState().clipboardPins.length > 0}
+          hasFloorplanClipboard={useDieViewerStore.getState().clipboardFloorplans.length > 0}
           onCopyPin={() => {
             const ann = annotationsRef.current;
             const partId = contextMenu.hitPartId;
@@ -4757,20 +4647,23 @@ function hitTestAnalogDevice(
 }
 
 /**
- * Copy the cells, I/O pads and wires in `sel` to the clipboard, positioned
- * relative to their common top-left. Kinds with nothing selected are
- * cleared, so a paste brings back exactly this selection. False when there
- * is nothing to copy (clipboard untouched).
+ * Copy the cells, I/O pads, wires and floorplan regions in `sel` to the
+ * clipboard, positioned relative to their common top-left. Kinds with nothing
+ * selected are cleared, so a paste brings back exactly this selection. False
+ * when there is nothing to copy (clipboard untouched).
  */
 function copySelectionToClipboard(ann: DieAnnotations, sel: ReadonlySet<string>): boolean {
   const cells = ann.cells?.filter((c) => sel.has(`cell:${c.id}`)) ?? [];
   const wireBounds = wireSelectionBounds(ann.nets, sel);
   const pins = selectedPins(ann.pins, sel);
-  if (cells.length === 0 && !wireBounds && pins.length === 0) return false;
-  const minX = Math.min(...cells.map((c) => c.x), ...pins.map((p) => p.x), wireBounds?.minX ?? Infinity);
-  const minY = Math.min(...cells.map((c) => c.y), ...pins.map((p) => p.y), wireBounds?.minY ?? Infinity);
+  const regions = selectedFloorplans(ann.floorplanRegions, sel);
+  const fpBounds = floorplanBounds(regions);
+  if (cells.length === 0 && !wireBounds && pins.length === 0 && !fpBounds) return false;
+  const minX = Math.min(...cells.map((c) => c.x), ...pins.map((p) => p.x), wireBounds?.minX ?? Infinity, fpBounds?.minX ?? Infinity);
+  const minY = Math.min(...cells.map((c) => c.y), ...pins.map((p) => p.y), wireBounds?.minY ?? Infinity, fpBounds?.minY ?? Infinity);
   const viewerStore = useDieViewerStore.getState();
   viewerStore.setPinClipboard(pinClips(pins, minX, minY));
+  viewerStore.setFloorplanClipboard(floorplanClips(regions, minX, minY));
   if (cells.length > 0) {
     viewerStore.copyCells(
       cells.map((c) => ({
@@ -4792,4 +4685,51 @@ function copySelectionToClipboard(ann: DieAnnotations, sel: ReadonlySet<string>)
     viewerStore.clearWireClipboard();
   }
   return true;
+}
+
+/** Anything to paste (cells, wires, pads or floorplans). */
+function clipboardHasContent(store: ReturnType<typeof useDieViewerStore.getState>): boolean {
+  return (
+    store.clipboardCells.length > 0 ||
+    store.clipboardWires !== null ||
+    store.clipboardPins.length > 0 ||
+    store.clipboardFloorplans.length > 0
+  );
+}
+
+/** Actions pasting the whole clipboard with its top-left at `base`. */
+function pasteClipboardActions(ann: DieAnnotations, base: { x: number; y: number }): AnnotationAction[] {
+  const store = useDieViewerStore.getState();
+  const actions: AnnotationAction[] = store.clipboardCells.map((clip) => ({
+    kind: "upsertCell" as const,
+    cell: {
+      id: uuid(),
+      cellTypeId: clip.cellTypeId,
+      x: base.x + clip.offsetX,
+      y: base.y + clip.offsetY,
+      flippedV: clip.flippedV,
+      flippedH: clip.flippedH,
+      rotation: clip.rotation,
+      ...(clip.bounds ? { bounds: clip.bounds } : {}),
+    },
+    prevCell: null,
+  }));
+  actions.push(...pastePinActions(store.clipboardPins, base));
+  if (store.clipboardWires) {
+    const wireAction = netChangesToAction(pasteWireClipboard(ann.nets, store.clipboardWires, base));
+    if (wireAction?.kind === "batch") actions.push(...wireAction.actions);
+    else if (wireAction) actions.push(wireAction);
+  }
+  const au = useAuth.getState();
+  actions.push(
+    ...pasteFloorplanActions(store.clipboardFloorplans, base, { userId: au.userId ?? null, username: au.username ?? null })
+  );
+  return actions;
+}
+
+/** Paste the clipboard at `at` (rounded) as one undoable batch. */
+function dispatchPaste(dispatcher: ActionDispatcher, ann: DieAnnotations | undefined, at: { x: number; y: number }): void {
+  if (!ann || !clipboardHasContent(useDieViewerStore.getState())) return;
+  const actions = pasteClipboardActions(ann, { x: Math.round(at.x), y: Math.round(at.y) });
+  if (actions.length > 0) void dispatcher.dispatch({ kind: "batch", actions });
 }

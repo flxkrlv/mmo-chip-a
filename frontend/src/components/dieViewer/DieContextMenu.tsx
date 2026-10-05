@@ -46,6 +46,7 @@ interface Props {
   /** Copy the clicked I/O pad (or the selection it is part of). */
   onCopyPin?: () => void;
   hasPinClipboard?: boolean;
+  hasFloorplanClipboard?: boolean;
   onMakeUnique?: () => void;
   /** Rotate / mirror the clicked cell (or the selected cells it belongs to)
    *  in place on the die. */
@@ -79,6 +80,7 @@ export function DieContextMenu({
   hasCellClipboard,
   onCopyPin,
   hasPinClipboard,
+  hasFloorplanClipboard,
   onMakeUnique,
   onOrientCell,
   cellsLocked,
@@ -218,20 +220,23 @@ export function DieContextMenu({
           </button>
         </>
       )}
-      {!menu.hitCellId && onPasteCell && (hasCellClipboard || hasWireClipboard || hasPinClipboard) && (
+      {/* Wires alone get "Paste Wire" below. */}
+      {!menu.hitCellId && onPasteCell && (hasCellClipboard || hasPinClipboard || hasFloorplanClipboard) && (
         <>
           <div className="menu-sep" />
           <button className="menu-item" onClick={() => { onPasteCell(); onClose(); }}>
-            {[hasCellClipboard, hasWireClipboard, hasPinClipboard].filter(Boolean).length > 1
+            {[hasCellClipboard, hasWireClipboard, hasPinClipboard, hasFloorplanClipboard].filter(Boolean).length > 1
               ? "Paste Selection"
               : hasPinClipboard
                 ? "Paste Pad"
-                : "Paste Cell"}
+                : hasFloorplanClipboard
+                  ? "Paste Floorplan"
+                  : "Paste Cell"}
             <span style={{ marginLeft: "auto", color: "var(--ink3)" }}>Ctrl+V</span>
           </button>
         </>
       )}
-      {!menu.hitCellId && onPasteNet && hasWireClipboard && !hasCellClipboard && !hasPinClipboard && (
+      {!menu.hitCellId && onPasteNet && hasWireClipboard && !hasCellClipboard && !hasPinClipboard && !hasFloorplanClipboard && (
         <>
           <div className="menu-sep" />
           <button className="menu-item" onClick={() => { onPasteNet(); onClose(); }}>

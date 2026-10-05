@@ -13,6 +13,7 @@ import { collectDieWideAnalogDevices } from "../../api/dieWideAnalog";
 import { useAuth } from "../../state/auth";
 import { useToast } from "../Toast";
 import { useFloorplanStore } from "../../state/floorplan";
+import { useDieViewerStore } from "../../state/dieViewer";
 import {
   deviceInRegion,
   detectBoundaryNets,
@@ -112,7 +113,7 @@ export function FloorplanRegionPopover({
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [saveWarnings, setSaveWarnings] = useState<string[]>([]);
-  const selectRegion = useFloorplanStore((s) => s.selectRegion);
+  const openRegion = useFloorplanStore((s) => s.openRegion);
   const toast = useToast();
   const popoverRef = useRef<HTMLDivElement | null>(null);
   // Draggable; reopens where last dropped, relative to the nearest vertex
@@ -380,14 +381,17 @@ export function FloorplanRegionPopover({
       if (!(await dispatcher.dispatch({ kind: "removeFloorplan", region }))) {
         throw new Error("The server rejected the change");
       }
-      selectRegion(null);
+      openRegion(null);
+      // Drop the deleted region from the selection (Inspector, copy).
+      const viewer = useDieViewerStore.getState();
+      if (viewer.selectedIds.has(`floorplan:${region.id}`)) viewer.select([`floorplan:${region.id}`], "toggle");
       onSaved?.();
     } catch (err) {
       toast.error("Failed to delete floorplan region", err instanceof Error ? err.message : String(err));
     } finally {
       setDeleting(false);
     }
-  }, [region, deleting, dispatcher, selectRegion, onSaved, toast]);
+  }, [region, deleting, dispatcher, openRegion, onSaved, toast]);
 
   const popW = 280;
 

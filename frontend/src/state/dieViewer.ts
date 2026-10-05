@@ -3,6 +3,7 @@ import type { AnnotationRect, DieMLConfig } from "shared";
 import type { AnnotationAction } from "../api/actions";
 import type { WireClipboard } from "../lib/wireClipboard";
 import type { PinClip } from "../lib/pinClipboard";
+import type { FloorplanClip } from "../lib/floorplanClipboard";
 
 /** Which right-panel tab is showing. The ML tab also drives a render mode:
  *  traces/vias size from `mlConfig` instead of display preferences. */
@@ -114,6 +115,8 @@ interface DieViewerState {
   clipboardWires: WireClipboard | null;
   /** Copied I/O pads: pasted with the same pin number + name, new place. */
   clipboardPins: PinClip[];
+  /** Floorplan regions in the copy / paste clipboard (see lib/floorplanClipboard). */
+  clipboardFloorplans: FloorplanClip[];
 }
 
 interface DieViewerActions {
@@ -148,6 +151,7 @@ interface DieViewerActions {
   clearCellClipboard: () => void;
   /** Replace the pad clipboard (empty clears it). */
   setPinClipboard: (pins: PinClip[]) => void;
+  setFloorplanClipboard: (regions: FloorplanClip[]) => void;
   /** Wipe transient state — called when navigating to a different die. */
   reset: () => void;
 }
@@ -173,6 +177,7 @@ const INITIAL_STATE: DieViewerState = {
   mlViasCount: 0,
   clipboardCells: [],
   clipboardPins: [],
+  clipboardFloorplans: [],
   clipboardWires: null
 };
 
@@ -266,6 +271,7 @@ export const useDieViewerStore = create<DieViewerState & DieViewerActions>()((se
   clearWireClipboard: () => set({ clipboardWires: null }),
   clearCellClipboard: () => set({ clipboardCells: [] }),
   setPinClipboard: (pins) => set({ clipboardPins: pins }),
+  setFloorplanClipboard: (regions) => set({ clipboardFloorplans: regions }),
 
   // The undo history is left alone: it is per die (see ensureHistoryFor), and
   // the die viewer resets on every mount — coming back from Merge / RE cell

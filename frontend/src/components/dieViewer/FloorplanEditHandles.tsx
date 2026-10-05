@@ -66,6 +66,7 @@ export function FloorplanEditHandles({ region, viewport, live, setLive, onCommit
   viewportRef.current = viewport;
   const dragCleanupRef = useRef<(() => void) | null>(null);
   const setEditingRegion = useFloorplanStore((s) => s.setEditingRegion);
+  const openRegion = useFloorplanStore((s) => s.openRegion);
   const selectRegion = useFloorplanStore((s) => s.selectRegion);
 
   const geometry = live ?? region.geometry;
@@ -168,8 +169,9 @@ export function FloorplanEditHandles({ region, viewport, live, setLive, onCommit
   const moveHandler = (e: ReactPointerEvent) =>
     startDrag(e, (s, c) => translateGeometry(base, c.x - s.x, c.y - s.y));
 
-  // Outline hit area: drag to move; double-click still opens the popover
-  // (this stroke sits on top of the region's own outline).
+  // Outline hit area: drag to move; double-click opens the window, Shift+click
+  // removes the region from the selection (this stroke sits on top of the
+  // region's own outline, which would otherwise handle those).
   const outlineProps = {
     "data-fp-edit": true,
     fill: "none",
@@ -177,7 +179,13 @@ export function FloorplanEditHandles({ region, viewport, live, setLive, onCommit
     strokeWidth: MOVE_HIT_PX,
     style: { pointerEvents: "stroke" as const, cursor: "move" },
     onPointerDown: moveHandler,
-    onDoubleClick: () => selectRegion(region.id)
+    onClick: (e: React.MouseEvent) => {
+      if (e.shiftKey) selectRegion(region.id, "toggle");
+    },
+    onDoubleClick: (e: React.MouseEvent) => {
+      e.stopPropagation();
+      openRegion(region.id, e.shiftKey);
+    }
   };
 
   const square = (p: Pt, key: string, cursor: string, onPointerDown: (e: ReactPointerEvent) => void, onDoubleClick?: () => void) => {

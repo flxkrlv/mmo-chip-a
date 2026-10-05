@@ -21,10 +21,11 @@ export interface FloorplanDraft {
 interface FloorplanState {
   /** All persisted floorplan regions for the current die. */
   regions: FloorplanRegion[];
-  /** Currently selected region id (for popover). */
-  selectedRegionId: string | null;
+  /** Region whose window (FloorplanRegionPopover) is open. Selection itself
+   *  lives in the die viewer (`floorplan:<id>` in selectedIds). */
+  openRegionId: string | null;
   /** Region showing geometry edit handles. Set whenever a region is
-   *  selected, but outlives the popover (dragging a handle closes it). */
+   *  selected, but outlives the window (dragging a handle closes it). */
   editingRegionId: string | null;
   /** Active drawing sub-mode when the floorplan tool is selected. */
   toolMode: FloorplanToolMode;
@@ -39,9 +40,13 @@ interface FloorplanActions {
   upsertRegion: (region: FloorplanRegion) => void;
   /** Remove a region by id. */
   removeRegion: (id: string) => void;
-  /** Select a region for popover display (also starts geometry editing and
-   *  selects `floorplan:<id>` in the die viewer, for the Inspector). */
-  selectRegion: (id: string | null) => void;
+  /** Select a region (single click): `floorplan:<id>` in the die-viewer
+   *  selection (Inspector, copy) and its geometry edit handles. "toggle"
+   *  (Shift+click) adds / removes it, "add" only adds. */
+  selectRegion: (id: string, mode?: "replace" | "toggle" | "add") => void;
+  /** Open a region's window (double click), selecting it too — `additive`
+   *  (Shift) keeps the rest of the selection. `null` closes the window. */
+  openRegion: (id: string | null, additive?: boolean) => void;
   /** Start / stop showing geometry edit handles on a region. */
   setEditingRegion: (id: string | null) => void;
   /** Set the drawing sub-mode. */
@@ -54,7 +59,7 @@ interface FloorplanActions {
 
 const INITIAL: FloorplanState = {
   regions: [],
-  selectedRegionId: null,
+  openRegionId: null,
   editingRegionId: null,
   toolMode: "rect",
   draft: null,
@@ -78,18 +83,24 @@ export const useFloorplanStore = create<FloorplanState & FloorplanActions>()((se
   removeRegion: (id) =>
     set((state) => ({
       regions: state.regions.filter((r) => r.id !== id),
-      selectedRegionId: state.selectedRegionId === id ? null : state.selectedRegionId,
+      openRegionId: state.openRegionId === id ? null : state.openRegionId,
       editingRegionId: state.editingRegionId === id ? null : state.editingRegionId,
     })),
-  selectRegion: (id) => {
+  selectRegion: (id, mode = "replace") => {
+    // Same id as the Outline row, so the Inspector / copy see the region.
+    const viewer = useDieViewerStore.getState();
+    viewer.select([`floorplan:${id}`], mode);
+    const selected = useDieViewerStore.getState().selectedIds.has(`floorplan:${id}`);
+    if (selected) set({ editingRegionId: id });
+    else if (get().editingRegionId === id) set({ editingRegionId: null });
+  },
+  openRegion: (id, additive = false) => {
     if (id === null) {
-      set({ selectedRegionId: null });
+      set({ openRegionId: null });
       return;
     }
-    set({ selectedRegionId: id, editingRegionId: id });
-    // Mirror into the die-viewer selection (same id as the Outline row) so
-    // the Inspector shows the region.
-    useDieViewerStore.getState().select([`floorplan:${id}`]);
+    get().selectRegion(id, additive ? "add" : "replace");
+    set({ openRegionId: id, editingRegionId: id });
   },
   setEditingRegion: (id) => set({ editingRegionId: id }),
   setToolMode: (mode) => set({ toolMode: mode }),
