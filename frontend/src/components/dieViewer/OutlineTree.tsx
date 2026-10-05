@@ -1420,9 +1420,33 @@ function OverlayLayerSettings({ layerId }: { layerId: string }) {
     const l = s.layers.find((x) => x.id === layerId);
     return l?.opacity ?? 1;
   });
+  const layerName = useOverlayLayers((s) => s.layers.find((x) => x.id === layerId)?.name ?? "");
   const setLayerOpacity = useOverlayLayers((s) => s.setLayerOpacity);
   const removeLayer = useOverlayLayers((s) => s.removeLayer);
+  const dieId = useSession((s) => s.dieId);
+  const toast = useToast();
+  const [confirming, setConfirming] = useState(false);
+  const [deleting, setDeleting] = useState(false);
   const pct = Math.round(opacity * 100);
+
+  // Server-backed layers are shared, so the source is deleted on the server
+  // too (otherwise it comes back on the next load); blob layers are local only.
+  const onDelete = async () => {
+    const entry = useOverlayLayers.getState().layers.find((x) => x.id === layerId);
+    if (!entry) return;
+    if (entry.serverFilename && dieId) {
+      setDeleting(true);
+      try {
+        const mod = await import("../../api/overlayImages");
+        await mod.deleteOverlayImage(dieId, entry.serverFilename);
+      } catch (err) {
+        setDeleting(false);
+        toast.error(`Failed to delete ${entry.name}`, (err as Error).message);
+        return;
+      }
+    }
+    removeLayer(layerId);
+  };
 
   return (
     <SettingsPopover label="Overlay layer settings">
@@ -1452,18 +1476,45 @@ function OverlayLayerSettings({ layerId }: { layerId: string }) {
           {pct}%
         </span>
       </div>
-      <button
-        className="btn ghost"
-        style={{
-          marginTop: 8,
-          width: "100%",
-          justifyContent: "center",
-          color: "var(--err)"
-        }}
-        onClick={() => removeLayer(layerId)}
-      >
-        {Ic.trash} Remove layer
-      </button>
+      {confirming ? (
+        <div style={{ marginTop: 8 }}>
+          <div style={{ fontSize: 11, color: "var(--ink2)", marginBottom: 6 }}>
+            Delete “{layerName}” for everyone? This removes the image from the server.
+          </div>
+          <div className="row" style={{ gap: 6 }}>
+            <button
+              className="btn ghost"
+              style={{ flex: 1, justifyContent: "center" }}
+              disabled={deleting}
+              onClick={() => setConfirming(false)}
+            >
+              Cancel
+            </button>
+            <button
+              className="btn"
+              style={{ flex: 1, justifyContent: "center", color: "var(--err)" }}
+              disabled={deleting}
+              autoFocus
+              onClick={() => void onDelete()}
+            >
+              {Ic.trash} {deleting ? "Deleting…" : "Delete"}
+            </button>
+          </div>
+        </div>
+      ) : (
+        <button
+          className="btn ghost"
+          style={{
+            marginTop: 8,
+            width: "100%",
+            justifyContent: "center",
+            color: "var(--err)"
+          }}
+          onClick={() => setConfirming(true)}
+        >
+          {Ic.trash} Remove layer
+        </button>
+      )}
     </SettingsPopover>
   );
 }

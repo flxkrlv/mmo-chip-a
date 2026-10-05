@@ -240,6 +240,8 @@ let tileGenerationSequence = 0;
 const pendingPyramidPrebuilds = new Map<string, Promise<void>>();
 const overlayPrebuildStates = new Map<string, OverlayPrebuildState>();
 const pausedOverlayDieIds = new Set<string>();
+/** Prebuild keys of sources deleted while a prebuild may still be running. */
+const deletedOverlaySources = new Set<string>();
 
 function drainTileGenerationQueue(): void {
   while (
@@ -561,6 +563,7 @@ async function prebuildFromStoredLevels(
     }))
   );
   for (let i = 0; i < coords.length; i += STORED_LEVEL_PREBUILD_CONCURRENCY) {
+    if (deletedOverlaySources.has(overlayPrebuildKey(params.dieId, manifest.id))) return;
     if (pausedOverlayDieIds.has(params.dieId)) {
       state.status = "queued";
       console.log(`[overlay-prebuild:${label}] paused`);
@@ -631,7 +634,9 @@ function prebuildInOnePass(
         await fs.rm(stagingRoot, { recursive: true, force: true }).catch(() => {});
       }
     },
-    () => !pausedOverlayDieIds.has(params.dieId)
+    () =>
+      !pausedOverlayDieIds.has(params.dieId) &&
+      !deletedOverlaySources.has(overlayPrebuildKey(params.dieId, params.manifest.id))
   ).then(() => undefined);
 }
 
@@ -778,6 +783,45 @@ async function collectFiles(root: string): Promise<string[]> {
     else if (entry.isFile()) files.push(entryPath);
   }
   return files;
+}
+
+/**
+ * Delete one overlay source for everyone: a tiled source's folder (original,
+ * manifest, tiles) or a legacy flat file, plus its cached preview. A prebuild
+ * still running for it is stopped, and its folder removed again once it
+ * settles (tile writes may recreate it). Returns false when nothing matched.
+ */
+export async function deleteOverlaySource(dataRoot: string, dieId: string, id: string): Promise<boolean> {
+  assertSafeId(dieId);
+  const { dir: projectDir } = await resolveProjectDir(dataRoot, dieId);
+  const preview = path.join(projectDir, "previews", `overlay-${path.basename(id)}.4096.jpg`);
+  if (SAFE_ID.test(id)) {
+    const dir = await sourceDir(dataRoot, dieId, id);
+    if (!(await readManifest(dataRoot, dieId, id))) return false;
+    const key = overlayPrebuildKey(dieId, id);
+    deletedOverlaySources.add(key);
+    overlayPrebuildStates.delete(key);
+    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(preview, { force: true });
+    const running = pendingPyramidPrebuilds.get(key);
+    if (running) {
+      void running
+        .catch(() => {})
+        .then(() => fs.rm(dir, { recursive: true, force: true }))
+        .catch(() => {});
+    }
+    return true;
+  }
+  const safeName = path.basename(id);
+  if (safeName !== id || !/\.(png|jpe?g|webp)$/i.test(safeName)) return false;
+  try {
+    await fs.rm(path.join(await dieOverlayDir(dataRoot, dieId), safeName));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+    throw error;
+  }
+  await fs.rm(preview, { force: true });
+  return true;
 }
 
 export function createOverlayImagesRouter(config: { dataRoot: string }) {
@@ -964,6 +1008,19 @@ export function createOverlayImagesRouter(config: { dataRoot: string }) {
       response.setHeader("Cache-Control", "public, max-age=86400");
       response.type("image/jpeg");
       response.sendFile(previewPath);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.delete("/api/dies/:dieId/overlay-images/:id", async (request, response, next) => {
+    try {
+      const deleted = await deleteOverlaySource(config.dataRoot, request.params.dieId, request.params.id);
+      if (!deleted) {
+        response.status(404).json({ error: "Overlay image not found" });
+        return;
+      }
+      response.json({ ok: true });
     } catch (error) {
       next(error);
     }

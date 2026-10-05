@@ -253,6 +253,35 @@ test("overlay upload accepts a pyramidal TIFF and prebuilds it from its stored l
   assert.equal(fullLevel.filter((name) => name.endsWith(".jpg")).length, 6 * 4);
 });
 
+test("overlay delete removes the source for everyone", async () => {
+  const { app, dataRoot } = await createHarness();
+  const dieImage = await sharp({
+    create: { width: 64, height: 64, channels: 3, background: { r: 0, g: 0, b: 0 } }
+  })
+    .png()
+    .toBuffer();
+  const importResponse = await request(app)
+    .post("/api/dies/import")
+    .attach("file", dieImage, { filename: "die.png", contentType: "image/png" });
+  const { dieId } = await waitForCompletedJob(app, importResponse.body.id);
+
+  const upload = await request(app)
+    .post(`/api/dies/${dieId}/overlay-images/upload`)
+    .attach("file", dieImage, { filename: "layer.png", contentType: "image/png" });
+  assert.equal(upload.status, 201, JSON.stringify(upload.body));
+  const id = upload.body.image.id;
+  const sourceDir = path.join(dataRoot, "overlay-images", dieId, id);
+  await fs.access(sourceDir);
+
+  const deleted = await request(app).delete(`/api/dies/${dieId}/overlay-images/${id}`);
+  assert.equal(deleted.status, 200, JSON.stringify(deleted.body));
+  await assert.rejects(fs.access(sourceDir));
+  const list = await request(app).get(`/api/dies/${dieId}/overlay-images/list`);
+  assert.deepEqual(list.body.images, []);
+  const again = await request(app).delete(`/api/dies/${dieId}/overlay-images/${id}`);
+  assert.equal(again.status, 404);
+});
+
 test("overlay upload rejects formats other than PNG, JPEG, WebP and TIFF", async () => {
   const { app } = await createHarness();
   const dieImage = await sharp({
