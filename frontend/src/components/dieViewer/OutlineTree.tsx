@@ -261,8 +261,8 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
   const visibilityFor = (k: AnnotationKind) => ({
     visible: !hiddenKinds.includes(k),
     onToggle: () => toggleKindVisibility(k),
-    // Space+C / N / H in useOverlayHotkeys toggle these sections' eyes.
-    shortcut: ({ cell: "Space+C", net: "Space+N", floorplan: "Space+H" } as Partial<Record<AnnotationKind, string>>)[k]
+    // Space+C / N / H / M in useOverlayHotkeys toggle these sections' eyes.
+    shortcut: ({ cell: "Space+C", net: "Space+N", floorplan: "Space+H", comment: "Space+M" } as Partial<Record<AnnotationKind, string>>)[k]
   });
 
   // "ML Regions" is one collapsible parent over both ML kinds. Its eye toggles
@@ -568,6 +568,16 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
             </div>
           );
         })}
+
+      <TreeSep />
+
+      {/* Comments (pins only; no per-comment rows) ------------------------ */}
+      <TreeRow
+        icon={Ic.comment}
+        label="Comments"
+        meta={annotations.comments?.length ?? 0}
+        visibility={visibilityFor("comment")}
+      />
 
       <TreeSep />
 

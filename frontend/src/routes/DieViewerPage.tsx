@@ -2026,7 +2026,7 @@ function DieViewer({ dieId }: { dieId: string }) {
       if (!overlays.baseImageVisible) overlays.toggleBaseImage();
     }
   }, [dieId]);
-  const toggleKindForDie = useCallback((kind: "cell" | "net" | "floorplan") => {
+  const toggleKindForDie = useCallback((kind: "cell" | "net" | "floorplan" | "comment") => {
     const prefs = usePreferences.getState();
     if (kind !== "floorplan") {
       prefs.toggleKindVisibility(kind);

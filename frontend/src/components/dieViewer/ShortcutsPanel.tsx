@@ -49,6 +49,7 @@ const SHORTCUT_GROUPS: ShortcutGroup[] = [
       { key: "Space+C", label: "Toggle cells visibility" },
       { key: "Space+N", label: "Toggle nets visibility" },
       { key: "Space+H", label: "Toggle floorplans visibility" },
+      { key: "Space+M", label: "Toggle comments visibility" },
       { key: "E", label: "Via up (wire-end preview)" },
       { key: "Q", label: "Via down (wire-end preview)" },
       { key: "Dbl-click via", label: "Via color (all selected vias if it is selected)" },

@@ -5,7 +5,9 @@ export const ANNOTATION_KIND_VALUES = [
   "roi",
   "pin",
   "ignore",
-  "floorplan"
+  "floorplan",
+  // Comment pins (CommentOverlay, DOM — not in the annotation layer).
+  "comment"
 ] as const;
 
 export type AnnotationKind = (typeof ANNOTATION_KIND_VALUES)[number];

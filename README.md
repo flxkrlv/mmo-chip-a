@@ -428,6 +428,7 @@ Set the scale with double-click or right-click → **Set scale from ruler**. Aft
 | `Space+C` | Toggle cell visibility |
 | `Space+N` | Toggle net visibility |
 | `Space+H` | Toggle floorplan visibility |
+| `Space+M` | Toggle comment visibility |
 | `]` / `[` | Next / previous overlay layer only |
 | `Space+1..8` | Show only overlay layer N; repeat to hide it |
 

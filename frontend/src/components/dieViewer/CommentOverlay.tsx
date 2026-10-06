@@ -3,6 +3,7 @@ import type { CommentAnnotation, CommentReply, DieAnnotations } from "shared";
 import type { LiveValue } from "../../lib/liveValue";
 import { useLiveValue } from "../../lib/liveValue";
 import { useAuth } from "../../state/auth";
+import { usePreferences } from "../../state/preferences";
 import { uuid } from "../../lib/uuid";
 import type { ActionDispatcher } from "../../api/actions";
 import { CommentPopover } from "./CommentPopover";
@@ -41,6 +42,8 @@ const DRAG_THRESHOLD_PX = 4;
 export function CommentOverlay({ annotations, viewportStore, dieId, dispatcher, onAnnotationChange, pendingNewComment, onConsumePendingComment }: Props) {
   const viewport = useLiveValue(viewportStore);
   const { userId, username } = useAuth();
+  // Outline "Comments" eye / Space+M.
+  const commentsHidden = usePreferences((s) => s.hiddenKinds.includes("comment"));
   const [selectedComment, setSelectedComment] = useState<{
     comment: CommentAnnotation;
     x: number;
@@ -51,6 +54,10 @@ export function CommentOverlay({ annotations, viewportStore, dieId, dispatcher, 
   // comment-tool mode), create the unsaved comment and open the popover.
   useEffect(() => {
     if (!pendingNewComment || !userId || !username) return;
+    // Placing a comment while comments are hidden shows them again —
+    // otherwise the new pin would vanish once saved.
+    const prefs = usePreferences.getState();
+    if (prefs.hiddenKinds.includes("comment")) prefs.toggleKindVisibility("comment");
     const pos = pendingNewComment;
     const newComment: CommentAnnotation = {
       id: uuid(),
@@ -141,6 +148,10 @@ export function CommentOverlay({ annotations, viewportStore, dieId, dispatcher, 
     if (liveComment) seenRef.current = id;
     else if (seenRef.current === id || selectedComment.comment.text) setSelectedComment(null);
   }, [selectedComment, liveComment]);
+  // Hiding comments closes an open (saved) comment's window with its pin.
+  useEffect(() => {
+    if (commentsHidden && liveComment) setSelectedComment(null);
+  }, [commentsHidden, liveComment]);
 
   const dispatchThen = useCallback(
     async (action: Parameters<ActionDispatcher["dispatch"]>[0]) => {
@@ -235,7 +246,7 @@ export function CommentOverlay({ annotations, viewportStore, dieId, dispatcher, 
   return (
     <>
       {/* Pin markers */}
-      {markers.map((m) => {
+      {!commentsHidden && markers.map((m) => {
         const replyCount = m.comment.replies?.length ?? 0;
         const offset = dragOffset?.id === m.comment.id ? dragOffset : null;
         const drop = dropped?.id === m.comment.id && viewport ? dropped : null;
