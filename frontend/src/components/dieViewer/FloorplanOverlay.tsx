@@ -19,6 +19,7 @@ import { FloorplanRegionPopover } from "./FloorplanRegionPopover";
 import { FloorplanEditHandles } from "./FloorplanEditHandles";
 import { FloorplanPolyDraft } from "./FloorplanPolyDraft";
 import { floorplanNameLines } from "../../lib/floorplanName";
+import { isFloorplanVisible } from "../../lib/floorplanSnapshot";
 import type { ActionDispatcher } from "../../api/actions";
 import { useAuth } from "../../state/auth";
 import { useToast } from "../Toast";
@@ -86,10 +87,7 @@ export function FloorplanOverlay({
   const floorplanGloballyHidden = usePreferences((s) => s.hiddenKinds.includes("floorplan"));
   const hiddenFloorplanTypeNames = usePreferences((s) => s.hiddenFloorplanTypeNames);
   const isRegionVisible = useCallback(
-    (region: FloorplanRegion) => {
-      const override = hiddenFloorplanTypeNames[region.name || "(unnamed)"];
-      return override === undefined ? !floorplanGloballyHidden : !override;
-    },
+    (region: FloorplanRegion) => isFloorplanVisible(region, floorplanGloballyHidden, hiddenFloorplanTypeNames),
     [floorplanGloballyHidden, hiddenFloorplanTypeNames]
   );
 

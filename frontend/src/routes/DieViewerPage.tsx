@@ -111,6 +111,7 @@ import { NetRenamePopover } from "../components/dieViewer/NetRenamePopover";
 import { ViaColorPopover } from "../components/dieViewer/ViaColorPopover";
 import { viaBaseColor, viaColorAction, viaColorTargets, viaFromSelectionId } from "../lib/viaColor";
 import { floorplanNameInline } from "../lib/floorplanName";
+import { drawFloorplansForSnapshot, isFloorplanVisible } from "../lib/floorplanSnapshot";
 import { constrainPoint } from "../lib/angleConstraint";
 import { currentAngleMode } from "../state/angleMode";
 import { useWindowAnchorMaintenance } from "../components/dieViewer/useElementWindow";
@@ -4012,8 +4013,20 @@ function DieViewer({ dieId }: { dieId: string }) {
     screenshotBusyRef.current = true;
     setScreenshotBusy("Rendering…");
     try {
+      // Floorplans are SVG on screen: draw them as vectors into the snapshot.
+      const prefs = usePreferences.getState();
+      const floorplans = prefs.floorplanOverlayOn
+        ? useFloorplanStore.getState().regions.filter((r) =>
+            isFloorplanVisible(r, prefs.hiddenKinds.includes("floorplan"), prefs.hiddenFloorplanTypeNames)
+          )
+        : [];
+      const zoom = handle.getViewport().zoom;
       const blob = await handle.snapshotPng(scale, {
         overlays: canvases.slice(1),
+        drawWorld:
+          floorplans.length > 0
+            ? (ctx, { pxPerWorld, pxPerCss }) => drawFloorplansForSnapshot(ctx, floorplans, { zoom, pxPerWorld, pxPerCss })
+            : undefined,
         signal: abort.signal,
         onProgress: ({ band, bands, pendingTiles }) =>
           setScreenshotBusy(

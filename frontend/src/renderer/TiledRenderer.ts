@@ -196,6 +196,11 @@ export class TiledRenderer {
     scale: number,
     options: {
       overlays?: HTMLCanvasElement[];
+      /** Vector overlays drawn on top of every output tile in world
+       *  coordinates (ctx is already transformed), so DOM / SVG overlays such
+       *  as floorplans stay sharp at any scale. `pxPerWorld` = output px per
+       *  world unit, `pxPerCss` = output px per CSS px (line widths, fonts). */
+      drawWorld?: (ctx: CanvasRenderingContext2D, info: { pxPerWorld: number; pxPerCss: number }) => void;
       onProgress?: (p: SnapshotProgress) => void;
       signal?: AbortSignal;
       timeoutMs?: number;
@@ -268,6 +273,17 @@ export class TiledRenderer {
           const fx = o.width / W;
           const fy = o.height / H;
           tctx.drawImage(o, c * T * fx, b * T * fy, T * fx, T * fy, 0, 0, T, T);
+        }
+        if (options.drawWorld) {
+          tctx.save();
+          tctx.setTransform(k, 0, 0, k, -wx * k, -wy * k);
+          try {
+            options.drawWorld(tctx, { pxPerWorld: k, pxPerCss: dpr });
+          } catch (error) {
+            console.error("[renderer] snapshot drawWorld failed", error);
+          }
+          tctx.restore();
+          tctx.setTransform(1, 0, 0, 1, 0, 0);
         }
         const w = Math.min(T, W - c * T);
         const rows = tctx.getImageData(0, 0, w, bandH).data;
