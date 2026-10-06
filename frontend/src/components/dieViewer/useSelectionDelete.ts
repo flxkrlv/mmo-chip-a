@@ -12,6 +12,8 @@ import {
   type NetSelection
 } from "../../lib/netGraph";
 import { useDieViewerStore } from "../../state/dieViewer";
+import { useFloorplanStore } from "../../state/floorplan";
+import { useAuth } from "../../state/auth";
 
 /**
  * Generic, kind-agnostic deletion of the current selection. Resolves every
@@ -79,6 +81,14 @@ export function useSelectionDelete(opts: {
           const guide = a?.guides?.find((v) => v.id === eid);
           return guide ? { kind: "removeGuide", guide } : null;
         }
+        case "floorplan": {
+          const region = a?.floorplanRegions?.find((v) => v.id === eid);
+          // Like geometry editing: a region reserved by someone else stays
+          // (the floorplan window can still delete it explicitly).
+          const me = useAuth.getState().userId;
+          if (!region || (region.reservedBy && region.reservedBy !== me)) return null;
+          return { kind: "removeFloorplan", region };
+        }
         default:
           return null;
       }
@@ -132,6 +142,14 @@ export function useSelectionDelete(opts: {
         const cellType = a?.cellTypes.find((ct) => ct.id === typeId);
         if (cellType) actions.push({ kind: "removeCellType", cellType });
       }
+    }
+
+    // A deleted floorplan takes its window and edit handles with it.
+    const fp = useFloorplanStore.getState();
+    for (const act of actions) {
+      if (act.kind !== "removeFloorplan") continue;
+      if (fp.openRegionId === act.region.id) fp.openRegion(null);
+      if (fp.editingRegionId === act.region.id) fp.setEditingRegion(null);
     }
 
     if (actions.length > 0) {
