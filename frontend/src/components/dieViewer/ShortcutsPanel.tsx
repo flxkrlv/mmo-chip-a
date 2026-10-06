@@ -35,6 +35,7 @@ const SHORTCUT_GROUPS: ShortcutGroup[] = [
       { key: "P", label: "I/O Point" },
       { key: "H", label: "Floorplan" },
       { key: "Enter / Dbl-click", label: "Finish floorplan polygon (Esc: cancel)" },
+      { key: "Ctrl+Enter", label: "Save and close the floorplan window" },
       { key: "Shift (hold)", label: "Place freely, ignoring the Angle mode (wire, bus, polygons)" },
       { key: "C", label: "Comment" },
       { key: "F", label: "Fit to Screen" },

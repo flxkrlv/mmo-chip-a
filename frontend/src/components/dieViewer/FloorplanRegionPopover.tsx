@@ -9,6 +9,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { DieAnnotations, FloorplanRegion } from "shared";
 import type { ActionDispatcher, AnnotationAction } from "../../api/actions";
 import { normalizeFloorplanName } from "../../lib/floorplanName";
+import { isTypingTarget } from "../../lib/keyboard";
 import { collectDieWideAnalogDevices } from "../../api/dieWideAnalog";
 import { useAuth } from "../../state/auth";
 import { useToast } from "../Toast";
@@ -208,8 +209,9 @@ export function FloorplanRegionPopover({
     originalNetNamesRef.current = map;
   }
 
-  const handleSave = useCallback(async () => {
-    if (saving) return;
+  /** Persist the edits; resolves true once saved. */
+  const handleSave = useCallback(async (): Promise<boolean> => {
+    if (saving) return false;
     setSaving(true);
     try {
       const newAliases = buildPortAliasesForSave();
@@ -343,7 +345,7 @@ export function FloorplanRegionPopover({
           // Reset original names ref so it picks up new state on next save
           originalNetNamesRef.current = null;
           onSaved?.();
-          return; // ← early return, we already saved the region
+          return true; // ← early return, we already saved the region
         } catch (e) {
           toast.error("Failed to rename annotation nets", e instanceof Error ? e.message : String(e));
           // Fall through to the regular save below
@@ -366,12 +368,36 @@ export function FloorplanRegionPopover({
       // Reset original names ref so it picks up new state on next save
       originalNetNamesRef.current = null;
       onSaved?.();
+      return true;
     } catch (err) {
       toast.error("Failed to save floorplan region", err instanceof Error ? err.message : String(err));
+      return false;
     } finally {
       setSaving(false);
     }
   }, [region, name, color, saving, dispatcher, onSaved, buildPortAliasesForSave, annotations, toast]);
+
+  /** Ctrl/Cmd+Enter: save (when there are edits) and close; stays open if
+   *  the save fails. */
+  const saveAndClose = useCallback(async () => {
+    if (!dirty || (await handleSave())) onClose();
+  }, [dirty, handleSave, onClose]);
+  const saveAndCloseRef = useRef(saveAndClose);
+  saveAndCloseRef.current = saveAndClose;
+  // Window-level so it also works right after the double-click, while focus
+  // is still on the canvas — but not while typing in a field elsewhere.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Enter" || !(e.ctrlKey || e.metaKey) || e.repeat) return;
+      const inside = !!popoverRef.current?.contains(e.target as Node);
+      if (!inside && isTypingTarget(e.target)) return;
+      e.preventDefault();
+      e.stopPropagation();
+      void saveAndCloseRef.current();
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, []);
 
   const handleDelete = useCallback(async () => {
     if (deleting) return;
@@ -430,15 +456,8 @@ export function FloorplanRegionPopover({
             setDirty(true);
             setSaveWarnings([]);
           }}
-          onKeyDown={(e) => {
-            // Enter = new line; Ctrl/Cmd+Enter saves.
-            if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
-              e.preventDefault();
-              void handleSave();
-            }
-          }}
           placeholder="e.g. VCC_UVLO (Enter: new line)"
-          title="Enter adds a line · Ctrl+Enter saves"
+          title="Enter adds a line · Ctrl+Enter saves and closes"
           style={{ width: "100%", boxSizing: "border-box", resize: "vertical", fontFamily: "inherit", lineHeight: 1.35 }}
         />
       </label>
@@ -607,7 +626,8 @@ export function FloorplanRegionPopover({
         </button>
         <button
           className="btn sm accent"
-          onClick={handleSave}
+          onClick={() => void handleSave()}
+          title="Save · Ctrl+Enter saves and closes"
           disabled={saving || !dirty}
         >
           {saving ? "Saving…" : "Save"}
