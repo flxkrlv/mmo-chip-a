@@ -112,6 +112,7 @@ import { ViaColorPopover } from "../components/dieViewer/ViaColorPopover";
 import { viaBaseColor, viaColorAction, viaColorTargets, viaFromSelectionId } from "../lib/viaColor";
 import { floorplanNameInline } from "../lib/floorplanName";
 import { drawFloorplansForSnapshot, isFloorplanVisible } from "../lib/floorplanSnapshot";
+import { regionInMarquee } from "../lib/floorplanEdit";
 import { constrainPoint } from "../lib/angleConstraint";
 import { currentAngleMode } from "../state/angleMode";
 import { useWindowAnchorMaintenance } from "../components/dieViewer/useElementWindow";
@@ -3345,6 +3346,15 @@ function DieViewer({ dieId }: { dieId: string }) {
               fullyContained
             )) {
               ids.push(`guide:${g.id}`);
+            }
+          }
+          // Visible floorplan regions (outline-based, see regionInMarquee).
+          const fpPrefs = usePreferences.getState();
+          if (fpPrefs.floorplanOverlayOn) {
+            const fpHidden = fpPrefs.hiddenKinds.includes("floorplan");
+            for (const r of useFloorplanStore.getState().regions) {
+              if (!isFloorplanVisible(r, fpHidden, fpPrefs.hiddenFloorplanTypeNames)) continue;
+              if (regionInMarquee(r, world, fullyContained)) ids.push(`floorplan:${r.id}`);
             }
           }
           // ML vias swept by the marquee — only those currently rendered

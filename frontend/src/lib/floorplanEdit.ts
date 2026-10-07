@@ -5,6 +5,7 @@
 // All coordinates are die (world) pixels.
 
 import type { FloorplanRegion } from "shared";
+import { pointInRect, segmentIntersectsRect, type Rect } from "./geometry";
 
 export type Pt = { x: number; y: number };
 
@@ -91,4 +92,32 @@ export function isDegenerate(region: Pick<FloorplanRegion, "kind">, geometry: Pt
   if (isPolyRegion(region)) return geometry.length < MIN_POLY_VERTICES;
   const { x0, y0, x1, y1 } = rectBounds(geometry);
   return x1 - x0 < 1 || y1 - y0 < 1;
+}
+
+// ── Marquee selection ────────────────────────────────────────────────
+
+/** Outline vertices of a region (a rect's 4 corners, a polygon's vertices). */
+export function regionOutline(region: Pick<FloorplanRegion, "kind" | "geometry">): Pt[] {
+  const g = region.geometry;
+  if (isPolyRegion(region) || g.length < 2) return g;
+  const { x0, y0, x1, y1 } = rectBounds(g);
+  return [{ x: x0, y: y0 }, { x: x1, y: y0 }, { x: x1, y: y1 }, { x: x0, y: y1 }];
+}
+
+/**
+ * Whether the marquee `r` selects `region`. Fully contained (left-to-right
+ * drag): the whole outline is inside. Crossing (right-to-left): the marquee
+ * touches the outline — a marquee entirely inside the region does not pick
+ * it, matching how floorplans only react to their outline (the interior
+ * belongs to what is drawn in it).
+ */
+export function regionInMarquee(
+  region: Pick<FloorplanRegion, "kind" | "geometry">,
+  r: Rect,
+  fullyContained: boolean
+): boolean {
+  const pts = regionOutline(region);
+  if (pts.length < 2) return false;
+  if (fullyContained) return pts.every((p) => pointInRect(p, r));
+  return pts.some((p, i) => segmentIntersectsRect(p, pts[(i + 1) % pts.length], r));
 }

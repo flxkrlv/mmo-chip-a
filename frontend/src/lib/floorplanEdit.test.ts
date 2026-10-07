@@ -8,6 +8,7 @@ import {
   isPolyRegion,
   moveVertex,
   rectHandlePoint,
+  regionInMarquee,
   translateGeometry
 } from "./floorplanEdit";
 
@@ -96,5 +97,27 @@ describe("misc", () => {
   it("flags zero-area rects", () => {
     expect(isDegenerate({ kind: "rect" }, [{ x: 1, y: 1 }, { x: 1, y: 50 }])).toBe(true);
     expect(isDegenerate({ kind: "rect" }, rect)).toBe(false);
+  });
+});
+
+describe("marquee selection of regions", () => {
+  const rect = { kind: "rect" as const, geometry: [{ x: 100, y: 100 }, { x: 0, y: 0 }] };
+  const tri = { kind: "polygon" as const, geometry: [{ x: 0, y: 0 }, { x: 100, y: 0 }, { x: 50, y: 80 }] };
+
+  it("fully contained needs the whole outline inside", () => {
+    expect(regionInMarquee(rect, { x: -1, y: -1, width: 102, height: 102 }, true)).toBe(true);
+    expect(regionInMarquee(rect, { x: 10, y: -1, width: 102, height: 102 }, true)).toBe(false);
+    expect(regionInMarquee(tri, { x: -5, y: -5, width: 110, height: 90 }, true)).toBe(true);
+  });
+
+  it("crossing picks regions whose outline the marquee touches", () => {
+    expect(regionInMarquee(rect, { x: 90, y: 40, width: 20, height: 10 }, false)).toBe(true);
+    expect(regionInMarquee(tri, { x: 45, y: 70, width: 10, height: 20 }, false)).toBe(true);
+    expect(regionInMarquee(rect, { x: 200, y: 200, width: 10, height: 10 }, false)).toBe(false);
+  });
+
+  it("a marquee entirely inside the region does not pick it", () => {
+    expect(regionInMarquee(rect, { x: 20, y: 20, width: 30, height: 30 }, false)).toBe(false);
+    expect(regionInMarquee(tri, { x: 40, y: 10, width: 10, height: 10 }, false)).toBe(false);
   });
 });
