@@ -29,6 +29,14 @@ export interface TiledCanvasHandle {
   refresh: () => void;
   /** Center the view on a world point at the given zoom. */
   centerOn: (worldX: number, worldY: number, zoom?: number) => void;
+  /** The current view as a PNG at `scale` × screen resolution (see
+   *  TiledRenderer.renderSnapshotPng). Null before mount or when cancelled. */
+  snapshotPng: (
+    scale: number,
+    options?: Parameters<TiledRenderer["renderSnapshotPng"]>[1]
+  ) => Promise<Blob | null>;
+  /** On-screen device px per CSS px (window.devicePixelRatio at last resize). */
+  getDpr: () => number;
 }
 
 export interface TiledCanvasProps {
@@ -77,6 +85,9 @@ export function TiledCanvas({
   const onCanvasClickRef = useRef(onCanvasClick);
   onCanvasClickRef.current = onCanvasClick;
 
+  // Set once `gestures` exists below; lets an in-progress drag follow any
+  // viewport change (wheel, keyboard zoom, auto-pan).
+  const viewportChangedRef = useRef<(() => void) | null>(null);
   const setViewport = useCallback(
     (v: Viewport) => {
       const clamped: Viewport = {
@@ -87,6 +98,7 @@ export function TiledCanvas({
       viewportRef.current = clamped;
       rendererRef.current?.setViewport(clamped);
       onViewportChangeRef.current?.(clamped);
+      viewportChangedRef.current?.();
     },
     [minZoom, maxZoom]
   );
@@ -110,6 +122,9 @@ export function TiledCanvas({
         };
       },
       invalidate: () => rendererRef.current?.invalidate(),
+      snapshotPng: async (scale, options) =>
+        rendererRef.current ? rendererRef.current.renderSnapshotPng(scale, options) : null,
+      getDpr: () => window.devicePixelRatio || 1,
       refresh: () => rendererRef.current?.invalidate(),
       centerOn: (worldX, worldY, zoom) => {
         const cur = viewportRef.current;
@@ -161,6 +176,7 @@ export function TiledCanvas({
     minZoom,
     maxZoom
   });
+  viewportChangedRef.current = gestures.viewportChanged;
 
   return (
     <canvas

@@ -23,6 +23,7 @@ import type {
   DieAnnotations,
   IOPin,
 } from "shared";
+import { cellWorldRect } from "../cellFootprint";
 import type { CellExtraction, CellPort, ConnectingLayer } from "./cell";
 import { shapeToPolygon } from "./common";
 import type { Point, Rect } from "../geometry";
@@ -139,24 +140,6 @@ function wireTouchesPolygon(
 // ── Top-level I/O inference ───────────────────────────────────────
 
 /**
- * World-space axis-aligned footprint of a placed cell (its oriented cropRect).
- * Used to decide which placed pins land inside which cell. 90°-step rotations
- * keep the box axis-aligned, so a bbox of the transformed corners is exact.
- */
-function cellFootprint(cell: Cell, cropW: number, cropH: number): Rect | null {
-  const corners = [
-    { x: 0, y: 0 },
-    { x: cropW, y: 0 },
-    { x: cropW, y: cropH },
-    { x: 0, y: cropH },
-  ].map((p) => {
-    const o = applyOrientation(p, cell, cropW, cropH);
-    return { x: cell.x + o.x, y: cell.y + o.y };
-  });
-  return polygonBounds(corners);
-}
-
-/**
  * Group placed I/O pins by the cell instance whose footprint contains them
  * (first containing cell wins — cells rarely overlap). Cells with ≥1 pin
  * inside are "I/O cells": pads whose nets get promoted to top-level ports
@@ -171,7 +154,8 @@ function pinsByCell(
     const ct = cellTypeById.get(cell.cellTypeId);
     return {
       cell,
-      fp: ct ? cellFootprint(cell, ct.cropRect.width, ct.cropRect.height) : null,
+      // Per-instance footprint (honours a resized cell's own bounds).
+      fp: ct ? cellWorldRect(cell, ct.cropRect.width, ct.cropRect.height) : null,
     };
   });
   const out = new Map<string, IOPin[]>();

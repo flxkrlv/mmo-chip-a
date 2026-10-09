@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import sharp from "sharp";
+import { getSourceLevels, isTiffPath, openSourceLevel } from "./dieImport/tiffPyramid.js";
 
 export const PREVIEW_MAX_EDGE = 4096;
 
@@ -26,9 +27,17 @@ export async function ensurePreviewImage(params: {
     // Cache missing — regenerate.
   }
 
+  // A pyramidal TIFF already has a small copy: start from the least detailed
+  // level that still covers the preview size rather than the full image.
+  const sourceLevel = isTiffPath(params.sourcePath)
+    ? (await getSourceLevels(params.sourcePath))
+        .filter((level) => Math.max(level.width, level.height) >= maxEdge)
+        .at(-1) ?? null
+    : null;
+
   await fs.mkdir(path.dirname(params.cachePath), { recursive: true });
   await pipelineToFileAtomic(
-    sharp(params.sourcePath, { limitInputPixels: false, sequentialRead: true })
+    openSourceLevel(params.sourcePath, sourceLevel, { limitInputPixels: false, sequentialRead: true })
       .resize({
         width: maxEdge,
         height: maxEdge,

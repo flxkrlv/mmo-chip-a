@@ -1,6 +1,7 @@
 import type { DieAnnotations } from "shared";
 import type { Rect } from "../../lib/geometry";
 import { formatPercent } from "../../lib/format";
+import { withShortcut } from "../../lib/hotkeys";
 import { useLiveValue, type LiveValue } from "../../lib/liveValue";
 import type { Viewport } from "../../renderer/types";
 
@@ -50,6 +51,100 @@ export function CursorReadout({
   );
 }
 
+/** What the cursor is currently over: the net a hovered wire/vertex belongs
+ *  to, the cell type(s) of any visible cells under the cursor and the
+ *  floorplan type(s) of any regions containing it. */
+export interface HoverInfo {
+  net: string | null;
+  cells: string[];
+  floorplans: string[];
+}
+
+const sameList = (a: string[], b: string[]) =>
+  a.length === b.length && a.every((x, i) => x === b[i]);
+
+export function sameHoverInfo(a: HoverInfo | null, b: HoverInfo | null): boolean {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  return (
+    a.net === b.net &&
+    sameList(a.cells, b.cells) &&
+    sameList(a.floorplans, b.floorplans)
+  );
+}
+
+/** Renders its own leading separators so it can sit inside the cursor item
+ *  without leaving a dangling "·" in the status bar when nothing is hovered. */
+export function HoverReadout({ store }: { store: LiveValue<HoverInfo | null> }) {
+  const h = useLiveValue(store);
+  if (!h) return null;
+  const sep = <span style={{ color: "var(--muted)", margin: "0 6px" }}>·</span>;
+  return (
+    <>
+      {h.net != null && (
+        <>
+          {sep}
+          <span>
+            net <span style={{ color: "var(--ink)" }}>{h.net}</span>
+            <span style={{ color: "var(--muted)", marginLeft: 6 }}>
+              (double-click: rename · hold 2s: select &amp; fit)
+            </span>
+          </span>
+        </>
+      )}
+      {h.cells.length > 0 && (
+        <>
+          {sep}
+          <span>
+            cell <span style={{ color: "var(--ink)" }}>{h.cells.join(", ")}</span>
+          </span>
+        </>
+      )}
+      {h.floorplans.length > 0 && (
+        <>
+          {sep}
+          <span>
+            floorplan <span style={{ color: "var(--ink)" }}>{h.floorplans.join(", ")}</span>
+          </span>
+        </>
+      )}
+    </>
+  );
+}
+
+/**
+ * Progress ring at the cursor while a net is press-and-held on the canvas
+ * (same look and timing as the outline eye's long press). `store` holds the
+ * canvas-relative position; `key` restarts the CSS animation per press.
+ */
+export function NetHoldRing({
+  store,
+  delayMs
+}: {
+  store: LiveValue<{ x: number; y: number; key: number } | null>;
+  delayMs: number;
+}) {
+  const at = useLiveValue(store);
+  if (!at) return null;
+  return (
+    <div
+      style={{ position: "absolute", left: at.x, top: at.y, width: 0, height: 0, zIndex: 20, pointerEvents: "none" }}
+    >
+      <svg
+        key={at.key}
+        className="trow-eye-ring"
+        viewBox="0 0 20 20"
+        aria-hidden
+        // The ring appears `delayMs` into the hold; start its fill there so it
+        // completes exactly when the hold fires.
+        style={{ width: 28, height: 28, ["--ring-delay" as string]: `-${delayMs}ms` }}
+      >
+        <circle cx="10" cy="10" r="8.5" pathLength={1} />
+      </svg>
+    </div>
+  );
+}
+
 export function annotationsSummary(a: DieAnnotations): string | null {
   const counts: string[] = [];
   if (a.cells.length) counts.push(`${a.cells.length} cells`);
@@ -78,12 +173,15 @@ export function Tool({
   icon,
   on,
   label,
+  shortcut,
   todo,
   onClick
 }: {
   icon: React.ReactNode;
   on?: boolean;
   label?: string;
+  /** Keyboard shortcut appended to the tooltip, e.g. "W". */
+  shortcut?: string;
   /** Not implemented yet — renders disabled with a "(coming soon)" hint. */
   todo?: boolean;
   onClick?: () => void;
@@ -92,7 +190,7 @@ export function Tool({
     <button
       type="button"
       className={"tool" + (on ? " on" : "") + (todo ? " todo" : "")}
-      title={todo ? `${label ?? ""} (coming soon)` : label}
+      title={todo ? `${label ?? ""} (coming soon)` : withShortcut(label ?? "", shortcut) || undefined}
       disabled={todo}
       onClick={todo ? undefined : onClick}
     >

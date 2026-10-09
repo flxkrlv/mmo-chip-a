@@ -5,9 +5,68 @@
 **A fork of [mmo-chip](https://github.com/giulioz/mmo-chip) for reverse engineering analog and mixed-signal ICs.**  
 Extends the original digital CMOS pipeline to **BJTs, BiCMOS, resistors, capacitors, diodes** — transistor-level extraction with SPICE/CDL/Spectre netlist export.
 
+## What's different in this fork ([lytex/mmo-chip](https://github.com/lytex/mmo-chip))
+
+This fork tracks [flxkrlv/mmo-chip-a](https://github.com/flxkrlv/mmo-chip-a) (itself a fork of [giulioz/mmo-chip](https://github.com/giulioz/mmo-chip)) and adds the following on top. Everything else in this README applies to all three.
+
+### Large images
+
+- **Pyramidal TIFF import** — dies and overlays can be imported as pyramidal / tiled TIFF (libvips `tiffsave --pyramid`, SubIFD/OME-TIFF, SVS). Coarse zoom levels are cut from the matching stored resolution and full-resolution tiles only decode the region they cover, so tiling huge mosaics is far faster than from PNG.
+- **Resumable tiling** — background tile generation resumes after a backend restart, only renders tiles missing on disk, and the progress counter is seeded from the tiles already present (no more "tiling" again for an already-tiled die).
+
+### Nets and wires
+
+- **Per-net colors** — assign colors to one or many nets at once from the Outline Tree; a switch flips between custom net colors and per-layer colors without losing the assignments.
+- **Per-net / per-cell visibility** — hide individual nets or cells while keeping the global visibility toggles.
+- **Net width per die** — wire width is stored per die instead of globally.
+- **Multi-wire (`B`) with multiple turning points** — route a bus through several bends; staggered start points end on a common aligned front.
+- **Hold to zoom** — hold the pointer for 2 s on a net (in the tree or on the canvas) to zoom to it.
+- **Double-click windows** — double-clicking a net opens a small non-modal window to rename it and pick its color (duplicate names get an inline warning); double-clicking a cell opens one to change its type and set the type's color. The windows (and the floorplan and comment popovers) can be dragged; their position is remembered and stays anchored to the element as you pan and zoom.
+- Double-click to rename I/O pins directly on the canvas.
+- **Selection rectangle** keeps its start corner on the die while you scroll or zoom mid-drag, and auto-pans when dragged to the canvas edge.
+- Toggleable crosses on net vertices.
+
+### Cells and I/O points
+
+- **Resize handles** — resize cells after placing them; resizing applies to all cells of the same type, with correct transforms.
+- **Cell type colors** and cell type shown on hover.
+- **Rotate / mirror from the die viewer** — right-click a cell → *Rotate 90° clockwise*, *Flip horizontally*, *Flip vertically*. The box and its content turn about the box centre (a tall cell becomes wide in place); applies to the whole selection when the clicked cell is selected; one undo step.
+- **Draggable I/O points** — I/O points are always visible; their names toggle with a switch.
+- **Several pads for one pin** — copy an I/O pad (`Ctrl+C` or right-click → *Copy pad*) and paste it (`Ctrl+V`) to add another pad with the same pin number and name at a different location (e.g. two VDD pads bonded to the same pin). Pads are copied together with selected cells and wires. Renaming any pad renames every pad of that pin; *Apply to Die Viewer* in the IC Package page names them all; the netlists treat them as one port.
+- **Hover info** — the bottom panel shows details of the object under the cursor.
+
+### Merge Cells
+
+- **Multi overlay** — stack every cell of the same type into a single overlaid image to spot outliers.
+- **Rotated cells shown upright** — each instance is cropped from its real (oriented) footprint on the die and shown in its type's frame, so a rotated instance of a tall cell is tall too. Flip H / Flip V / 90° act on what you see; drag-align and auto-align use the same frame, and merging keeps the cell's box centre in place.
+- **Stretch lines** (`S`) — for an exact match, drag across the candidate to draw a vertical or horizontal line, then drag lines (or the box edges) to stretch each band separately — a piecewise-linear stretch in both directions. Each band shows its factor (`×1.023`); double-click a line to remove it; *Reset stretch* clears them. Every change is one undo step (`Ctrl+Z` / `Ctrl+Shift+Z`). Works in the overlay, difference and candidate views.
+- Faster cell thumbnails by reusing the die viewer's tiles.
+- Fixed undo/redo history.
+
+### Floorplans
+
+- **Edit geometry after drawing** — move/reshape rectangle and polygon regions after creation.
+- **Undo/redo** for floorplan regions (and for layout comments).
+- Custom color picker and per-region visibility in the floorplan hierarchy.
+- `Esc` exits the floorplan tool; the first click already places a point; `Space+H` toggles floorplans.
+
+### Comments
+
+- `✕` closes a comment; a trash button deletes it (author only).
+- Comments can be dragged to a new place, and comments and replies can be edited and deleted by their author — all undoable.
+
+### Other
+
+- **Editable code pages** — the generated netlist on the Code / Analog Netlist pages can be edited by hand and re-parsed into the schematic.
+- **Toggleable rulers** — show/hide rulers from the Outline Tree.
+- **High-resolution screenshots** — right-click the screenshot button for a resolution slider, up to the die's full tile resolution (see [Screenshot](#screenshot)).
+- **Shortcut hints** — tooltips of buttons, tools, tabs and layer toggles show their keyboard shortcut.
+- Scrollable popovers.
+- Compatibility with older `data/` formats.
+
 ## Acknowledgments
 
-Many thanks to the developers of the original [mmo-chip](https://github.com/giulioz/mmo-chip) for the clean architecture and clear interfaces that made this analog extension possible.
+Many thanks to the developers of the original [mmo-chip](https://github.com/giulioz/mmo-chip) and fork [flxkrlv/mmo-chip-a](https://github.com/flxkrlv/mmo-chip-a) for the clean architecture and clear interfaces that made this analog extension possible.
 
 The original CMOS pipeline (standard cells, logic, Verilog) is **untouched** — analog extraction works as an add-on.
 
@@ -144,6 +203,8 @@ Unified issue panel (`IssuesChip` button). Checks: connectivity (unconnected ter
 |--------|-----|
 | **Copy / Paste** | `Ctrl+C` / `Ctrl+V` or right-click context menu |
 | **Make Unique** | `Shift+U` or right-click — detach cell from shared type, edit independently |
+| **Rotate / Flip** | Right-click a cell → Rotate 90° clockwise / Flip horizontally / Flip vertically (whole selection if the cell is selected) |
+| **Copy I/O pads** | Select pads + `Ctrl+C`, or right-click → Copy pad; `Ctrl+V` adds pads with the same pin number and name |
 | **Cell Relationship** | Toggle **CELL REL** in right panel — highlight all same-type cells, dim others |
 
 ### Device Registry
@@ -164,7 +225,9 @@ Each device gets a stable UUID from `kind + position + subType`. Renames and par
 
 ### Screenshot
 
-`Ctrl+Shift+S` exports the current die view as PNG (4K resolution, composited with all overlay layers including analog device highlights). Download button also in SubBar.
+`Ctrl+Shift+S` (or the download button in the SubBar) exports the current die view as PNG, composited with all overlay layers including analog device highlights.
+
+**Right-click the button** for the resolution panel: a slider from 0.5× to the die's **native** resolution for the current zoom (one output pixel per pixel of the finest image tiles, at least 4×), the resulting size in pixels, and a **Native** setting that follows the zoom. The choice is remembered. Higher settings re-render the view and load finer image tiles, so they add real detail; the image is rendered in bands and streamed into the PNG, so it can be far larger than the screen (up to 2 gigapixels). Progress is shown while tiles load, and long exports can be cancelled. Overlay drawings on top (analog highlights, comments) are stretched from screen resolution.
 
 ### Search
 
@@ -334,10 +397,10 @@ Tool access is explicitly controlled by the user. The model proposes hypotheses 
 | `Shift+1` … `Shift+5` | Navigate tabs: Die / Merge / RE Cell / Code / Analog Netlist |
 | `Ctrl+Z` / `⌘Z` | Undo |
 | `Ctrl+Shift+Z` / `⌘⇧Z` | Redo |
-| `Ctrl+C` / `⌘C` | Copy cell / shape |
+| `Ctrl+C` / `⌘C` | Copy selected cells / I/O pads / wires |
 | `Ctrl+V` / `⌘V` | Paste |
 | `Shift+U` | Make Unique (cell) |
-| `Ctrl+Shift+S` | Screenshot (PNG, 4K) |
+| `Ctrl+Shift+S` | Screenshot (PNG; right-click its button for resolution) |
 | `Ctrl+F` | Search nets / cells |
 | `Ctrl+/` | Keyboard shortcuts panel |
 | Space (hold) | Temporary pan |
@@ -364,6 +427,8 @@ Set the scale with double-click or right-click → **Set scale from ruler**. Aft
 | `Space+B` | Toggle base image |
 | `Space+C` | Toggle cell visibility |
 | `Space+N` | Toggle net visibility |
+| `Space+H` | Toggle floorplan visibility |
+| `Space+M` | Toggle comment visibility |
 | `]` / `[` | Next / previous overlay layer only |
 | `Space+1..8` | Show only overlay layer N; repeat to hide it |
 
@@ -381,9 +446,14 @@ Overlay layer settings (visibility, opacity, offset) are persisted per-die in lo
 
 ### Merge Cells
 
-| Key | Mode |
+| Key | Action |
 |-----|------|
-| `Alt+1`…`5` | Overlay / Side-by-side / Diff / Specimen / Candidate |
+| `Alt+1`…`6` | Overlay / Side-by-side / Diff / Specimen / Candidate / Multi overlay |
+| `←` / `→` | Previous / next candidate |
+| `F` / `G` / `H` | Flip horizontally / Flip vertically / Rotate 90° (as shown) |
+| `J` | Auto-align from ML vias |
+| `S` | Stretch lines on / off |
+| `Y` | Accept & merge |
 
 ---
 

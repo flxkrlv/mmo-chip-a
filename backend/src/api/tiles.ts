@@ -1,12 +1,22 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import { Router, type Request } from "express";
-import sharp from "sharp";
-import { resolveOverlayOriginalPath, readManifest } from "./overlayImages.js";
+import { Router, type Request, type Response } from "express";
+import { getOverlayCropSource } from "./overlayImages.js";
 import { ensurePreviewImage } from "../imagePreview.js";
 import { readAnnotations, readDieRecord } from "../store.js";
 import { resolveProjectDir } from "../projectLayout.js";
+import {
+  ensureCrop,
+  pickCropScale,
+  renderCropFromOriginal,
+  renderCropFromTiles,
+  tilesAvailable,
+  type CropRect,
+  type PyramidSource
+} from "../tileCrop.js";
 import type { createTileScheduler } from "../tileScheduler.js";
+import type { DieRecord } from "../types.js";
+import type { Cell } from "shared";
 
 const SAFE_ID = /^[a-zA-Z0-9_-]+$/;
 
@@ -14,31 +24,7 @@ function assertSafeId(value: string): void {
   if (!SAFE_ID.test(value)) throw new Error("Invalid id");
 }
 
-/**
- * Resolves the source for small static previews. A tiled overlay is always
- * resolved in the shared namespace; legacy/base-image previews retain the
- * historical original-image fallback when no source is selected.
- */
-async function resolveCropOriginalPath(params: {
-  request: Request;
-  dataRoot: string;
-  dieId: string;
-}): Promise<string | null> {
-  const rawSourceId = params.request.query.overlaySourceId;
-  const sourceId = typeof rawSourceId === "string" ? rawSourceId : undefined;
-  if (sourceId) {
-    return resolveOverlayOriginalPath({
-      dataRoot: params.dataRoot,
-      dieId: params.dieId,
-      sourceId
-    });
-  }
-
-  const { dir } = await resolveProjectDir(params.dataRoot, params.dieId);
-  const originalDir = path.join(dir, "original");
-  const files = await fs.readdir(originalDir);
-  return files.length > 0 ? path.join(originalDir, files[0]) : null;
-}
+class CropSourceMissing extends Error {}
 
 function cropCachePath(params: {
   projectDir: string;
@@ -61,6 +47,109 @@ export function createTilesRouter(config: {
 }) {
   const router = Router();
 
+  /**
+   * Shared crop response. `?px=N` asks for a quick preview: the coarsest
+   * pyramid level whose output long side is still >= N pixels. Without it
+   * the crop is full resolution. Both are assembled from pyramid tiles.
+   */
+  async function serveCrop(params: {
+    request: Request;
+    response: Response;
+    dieId: string;
+    record: DieRecord;
+    /** Cache basename prefix (cell / type id). */
+    key: string;
+    rect: CropRect;
+  }): Promise<void> {
+    const { request, response, record, rect } = params;
+    if (rect.width <= 0 || rect.height <= 0) {
+      response.status(400).json({ error: "Invalid crop region" });
+      return;
+    }
+    const rawOverlaySourceId = request.query.overlaySourceId;
+    const overlaySourceId =
+      typeof rawOverlaySourceId === "string" ? rawOverlaySourceId : undefined;
+    const minPx = Number(request.query.px);
+    const requestedScale = pickCropScale(record.levels, rect, Number.isFinite(minPx) ? minPx : undefined);
+    const { dir: projectDir } = await resolveProjectDir(config.dataRoot, params.dieId);
+    const overlay = overlaySourceId
+      ? await getOverlayCropSource({
+          dataRoot: config.dataRoot,
+          dieId: params.dieId,
+          sourceId: overlaySourceId
+        })
+      : null;
+    const tilesDir = path.join(projectDir, "tiles");
+    const base: PyramidSource = {
+      levels: record.levels,
+      tileSize: record.tileSize,
+      peekTile: async (z, x, y) => {
+        const tilePath = path.join(tilesDir, String(z), `${x}_${y}.jpg`);
+        try {
+          await fs.access(tilePath);
+          return tilePath;
+        } catch {
+          return null;
+        }
+      }
+    };
+
+    // Tiles are used only where they are already built. A preview may come
+    // from any coarser complete level (the client stretches it to the cell
+    // box); a full-resolution crop needs the scale-1 tiles. Otherwise one
+    // direct extract from the original at the requested scale.
+    const candidates = [
+      requestedScale,
+      ...record.levels.map((l) => l.scale).filter((s) => requestedScale > 1 && s > requestedScale).sort((a, b) => a - b)
+    ];
+    let scale = requestedScale;
+    let fromTiles = false;
+    for (const s of candidates) {
+      if (await tilesAvailable({ base, overlay: overlay?.pyramid, rect, scale: s })) {
+        scale = s;
+        fromTiles = true;
+        break;
+      }
+    }
+
+    // Position, size and scale are all in the key: moving or resizing a cell
+    // yields a fresh crop, and a preview never masquerades as the full crop.
+    const cachePath = cropCachePath({
+      projectDir,
+      overlaySourceId,
+      basename: `${params.key}-${rect.left}-${rect.top}-${rect.width}x${rect.height}-s${scale}.jpg`
+    });
+
+    await ensureCrop(cachePath, async () => {
+      if (fromTiles && await renderCropFromTiles({ base, overlay: overlay?.pyramid, rect, scale, target: cachePath })) {
+        return;
+      }
+      const originalDir = path.join(projectDir, "original");
+      const originalFiles = await fs.readdir(originalDir);
+      if (originalFiles.length === 0) throw new CropSourceMissing();
+      await renderCropFromOriginal({
+        basePath: path.join(originalDir, originalFiles[0]),
+        overlayPath: overlay?.originalPath,
+        imageSize: { width: record.width, height: record.height },
+        rect,
+        scale,
+        target: cachePath
+      });
+    });
+    response.sendFile(cachePath);
+  }
+
+  function clampRect(record: DieRecord, x: number, y: number, w: number, h: number): CropRect {
+    const left = Math.max(0, Math.round(x));
+    const top = Math.max(0, Math.round(y));
+    return {
+      left,
+      top,
+      width: Math.min(Math.round(w), record.width - left),
+      height: Math.min(Math.round(h), record.height - top)
+    };
+  }
+
   router.get("/api/dies/:dieId/cells/:cellId/crop", async (request, response, next) => {
     try {
       const { dieId, cellId } = request.params;
@@ -73,69 +162,22 @@ export function createTilesRouter(config: {
       const cellType = annotations.cellTypes.find((ct) => ct.id === cell.cellTypeId);
       if (!cellType) { response.status(404).json({ error: "Cell type not found" }); return; }
 
-      const { width: cropW, height: cropH } = cellType.cropRect;
-      const left = Math.max(0, Math.round(cell.x));
-      const top = Math.max(0, Math.round(cell.y));
-      const width = Math.min(Math.round(cropW), record.width - left);
-      const height = Math.min(Math.round(cropH), record.height - top);
-      const rawOverlaySourceId = request.query.overlaySourceId;
-      const overlaySourceId =
-        typeof rawOverlaySourceId === "string" ? rawOverlaySourceId : undefined;
-      const { dir: projectDir } = await resolveProjectDir(config.dataRoot, dieId);
-      const cachePath = cropCachePath({
-        projectDir,
-        overlaySourceId,
-        basename: `${cellId}-${left}-${top}.jpg`
+      await serveCrop({
+        request,
+        response,
+        dieId,
+        record,
+        key: cellId,
+        rect: (() => {
+          const r = cellDieRect(cell, cellType.cropRect.width, cellType.cropRect.height);
+          return clampRect(record, r.x, r.y, r.width, r.height);
+        })()
       });
-      const cacheDir = path.dirname(cachePath);
-      try {
-        await fs.access(cachePath);
-        response.sendFile(cachePath);
-        return;
-      } catch { /* cache miss */ }
-
-      // Always resolve the base image (die photo)
-      const originalDir = path.join(projectDir, "original");
-      const originalFiles = await fs.readdir(originalDir);
-      const basePath = originalFiles.length > 0 ? path.join(originalDir, originalFiles[0]) : null;
-      if (!basePath) {
+    } catch (error) {
+      if (error instanceof CropSourceMissing) {
         response.status(404).json({ error: "Crop source image not found" });
         return;
       }
-      if (width <= 0 || height <= 0) { response.status(400).json({ error: "Invalid crop region" }); return; }
-
-      await fs.mkdir(cacheDir, { recursive: true });
-
-      // Extract base crop
-      const baseCrop = sharp(basePath, { limitInputPixels: false })
-        .extract({ left, top, width, height })
-        .jpeg({ quality: 90 });
-
-      if (overlaySourceId) {
-        // Load overlay manifest and original for compositing
-        const manifest = await readManifest(config.dataRoot, dieId, overlaySourceId);
-        if (manifest && manifest.originalPath) {
-          try {
-            await fs.access(manifest.originalPath);
-            // Extract same region from overlay and composite on top of base
-            const overlayCrop = sharp(manifest.originalPath, { limitInputPixels: false })
-              .extract({ left, top, width, height });
-            await baseCrop
-              .composite([{ input: await overlayCrop.toBuffer(), blend: "over" }])
-              .toFile(cachePath);
-          } catch {
-            // Overlay not available — fall back to base-only crop
-            await baseCrop.toFile(cachePath);
-          }
-        } else {
-          await baseCrop.toFile(cachePath);
-        }
-      } else {
-        await baseCrop.toFile(cachePath);
-      }
-
-      response.sendFile(cachePath);
-    } catch (error) {
       next(error);
     }
   });
@@ -159,46 +201,19 @@ export function createTilesRouter(config: {
         if (cell) { cropX = cell.x; cropY = cell.y; }
       }
 
-      const rawOverlaySourceId = request.query.overlaySourceId;
-      const overlaySourceId =
-        typeof rawOverlaySourceId === "string" ? rawOverlaySourceId : undefined;
-      const { dir: projectDir } = await resolveProjectDir(config.dataRoot, dieId);
-      const cachePath = cropCachePath({
-        projectDir,
-        overlaySourceId,
-        basename: `ct-${cellTypeId}.jpg`
-      });
-      const cacheDir = path.dirname(cachePath);
-      try {
-        await fs.access(cachePath);
-        response.sendFile(cachePath);
-        return;
-      } catch { /* cache miss */ }
-
-      const originalPath = await resolveCropOriginalPath({
+      await serveCrop({
         request,
-        dataRoot: config.dataRoot,
-        dieId
+        response,
+        dieId,
+        record,
+        key: `ct-${cellTypeId}`,
+        rect: clampRect(record, cropX, cropY, cellType.cropRect.width, cellType.cropRect.height)
       });
-      if (!originalPath) {
+    } catch (error) {
+      if (error instanceof CropSourceMissing) {
         response.status(404).json({ error: "Crop source image not found" });
         return;
       }
-
-      const left = Math.max(0, Math.round(cropX));
-      const top = Math.max(0, Math.round(cropY));
-      const width = Math.min(Math.round(cellType.cropRect.width), record.width - left);
-      const height = Math.min(Math.round(cellType.cropRect.height), record.height - top);
-      if (width <= 0 || height <= 0) { response.status(400).json({ error: "Invalid crop region" }); return; }
-
-      await fs.mkdir(cacheDir, { recursive: true });
-      await sharp(originalPath, { limitInputPixels: false })
-        .extract({ left, top, width, height })
-        .jpeg({ quality: 90 })
-        .toFile(cachePath);
-
-      response.sendFile(cachePath);
-    } catch (error) {
       next(error);
     }
   });
@@ -268,4 +283,39 @@ export function createTilesRouter(config: {
   });
 
   return router;
+}
+
+/**
+ * A placed cell's footprint on the die (mirror of the frontend's
+ * `lib/cellFootprint.cellWorldRect`): its type-frame box (`bounds`, else the
+ * type box) mirrored, then rotated clockwise about the type-box centre, at
+ * the cell origin. A 90°/270° cell of a W×H type covers H×W. The crop is this
+ * region as it sits on the die; clients un-orient it for display.
+ */
+export function cellDieRect(
+  cell: Pick<Cell, "x" | "y" | "bounds" | "flippedH" | "flippedV" | "rotation">,
+  typeW: number,
+  typeH: number
+): { x: number; y: number; width: number; height: number } {
+  const b = cell.bounds ?? { x: 0, y: 0, width: typeW, height: typeH };
+  const map = (px: number, py: number): [number, number] => {
+    let qx = px - typeW / 2;
+    let qy = py - typeH / 2;
+    if (cell.flippedH) qx = -qx;
+    if (cell.flippedV) qy = -qy;
+    switch (cell.rotation ?? 0) {
+      case 90: [qx, qy] = [-qy, qx]; break;
+      case 180: [qx, qy] = [-qx, -qy]; break;
+      case 270: [qx, qy] = [qy, -qx]; break;
+    }
+    return [qx + typeW / 2, qy + typeH / 2];
+  };
+  const [ax, ay] = map(b.x, b.y);
+  const [bx, by] = map(b.x + b.width, b.y + b.height);
+  return {
+    x: cell.x + Math.min(ax, bx),
+    y: cell.y + Math.min(ay, by),
+    width: Math.abs(bx - ax),
+    height: Math.abs(by - ay)
+  };
 }

@@ -96,7 +96,7 @@ test("rejects unsupported file types", async () => {
   assert.equal(response.status, 202);
   const failedJob = await waitForCompletedJob(app, response.body.id);
   assert.equal(failedJob.status, "failed");
-  assert.match(failedJob.error, /PNG and JPEG/);
+  assert.match(failedJob.error, /PNG, JPEG and TIFF/);
 });
 
 test("deletes a die and its stored data", async () => {
@@ -167,6 +167,139 @@ test("analyses a supplied circuit snapshot without changing annotations", async 
   assert.ok(analysed.body.data.findings.some((finding: { kind: string }) => finding.kind === "current_mirror"));
   const after = await request(app).get(`/api/dies/${job.dieId}/annotations`);
   assert.equal(after.body.rev, before.body.rev);
+});
+
+test("cell crops come from the tile pyramid, with ?px previews at coarse levels", async () => {
+  const { app, dataRoot } = await createHarness();
+  // Left half dark, right half bright: a crop straddling x=256 shows both.
+  const imageBuffer = await sharp({ create: { width: 512, height: 512, channels: 3, background: { r: 30, g: 30, b: 30 } } })
+    .composite([{ input: { create: { width: 256, height: 512, channels: 3, background: { r: 220, g: 220, b: 220 } } }, left: 256, top: 0 }])
+    .png()
+    .toBuffer();
+  const imported = await request(app).post("/api/dies/import").attach("file", imageBuffer, { filename: "crop.png", contentType: "image/png" });
+  const job = await waitForCompletedJob(app, imported.body.id);
+  await waitForTilePrebuild(app, job.dieId);
+
+  const annotations = (await request(app).get(`/api/dies/${job.dieId}/annotations`)).body;
+  annotations.cellTypes = [{ id: "ct1", name: "T", cropRect: { x: 0, y: 0, width: 200, height: 160 } }];
+  annotations.cells = [{ id: "c1", cellTypeId: "ct1", x: 150, y: 100 }]; // straddles tile edges at 128/256
+  assert.equal((await request(app).put(`/api/dies/${job.dieId}/annotations`).send(annotations)).status, 200);
+
+  const full = await request(app).get(`/api/dies/${job.dieId}/cells/c1/crop`).buffer(true);
+  assert.equal(full.status, 200);
+  const fullImg = await sharp(full.body).raw().toBuffer({ resolveWithObject: true });
+  assert.equal(fullImg.info.width, 200);
+  assert.equal(fullImg.info.height, 160);
+  const at = (img: typeof fullImg, x: number, y: number) => img.data[(y * img.info.width + x) * img.info.channels];
+  assert.ok(at(fullImg, 50, 80) < 60, "left of x=256 is dark"); // die x=200
+  assert.ok(at(fullImg, 150, 80) > 190, "right of x=256 is bright"); // die x=300
+
+  const preview = await request(app).get(`/api/dies/${job.dieId}/cells/c1/crop?px=40`).buffer(true);
+  assert.equal(preview.status, 200);
+  const previewMeta = await sharp(preview.body).metadata();
+  assert.ok(previewMeta.width! < 200 && previewMeta.width! >= 40, `preview width ${previewMeta.width}`);
+
+  // Cached per position + size + scale.
+  const cached = await fs.readdir(path.join(dataRoot, "dies", job.dieId, "cell-crops"));
+  assert.ok(cached.includes("base-c1-150-100-200x160-s1.jpg"), cached.join(","));
+  assert.equal(cached.filter((f) => f.startsWith("base-c1-")).length, 2);
+});
+
+test("overlay upload accepts a pyramidal TIFF and prebuilds it from its stored levels", async () => {
+  const { app, dataRoot } = await createHarness();
+  const dieImage = await sharp({
+    create: { width: 256, height: 256, channels: 3, background: { r: 10, g: 10, b: 10 } }
+  })
+    .png()
+    .toBuffer();
+  const importResponse = await request(app)
+    .post("/api/dies/import")
+    .attach("file", dieImage, { filename: "die.png", contentType: "image/png" });
+  const { dieId } = await waitForCompletedJob(app, importResponse.body.id);
+
+  const tiff = await sharp({
+    create: { width: 3000, height: 2000, channels: 3, background: { r: 30, g: 180, b: 60 } }
+  })
+    .tiff({ pyramid: true, tile: true, compression: "jpeg" })
+    .toBuffer();
+  const upload = await request(app)
+    .post(`/api/dies/${dieId}/overlay-images/upload`)
+    // Some browsers send no TIFF MIME type; the extension must suffice.
+    .attach("file", tiff, { filename: "Metal 1.tiff", contentType: "application/octet-stream" });
+  assert.equal(upload.status, 201, JSON.stringify(upload.body));
+  const image = upload.body.image;
+  assert.deepEqual([image.width, image.height, image.tileFormat], [3000, 2000, "jpg"]);
+  const sourceDir = path.join(dataRoot, "overlay-images", dieId, image.id);
+  await fs.access(path.join(sourceDir, "original.tif"));
+
+  const tile = await request(app).get(`/api/dies/${dieId}/overlay-images/${image.id}/tiles/0/0/0`);
+  assert.equal(tile.status, 200);
+  const tileMeta = await sharp(tile.body).metadata();
+  assert.deepEqual([tileMeta.width, tileMeta.height], [375, 250]);
+  const { channels } = await sharp(tile.body).stats();
+  assert.ok(Math.abs(channels[1].mean - 180) < 6, "tile keeps the overlay colour");
+
+  for (let attempt = 0; ; attempt += 1) {
+    const info = await request(app).get(`/api/dies/${dieId}/tile-info`);
+    const source = info.body.overlayTileProgress.sources[0];
+    if (source?.status === "completed") {
+      assert.equal(source.completedTiles, source.totalTiles);
+      break;
+    }
+    assert.ok(attempt < 300, `overlay prebuild stuck: ${JSON.stringify(source)}`);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  const fullLevel = await fs.readdir(path.join(sourceDir, "tiles", String(image.maxZoomLevel)));
+  assert.equal(fullLevel.filter((name) => name.endsWith(".jpg")).length, 6 * 4);
+});
+
+test("overlay delete removes the source for everyone", async () => {
+  const { app, dataRoot } = await createHarness();
+  const dieImage = await sharp({
+    create: { width: 64, height: 64, channels: 3, background: { r: 0, g: 0, b: 0 } }
+  })
+    .png()
+    .toBuffer();
+  const importResponse = await request(app)
+    .post("/api/dies/import")
+    .attach("file", dieImage, { filename: "die.png", contentType: "image/png" });
+  const { dieId } = await waitForCompletedJob(app, importResponse.body.id);
+
+  const upload = await request(app)
+    .post(`/api/dies/${dieId}/overlay-images/upload`)
+    .attach("file", dieImage, { filename: "layer.png", contentType: "image/png" });
+  assert.equal(upload.status, 201, JSON.stringify(upload.body));
+  const id = upload.body.image.id;
+  const sourceDir = path.join(dataRoot, "overlay-images", dieId, id);
+  await fs.access(sourceDir);
+
+  const deleted = await request(app).delete(`/api/dies/${dieId}/overlay-images/${id}`);
+  assert.equal(deleted.status, 200, JSON.stringify(deleted.body));
+  await assert.rejects(fs.access(sourceDir));
+  const list = await request(app).get(`/api/dies/${dieId}/overlay-images/list`);
+  assert.deepEqual(list.body.images, []);
+  const again = await request(app).delete(`/api/dies/${dieId}/overlay-images/${id}`);
+  assert.equal(again.status, 404);
+});
+
+test("overlay upload rejects formats other than PNG, JPEG, WebP and TIFF", async () => {
+  const { app } = await createHarness();
+  const dieImage = await sharp({
+    create: { width: 64, height: 64, channels: 3, background: { r: 0, g: 0, b: 0 } }
+  })
+    .png()
+    .toBuffer();
+  const importResponse = await request(app)
+    .post("/api/dies/import")
+    .attach("file", dieImage, { filename: "die.png", contentType: "image/png" });
+  const { dieId } = await waitForCompletedJob(app, importResponse.body.id);
+
+  const gif = await sharp(dieImage).gif().toBuffer();
+  const upload = await request(app)
+    .post(`/api/dies/${dieId}/overlay-images/upload`)
+    .attach("file", gif, { filename: "layer.png", contentType: "image/png" });
+  assert.equal(upload.status, 400);
+  assert.match(upload.body.error, /PNG, JPEG, WebP and TIFF/);
 });
 
 async function createHarness() {

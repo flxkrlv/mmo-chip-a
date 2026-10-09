@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { DieAnnotations } from "shared";
+import type { DieAnnotations, FloorplanRegion } from "shared";
 import { Ic } from "../../icons";
 import { useToast } from "../Toast";
 import { useOverlayLayers } from "../../state/overlayLayers";
+import { useFloorplanStore } from "../../state/floorplan";
 import { useSession, DEFAULT_METAL_STACK, buildMetalStack, fetchMetalStack } from "../../state/session";
 import { apiPut, apiUpload } from "../../api/client";
 import {
@@ -20,13 +21,16 @@ import {
   NET_NODE_RADIUS_MULT
 } from "../../renderer/annotations/style";
 import { ColorSwatches, SettingsPopover } from "./SettingsPopover";
+import { CellTypeColorPicker } from "./CellTypeColorPicker";
 import {
   ANNOTATION_KIND_VALUES,
   type AnnotationKind
 } from "../../state/annotationKinds";
 import { useDieViewerStore } from "../../state/dieViewer";
-import { usePreferences } from "../../state/preferences";
+import { usePreferences, selectNetWidth } from "../../state/preferences";
 import { TreeRow, TreeSep } from "../tree/TreeRow";
+import { NetColorPickerBody } from "./NetColorPickerBody";
+import { floorplanNameInline } from "../../lib/floorplanName";
 
 // Re-export so existing imports keep working.
 export { ANNOTATION_KIND_VALUES as ANNOTATION_KINDS };
@@ -34,8 +38,9 @@ export type { AnnotationKind };
 
 type Props = {
   annotations: DieAnnotations | undefined;
-  /** Frame these annotation ids in the viewport — fired on row double-click. */
-  onFocus?: (ids: string[]) => void;
+  /** Frame these annotation ids in the viewport — fired on row double-click.
+   *  `tight` (from long-pressing a net's eye) fits the bbox edge-to-edge. */
+  onFocus?: (ids: string[], opts?: { tight?: boolean }) => void;
   /** Base (die background) images. One per die today; the data model will
    *  grow to multiple later. Each gets independent visibility + opacity. */
   baseImages?: { id: string; name: string }[];
@@ -47,6 +52,8 @@ type Props = {
   onOpenInRE?: (cellId: string, cellTypeId: string) => void;
   /** Mutable ref — parent can set .current to a function that opens search. */
   searchOpenRef?: React.MutableRefObject<(() => void) | null>;
+  /** Set / clear (undefined) a cell type's own color. Absent ⇒ no picker. */
+  onSetCellTypeColor?: (cellTypeId: string, color: string | undefined) => void;
 };
 
 /** Session-group key for the "ML Regions" parent (it spans two annotation
@@ -59,13 +66,16 @@ const ML_RESULTS_KEY = "ml-results";
 /** Session-group key for the "Guides" section (not an AnnotationKind — guides
  *  render via their own overlay, not the rbush layer). */
 const GUIDES_KEY = "guides";
+/** Session-group key for the "Rulers" section (not an AnnotationKind —
+ *  rulers render via their own overlay, not the rbush layer). */
+const RULERS_KEY = "rulers";
 /** Session-group key for the "Base Images" section (die background images;
  *  not an AnnotationKind — they render via the image layer, not rbush). */
 const BASE_IMAGES_KEY = "base-images";
 /** Session-group key for the "Overlay Layers" section. */
 const OVERLAY_LAYERS_KEY = "overlay-layers";
 
-export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabels, onDeviceSelect, onOpenInRE, searchOpenRef }: Props) {
+export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabels, onDeviceSelect, onOpenInRE, searchOpenRef, onSetCellTypeColor }: Props) {
   const toast = useToast();
   const expandedSections = usePreferences((s) => s.expandedSections);
   const hiddenKinds = usePreferences((s) => s.hiddenKinds);
@@ -76,6 +86,11 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
   const setGuidesHidden = usePreferences((s) => s.setGuidesHidden);
   const guidesLocked = usePreferences((s) => s.guidesLocked);
   const setGuidesLocked = usePreferences((s) => s.setGuidesLocked);
+
+  const rulersHidden = usePreferences((s) => s.rulersHidden);
+  const toggleRulersVisibility = usePreferences((s) => s.toggleRulersVisibility);
+  const rulerVisibilityOverrides = usePreferences((s) => s.rulerVisibilityOverrides);
+  const setRulerVisible = usePreferences((s) => s.setRulerVisible);
 
   const baseImageHidden = usePreferences((s) => s.baseImageHidden);
   const setBaseImageHidden = usePreferences((s) => s.setBaseImageHidden);
@@ -88,12 +103,40 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
   const netColors = usePreferences((s) => s.netColors);
   const globalNetColor = usePreferences((s) => s.netColor);
   const setNetColorOverride = usePreferences((s) => s.setNetColorOverride);
+  const setNetColorsForIds = usePreferences((s) => s.setNetColorsForIds);
+  const hiddenNetIds = usePreferences((s) => s.hiddenNetIds);
+  const setNetHidden = usePreferences((s) => s.setNetHidden);
+  const resetHiddenNets = usePreferences((s) => s.resetHiddenNets);
+  const hiddenCellTypeIds = usePreferences((s) => s.hiddenCellTypeIds);
+  const cellColor = usePreferences((s) => s.cellColor);
+  const setCellTypeHidden = usePreferences((s) => s.setCellTypeHidden);
+  const resetHiddenCellTypes = usePreferences((s) => s.resetHiddenCellTypes);
+  const hiddenFloorplanTypeNames = usePreferences((s) => s.hiddenFloorplanTypeNames);
+  const setFloorplanTypeHidden = usePreferences((s) => s.setFloorplanTypeHidden);
+  const resetHiddenFloorplanTypes = usePreferences((s) => s.resetHiddenFloorplanTypes);
+  const floorplanRegions = useFloorplanStore((s) => s.regions);
+  const pinNamesVisible = usePreferences((s) => s.pinNamesVisible);
+  const setPinNamesVisible = usePreferences((s) => s.setPinNamesVisible);
 
   const selectedIds = useDieViewerStore((s) => s.selectedIds);
   const select = useDieViewerStore((s) => s.select);
   const expandedGroups = useDieViewerStore((s) => s.expandedGroups);
   const toggleGroup = useDieViewerStore((s) => s.toggleGroup);
   const mlViasCount = useDieViewerStore((s) => s.mlViasCount);
+
+  // Whole-net ids present in the current selection — includes nets selected
+  // by clicking a sub-part (edge/node id like "net:abc/edge:1") on the canvas,
+  // so a canvas marquee/shift-click selection can drive the bulk color picker
+  // too, not just multi-select in this list.
+  const selectedNetIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const id of selectedIds) {
+      if (!id.startsWith("net:")) continue;
+      const netId = id.split("/")[0];
+      ids.add(netId);
+    }
+    return Array.from(ids);
+  }, [selectedIds]);
 
   // Overlay layers (user-loaded images).
   const overlayLayers = useOverlayLayers((s) => s.layers);
@@ -196,6 +239,7 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
   }, [addLayer, dieId, loadingTestImages]);
 
   const cellsByType = useMemo(() => groupCellsByType(annotations), [annotations]);
+  const floorplansByType = useMemo(() => groupFloorplansByName(floorplanRegions), [floorplanRegions]);
   const viaTotals = useMemo(() => viaCounts(annotations), [annotations]);
 
   if (!annotations) {
@@ -216,7 +260,9 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
   const isOpen = (k: AnnotationKind) => expandedSections.includes(k);
   const visibilityFor = (k: AnnotationKind) => ({
     visible: !hiddenKinds.includes(k),
-    onToggle: () => toggleKindVisibility(k)
+    onToggle: () => toggleKindVisibility(k),
+    // Space+C / N / H / M in useOverlayHotkeys toggle these sections' eyes.
+    shortcut: ({ cell: "Space+C", net: "Space+N", floorplan: "Space+H", comment: "Space+M" } as Partial<Record<AnnotationKind, string>>)[k]
   });
 
   // "ML Regions" is one collapsible parent over both ML kinds. Its eye toggles
@@ -224,6 +270,7 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
   const mlOpen = expandedGroups.includes(ML_REGIONS_KEY);
   const mlResultsOpen = expandedGroups.includes(ML_RESULTS_KEY);
   const guidesOpen = expandedGroups.includes(GUIDES_KEY);
+  const rulersOpen = expandedGroups.includes(RULERS_KEY);
   const baseImagesOpen = expandedGroups.includes(BASE_IMAGES_KEY);
   const overlayLayersOpen = expandedGroups.includes(OVERLAY_LAYERS_KEY);
   const mlAnyVisible = ML_KINDS.some((k) => !hiddenKinds.includes(k));
@@ -246,12 +293,13 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
   const irregularViaIds = anns
     .filter((a) => a.class === "irregular_via")
     .map((a) => `anno:${a.id}`);
+  const netIdsAll = annotations.nets.map((n) => `net:${n.id}`);
   const viaIdsAll = [...pointViaIds, ...irregularViaIds];
   const pinIdsAll = (annotations.pins ?? []).map((p) => `pin:${p.id}`);
   const roiIdsAll = (annotations.rois ?? []).map((r) => `roi:${r.id}`);
   const ignoreIdsAll = (annotations.ignores ?? []).map((r) => `ignore:${r.id}`);
-  const focus = (ids: string[]) => {
-    if (ids.length) onFocus?.(ids);
+  const focus = (ids: string[], opts?: { tight?: boolean }) => {
+    if (ids.length) onFocus?.(ids, opts);
   };
 
   // Filtered lists for search.
@@ -313,8 +361,29 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
         expand={isOpen("net") ? "open" : "closed"}
         label="Nets"
         meta={q ? `${filteredNets.length}/${annotations.nets.length}` : annotations.nets.length}
-        controls={<NetSettingsButton />}
-        visibility={visibilityFor("net")}
+        controls={
+          <>
+            {selectedNetIds.length >= 2 && (
+              <BulkNetColorButton
+                count={selectedNetIds.length}
+                onPick={(c) => setNetColorsForIds(selectedNetIds, c)}
+              />
+            )}
+            <NetSettingsButton />
+          </>
+        }
+        visibility={{
+          ...visibilityFor("net"),
+          // The section eye stays all-or-nothing (hides/shows every net at
+          // once), but each click also resets per-net overrides — so hiding
+          // clears the slate, and showing again reveals every net, not just
+          // whichever ones weren't individually hidden before.
+          onToggle: () => {
+            resetHiddenNets();
+            toggleKindVisibility("net");
+          },
+          onLongPress: () => focus(netIdsAll, { tight: true })
+        }}
         onToggleExpand={() => toggleSection("net")}
         onSelect={() => toggleSection("net")}
       />
@@ -322,6 +391,8 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
         filteredNets.map((net) => {
           const id = `net:${net.id}`;
           const netColor = netColors[id] ?? globalNetColor;
+          const netOverride = hiddenNetIds[id];
+          const netVisible = netOverride === undefined ? !hiddenKinds.includes("net") : !netOverride;
           return (
             <TreeRow
               key={id}
@@ -335,8 +406,15 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
                   onPick={(c) => setNetColorOverride(id, c)}
                 />
               }
+              visibility={{
+                visible: netVisible,
+                onToggle: () => setNetHidden(id, netVisible),
+                onLongPress: () => focus([id], { tight: true })
+              }}
               selected={selectedIds.has(id)}
-              onSelect={() => select([id])}
+              onSelect={(e) =>
+                select([id], e.shiftKey || e.metaKey || e.ctrlKey ? "toggle" : "replace")
+              }
               onDoubleClick={() => focus([id])}
             />
           );
@@ -350,7 +428,17 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
         label="Cells"
         meta={q ? `${filteredCellsByType.reduce((s, g) => s + g.cells.length, 0)}/${annotations.cells.length}` : annotations.cells.length}
         controls={<CellSettingsButton />}
-        visibility={visibilityFor("cell")}
+        visibility={{
+          ...visibilityFor("cell"),
+          // Same all-or-nothing / per-item split as the Nets section: the
+          // section eye stays all-or-nothing, but each click also resets
+          // per-cell-type overrides so hiding clears the slate and showing
+          // again reveals every cell type.
+          onToggle: () => {
+            resetHiddenCellTypes();
+            toggleKindVisibility("cell");
+          }
+        }}
         onToggleExpand={() => toggleSection("cell")}
         onSelect={() => toggleSection("cell")}
       />
@@ -358,6 +446,8 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
         filteredCellsByType.map((group) => {
           const groupKey = `cellType:${group.cellType.id}`;
           const open = expandedGroups.includes(groupKey);
+          const cellTypeOverride = hiddenCellTypeIds[group.cellType.id];
+          const cellTypeVisible = cellTypeOverride === undefined ? !hiddenKinds.includes("cell") : !cellTypeOverride;
           return (
             <div key={groupKey}>
               <TreeRow
@@ -365,6 +455,18 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
                 expand={open ? "open" : "closed"}
                 label={group.cellType.name || group.cellType.id}
                 meta={group.cells.length}
+                controls={onSetCellTypeColor ? (
+                  <CellTypeColorPicker
+                    cellType={group.cellType}
+                    cellTypes={annotations.cellTypes}
+                    fallbackColor={cellColor}
+                    onPick={(c) => onSetCellTypeColor(group.cellType.id, c)}
+                  />
+                ) : undefined}
+                visibility={{
+                  visible: cellTypeVisible,
+                  onToggle: () => setCellTypeHidden(group.cellType.id, cellTypeVisible)
+                }}
                 selected={selectedIds.has(groupKey)}
                 onToggleExpand={() => toggleGroup(groupKey)}
                 onSelect={() => select([groupKey])}
@@ -409,6 +511,76 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
 
       <TreeSep />
 
+      {/* Floorplans -------------------------------------------------------- */}
+      <TreeRow
+        expand={isOpen("floorplan") ? "open" : "closed"}
+        label="Floorplans"
+        meta={floorplanRegions.length}
+        visibility={{
+          ...visibilityFor("floorplan"),
+          // Same all-or-nothing / per-item split as Cells: the section eye
+          // stays all-or-nothing, but each click also resets per-type
+          // overrides so hiding clears the slate and showing again reveals
+          // every floorplan type.
+          onToggle: () => {
+            resetHiddenFloorplanTypes();
+            toggleKindVisibility("floorplan");
+          }
+        }}
+        onToggleExpand={() => toggleSection("floorplan")}
+        onSelect={() => toggleSection("floorplan")}
+      />
+      {isOpen("floorplan") &&
+        floorplansByType.map((group) => {
+          const groupKey = `floorplanType:${group.name}`;
+          const open = expandedGroups.includes(groupKey);
+          const typeOverride = hiddenFloorplanTypeNames[group.name];
+          const typeVisible = typeOverride === undefined ? !hiddenKinds.includes("floorplan") : !typeOverride;
+          return (
+            <div key={groupKey}>
+              <TreeRow
+                depth={1}
+                expand={open ? "open" : "closed"}
+                label={floorplanNameInline(group.name) || group.name}
+                meta={group.regions.length}
+                visibility={{
+                  visible: typeVisible,
+                  onToggle: () => setFloorplanTypeHidden(group.name, typeVisible)
+                }}
+                selected={selectedIds.has(groupKey)}
+                onToggleExpand={() => toggleGroup(groupKey)}
+                onSelect={() => select([groupKey])}
+              />
+              {open &&
+                group.regions.map((region) => {
+                  const id = `floorplan:${region.id}`;
+                  return (
+                    <TreeRow
+                      key={id}
+                      depth={2}
+                      icon={Ic.floorplan}
+                      label={floorplanNameInline(region.name) || region.id.slice(0, 8)}
+                      selected={selectedIds.has(id)}
+                      onSelect={() => select([id])}
+                    />
+                  );
+                })}
+            </div>
+          );
+        })}
+
+      <TreeSep />
+
+      {/* Comments (pins only; no per-comment rows) ------------------------ */}
+      <TreeRow
+        icon={Ic.comment}
+        label="Comments"
+        meta={annotations.comments?.length ?? 0}
+        visibility={visibilityFor("comment")}
+      />
+
+      <TreeSep />
+
       {/* Vias (ML annotations) ------------------------------------------ */}
       <TreeRow
         expand={isOpen("via") ? "open" : "closed"}
@@ -446,7 +618,40 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
         expand={isOpen("pin") ? "open" : "closed"}
         label="I/O pins"
         meta={annotations.pins?.length ?? 0}
-        visibility={visibilityFor("pin")}
+        controls={
+          <button
+            type="button"
+            className="trow-eye"
+            aria-label={pinNamesVisible ? "hide pin names" : "show pin names"}
+            aria-pressed={!pinNamesVisible}
+            title="Toggle I/O pin name labels"
+            onClick={() => setPinNamesVisible(!pinNamesVisible)}
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              justifyContent: "center",
+              background: "transparent",
+              border: 0,
+              padding: 0,
+              color: pinNamesVisible ? "var(--ink3)" : "var(--muted)",
+              cursor: "pointer"
+            }}
+          >
+            {Ic.tag}
+          </button>
+        }
+        visibility={{
+          ...visibilityFor("pin"),
+          // The section eye stays all-or-nothing (hides/shows every pin
+          // marker + name at once), but each click also resets the names
+          // toggle back to visible — so hiding is a clean slate, and showing
+          // again always brings names back too, regardless of what the names
+          // toggle was set to before.
+          onToggle: () => {
+            setPinNamesVisible(true);
+            toggleKindVisibility("pin");
+          }
+        }}
         onToggleExpand={() => toggleSection("pin")}
         onSelect={() => toggleSection("pin")}
         onDoubleClick={() => focus(pinIdsAll)}
@@ -614,6 +819,42 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
 
       <TreeSep />
 
+      {/* Rulers ------------------------------------------------------------ */}
+      <TreeRow
+        expand={rulersOpen ? "open" : "closed"}
+        label="Rulers"
+        meta={annotations.rulers?.length ?? 0}
+        visibility={{
+          visible: !rulersHidden,
+          // All-or-nothing: every click flips the global toggle AND clears
+          // per-ruler overrides, so hiding is a clean slate and showing
+          // again reveals every ruler — re-showing just one (below) doesn't
+          // survive the next global click either way.
+          onToggle: toggleRulersVisibility
+        }}
+        onToggleExpand={() => toggleGroup(RULERS_KEY)}
+        onSelect={() => toggleGroup(RULERS_KEY)}
+      />
+      {rulersOpen &&
+        annotations.rulers?.map((ruler, idx) => {
+          const visible = rulerVisibilityOverrides[ruler.id] ?? !rulersHidden;
+          return (
+            <TreeRow
+              key={`ruler:${ruler.id}`}
+              depth={1}
+              icon={Ic.ruler}
+              label={ruler.name || `ruler ${idx + 1}`}
+              meta={`${Math.round(ruler.lengthPx).toLocaleString()} px`}
+              visibility={{
+                visible,
+                onToggle: () => setRulerVisible(ruler.id, !visible)
+              }}
+            />
+          );
+        })}
+
+      <TreeSep />
+
       {/* Base images ---------------------------------------------------- */}
       <TreeRow
         expand={baseImagesOpen ? "open" : "closed"}
@@ -634,7 +875,8 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
               controls={<BaseImageSettings id={img.id} />}
               visibility={{
                 visible,
-                onToggle: () => setBaseImageHidden(img.id, visible)
+                onToggle: () => setBaseImageHidden(img.id, visible),
+                shortcut: "Space+B"
               }}
             />
           );
@@ -678,7 +920,7 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
           <input
             ref={serverFileInputRef}
             type="file"
-            accept="image/png,image/jpeg,image/webp"
+            accept="image/png,image/jpeg,image/webp,image/tiff,.tif,.tiff"
             multiple
             style={{ display: "none" }}
             onChange={onUploadToServer}
@@ -686,7 +928,7 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
           <input
             ref={localFileInputRef}
             type="file"
-            accept="image/png,image/jpeg"
+            accept="image/png,image/jpeg,image/tiff,.tif,.tiff"
             multiple
             style={{ display: "none" }}
             onChange={onLocalFilePick}
@@ -740,7 +982,9 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
               visibility={{
                 visible: !layer.hidden,
                 onToggle: () =>
-                  setLayerHidden(layer.id, !layer.hidden)
+                  setLayerHidden(layer.id, !layer.hidden),
+                // Space+1..8 solos layer #1..#8 (repeat to hide); [ / ] step through.
+                shortcut: index < 8 ? `Space+${index + 1} shows only this layer` : undefined
               }}
             />
           ))}
@@ -750,17 +994,6 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
   );
 }
 
-/** Per-net color override. Cycles through a small palette. */
-const NET_OVERRIDE_COLORS = [
-  null,                     // reset to global
-  "#ff3333",               // VDD red
-  "#3388ff",               // GND blue
-  "#22d366",               // VSS green
-  "#ffaa00",               // IO yellow
-  "#ff66aa",               // pink
-  "#aa66ff",               // purple
-  "#66ffaa",               // mint
-];
 
 /** Tiny color swatch used as the popover trigger for per-net color
  *  override — replaces the generic sliders icon so the coloured square
@@ -788,34 +1021,37 @@ function NetColorSettings({ netId, currentColor, onPick }: {
       <div className="u" style={{ marginBottom: 6, fontSize: 10 }}>
         Override color
       </div>
-      <div style={{ display: "flex", gap: 4, flexWrap: "wrap", maxWidth: 140 }}>
-        {NET_OVERRIDE_COLORS.map((c, i) => {
-          const label = c === null
-            ? "default"
-            : ["VDD red","GND blue","VSS green","IO yellow","pink","purple","mint"][i - 1] ?? "";
-          return (
-            <button
-              key={i}
-              type="button"
-              title={label}
-              style={{
-                width: 24, height: 24, borderRadius: 3,
-                border: currentColor === (c ?? "#2e97ff") ? "2px solid rgba(255,255,255,0.9)" : "1px solid rgba(255,255,255,0.2)",
-                background: c ?? "#555",
-                cursor: "pointer",
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                fontSize: 9,
-                color: c ? "rgba(0,0,0,0.3)" : "rgba(255,255,255,0.5)",
-              }}
-              onClick={() => onPick(c)}
-            >
-              {c === null ? "↺" : ""}
-            </button>
-          );
-        })}
+      <NetColorPickerBody currentColor={currentColor} onPick={onPick} />
+    </SettingsPopover>
+  );
+}
+
+/** Multi-select bulk color assign — appears in the Nets section header once
+ *  2+ nets are selected (canvas shift-click/marquee or ctrl/cmd-click in this
+ *  list). Applies one color persistently to every selected net at once. */
+function BulkNetColorButton({ count, onPick }: {
+  count: number;
+  onPick: (color: string | null) => void;
+}) {
+  const trigger = (
+    <span style={{ display: "inline-flex", alignItems: "center", gap: 3, fontSize: 9, color: "var(--ink2)" }}>
+      <span
+        style={{
+          width: 8, height: 8, borderRadius: 1,
+          background: "linear-gradient(135deg, #2e97ff 50%, #ef4444 50%)",
+          border: "1px solid rgba(0,0,0,0.15)",
+          flex: "0 0 auto"
+        }}
+      />
+      {count}
+    </span>
+  );
+  return (
+    <SettingsPopover label={`Color ${count} selected nets`} triggerContent={trigger}>
+      <div className="u" style={{ marginBottom: 6, fontSize: 10 }}>
+        Color {count} selected nets
       </div>
+      <NetColorPickerBody currentColor="" onPick={onPick} />
     </SettingsPopover>
   );
 }
@@ -871,6 +1107,22 @@ function groupCellsByType(annotations: DieAnnotations | undefined) {
     .sort((a, b) => b.cells.length - a.cells.length);
 }
 
+/** Group floorplan regions into "types" by their (assumed-authoritative)
+ *  `name` — regions sharing a name are treated as instances of one type,
+ *  same idea as `groupCellsByType` grouping cells by `cellTypeId`. */
+function groupFloorplansByName(regions: FloorplanRegion[]) {
+  const byName = new Map<string, FloorplanRegion[]>();
+  for (const region of regions) {
+    const name = region.name || "(unnamed)";
+    const list = byName.get(name);
+    if (list) list.push(region);
+    else byName.set(name, [region]);
+  }
+  return Array.from(byName.entries())
+    .map(([name, regions]) => ({ name, regions }))
+    .sort((a, b) => b.regions.length - a.regions.length);
+}
+
 function viaCounts(annotations: DieAnnotations | undefined) {
   let points = 0;
   let irregular = 0;
@@ -884,8 +1136,10 @@ function viaCounts(annotations: DieAnnotations | undefined) {
 // ── Settings popovers ───────────────────────────────────────────────
 
 function NetSettingsButton() {
-  const width = usePreferences((s) => s.netWidth);
-  const setNetWidth = usePreferences((s) => s.setNetWidth);
+  const dieId = useSession((s) => s.dieId);
+  const width = usePreferences(selectNetWidth(dieId));
+  const setNetWidthForDie = usePreferences((s) => s.setNetWidth);
+  const setNetWidth = (w: number) => { if (dieId) setNetWidthForDie(dieId, w); };
   const netColor = usePreferences((s) => s.netColor);
   const setNetColor = usePreferences((s) => s.setNetColor);
   const wireLayerColors = usePreferences((s) => s.wireLayerColors);
@@ -896,8 +1150,12 @@ function NetSettingsButton() {
   const setNetNodeSize = usePreferences((s) => s.setNetNodeSize);
   const netNodeVisible = usePreferences((s) => s.netNodeVisible);
   const setNetNodeVisible = usePreferences((s) => s.setNetNodeVisible);
+  const customNetColorsEnabled = usePreferences((s) => s.customNetColorsEnabled);
+  const setCustomNetColorsEnabled = usePreferences((s) => s.setCustomNetColorsEnabled);
   const netNodeJunctionsOnly = usePreferences((s) => s.netNodeJunctionsOnly);
   const setNetNodeJunctionsOnly = usePreferences((s) => s.setNetNodeJunctionsOnly);
+  const netNodeJunctionCross = usePreferences((s) => s.netNodeJunctionCross);
+  const setNetNodeJunctionCross = usePreferences((s) => s.setNetNodeJunctionCross);
   const metalStack = useSession((s) => s.metalStack ?? DEFAULT_METAL_STACK);
 
   return (
@@ -920,6 +1178,31 @@ function NetSettingsButton() {
         >
           {width.toFixed(1)}
         </span>
+      </div>
+
+      <div className="u" style={{ margin: "12px 0 8px" }}>
+        Color mode
+      </div>
+      <div className="row" style={{ gap: 4 }}>
+        <button
+          type="button"
+          className={"btn sm" + (customNetColorsEnabled ? " on" : "")}
+          onClick={() => setCustomNetColorsEnabled(true)}
+        >
+          By net (custom)
+        </button>
+        <button
+          type="button"
+          className={"btn sm" + (!customNetColorsEnabled ? " on" : "")}
+          onClick={() => setCustomNetColorsEnabled(false)}
+        >
+          By metal/silicon type
+        </button>
+      </div>
+      <div style={{ fontSize: 9, color: "var(--ink3)", lineHeight: 1.4, margin: "6px 0 12px" }}>
+        {customNetColorsEnabled
+          ? "Nets with a custom color below render in that color; others fall back to layer colors."
+          : "Custom net colors are hidden — every net renders by its metal/silicon layer color. Your per-net assignments are kept."}
       </div>
 
       <div className="u" style={{ margin: "12px 0 8px" }}>
@@ -1004,6 +1287,14 @@ function NetSettingsButton() {
           onChange={(e) => setNetNodeJunctionsOnly(e.target.checked)}
         />
         Show only connection points
+      </label>
+      <label className="check" style={{ marginBottom: 8 }}>
+        <input
+          type="checkbox"
+          checked={netNodeJunctionCross}
+          onChange={(e) => setNetNodeJunctionCross(e.target.checked)}
+        />
+        Show cross at net junctions
       </label>
       <div className="row" style={{ gap: 10 }}>
         <input
@@ -1140,9 +1431,33 @@ function OverlayLayerSettings({ layerId }: { layerId: string }) {
     const l = s.layers.find((x) => x.id === layerId);
     return l?.opacity ?? 1;
   });
+  const layerName = useOverlayLayers((s) => s.layers.find((x) => x.id === layerId)?.name ?? "");
   const setLayerOpacity = useOverlayLayers((s) => s.setLayerOpacity);
   const removeLayer = useOverlayLayers((s) => s.removeLayer);
+  const dieId = useSession((s) => s.dieId);
+  const toast = useToast();
+  const [confirming, setConfirming] = useState(false);
+  const [deleting, setDeleting] = useState(false);
   const pct = Math.round(opacity * 100);
+
+  // Server-backed layers are shared, so the source is deleted on the server
+  // too (otherwise it comes back on the next load); blob layers are local only.
+  const onDelete = async () => {
+    const entry = useOverlayLayers.getState().layers.find((x) => x.id === layerId);
+    if (!entry) return;
+    if (entry.serverFilename && dieId) {
+      setDeleting(true);
+      try {
+        const mod = await import("../../api/overlayImages");
+        await mod.deleteOverlayImage(dieId, entry.serverFilename);
+      } catch (err) {
+        setDeleting(false);
+        toast.error(`Failed to delete ${entry.name}`, (err as Error).message);
+        return;
+      }
+    }
+    removeLayer(layerId);
+  };
 
   return (
     <SettingsPopover label="Overlay layer settings">
@@ -1172,18 +1487,45 @@ function OverlayLayerSettings({ layerId }: { layerId: string }) {
           {pct}%
         </span>
       </div>
-      <button
-        className="btn ghost"
-        style={{
-          marginTop: 8,
-          width: "100%",
-          justifyContent: "center",
-          color: "var(--err)"
-        }}
-        onClick={() => removeLayer(layerId)}
-      >
-        {Ic.trash} Remove layer
-      </button>
+      {confirming ? (
+        <div style={{ marginTop: 8 }}>
+          <div style={{ fontSize: 11, color: "var(--ink2)", marginBottom: 6 }}>
+            Delete “{layerName}” for everyone? This removes the image from the server.
+          </div>
+          <div className="row" style={{ gap: 6 }}>
+            <button
+              className="btn ghost"
+              style={{ flex: 1, justifyContent: "center" }}
+              disabled={deleting}
+              onClick={() => setConfirming(false)}
+            >
+              Cancel
+            </button>
+            <button
+              className="btn"
+              style={{ flex: 1, justifyContent: "center", color: "var(--err)" }}
+              disabled={deleting}
+              autoFocus
+              onClick={() => void onDelete()}
+            >
+              {Ic.trash} {deleting ? "Deleting…" : "Delete"}
+            </button>
+          </div>
+        </div>
+      ) : (
+        <button
+          className="btn ghost"
+          style={{
+            marginTop: 8,
+            width: "100%",
+            justifyContent: "center",
+            color: "var(--err)"
+          }}
+          onClick={() => setConfirming(true)}
+        >
+          {Ic.trash} Remove layer
+        </button>
+      )}
     </SettingsPopover>
   );
 }

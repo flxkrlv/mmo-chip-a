@@ -1,4 +1,4 @@
-import { apiGet, apiUpload } from "./client";
+import { apiDelete, apiGet, apiUpload } from "./client";
 
 export interface OverlayTileLevel {
   z: number;
@@ -47,6 +47,13 @@ export async function uploadOverlayImage(
   return apiUpload<{ image: OverlayImageSource }>(
     `/api/dies/${encodeURIComponent(dieId)}/overlay-images/upload`,
     form
+  );
+}
+
+/** Delete a source for everyone: a tiled source id or a legacy filename. */
+export async function deleteOverlayImage(dieId: string, id: string): Promise<void> {
+  await apiDelete<{ ok: true }>(
+    `/api/dies/${encodeURIComponent(dieId)}/overlay-images/${encodeURIComponent(id)}`
   );
 }
 

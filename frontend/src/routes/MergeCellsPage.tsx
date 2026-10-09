@@ -7,7 +7,8 @@ import {
   useState
 } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
-import type { Cell } from "shared";
+import { cellWorldRect } from "../lib/cellFootprint";
+import type { Cell, CellWarp } from "shared";
 import { AppShell } from "../components/shell/AppShell";
 import { StatusBar } from "../components/shell/StatusBar";
 import { SubBar, ToolDivider } from "../components/shell/SubBar";
@@ -29,6 +30,7 @@ import {
   type MergeCanvasHandle
 } from "../components/mergeCells/MergeCanvas";
 import { MergeLeftPanel } from "../components/mergeCells/MergeLeftPanel";
+import { MultiOverlayPanel } from "../components/mergeCells/MultiOverlayPanel";
 import { PanelToggle, usePanelCollapsed } from "../components/shell/PanelToggle";
 import { Filmstrip } from "../components/mergeCells/Filmstrip";
 import { MergeBottomBar } from "../components/mergeCells/MergeBottomBar";
@@ -46,9 +48,10 @@ import {
   cellTypeById,
   cellTypeCropUrl,
   membersOf,
+  orientInTypeFrame,
   orientOf,
   resolveSpecimenCell,
-  rotateCw
+  type OrientOp
 } from "../lib/mergeCells";
 import { alignVias, viasToCanonical } from "../lib/viaAlign";
 import { MERGE_HOTKEYS } from "../lib/hotkeys";
@@ -196,21 +199,11 @@ function Merge({ dieId }: { dieId: string }) {
   // so flipping between candidates instantly serves cached results.
   const specimenBbox: DieViasBbox | null =
     specimenCell && specimenType
-      ? [
-          specimenCell.x,
-          specimenCell.y,
-          specimenCell.x + specimenType.cropRect.width,
-          specimenCell.y + specimenType.cropRect.height
-        ]
+      ? rectBbox(cellWorldRect(specimenCell, specimenType.cropRect.width, specimenType.cropRect.height))
       : null;
   const candidateBbox: DieViasBbox | null =
     candidateCell && candidateType
-      ? [
-          candidateCell.x,
-          candidateCell.y,
-          candidateCell.x + candidateType.cropRect.width,
-          candidateCell.y + candidateType.cropRect.height
-        ]
+      ? rectBbox(cellWorldRect(candidateCell, candidateType.cropRect.width, candidateType.cropRect.height))
       : null;
   const specimenViasQ = useDieVias(dieId, specimenBbox, { enabled: showMlVias });
   const candidateViasQ = useDieVias(dieId, candidateBbox, { enabled: showMlVias });
@@ -239,6 +232,42 @@ function Merge({ dieId }: { dieId: string }) {
     () => (annotations ? candidatesFor(annotations, specimenType) : []),
     [annotations, specimenType]
   );
+
+  // ── Multi overlay (Alt+6): every instance of the specimen type ────
+  // Instances are included by default; `multiExcluded` holds the ones the
+  // user switched off. Keyed by cell id, so it survives type switches.
+  const [multiExcluded, setMultiExcluded] = useState<ReadonlySet<string>>(
+    () => new Set()
+  );
+  const typeMembers = useMemo(
+    () => (annotations && specimenTypeId ? membersOf(annotations, specimenTypeId) : []),
+    [annotations, specimenTypeId]
+  );
+  const multiViews: CellView[] = useMemo(
+    () =>
+      specimenType
+        ? typeMembers
+            .filter((c) => !multiExcluded.has(c.id))
+            .map((c) => ({
+              cellType: specimenType,
+              cell: c,
+              imageUrl: cellCropUrl(dieId, c, previewOverlaySourceId),
+              mlVias: null
+            }))
+        : [],
+    [typeMembers, multiExcluded, specimenType, dieId, previewOverlaySourceId]
+  );
+  const setMultiIncluded = useCallback((ids: string[], included: boolean) => {
+    setMultiExcluded((prev) => {
+      const next = new Set(prev);
+      for (const id of ids) {
+        if (included) next.delete(id);
+        else next.add(id);
+      }
+      return next;
+    });
+  }, []);
+  const multiPct = multiViews.length > 0 ? 100 / multiViews.length : 0;
 
   // When the specimen *type* changes, jump the selection to the most likely
   // candidate (the closest-size not-yet-matched one — candidates are sorted
@@ -273,25 +302,31 @@ function Merge({ dieId }: { dieId: string }) {
   }, [candidates, candidateCellId, setCandidate]);
 
   const orient = useCallback(
-    (patch: Partial<Pick<Cell, "flippedH" | "flippedV" | "rotation" | "x" | "y">>) => {
+    (patch: Partial<Pick<Cell, "flippedH" | "flippedV" | "rotation" | "x" | "y" | "warp">>) => {
       if (!candidateCell) return;
       void dispatcher.dispatch(buildOrientAction(candidateCell, patch));
     },
     [candidateCell, dispatcher]
   );
 
-  const onFlipH = useCallback(
-    () => orient({ flippedH: !(candidateCell?.flippedH === true) }),
+  // The canvas shows the candidate in its type frame (die crop un-oriented),
+  // so the buttons turn / mirror that view, not the cell on the die.
+  const orientView = useCallback(
+    (op: OrientOp) => {
+      if (candidateCell) orient(orientInTypeFrame(orientOf(candidateCell), op));
+    },
     [orient, candidateCell]
   );
-  const onFlipV = useCallback(
-    () => orient({ flippedV: !(candidateCell?.flippedV === true) }),
-    [orient, candidateCell]
+  // Stretch-line editing on the candidate (S). Each finished gesture is one
+  // undoable upsertCell, so Ctrl+Z / Ctrl+Shift+Z step through the tweaks.
+  const [warpEdit, setWarpEdit] = useState(false);
+  const onWarp = useCallback(
+    (warp: CellWarp | undefined) => orient({ warp }),
+    [orient]
   );
-  const onRotateCw = useCallback(
-    () => orient({ rotation: rotateCw((candidateCell?.rotation ?? 0) as 0) }),
-    [orient, candidateCell]
-  );
+  const onFlipH = useCallback(() => orientView("flipH"), [orientView]);
+  const onFlipV = useCallback(() => orientView("flipV"), [orientView]);
+  const onRotateCw = useCallback(() => orientView("rotateCw"), [orientView]);
   const onAlign = useCallback(
     (dxSrc: number, dySrc: number) => {
       if (!candidateCell) return;
@@ -332,17 +367,21 @@ function Merge({ dieId }: { dieId: string }) {
     // Specimen vias projected into the specimen's canonical frame (once).
     // Candidate vias stay in raw cell-local coords — alignVias re-projects
     // them under every candidate orientation it tries.
+    // The canvas centres both type boxes on each other, so the specimen's
+    // type-frame vias are re-expressed in the candidate's box by centre.
     const W = candidateType.cropRect.width;
     const H = candidateType.cropRect.height;
+    const sW = specimenType.cropRect.width;
+    const sH = specimenType.cropRect.height;
     const specCanon = viasToCanonical(
       specimenVias.map((v) => ({
         x: v.x - specimenCell.x,
         y: v.y - specimenCell.y
       })),
       orientOf(specimenCell),
-      specimenType.cropRect.width,
-      specimenType.cropRect.height
-    );
+      sW,
+      sH
+    ).map((p) => ({ x: p.x + (W - sW) / 2, y: p.y + (H - sH) / 2 }));
     const candRaw = candidateVias.map((v) => ({
       x: v.x - candidateCell.x,
       y: v.y - candidateCell.y
@@ -403,12 +442,12 @@ function Merge({ dieId }: { dieId: string }) {
     (cell: Cell) => {
       const ct = annotations ? cellTypeById(annotations, cell.cellTypeId) : null;
       if (ct) {
-        const rect = {
-          x: cell.x,
-          y: cell.y,
-          width: ct.cropRect.width || 64,
-          height: ct.cropRect.height || 64
-        };
+        // Frame the cell's real die footprint (honours a resized cell).
+        const rect = cellWorldRect(
+          cell,
+          ct.cropRect.width || 64,
+          ct.cropRect.height || 64
+        );
         const v = fitRectViewport(
           rect,
           Math.max(320, window.innerWidth - 568),
@@ -427,6 +466,7 @@ function Merge({ dieId }: { dieId: string }) {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "z") {
+        if (isTypingTarget(e.target)) return; // native text undo in inputs
         e.preventDefault();
         if (e.shiftKey) void dispatcher.redo();
         else void dispatcher.undo();
@@ -437,10 +477,10 @@ function Merge({ dieId }: { dieId: string }) {
   }, [dispatcher]);
 
   // ── Keyboard: merge workflow shortcuts ──────────────────────────────
-  //   Alt+1/2/3/4/5  switch merge modes (from MERGE_HOTKEYS)
+  //   Alt+1..6  switch merge modes (from MERGE_HOTKEYS)
   //   ←/↑ prev · →/↓ next candidate
   //   f flip H · g flip V · h rotate · j auto-align
-  //   y accept & merge
+  //   y accept & merge · s stretch lines
   useEffect(() => {
     const stepCandidate = (delta: number) => {
       if (candidates.length === 0) return;
@@ -459,7 +499,7 @@ function Merge({ dieId }: { dieId: string }) {
       }
       if (e.metaKey || e.ctrlKey) return;
       if (isTypingTarget(e.target)) return;
-      // Merge mode shortcuts (Alt+1..Alt+5)
+      // Merge mode shortcuts (Alt+1..Alt+6)
       if (e.altKey && !e.shiftKey && !e.metaKey && !e.ctrlKey) {
         const mode = MERGE_HOTKEYS[`Alt+${e.key}`];
         if (mode) {
@@ -503,6 +543,10 @@ function Merge({ dieId }: { dieId: string }) {
         case "y":
         case "Y":
           doMerge();
+          break;
+        case "s":
+        case "S":
+          setWarpEdit((v) => !v);
           break;
       }
     };
@@ -598,6 +642,14 @@ function Merge({ dieId }: { dieId: string }) {
         >
           <Kb>Alt+5</Kb> candidate
         </span>
+        <span
+          className={"chip" + (mode === "multi" ? " on" : "")}
+          style={{ cursor: "pointer" }}
+          onClick={() => setMode("multi")}
+          title="Overlay every instance of the type, each at 100/N % (Alt+6)"
+        >
+          <Kb>Alt+6</Kb> multiple overlay
+        </span>
         {mode === "overlay" && (
           <>
             <span
@@ -670,6 +722,11 @@ function Merge({ dieId }: { dieId: string }) {
           <MergeLeftPanel
             dieId={dieId}
             annotations={annotations}
+            overlaySourceId={previewOverlaySourceId}
+            onSetCellTypeColor={(cellTypeId, color) => {
+              const ct = cellTypeById(annotations, cellTypeId);
+              if (ct) void dispatcher.dispatch({ kind: "upsertCellType", cellType: { ...ct, color }, prevCellType: ct });
+            }}
             onCandidateContextMenu={(cell, x, y) => {
               const canUnmatch =
                 membersOf(annotations, cell.cellTypeId).length > 1;
@@ -689,8 +746,22 @@ function Merge({ dieId }: { dieId: string }) {
             showMlVias={showMlVias}
             specimen={specimenView}
             candidate={candidateView}
+            multi={mode === "multi" ? multiViews : undefined}
             onAlign={onAlign}
-          />
+            warpEdit={warpEdit}
+            onWarp={onWarp}
+          >
+            {mode === "multi" && specimenType && (
+              <MultiOverlayPanel
+                dieId={dieId}
+                overlaySourceId={previewOverlaySourceId}
+                cells={typeMembers}
+                excluded={multiExcluded}
+                referenceId={specimenCell?.id ?? null}
+                onSetIncluded={setMultiIncluded}
+              />
+            )}
+          </MergeCanvas>
           <Filmstrip
             dieId={dieId}
             candidates={candidates}
@@ -710,6 +781,11 @@ function Merge({ dieId }: { dieId: string }) {
             onFlipV={onFlipV}
             onRotateCw={onRotateCw}
             onAutoAlign={canAutoAlign ? doAutoAlign : null}
+            warpEdit={warpEdit}
+            warpAvailable={mode === "overlay" || mode === "diff" || mode === "candidate"}
+            onToggleWarp={() => setWarpEdit((v) => !v)}
+            hasWarp={!!candidateCell?.warp}
+            onResetWarp={() => onWarp(undefined)}
             onSkip={onSkip}
             onMerge={doMerge}
           />
@@ -727,7 +803,11 @@ function Merge({ dieId }: { dieId: string }) {
                 ? "specimen only"
                 : mode === "candidate"
                   ? "candidate only"
-                  : "side-by-side",
+                  : mode === "multi"
+                    ? `multiple overlay · ${multiViews.length}/${typeMembers.length} · ${
+                        multiViews.length > 0 ? `${+multiPct.toFixed(1)}% each` : "none"
+                      }`
+                    : "side-by-side",
           specimenType ? `specimen ${specimenType.name}` : "no specimen",
           candidateCell ? `candidate ${candidateCell.id.slice(0, 6)}` : "no candidate"
         ]}
@@ -860,4 +940,9 @@ function ConfirmDialog({
       </div>
     </div>
   );
+}
+
+/** `[x0, y0, x1, y1]` of a die rect, for the ML-via query. */
+function rectBbox(r: { x: number; y: number; width: number; height: number }): DieViasBbox {
+  return [r.x, r.y, r.x + r.width, r.y + r.height];
 }

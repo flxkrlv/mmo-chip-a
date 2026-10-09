@@ -12,6 +12,14 @@ interface Props {
    *  the page hasn't fetched both sets yet (or when the user has the ML-via
    *  overlay toggled off): the button stays present but disabled. */
   onAutoAlign: (() => void) | null;
+  /** Stretch-line editing is on. */
+  warpEdit: boolean;
+  /** The mode shows the candidate alone on the stacked canvas (editable). */
+  warpAvailable: boolean;
+  onToggleWarp: () => void;
+  /** The candidate has a stretch to reset. */
+  hasWarp: boolean;
+  onResetWarp: () => void;
   onSkip: () => void;
   onMerge: () => void;
 }
@@ -23,6 +31,11 @@ export function MergeBottomBar({
   onFlipV,
   onRotateCw,
   onAutoAlign,
+  warpEdit,
+  warpAvailable,
+  onToggleWarp,
+  hasWarp,
+  onResetWarp,
   onSkip,
   onMerge
 }: Props) {
@@ -75,6 +88,29 @@ export function MergeBottomBar({
         }
       >
         {ALIGN} Auto align <Kb>J</Kb>
+      </button>
+      <ToolDivider />
+      <button
+        className={"btn" + (warpEdit ? " on" : "")}
+        disabled={!hasCandidate}
+        aria-pressed={warpEdit}
+        onClick={onToggleWarp}
+        title={
+          warpAvailable
+            ? "Stretch lines (S): drag across the cell to draw a vertical / horizontal line, drag a line or box edge to stretch, double-click to remove"
+            : "Stretch lines (S) — switch to overlay, difference or candidate view to edit"
+        }
+        style={warpEdit ? { borderColor: "var(--accent)", color: "var(--accent)" } : undefined}
+      >
+        {STRETCH} Stretch <Kb>S</Kb>
+      </button>
+      <button
+        className="btn"
+        disabled={!hasCandidate || !hasWarp}
+        onClick={onResetWarp}
+        title="Remove all stretch lines from this candidate"
+      >
+        Reset stretch
       </button>
       <div style={{ flex: 1 }} />
       <button className="btn" disabled={!hasCandidate} onClick={onSkip}>
@@ -129,6 +165,13 @@ const ico = (children: React.ReactNode) => (
   >
     {children}
   </svg>
+);
+
+const STRETCH = ico(
+  <>
+    <path d="M8 2v12" strokeDasharray="2 1.5" />
+    <path d="M2 8h4M10 8h4M4 6l-2 2 2 2M12 6l2 2-2 2" />
+  </>
 );
 
 const FLIP_H = ico(

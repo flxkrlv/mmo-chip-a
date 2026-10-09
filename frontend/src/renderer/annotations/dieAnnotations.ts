@@ -7,12 +7,11 @@ import type {
   IOPin,
   ROIRectangle
 } from "shared";
+import { cellWorldRect } from "../../lib/cellFootprint";
 import { withAlpha } from "../../lib/color";
 import {
-  applyOrientation,
   pointInPolygon,
   pointInRect,
-  polygonBounds,
   type Rect
 } from "../../lib/geometry";
 import type { AnnotationLayer, Annotation } from "../layers/AnnotationLayer";
@@ -118,12 +117,15 @@ export interface PopulateOptions {
    *  junction-only mode a mid-net vertex (degree 2) at such a point is still
    *  drawn. Default: none. */
   netNodeConnectionPoint?: (netId: string, x: number, y: number) => boolean;
-  /** Called at draw time for each cell: true → draw a glow outline
-   *  (sibling cells sharing a cellTypeId with the selection). */
-  isSibling?: (cellId: string) => boolean;
-  /** Called at draw time: when sibling highlighting is active, non-sibling
-   *  cells are dimmed so the group stands out. */
-  siblingActive?: () => boolean;
+  /** Live getter: draw the cross inside junction dots. Default true. */
+  netNodeJunctionCross?: () => boolean;
+  /** Called at draw time for each cell: true → the cell's *type* is selected
+   *  (e.g. from the outline tree), so draw it with the selection highlight. */
+  isTypeSelected?: (cellId: string) => boolean;
+  /** Live getter: show the name+number label next to each I/O pin marker.
+   *  Default true (names always shown). Independent of the pin kind's
+   *  own all-or-nothing visibility (which hides the whole marker). */
+  pinNamesVisible?: () => boolean;
 }
 
 /**
@@ -151,16 +153,16 @@ export function populateAnnotationLayer(
   const getNodeRadiusMult = options.netNodeRadiusMult;
   const getJunctionsOnly = options.netNodeJunctionsOnly;
   const getConnectionPoint = options.netNodeConnectionPoint;
+  const getJunctionCross = options.netNodeJunctionCross;
 
   const cellTypeMap = new Map(annotations.cellTypes.map((ct) => [ct.id, ct]));
 
-  const getIsSibling = options.isSibling;
-  const getSiblingActive = options.siblingActive;
+  const getIsTypeSelected = options.isTypeSelected;
 
   for (const cell of annotations.cells) {
     const ct = cellTypeMap.get(cell.cellTypeId);
     if (!ct) continue;
-    layer.add(buildCellAnnotation(cell, ct, getCellColor, getCellShowShapes, getIsSibling, getSiblingActive));
+    layer.add(buildCellAnnotation(cell, ct, getCellColor, getCellShowShapes, getIsTypeSelected));
   }
 
   const getNetOverrideColor = options.netOverrideColor ?? ((_: string) => null);
@@ -197,7 +199,7 @@ export function populateAnnotationLayer(
           buildNetAnnotation(
         net, getNetWidth, getNetColor, getNetNodeMatchesWidth,
         getNetOverrideColor, getLayerColor, getNodeRadiusMult, getJunctionsOnly,
-        getConnectionPoint
+        getConnectionPoint, getJunctionCross
       )
     );
   }
@@ -208,7 +210,8 @@ export function populateAnnotationLayer(
   }
   for (const r of annotations.rois ?? []) layer.add(buildRoiRect(r));
   for (const r of annotations.ignores ?? []) layer.add(buildIgnore(r));
-  for (const p of annotations.pins ?? []) layer.add(buildPin(p));
+  const getPinNamesVisible = options.pinNamesVisible ?? (() => true);
+  for (const p of annotations.pins ?? []) layer.add(buildPin(p, getPinNamesVisible));
 }
 
 // ── Cells ────────────────────────────────────────────────────────────
@@ -218,32 +221,13 @@ export function buildCellAnnotation(
   cellType: CellType,
   getColor: () => string,
   getShowShapes: () => boolean,
-  isSibling?: (cellId: string) => boolean,
-  siblingActive?: () => boolean
+  isTypeSelected?: (cellId: string) => boolean
 ): Annotation {
   const w = cellType.cropRect.width;
   const h = cellType.cropRect.height;
-  // Footprint AABB: the canonical w×h box, oriented (mirror + rotation) about
-  // its centre, then placed at (cell.x, cell.y). A 90°/270° rotation swaps the
-  // extent, so the bbox is derived from the oriented corners.
-  const orientedCorners = [
-    { x: 0, y: 0 },
-    { x: w, y: 0 },
-    { x: w, y: h },
-    { x: 0, y: h }
-  ].map((p) => applyOrientation(p, cell, w, h));
-  const ob = polygonBounds(orientedCorners) ?? {
-    x: 0,
-    y: 0,
-    width: w,
-    height: h
-  };
-  const bbox: Rect = {
-    x: cell.x + ob.x,
-    y: cell.y + ob.y,
-    width: ob.width,
-    height: ob.height
-  };
+  // Footprint: the type box (or per-instance `bounds`) oriented like the
+  // content, so the outline wraps what's drawn (see cellFootprint.ts).
+  const bbox: Rect = cellWorldRect(cell, w, h);
   const layers = cellType.layers ?? {};
   // A cell with no inner layer shapes has nothing to draw at high zoom — keep
   // the solid block fill at every zoom so it stays visible.
@@ -259,54 +243,44 @@ export function buildCellAnnotation(
       // AND there are shapes; otherwise the cell renders as a solid block.
       const showShapes =
         getShowShapes() && bounds.zoom >= CELL_DETAIL_ZOOM && hasShapes;
-      const color = getColor();
+      // A per-type color wins over the global cell color.
+      const color = cellType.color ?? getColor();
 
-      ctx.save();
-      // Canonical cell-local → world: place at the cell centre, then apply the
-      // instance orientation (rotation + mirror) about that centre, matching
-      // the cell-RE / merge canvas transform so layer shapes land on the die
-      // exactly where the cell image shows them.
-      ctx.translate(cell.x + w / 2, cell.y + h / 2);
-      ctx.rotate(((cell.rotation ?? 0) * Math.PI) / 180);
-      ctx.scale(cell.flippedH ? -1 : 1, cell.flippedV ? -1 : 1);
-      ctx.translate(-w / 2, -h / 2);
-
-      // Dim non-sibling cells when a sibling group is active so the
-      // highlighted cluster stands out on the die.
-      const dimmed = !state.selected && !isSibling?.(cell.id) && siblingActive?.();
-      if (dimmed) ctx.globalAlpha = 0.1;
+      // Only the selected cell (or every instance of a selected cell type)
+      // changes colour; all other cells keep their normal look.
+      const selected = state.selected || isTypeSelected?.(cell.id) === true;
 
       const isMl = cell.mlDetected === true;
 
+      ctx.save();
       if (showShapes) {
+        // Content only: canonical cell-local → world, placed at the type box
+        // centre with the instance orientation (rotation + mirror) applied
+        // about it, matching the cell-RE / merge canvas transform so layer
+        // shapes land on the die where the cell image shows them.
+        ctx.save();
+        ctx.translate(cell.x + w / 2, cell.y + h / 2);
+        ctx.rotate(((cell.rotation ?? 0) * Math.PI) / 180);
+        ctx.scale(cell.flippedH ? -1 : 1, cell.flippedV ? -1 : 1);
+        ctx.translate(-w / 2, -h / 2);
         // No outlines on the die view — at die-wide zooms the per-shape
         // strokes add noise without disambiguating anything (the cell box
         // itself carries the outline).
         drawCellLayers(ctx, layers, bounds, { outline: false });
+        ctx.restore();
       } else {
         // Solid block so placement structure stays legible (when zoomed out,
         // or for cells that carry no inner shapes at all).
-        if (isMl && !state.selected) {
+        if (isMl && !selected) {
           ctx.fillStyle = "rgba(100, 180, 255, 0.18)";
         } else {
-          ctx.fillStyle = state.selected ? SELECT_FILL : withAlpha(color, CELL_FILL_ALPHA);
+          ctx.fillStyle = selected ? SELECT_FILL : withAlpha(color, CELL_FILL_ALPHA);
         }
-        ctx.fillRect(0, 0, w, h);
-      }
-
-      // Sibling glow: cells sharing a cellTypeId with the selection get a
-      // cyan halo before the regular outline so the group is visible at a glance.
-      if (!state.selected && isSibling?.(cell.id)) {
-        ctx.strokeStyle = "rgba(0, 200, 255, 0.45)";
-        ctx.lineWidth = (CELL_OUTLINE_PX + 10) / bounds.zoom;
-        ctx.strokeRect(0, 0, w, h);
-        ctx.strokeStyle = "rgba(0, 230, 255, 0.7)";
-        ctx.lineWidth = (CELL_OUTLINE_PX + 3) / bounds.zoom;
-        ctx.strokeRect(0, 0, w, h);
+        ctx.fillRect(bbox.x, bbox.y, bbox.width, bbox.height);
       }
 
       // Strong outline, always — this is what makes cell boundaries readable.
-      if (state.selected) {
+      if (selected) {
         ctx.strokeStyle = SELECT_COLOR;
         ctx.lineWidth = (CELL_OUTLINE_PX + 1) / bounds.zoom;
       } else if (isMl) {
@@ -316,7 +290,7 @@ export function buildCellAnnotation(
         ctx.strokeStyle = withAlpha(color, CELL_OUTLINE_ALPHA);
         ctx.lineWidth = CELL_OUTLINE_PX / bounds.zoom;
       }
-      ctx.strokeRect(0, 0, w, h);
+      ctx.strokeRect(bbox.x, bbox.y, bbox.width, bbox.height);
 
       // CV label overlay — shown only when zoomed in enough to read text
       if (isMl && bounds.zoom >= 0.3 && cell.mlConfidence != null) {
@@ -326,7 +300,11 @@ export function buildCellAnnotation(
         ctx.textBaseline = "bottom";
         ctx.textAlign = "right";
         ctx.fillStyle = "#90caf9";
-        ctx.fillText(label, w - 2 / bounds.zoom, h - 2 / bounds.zoom);
+        ctx.fillText(
+          label,
+          bbox.x + bbox.width - 2 / bounds.zoom,
+          bbox.y + bbox.height - 2 / bounds.zoom
+        );
       }
 
       ctx.restore();
@@ -385,7 +363,7 @@ export function buildAnnotation(
             ? viaScreenRadius(bounds.zoom, worldR) / bounds.zoom
             : VIA_RADIUS_PX / bounds.zoom;
         const r = state.selected ? baseR * SELECT_NODE_MULT : baseR;
-        const viaColor = (a.layer && getViaLayerColor?.(a.layer)) ?? getPointViaColor();
+        const viaColor = a.color ?? (a.layer && getViaLayerColor?.(a.layer)) ?? getPointViaColor();
         ctx.fillStyle = state.selected ? SELECT_COLOR : viaColor;
         ctx.beginPath();
         ctx.arc(g.x, g.y, r, 0, Math.PI * 2);
@@ -425,7 +403,7 @@ export function buildAnnotation(
           }
           return;
         }
-        const viaColor = (a.layer && getViaLayerColor?.(a.layer)) ?? getPointViaColor();
+        const viaColor = a.color ?? (a.layer && getViaLayerColor?.(a.layer)) ?? getPointViaColor();
         const viaFill = viaColorWithAlpha(viaColor, 0.25);
         ctx.fillStyle = state.selected ? SELECT_FILL : viaFill;
         ctx.strokeStyle = state.selected ? SELECT_COLOR : viaColor;
@@ -474,7 +452,7 @@ export function buildAnnotation(
           return;
         }
         if (pts.length < 2) return;
-        const viaColor = (a.layer && getViaLayerColor?.(a.layer)) ?? getPointViaColor();
+        const viaColor = a.color ?? (a.layer && getViaLayerColor?.(a.layer)) ?? getPointViaColor();
         const viaFill = viaColorWithAlpha(viaColor, 0.25);
         ctx.fillStyle = state.selected ? SELECT_FILL : viaFill;
         ctx.strokeStyle = state.selected ? SELECT_COLOR : viaColor;
@@ -537,12 +515,7 @@ export function buildRoiRect(roi: ROIRectangle): Annotation {
   };
 }
 
-// Above this zoom (CSS px per world unit) the name+number label is drawn for
-// every pin; below it, only the selected pin shows its label (avoids clutter
-// when the whole die is in view).
-const PIN_LABEL_MIN_ZOOM = 0.12;
-
-function buildPin(pin: IOPin): Annotation {
+export function buildPin(pin: IOPin, getNamesVisible: () => boolean): Annotation {
   const half = 6; // half-size in source pixels for the bbox
   return {
     id: `pin:${pin.id}`,
@@ -559,8 +532,9 @@ function buildPin(pin: IOPin): Annotation {
       ctx.fill();
       ctx.stroke();
 
-      // Label: pin name + number. Shown when zoomed in, or when selected.
-      if (!state.selected && bounds.zoom < PIN_LABEL_MIN_ZOOM) return;
+      // Label: pin name + number. Always shown (regardless of zoom/selection)
+      // unless the names toggle has hidden them.
+      if (!getNamesVisible()) return;
       const fontPx = 11 / bounds.zoom; // ~constant on-screen size
       ctx.font = `${fontPx}px ui-sans-serif, system-ui, sans-serif`;
       ctx.textAlign = "left";

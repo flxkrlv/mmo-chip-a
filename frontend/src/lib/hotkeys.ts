@@ -103,7 +103,7 @@ export const VIA_HOTKEYS: Record<string, number> = {
 // ── Merge Cells mode hotkeys ────────────────────────────────────
 // Alt+1..Alt+5 to switch merge view mode (Alt prefix avoids conflict
 // with NAV_HOTKEYS which uses bare digits for tab switching).
-export type MergeModeId = "overlay" | "sxs" | "diff" | "specimen" | "candidate";
+export type MergeModeId = "overlay" | "sxs" | "diff" | "specimen" | "candidate" | "multi";
 
 export const MERGE_HOTKEYS: Record<string, MergeModeId> = {
   "Alt+1": "overlay",
@@ -111,6 +111,7 @@ export const MERGE_HOTKEYS: Record<string, MergeModeId> = {
   "Alt+3": "diff",
   "Alt+4": "specimen",
   "Alt+5": "candidate",
+  "Alt+6": "multi",
 };
 
 // ── Pin Planner (IC Package) tool hotkeys ────────────────────────
@@ -182,6 +183,23 @@ export const DIE_VIEWER_MOD_HOTKEYS: Record<string, {
   "k": { ctrl: false, shift: true, action: "deleteAllRulers" },
   "K": { ctrl: false, shift: true, action: "deleteAllRulers" },
 };
+
+// ── Tooltip helpers ─────────────────────────────────────────────
+
+/** Tooltip text with its shortcut appended, e.g. "Draw wire (W)". */
+export function withShortcut(label: string, shortcut?: string | null): string {
+  return shortcut ? `${label} (${shortcut})` : label;
+}
+
+/** Display form of the bare key bound to `id` in a tool registry
+ *  (first match, upper-cased), or undefined when the tool has none. */
+export function hotkeyFor<T extends string>(
+  registry: Record<string, T>,
+  id: T
+): string | undefined {
+  const key = Object.keys(registry).find((k) => registry[k] === id);
+  return key?.toUpperCase();
+}
 
 // ── Overlay hotkeys (shared across Die viewer / Merge / RE Cell) ─
 //   Space+B         — toggle base image visibility

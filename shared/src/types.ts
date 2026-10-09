@@ -386,6 +386,9 @@ export interface CellType {
    *  D and S are swapped so the forced contact shows "S".
    *  Empty/absent = no overrides. */
   forcedSourceContacts?: string[];
+  /** Per-type display color (#rrggbb) for the cell outline / block fill.
+   *  Unique across the die's cell types. Absent ⇒ the global cell color. */
+  color?: string;
 }
 
 export interface Cell {
@@ -407,6 +410,29 @@ export interface Cell {
   mlDetected?: boolean;
   /** Confidence score from CV matching (0..1). */
   mlConfidence?: number;
+  /** Per-instance footprint override: a rect in die axes relative to
+   *  `(x, y)`. Absent ⇒ the type's `cropRect` box `(0, 0, width, height)`.
+   *  Orientation never affects the footprint — it only changes how the
+   *  type's content is presented on the cell. */
+  bounds?: AnnotationRect;
+  /** Piecewise-linear stretch of this instance's image, in its type frame
+   *  (after un-orienting), so it lines up exactly with the type in the
+   *  merge-cells tool. Absent ⇒ none. */
+  warp?: CellWarp;
+}
+
+/** One stretch line: image content at `src` (type-frame px along the axis)
+ *  is shown at `dst`. Between lines content is stretched linearly. */
+export interface WarpKnot {
+  src: number;
+  dst: number;
+}
+
+/** Per-axis stretch knots, sorted by `src`, first at 0 and last at the type
+ *  size (the box edges) — `x` from vertical lines, `y` from horizontal ones. */
+export interface CellWarp {
+  x?: WarpKnot[];
+  y?: WarpKnot[];
 }
 
 // ── Grid definitions ──────────────────────────────────────────────
@@ -529,6 +555,8 @@ export interface HumanAnnotation {
   source?: "human" | "approved";
   /** Via layer id (VIA12, VIA23, …) for via annotations. Absent = legacy. */
   layer?: string;
+  /** Per-via color override (CSS color). Absent = via layer / global color. */
+  color?: string;
 }
 
 export interface ROIRectangle {

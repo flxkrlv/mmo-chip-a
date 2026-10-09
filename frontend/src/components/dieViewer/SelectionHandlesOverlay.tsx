@@ -3,15 +3,21 @@ import type { DieAnnotations } from "shared";
 import type { LiveValue } from "../../lib/liveValue";
 import type { Viewport } from "../../renderer/types";
 import { useDieViewerStore } from "../../state/dieViewer";
-import { rectCorners, type Point } from "../../lib/geometry";
+import { usePreferences } from "../../state/preferences";
+import { rectCorners, type Point, type Rect } from "../../lib/geometry";
 import { resolveEditable, type EditPreview } from "./shapeEdit";
+import { cellWorldRect, resolveSelectedCell } from "./cellResize";
 
 const HANDLE_PX = 10;
 const COLOR = "#f3b351"; // selection accent
+/** Side-bar handle size for cells: long axis capped, thickness fixed. */
+const BAR_LEN_PX = 24;
+const BAR_THICK_PX = 6;
 
 /**
  * Draws grab handles (corner squares for rect-like entities, vertex squares
- * for polygons) on the single selected editable ML shape. While a drag is in
+ * for polygons) on the single selected editable ML shape, or GIMP-style
+ * side bars on a single selected (unlocked) cell — cells resize by edge only. While a drag is in
  * progress the handles track the cursor via `previewStore` (the live geometry
  * pushed by `shapeDragHandler`); otherwise they sit on the committed shape.
  */
@@ -26,6 +32,7 @@ export function SelectionHandlesOverlay({
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const selectedIds = useDieViewerStore((s) => s.selectedIds);
+  const cellsLocked = usePreferences((s) => s.cellsLocked);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -38,6 +45,10 @@ export function SelectionHandlesOverlay({
         ? (selectedIds.values().next().value as string)
         : null;
     const committed = only && annotations ? resolveEditable(only, annotations) : null;
+    const selCell = cellsLocked ? null : resolveSelectedCell(selectedIds, annotations);
+    const committedCellRect = selCell
+      ? cellWorldRect(selCell.cell, selCell.cellType.cropRect.width, selCell.cellType.cropRect.height)
+      : null;
 
     let raf = 0;
     const draw = () => {
@@ -57,8 +68,13 @@ export function SelectionHandlesOverlay({
 
       // Live drag geometry wins; otherwise the committed selected shape.
       const pv = previewStore.get();
+      const cellRect = pv?.kind === "cellRect" ? pv.rect : pv ? null : committedCellRect;
+      if (cellRect) {
+        drawSideBars(ctx, cellRect, vp);
+        return;
+      }
       let pts: Point[] | null = null;
-      if (pv) {
+      if (pv && pv.kind !== "cellRect") {
         pts = pv.kind === "rect" ? rectCorners(pv.rect) : pv.points;
       } else if (committed) {
         pts =
@@ -96,7 +112,7 @@ export function SelectionHandlesOverlay({
       unsubPv();
       ro.disconnect();
     };
-  }, [annotations, selectedIds, viewportStore, previewStore]);
+  }, [annotations, selectedIds, cellsLocked, viewportStore, previewStore]);
 
   return (
     <canvas
@@ -110,4 +126,29 @@ export function SelectionHandlesOverlay({
       }}
     />
   );
+}
+
+/** One bar centred on each side of `r`, shrunk to fit short sides. */
+function drawSideBars(ctx: CanvasRenderingContext2D, r: Rect, vp: Viewport) {
+  const x0 = (r.x - vp.originX) * vp.zoom;
+  const y0 = (r.y - vp.originY) * vp.zoom;
+  const w = r.width * vp.zoom;
+  const h = r.height * vp.zoom;
+  const lx = Math.min(BAR_LEN_PX, w * 0.6);
+  const ly = Math.min(BAR_LEN_PX, h * 0.6);
+  const t = BAR_THICK_PX;
+  ctx.fillStyle = "#fff";
+  ctx.strokeStyle = COLOR;
+  ctx.lineWidth = 1.5;
+  for (const [bx, by, bw, bh] of [
+    [x0 + w / 2 - lx / 2, y0 - t / 2, lx, t], // top
+    [x0 + w / 2 - lx / 2, y0 + h - t / 2, lx, t], // bottom
+    [x0 - t / 2, y0 + h / 2 - ly / 2, t, ly], // left
+    [x0 + w - t / 2, y0 + h / 2 - ly / 2, t, ly] // right
+  ]) {
+    ctx.beginPath();
+    ctx.rect(bx, by, bw, bh);
+    ctx.fill();
+    ctx.stroke();
+  }
 }

@@ -1,7 +1,9 @@
 import { create } from "zustand";
-import type { DieMLConfig } from "shared";
+import type { AnnotationRect, DieMLConfig } from "shared";
 import type { AnnotationAction } from "../api/actions";
 import type { WireClipboard } from "../lib/wireClipboard";
+import type { PinClip } from "../lib/pinClipboard";
+import type { FloorplanClip } from "../lib/floorplanClipboard";
 
 /** Which right-panel tab is showing. The ML tab also drives a render mode:
  *  traces/vias size from `mlConfig` instead of display preferences. */
@@ -78,6 +80,10 @@ interface DieViewerState {
   undoStack: AnnotationAction[];
   /** Actions that were undone and can be redone, newest at the end. */
   redoStack: AnnotationAction[];
+  /** Die the undo / redo stacks belong to. The history is shared by the die
+   *  viewer, Merge cells and RE cell pages of that die (switching between them
+   *  keeps it); opening another die starts a fresh one. */
+  historyDieId: string | null;
   /** When set, the global ⌘Z/⌘⇧Z handler defers to this instead of the
    *  action dispatcher (e.g. per-point undo while drawing a wire). */
   undoOverride: UndoOverride | null;
@@ -91,7 +97,6 @@ interface DieViewerState {
   guideAxis: "x" | "y";
   /** Ruler tool measurement mode. "free" = draw at any angle;
    *  "h" = horizontal only; "v" = vertical only. */
-  measureMode: "free" | "h" | "v" | "ortho" | "diag";
   /** Ruler label display preferences. */
   showRulerPx: boolean;
   showRulerUm: boolean;
@@ -106,8 +111,12 @@ interface DieViewerState {
  *  fetched so far this session, not a die-wide ground truth. */
   mlViasCount: number;
   /** Copied cell data for paste (cellTypeId + orientation, no position). */
-  clipboardCells: { cellTypeId: string; offsetX: number; offsetY: number; flippedV?: boolean; flippedH?: boolean; rotation?: 0 | 90 | 180 | 270 }[];
+  clipboardCells: { cellTypeId: string; offsetX: number; offsetY: number; flippedV?: boolean; flippedH?: boolean; rotation?: 0 | 90 | 180 | 270; bounds?: AnnotationRect }[];
   clipboardWires: WireClipboard | null;
+  /** Copied I/O pads: pasted with the same pin number + name, new place. */
+  clipboardPins: PinClip[];
+  /** Floorplan regions in the copy / paste clipboard (see lib/floorplanClipboard). */
+  clipboardFloorplans: FloorplanClip[];
 }
 
 interface DieViewerActions {
@@ -121,12 +130,14 @@ interface DieViewerActions {
   pushRedo: (action: AnnotationAction) => void;
   popRedo: () => AnnotationAction | undefined;
   clearRedo: () => void;
+  /** Make `dieId` the owner of the undo history, clearing it if it belonged
+   *  to another die (its actions must never be replayed on this one). */
+  ensureHistoryFor: (dieId: string) => void;
   /** Register / clear the global-undo override (see `UndoOverride`). */
   setUndoOverride: (override: UndoOverride | null) => void;
   setActiveMetalId: (id: string | null) => void;
   setActiveViaId: (id: string | null) => void;
   setGuideAxis: (axis: "x" | "y") => void;
-  setMeasureMode: (mode: "free" | "h" | "v" | "ortho" | "diag") => void;
   setRulerDisplay: (patch: Partial<Pick<DieViewerState, "showRulerPx" | "showRulerUm" | "showRulerNm">>) => void;
   /** Patch the draft ML config (one or more fields). */
   setMlConfig: (patch: Partial<DieMLConfig>) => void;
@@ -138,6 +149,9 @@ interface DieViewerActions {
   clearWireClipboard: () => void;
   /** Clear cell clipboard. */
   clearCellClipboard: () => void;
+  /** Replace the pad clipboard (empty clears it). */
+  setPinClipboard: (pins: PinClip[]) => void;
+  setFloorplanClipboard: (regions: FloorplanClip[]) => void;
   /** Wipe transient state — called when navigating to a different die. */
   reset: () => void;
 }
@@ -151,17 +165,19 @@ const INITIAL_STATE: DieViewerState = {
   activeAnalogLayer: "nwell",
   undoStack: [],
   redoStack: [],
+  historyDieId: null,
   undoOverride: null,
   activeMetalId: null,
   activeViaId: null,
   guideAxis: "x",
-  measureMode: "ortho",
   showRulerPx: false,
   showRulerUm: true,
   showRulerNm: false,
   mlConfig: { ...DEFAULT_ML_CONFIG },
   mlViasCount: 0,
   clipboardCells: [],
+  clipboardPins: [],
+  clipboardFloorplans: [],
   clipboardWires: null
 };
 
@@ -233,12 +249,15 @@ export const useDieViewerStore = create<DieViewerState & DieViewerActions>()((se
     return top;
   },
   clearRedo: () => set({ redoStack: [] }),
+  ensureHistoryFor: (dieId) => {
+    if (get().historyDieId === dieId) return;
+    set({ historyDieId: dieId, undoStack: [], redoStack: [] });
+  },
   setUndoOverride: (override) => set({ undoOverride: override }),
   setActiveAnalogLayer: (layer) => set({ activeAnalogLayer: layer }),
   setActiveMetalId: (id) => set({ activeMetalId: id }),
   setActiveViaId: (id) => set({ activeViaId: id }),
   setGuideAxis: (axis) => set({ guideAxis: axis }),
-  setMeasureMode: (mode) => set({ measureMode: mode }),
   setRulerDisplay: (patch) => set(patch),
   setMlConfig: (patch) =>
     set((state) => ({ mlConfig: { ...state.mlConfig, ...patch } })),
@@ -251,8 +270,19 @@ export const useDieViewerStore = create<DieViewerState & DieViewerActions>()((se
   setWireClipboard: (clipboard) => set({ clipboardWires: clipboard }),
   clearWireClipboard: () => set({ clipboardWires: null }),
   clearCellClipboard: () => set({ clipboardCells: [] }),
+  setPinClipboard: (pins) => set({ clipboardPins: pins }),
+  setFloorplanClipboard: (regions) => set({ clipboardFloorplans: regions }),
 
-  reset: () => set(INITIAL_STATE)
+  // The undo history is left alone: it is per die (see ensureHistoryFor), and
+  // the die viewer resets on every mount — coming back from Merge / RE cell
+  // must not lose what was done there.
+  reset: () =>
+    set((state) => ({
+      ...INITIAL_STATE,
+      undoStack: state.undoStack,
+      redoStack: state.redoStack,
+      historyDieId: state.historyDieId
+    }))
 }));
 
 function setsEqual(a: ReadonlySet<string>, b: ReadonlySet<string>): boolean {

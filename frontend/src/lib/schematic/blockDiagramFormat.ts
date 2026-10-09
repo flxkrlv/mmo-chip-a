@@ -13,6 +13,7 @@
  */
 
 import type { AnalogDevice, FloorplanRegion } from "shared";
+import { floorplanNameInline } from "../floorplanName";
 
 // ── Yosys JSON types (mirrors netlist2svgFormat) ─────────────────
 
@@ -355,7 +356,7 @@ export function generateBlockDiagram(
   for (const [regionId, devices] of floorplanDevices) {
     if (devices.length === 0) continue;
     const region = regionMap.get(regionId);
-    const blockName = region?.name ?? regionId;
+    const blockName = (region?.name && floorplanNameInline(region.name)) || regionId;
 
     // Collect netIds used inside this region
     const regionNets = new Set<number>();

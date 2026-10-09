@@ -3,6 +3,7 @@ import {
   useEffect,
   useImperativeHandle,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
   forwardRef
@@ -66,6 +67,9 @@ import { uuid } from "../../lib/uuid";
 import { useCellREStore } from "../../state/cellRE";
 import { useOverlayLayers } from "../../state/overlayLayers";
 import { usePreferences } from "../../state/preferences";
+import { createProgressiveImageCache } from "../../lib/progressiveImage";
+import { cellWorldRect, dieToTypeMatrix } from "../../lib/cellFootprint";
+import { drawCellCrop } from "../../lib/cellCrop";
 
 export interface CellRECanvasHandle {
   /** Re-fit the cell into the viewport. */
@@ -379,23 +383,8 @@ export const CellRECanvas = forwardRef<CellRECanvasHandle, Props>(function CellR
   }, [overlayKey]);
 
   // ── Image cache ────────────────────────────────────────────────────
-  const imgCacheRef = useRef(new Map<string, HTMLImageElement>());
-  const getImage = useCallback(
-    (url: string | null): HTMLImageElement | null => {
-      if (!url) return null;
-      const cache = imgCacheRef.current;
-      const hit = cache.get(url);
-      if (hit) return hit.complete && hit.naturalWidth > 0 ? hit : null;
-      const img = new Image();
-      img.decoding = "async";
-      img.onload = redraw;
-      img.onerror = redraw;
-      img.src = url;
-      cache.set(url, img);
-      return null;
-    },
-    [redraw]
-  );
+  // Preview first, full resolution once it arrives (see lib/progressiveImage).
+  const getImage = useMemo(() => createProgressiveImageCache(redraw), [redraw]);
 
   // ── Fit ────────────────────────────────────────────────────────────
   const fit = useCallback(() => {
@@ -1149,7 +1138,7 @@ export const CellRECanvas = forwardRef<CellRECanvasHandle, Props>(function CellR
     if (hovering) ctx.globalAlpha = DIM_ALPHA;
     if (baseVisible && img) {
       ctx.imageSmoothingEnabled = v.zoom < 3;
-      ctx.drawImage(img, 0, 0, box.w, box.h);
+      drawCellCrop(ctx, img, cell, box);
     } else if (img) {
       // Base image hidden via Space+B — show only overlays below.
     } else {
@@ -1157,19 +1146,11 @@ export const CellRECanvas = forwardRef<CellRECanvasHandle, Props>(function CellR
       ctx.fillRect(0, 0, box.w, box.h);
     }
     // Die-viewer overlay (wires, vias) — lives in die-world coordinates,
-    // so apply instance orientation to match the physical layout.
+    // so un-orient it into the type frame, like the crop.
     if (cell && annotations) {
-      const cellDieRect: Rect = {
-        x: cell.x,
-        y: cell.y,
-        width: box.w,
-        height: box.h
-      };
+      const cellDieRect: Rect = cellWorldRect(cell, box.w, box.h);
       ctx.save();
-      ctx.translate(box.w / 2, box.h / 2);
-      ctx.rotate(((cell.rotation ?? 0) * Math.PI) / 180);
-      ctx.scale(cell.flippedH ? -1 : 1, cell.flippedV ? -1 : 1);
-      ctx.translate(-box.w / 2, -box.h / 2);
+      ctx.transform(...dieToTypeMatrix(cell, box.w, box.h));
       ctx.translate(-cell.x, -cell.y);
       drawDieOverlay(ctx, annotations, cellDieRect, v.zoom, {
         hideWires: layerHidden["_dvWires"] === true,

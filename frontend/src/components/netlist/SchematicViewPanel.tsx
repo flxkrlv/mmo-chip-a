@@ -20,6 +20,7 @@ import { generateSpiceTSViews } from "../../lib/schematic/spiceTSFormat";
 import { Netlist2SvgView, type Netlist2SvgHandle } from "./Netlist2SvgView";
 import { LAYOUT_STRATEGIES, LAYOUT_DIRECTIONS, COMPACTION_LEVELS, type LayoutStrategy, type LayoutDirection, type CompactionLevel } from "../../lib/schematic/netlist2svgSkin";
 import { formatDevicesAsNetlist2Svg } from "../../lib/schematic/netlist2svgFormat";
+import { parseNetlistToDevices } from "../../lib/schematic/netlistTextToDevices";
 import { generateBlockDiagram } from "../../lib/schematic/blockDiagramFormat";
 import { NetlistSettingsPanel } from "./NetlistSettingsPanel";
 import { collectDieWideAnalogDevices, getRenameVersion } from "../../api/dieWideAnalog";
@@ -30,6 +31,7 @@ import { InteractiveAnalogSchematic } from "./InteractiveAnalogSchematic";
 import { scopeKey as interactiveScopeKey } from "../../state/interactiveSchematic";
 import { useSession } from "../../state/session";
 import { usePreferences } from "../../state/preferences";
+import { floorplanNameInline } from "../../lib/floorplanName";
 
 // ── Props ───────────────────────────────────────────────────────
 
@@ -45,6 +47,13 @@ interface Props {
   onSelectRegion?: (regionId: string | null) => void;
   /** Optional read-only assistant finding: render this device subset as a schematic fragment. */
   selectedDeviceNames?: string[];
+  /**
+   * Optional hand-edited netlist text (from the Code tab). When present, it
+   * fully overrides the die-derived devices below — the schematic renders a
+   * tentative sketch parsed straight from this text instead of extraction
+   * results. Hierarchy/regions don't apply to a flat hand-typed netlist.
+   */
+  manualSource?: string | null;
 }
 
 // ── Component ───────────────────────────────────────────────────
@@ -58,6 +67,7 @@ export function SchematicViewPanel({
   selectedRegion: selectedRegionProp,
   onSelectRegion,
   selectedDeviceNames = [],
+  manualSource = null,
 }: Props) {
   const [renderMode, setRenderMode] = useState<"analog" | "functional">("analog");
   /** Schematic engine: static netlist2svg SVG or interactive draggable canvas.
@@ -165,8 +175,37 @@ export function SchematicViewPanel({
     return { flatJson: flat, floorplanDevices, namedNets, ioNetIds, devices: named as import("shared").AnalogDevice[] };
   }, [annotations, moduleName, spiceConfig, hierarchical, floorplanRegions, getRenameVersion(), namesVer]);
 
+  // ══ Manual/tentative override — hand-edited netlist from the Code tab ═
+  // When present, this fully replaces the die-derived n2sData below with
+  // devices parsed straight from the user's text, so a schematic can be
+  // sketched before real layout extraction exists. Flat only — hierarchy
+  // and floorplan regions don't apply to hand-typed text.
+  const manualData = useMemo(() => {
+    if (!manualSource || !manualSource.trim()) return null;
+    return parseNetlistToDevices(manualSource);
+  }, [manualSource]);
+  const isManual = manualData !== null;
+
+  const effectiveN2s = useMemo(() => {
+    if (!manualData) return n2sData;
+    const flat = formatDevicesAsNetlist2Svg(
+      manualData.devices,
+      manualData.namedNets,
+      `${moduleName}.tentative`,
+      { vdd: spiceConfig?.vdd ?? "VDD", gnd: spiceConfig?.gnd ?? "GND", hierarchical: false, ioNetIds: new Set(), showNetLabels: false },
+    );
+    return {
+      flatJson: flat,
+      floorplanDevices: undefined as Map<string, AnalogDevice[]> | undefined,
+      namedNets: manualData.namedNets,
+      ioNetIds: new Set<number>(),
+      devices: manualData.devices,
+    };
+  }, [manualData, n2sData, moduleName, spiceConfig]);
+
   // ══ Functional block diagram ═════════════════════════════════
   const blockDiagramJson = useMemo(() => {
+    if (isManual) return null;
     if (!hierarchical || !floorplanRegions || floorplanRegions.length === 0) return null;
     if (!n2sData.floorplanDevices) return null;
     // Separate region blocks from unassigned (top-level) devices
@@ -192,7 +231,7 @@ export function SchematicViewPanel({
       { vdd: cfg.vdd ?? "VDD", gnd: cfg.gnd ?? "GND" },
       unassignedDevices.length > 0 ? unassignedDevices : undefined,
     );
-  }, [hierarchical, floorplanRegions, n2sData, moduleName, spiceConfig]);
+  }, [isManual, hierarchical, floorplanRegions, n2sData, moduleName, spiceConfig]);
 
   /** Is functional mode available? Need hierarchical + regions with devices */
   const functionalAvail = blockDiagramJson !== null;
@@ -282,6 +321,7 @@ useEffect(() => {
   // ── Current data ──────────────────────────────────────────────
 
   const currentN2sJson = useMemo(() => {
+    if (isManual) return effectiveN2s.flatJson;
     if (selectedDeviceNames.length > 0) {
       const selected = n2sData.devices.filter((device) => selectedDeviceNames.includes(device.instanceName ?? device.id));
       if (selected.length > 0) {
@@ -306,12 +346,13 @@ useEffect(() => {
       return null;
     }
     return n2sData.flatJson;
-  }, [hierarchical, activeRegion, n2sData, moduleName, spiceConfig, selectedDeviceNames]);
+  }, [isManual, effectiveN2s, hierarchical, activeRegion, n2sData, moduleName, spiceConfig, selectedDeviceNames]);
 
   // ── Hierarchy blocks ─────────────────────────────────────────
   // Floorplan regions collapsed into subcircuit rectangles (interactive
   // "show hierarchy"). Defined BEFORE interactiveScope (it keys the slot).
   const hierarchyBlocks: HierarchyBlock[] | undefined = useMemo(() => {
+    if (isManual) return undefined;
     if (!showHierarchy) return undefined;
     if (selectedDeviceNames.length > 0) return undefined; // hierarchy only on "All"
     if (!hierarchical || !floorplanRegions || floorplanRegions.length === 0) return undefined;
@@ -326,7 +367,7 @@ useEffect(() => {
     const cfg: SpiceConfig = { vdd: "VDD", gnd: "GND", ...spiceConfig };
     // region.name is the readable block label (not the raw regionId).
     const regionNames = new Map<string, string>();
-    for (const r of floorplanRegions) regionNames.set(r.id, r.name ?? r.id);
+    for (const r of floorplanRegions) regionNames.set(r.id, (r.name && floorplanNameInline(r.name)) || r.id);
     return regionExternalNets(
       regionDevices,
       unassignedDevices,
@@ -335,7 +376,7 @@ useEffect(() => {
       { vdd: cfg.vdd ?? "VDD", gnd: cfg.gnd ?? "GND" },
       regionNames,
     );
-  }, [showHierarchy, hierarchical, floorplanRegions, n2sData, spiceConfig]);
+  }, [isManual, showHierarchy, hierarchical, floorplanRegions, n2sData, spiceConfig]);
 
   // ── Region boundary pins (shown when viewing a subcircuit) ─────
   // When a region is selected (subcircuit view) and hierarchy overview is off,
@@ -397,13 +438,15 @@ useEffect(() => {
   // Scope slot keeps layouts of different datasets (full / region /
   // assistant fragment) apart in the persisted store.
   const interactiveScope = useMemo(() => {
+    if (isManual) return "tentative";
     if (selectedDeviceNames.length > 0) return `fragment:${hashFragmentScope(selectedDeviceNames)}`;
     if (showHierarchy && hierarchyBlocks) return "hierarchy";
     if (hierarchical && activeRegion) return `region:${activeRegion}`;
     return "full";
-  }, [selectedDeviceNames, hierarchical, activeRegion, showHierarchy, hierarchyBlocks]);
+  }, [isManual, selectedDeviceNames, hierarchical, activeRegion, showHierarchy, hierarchyBlocks]);
 
   const interactiveDevices = useMemo(() => {
+    if (isManual) return effectiveN2s.devices;
     if (selectedDeviceNames.length > 0) {
       const selected = n2sData.devices.filter((device) => selectedDeviceNames.includes(device.instanceName ?? device.id));
       if (selected.length > 0) return selected;
@@ -414,7 +457,7 @@ useEffect(() => {
       return [];
     }
     return n2sData.devices;
-  }, [hierarchical, activeRegion, n2sData, selectedDeviceNames]);
+  }, [isManual, effectiveN2s, hierarchical, activeRegion, n2sData, selectedDeviceNames]);
 
   // I/O pin net ids:
   // - "All" view: show all die I/O pins when the toggle is on
@@ -718,7 +761,7 @@ useEffect(() => {
         )}
 
         {/* Hierarchical region buttons (analog mode only) */}
-        {renderMode === "analog" && hierarchical && regionIds.length > 0 && (
+        {!isManual && renderMode === "analog" && hierarchical && regionIds.length > 0 && (
           <>
             {/* "All" button (flat view) */}
             <button
@@ -783,7 +826,7 @@ useEffect(() => {
           engine === "interactive" ? (
             <InteractiveAnalogSchematic
               devices={interactiveDevicesWithHierarchy}
-              namedNets={n2sData.namedNets}
+              namedNets={effectiveN2s.namedNets}
               ioNetIds={interactiveIoNetIds}
               scopeKey={interactiveScopeKey(dieId, moduleName, interactiveScope)}
               vdd={spiceConfig?.vdd ?? "VDD"}

@@ -446,6 +446,13 @@ hr {
   padding: 10px 12px;
   z-index: 1000;
   min-width: 200px;
+  /* Never taller than the viewport; a scrollbar appears only when the
+     content actually overflows. Positioned popovers (SettingsPopover) set a
+     tighter inline max-height from the space left below/above the trigger. */
+  max-height: calc(100vh - 16px);
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 /* Small action button inside a tree row (e.g. settings, sliders). */
@@ -537,6 +544,45 @@ input[type="range"] {
   box-shadow: 0 0 0 2px var(--accent);
 }
 
+/* Pill toggle switch. Usage: <input type="checkbox" role="switch" class="switch" /> */
+input.switch[type="checkbox"] {
+  appearance: none;
+  -webkit-appearance: none;
+  flex: none;
+  position: relative;
+  width: 24px;
+  height: 14px;
+  margin: 0;
+  border: 1px solid var(--l3);
+  border-radius: 7px;
+  background: var(--card);
+  cursor: pointer;
+  transition: background 0.1s, border-color 0.1s;
+}
+input.switch[type="checkbox"]::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--ink3);
+  transition: transform 0.1s ease-out, background 0.1s;
+}
+input.switch[type="checkbox"]:checked {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+input.switch[type="checkbox"]:checked::after {
+  transform: translateX(10px);
+  background: var(--card);
+}
+input.switch[type="checkbox"]:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--accent);
+}
+
 /* Tree rows */
 .tree {
   padding: 2px 0;
@@ -564,6 +610,45 @@ input[type="range"] {
 }
 .trow-eye:hover {
   color: var(--ink) !important;
+}
+/* Long-press progress ring drawn around the eye while it's held. */
+.trow-eye-ring {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 20px;
+  height: 20px;
+  transform: translate(-50%, -50%) rotate(-90deg);
+  pointer-events: none;
+  overflow: visible;
+}
+.trow-eye-ring circle {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-dasharray: 1;
+  stroke-dashoffset: 1;
+  animation: trow-eye-ring 2s linear var(--ring-delay, 0ms) forwards;
+}
+@keyframes trow-eye-ring {
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+/* Delayed hover hint for the long-press gesture. Fixed so the outline
+   panel's overflow can't clip it. */
+.trow-eye-hint {
+  position: fixed;
+  transform: translateY(-50%);
+  z-index: 1000;
+  padding: 3px 6px;
+  border-radius: 4px;
+  background: var(--ink);
+  color: var(--bg);
+  font: 500 10.5px/1.2 var(--font);
+  white-space: nowrap;
+  pointer-events: none;
 }
 .trow.sel .meta {
   color: var(--accent);
@@ -893,4 +978,99 @@ input[type="range"] {
   display: flex;
   justify-content: flex-end;
   gap: 8px;
+}
+.cell-type-picker-list {
+  max-height: 260px;
+  overflow-y: auto;
+  margin-bottom: 14px;
+  border: 1px solid var(--l2);
+  border-radius: 3px;
+}
+.cell-type-picker-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 5px 8px;
+  cursor: pointer;
+  font: 400 12px/1.3 var(--font);
+  color: var(--ink);
+}
+.cell-type-picker-row.active {
+  background: var(--l1);
+}
+.cell-type-picker-row.new {
+  border-top: 1px solid var(--l2);
+  color: var(--accent);
+}
+.cell-type-picker-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cell-type-picker-meta {
+  flex: none;
+  font: 400 11px/1.3 var(--mono);
+  color: var(--ink3);
+}
+.cell-type-picker-empty {
+  padding: 8px;
+  font: 400 11.5px/1.3 var(--font);
+  color: var(--ink3);
+}
+
+/* Cell crop thumbnail (components/mergeCells/CellThumb). The progressive
+   stages are stacked; each fades in over the previous one when loaded. */
+.cell-thumb {
+  position: relative;
+  overflow: hidden;
+  background: var(--canvas-bg);
+}
+.cell-thumb-img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+  opacity: 0;
+  transition: opacity 0.15s ease-out;
+}
+.cell-thumb-img.loaded {
+  opacity: 1;
+}
+.cell-thumb-status {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 9px;
+  color: var(--ink3);
+  pointer-events: none;
+}
+.cell-thumb-status.loading {
+  background: linear-gradient(90deg, transparent 0%, rgba(255, 255, 255, 0.06) 50%, transparent 100%);
+  background-size: 200% 100%;
+  animation: cell-thumb-shimmer 1.2s linear infinite;
+}
+.cell-thumb-spinner {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: 1.5px solid var(--l2);
+  border-top-color: var(--ink2);
+  animation: cell-thumb-spin 0.8s linear infinite;
+}
+@keyframes cell-thumb-shimmer {
+  from {
+    background-position: 100% 0;
+  }
+  to {
+    background-position: -100% 0;
+  }
+}
+@keyframes cell-thumb-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }

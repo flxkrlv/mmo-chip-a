@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { useQueryClient } from "@tanstack/react-query";
-import type { AnalogDevice, AnnotationNet, AssistantFinding, Cell, CellType } from "shared";
+import type { AnalogDevice, AnnotationNet, AssistantFinding, Cell, CellType, DieAnnotations } from "shared";
 import { annotationKeys, useAnnotations } from "../api/annotations";
 import { useAnnotationsWebSocket } from "../api/annotationsWebSocket";
 import { netChangesToAction, useActionDispatcher } from "../api/actions";
@@ -36,6 +36,7 @@ import { RulerOverlay, type RulerDraft } from "../components/dieViewer/RulerOver
 import {
   buildCellAnnotation,
   buildNetAnnotation,
+  buildPin,
   populateAnnotationLayer
 } from "../renderer/annotations/dieAnnotations";
 import { OutlineTree } from "../components/dieViewer/OutlineTree";
@@ -44,11 +45,15 @@ import { SettingsPanel } from "../components/dieViewer/SettingsPanel";
 import {
   CenteredStatus,
   CursorReadout,
+  HoverReadout,
   MarqueeOverlay,
   ZoomChip,
   ZoomReadout,
   annotationsSummary,
-  panelStyle
+  panelStyle,
+  sameHoverInfo,
+  NetHoldRing,
+  type HoverInfo
 } from "../components/dieViewer/DieViewerUI";
 import { DieToolbar, IssuesChip } from "../components/dieViewer/DieToolbar";
 import {
@@ -62,6 +67,17 @@ import { AnalogDeviceHighlights } from "../components/dieViewer/AnalogDeviceHigh
 import { SubcircuitHighlightsOverlay } from "../components/dieViewer/SubcircuitHighlightsOverlay";
 import { DeviceInspector } from "../components/dieViewer/DeviceInspector";
 import { DeviceInstancePanel } from "../components/dieViewer/DeviceInstancePanel";
+import { CellTypePopover } from "../components/dieViewer/CellTypePopover";
+import { retypeCell } from "../lib/cellFootprint";
+import {
+  cellSideAt,
+  cellWorldRect,
+  cellTypeResizeAction,
+  resizeCellType,
+  resolveSelectedCell,
+  sideCursor,
+  type CellSide
+} from "../components/dieViewer/cellResize";
 import { useDieExtraction } from "../hooks/useDieExtraction";
 import { setActiveProject, flushProjectDeviceNames } from "../state/analogDeviceNames";
 import { useExtractionProgress } from "../state/extractionProgress";
@@ -85,12 +101,21 @@ import { buildInstanceTerminalMap } from "../lib/extraction/terminalDetect";
 import { useCellTool } from "../components/dieViewer/useCellTool";
 import { useViaPolyTool } from "../components/dieViewer/useViaPolyTool";
 import {
-  multiParallelEnd,
-  multiWireEndpoint,
+  previewEnds,
+  tipOf,
   useMultiWireTool
 } from "../components/dieViewer/useMultiWireTool";
 import { MultiWireOverlay } from "../components/dieViewer/MultiWireOverlay";
 import { CommentOverlay } from "../components/dieViewer/CommentOverlay";
+import { NetRenamePopover } from "../components/dieViewer/NetRenamePopover";
+import { ViaColorPopover } from "../components/dieViewer/ViaColorPopover";
+import { viaBaseColor, viaColorAction, viaColorTargets, viaFromSelectionId } from "../lib/viaColor";
+import { floorplanNameInline } from "../lib/floorplanName";
+import { drawFloorplansForSnapshot, isFloorplanVisible } from "../lib/floorplanSnapshot";
+import { regionInMarquee } from "../lib/floorplanEdit";
+import { constrainPoint } from "../lib/angleConstraint";
+import { currentAngleMode } from "../state/angleMode";
+import { useWindowAnchorMaintenance } from "../components/dieViewer/useElementWindow";
 import { FloorplanOverlay } from "../components/dieViewer/FloorplanOverlay";
 import { useFloorplanStore, type FloorplanDraft } from "../state/floorplan";
 import { apiPut } from "../api/client";
@@ -116,13 +141,14 @@ import {
 import { useSelectionDelete } from "../components/dieViewer/useSelectionDelete";
 import { useUndoRedoHotkeys } from "../components/dieViewer/useUndoRedoHotkeys";
 import { useOverlayHotkeys } from "../lib/useOverlayHotkeys";
-import type { AnnotationAction } from "../api/actions";
+import type { ActionDispatcher, AnnotationAction } from "../api/actions";
 import { parseNetPartId, splitNetAtNode, weldNetAtEdge, weldNetAtNode, type DrawAnchor } from "../lib/netGraph";
 import { pasteWireClipboard, snapshotWireClipboard, wireSelectionBounds } from "../lib/wireClipboard";
 import {
   closestPointOnSegment,
   normalizeRect,
   distancePointToSegment,
+  pointInPolygon,
   pointInRect,
   rectCornerAt,
   rectCorners,
@@ -136,13 +162,22 @@ import { netNodeWorldRadius, viaSnapTolerance } from "../renderer/annotations/st
 import type { Layer, Viewport } from "../renderer/types";
 import { formatPercent } from "../lib/format";
 import { isTypingTarget } from "../lib/keyboard";
-import { buildMakeUniqueAction } from "../lib/mergeCells";
+import {
+  maxScreenshotScale,
+  nativeScreenshotScale,
+  resolveScreenshotScale,
+  screenshotSize
+} from "../lib/screenshot";
+import { ScreenshotPanel } from "../components/dieViewer/ScreenshotPanel";
+import { padCountByPin, pastePinActions, pinClips, renamePinActions, selectedPins } from "../lib/pinClipboard";
+import { floorplanBounds, floorplanClips, pasteFloorplanActions, selectedFloorplans } from "../lib/floorplanClipboard";
+import { buildMakeUniqueAction, buildOrientAction, orientOf, orientOnDie } from "../lib/mergeCells";
 import { createLiveValue } from "../lib/liveValue";
 import type { WirePreview } from "../components/dieViewer/WireDraftOverlay";
 import { ANNOTATION_KIND_VALUES } from "../state/annotationKinds";
 import { DEFAULT_ML_CONFIG, useDieViewerStore } from "../state/dieViewer";
 import { useOverlayLayers, saveOverlaySettingsToPrefs, applyOverlaySettingsFromPrefs } from "../state/overlayLayers";
-import { usePreferences } from "../state/preferences";
+import { usePreferences, selectNetWidth } from "../state/preferences";
 import { useSession, DEFAULT_METAL_STACK, fetchMetalStack } from "../state/session";
 import { useUserStatus } from "../lib/useUserStatus";
 import { uuid } from "../lib/uuid";
@@ -154,6 +189,14 @@ const NO_DRAFT_POINTS: Point[] = [];
  *  vertices that are real device-electrode connections. Kept tight so a node
  *  merely *near* a terminal is not mistaken for a connection. */
 const DEVICE_CONN_GRID_PX = 1;
+/** Screen-px grab zone either side of a selected cell's outline for resize. */
+const CELL_EDGE_GRAB_PX = 6;
+/** Bus turns shorter than this (screen px) are ignored — e.g. the 2nd click
+ *  of the double-click that finishes the bus. */
+const MULTI_WIRE_MIN_TURN_PX = 4;
+/** Press & hold on a net: same timing as the outline eye's long press. */
+const NET_HOLD_MS = 2000;
+const NET_HOLD_RING_DELAY_MS = 500;
 
 /** Broad-phase pick radius (world units) covering the rendered net-vertex
  *  dots. A vertex dot is drawn wider than the net's node bbox (screen-clamped),
@@ -313,6 +356,10 @@ function DieViewer({ dieId }: { dieId: string }) {
     () => createLiveValue<{ x: number; y: number } | null>(null),
     []
   );
+  const hoverInfoLive = useMemo(
+    () => createLiveValue<HoverInfo | null>(null),
+    []
+  );
   const marqueeLive = useMemo(() => createLiveValue<Rect | null>(null), []);
   const cellRectLive = useMemo(() => createLiveValue<Rect | null>(null), []);
   const shapeRectLive = useMemo(() => createLiveValue<Rect | null>(null), []);
@@ -321,6 +368,11 @@ function DieViewer({ dieId }: { dieId: string }) {
     []
   );
   const viaPolyPreviewLive = useMemo(
+    () => createLiveValue<Point | null>(null),
+    []
+  );
+  /** Rubber-band tip of the floorplan polygon draft (angle-constrained cursor). */
+  const floorplanTipLive = useMemo(
     () => createLiveValue<Point | null>(null),
     []
   );
@@ -359,6 +411,16 @@ function DieViewer({ dieId }: { dieId: string }) {
   const showRulerPx = useDieViewerStore((s) => s.showRulerPx);
   const showRulerUm = useDieViewerStore((s) => s.showRulerUm);
   const showRulerNm = useDieViewerStore((s) => s.showRulerNm);
+  const rulersHidden = usePreferences((s) => s.rulersHidden);
+  const rulerVisibilityOverrides = usePreferences((s) => s.rulerVisibilityOverrides);
+  const isRulerVisible = useCallback(
+    (rulerId: string) => rulerVisibilityOverrides[rulerId] ?? !rulersHidden,
+    [rulerVisibilityOverrides, rulersHidden]
+  );
+  const visibleRulers = useMemo(
+    () => (annotations?.rulers ?? []).filter((r) => isRulerVisible(r.id)),
+    [annotations?.rulers, isRulerVisible]
+  );
   useEffect(() => {
     const existing = new Set((annotations?.rulers ?? []).map((r) => r.id));
     setSelectedRulerIds((current) => {
@@ -374,6 +436,11 @@ function DieViewer({ dieId }: { dieId: string }) {
   // Right-click context menu. Null = closed. Position is viewport-relative
   // (clientX/clientY) so the menu renders fixed at the cursor regardless of
   // canvas pan/zoom.
+  // Resize cursor while hovering a side of the single selected cell.
+  const [cellResizeCursor, setCellResizeCursor] = useState<string | null>(null);
+  // Cell whose type is being changed via the double-click picker.
+  // Double-clicked cell → non-modal CellTypePopover anchored at the click.
+  const [cellTypePicker, setCellTypePicker] = useState<{ cellId: string; at: { x: number; y: number } } | null>(null);
   const [contextMenu, setContextMenu] = useState<DieContextMenuState | null>(
     null
   );
@@ -394,6 +461,23 @@ function DieViewer({ dieId }: { dieId: string }) {
       setFloorplanRegions([]);
     }
   }, [annotations?.floorplanRegions, setFloorplanRegions]);
+
+  // While a floorplan polygon is being drawn (vertices placed, not yet
+  // finished): Enter finishes it like a double-click (needs >= 3 vertices),
+  // Esc abandons it (nothing is saved).
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.key !== "Escape" && e.key !== "Enter") || isTypingTarget(e.target)) return;
+      if (useDieViewerStore.getState().activeTool !== "floorplan") return;
+      const fp = useFloorplanStore.getState();
+      if (fp.draft?.kind !== "poly" || !fp.draft.active) return;
+      e.preventDefault();
+      if (e.key === "Escape") fp.setDraft(null);
+      else finishFloorplanPolyRef.current();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
 
   // Hold-Space momentary pan. The ref is read by the (stable) pointer-down
   // router without re-binding; the state only drives the cursor.
@@ -431,6 +515,34 @@ function DieViewer({ dieId }: { dieId: string }) {
   const fitToScreenRef = useRef<() => void>(() => {});
   const wireRef = useRef<WireTool>(null!);
   const dispatcherRef = useRef(dispatcher);
+  /** Save the floorplan polygon being drawn (>= 3 vertices) as a new region
+   *  and select it; no-op otherwise. Double-click and Enter both call it. */
+  const finishFloorplanPolyRef = useRef(() => {});
+  finishFloorplanPolyRef.current = () => {
+    const fs = useFloorplanStore.getState();
+    if (fs.toolMode !== "poly" || !fs.draft || !fs.draft.active || fs.draft.points.length < 3) return;
+    const au = useAuth.getState();
+    const region: import("shared").FloorplanRegion = {
+      id: uuid(),
+      name: "",
+      kind: "polygon",
+      geometry: fs.draft.points,
+      color: "#4dabf7",
+      createdBy: au.userId ?? null,
+      createdByName: au.username ?? null,
+      createdAt: new Date().toISOString(),
+      reservedBy: null,
+      reservedByName: null,
+      reservedAt: null,
+    };
+    // Undoable; the store mirrors annotations, upsert now for instant feedback.
+    fs.upsertRegion(region);
+    fs.setDraft(null);
+    fs.openRegion(region.id); // new region: open its window to name it
+    void dispatcherRef.current
+      .dispatch({ kind: "upsertFloorplan", region, prevRegion: null })
+      .then((ok) => { if (!ok) toast.error("Failed to save floorplan"); });
+  };
   dispatcherRef.current = dispatcher;
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -463,64 +575,18 @@ function DieViewer({ dieId }: { dieId: string }) {
         switch (modDef.action) {
           case "copyCell": {
             const ann = annotationsRef.current;
-            const sel = useDieViewerStore.getState().selectedIds;
-            const cells = ann?.cells?.filter((c) => sel.has(`cell:${c.id}`)) ?? [];
             if (!ann) return;
-            const wireBounds = wireSelectionBounds(ann.nets, sel);
-            if (cells.length === 0 && !wireBounds) return;
-            e.preventDefault();
-            const minX = Math.min(...cells.map((c) => c.x), wireBounds?.minX ?? Infinity);
-            const minY = Math.min(...cells.map((c) => c.y), wireBounds?.minY ?? Infinity);
-            const viewerStore = useDieViewerStore.getState();
-            if (cells.length > 0) {
-              viewerStore.copyCells(
-                cells.map((c) => ({
-                  cellTypeId: c.cellTypeId,
-                  offsetX: c.x - minX,
-                  offsetY: c.y - minY,
-                  flippedV: c.flippedV,
-                  flippedH: c.flippedH,
-                  rotation: c.rotation,
-                }))
-              );
-            } else {
-              viewerStore.clearCellClipboard();
-            }
-            if (wireBounds) {
-              viewerStore.setWireClipboard(snapshotWireClipboard(ann.nets, sel, { x: minX, y: minY })!);
-            } else {
-              viewerStore.clearWireClipboard();
-            }
+            if (copySelectionToClipboard(ann, useDieViewerStore.getState().selectedIds)) e.preventDefault();
             return;
           }
           case "pasteCell": {
             const ann = annotationsRef.current;
             if (!ann) return;
             const store = useDieViewerStore.getState();
-            const clips = store.clipboardCells;
-            const wireClipboard = store.clipboardWires;
-            if (clips.length === 0 && !wireClipboard) return;
+            if (!clipboardHasContent(store)) return;
             e.preventDefault();
             const cursor = cursorLive.get();
-            const baseX = Math.round(cursor?.x ?? 0);
-            const baseY = Math.round(cursor?.y ?? 0);
-            const actions: AnnotationAction[] = clips.map((clip) => ({
-                kind: "upsertCell" as const,
-                cell: {
-                  id: uuid(), cellTypeId: clip.cellTypeId,
-                  x: baseX + clip.offsetX, y: baseY + clip.offsetY,
-                  flippedV: clip.flippedV, flippedH: clip.flippedH,
-                  rotation: clip.rotation,
-                },
-                prevCell: null,
-              }));
-            if (wireClipboard) {
-              const wireAction = netChangesToAction(
-                pasteWireClipboard(ann.nets, wireClipboard, { x: baseX, y: baseY }),
-              );
-              if (wireAction?.kind === "batch") actions.push(...wireAction.actions);
-              else if (wireAction) actions.push(wireAction);
-            }
+            const actions = pasteClipboardActions(ann, { x: Math.round(cursor?.x ?? 0), y: Math.round(cursor?.y ?? 0) });
             if (actions.length > 0) void dispatcherRef.current.dispatch({ kind: "batch", actions });
             return;
           }
@@ -591,10 +657,10 @@ function DieViewer({ dieId }: { dieId: string }) {
         }
       }
 
-      // Ctrl+Shift+S → screenshot (PNG download, 4K with overlays)
+      // Ctrl+Shift+S → screenshot (PNG at the chosen resolution, with overlays)
       if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === "s") {
         e.preventDefault();
-        takeScreenshot();
+        void takeScreenshot();
         return;
       }
 
@@ -666,7 +732,10 @@ function DieViewer({ dieId }: { dieId: string }) {
     return () => window.removeEventListener("keydown", onKey);
   }, [setActiveTool]);
 
-  const getNetW = useCallback(() => usePreferences.getState().netWidth, []);
+  const getNetW = useCallback(
+    () => selectNetWidth(useSession.getState().dieId)(usePreferences.getState()),
+    []
+  );
   /** Per-net color: return a (netId: string) => string function that checks
    *  per-net override first, then falls back to global netColor. */
   const getNetC = useCallback(() => {
@@ -678,6 +747,10 @@ function DieViewer({ dieId }: { dieId: string }) {
   const getCellC = useCallback(() => usePreferences.getState().cellColor, []);
   const getCellShapes = useCallback(
     () => usePreferences.getState().cellShowShapes,
+    []
+  );
+  const getPinNamesVisible = useCallback(
+    () => usePreferences.getState().pinNamesVisible,
     []
   );
 
@@ -810,13 +883,14 @@ function DieViewer({ dieId }: { dieId: string }) {
       netWidth: () =>
         usePreferences.getState().inspectorTab === "ml"
           ? useDieViewerStore.getState().mlConfig.traceWidth
-          : usePreferences.getState().netWidth,
+          : selectNetWidth(useSession.getState().dieId)(usePreferences.getState()),
       netColor: (netId: string) => {
         const prefs = usePreferences.getState();
         return prefs.netColors[netId] ?? prefs.netColor;
       },
       netOverrideColor: (netId: string) => {
         const prefs = usePreferences.getState();
+        if (!prefs.customNetColorsEnabled) return null;
         return prefs.netColors[netId] ?? null;
       },
       cellColor: () => usePreferences.getState().cellColor,
@@ -837,6 +911,7 @@ function DieViewer({ dieId }: { dieId: string }) {
         return prefs.viaLayerColors[layer] ?? stack.vias.find(v => v.id === layer)?.color;
       },
       viaLabelVisible: () => usePreferences.getState().viaLabelsVisible,
+      pinNamesVisible: () => usePreferences.getState().pinNamesVisible,
       netNodeMatchesWidth: () =>
         usePreferences.getState().inspectorTab === "ml",
       wireLayerColor: (layer: string) =>
@@ -848,29 +923,15 @@ function DieViewer({ dieId }: { dieId: string }) {
       netNodeJunctionsOnly: () =>
         usePreferences.getState().netNodeJunctionsOnly,
       netNodeConnectionPoint: isDeviceConnectionPoint,
-      isSibling: (cellId: string) => {
+      netNodeJunctionCross: () =>
+        usePreferences.getState().netNodeJunctionCross,
+      // Selecting a cell type (outline tree) highlights all its instances.
+      isTypeSelected: (cellId: string) => {
         if (!annotations) return false;
         const sel = useDieViewerStore.getState().selectedIds;
         if (sel.size === 0) return false;
-        let ctId: string | undefined;
-        for (const s of sel) {
-          if (s.startsWith("cellType:")) { ctId = s.slice(9); break; }
-          if (s.startsWith("cell:")) {
-            const c = annotations.cells.find((c) => c.id === s.slice(5));
-            if (c) { ctId = c.cellTypeId; break; }
-          }
-        }
-        if (!ctId) return false;
         const c = annotations.cells.find((c) => c.id === cellId);
-        return c?.cellTypeId === ctId;
-      },
-      siblingActive: () => {
-        const sel = useDieViewerStore.getState().selectedIds;
-        if (sel.size === 0) return false;
-        for (const s of sel) {
-          if (s.startsWith("cell:") || s.startsWith("cellType:")) return true;
-        }
-        return false;
+        return c != null && sel.has(`cellType:${c.cellTypeId}`);
       }
     });
   }, [annotationLayer, annotations]);
@@ -879,8 +940,8 @@ function DieViewer({ dieId }: { dieId: string }) {
   // + net node size/visibility pref changes → invalidate the canvas.
   useEffect(() => {
     const unsubs = (
-      ["netWidth", "netColor", "cellColor", "cellShowShapes", "viaSize",
-      "viaColor", "wireLayerColors", "viaLayerColors", "netNodeSize", "netNodeVisible", "netNodeJunctionsOnly"] as const
+      ["netWidth", "netWidthByDie", "netColor", "netColors", "customNetColorsEnabled", "cellColor", "cellShowShapes", "viaSize",
+       "viaColor", "wireLayerColors", "viaLayerColors", "netNodeSize", "netNodeVisible", "netNodeJunctionsOnly", "netNodeJunctionCross", "pinNamesVisible"] as const
     ).map((key) =>
       usePreferences.subscribe(
         (s) => s[key],
@@ -995,6 +1056,35 @@ function DieViewer({ dieId }: { dieId: string }) {
     const visible = ANNOTATION_KIND_VALUES.filter((k) => !hiddenKinds.includes(k));
     annotationLayer.setVisibleKinds(new Set(visible));
   }, [annotationLayer, hiddenKinds]);
+
+  // Individually-hidden nets and cell types — layered on top of the "net"/
+  // "cell" kinds' all-or-nothing toggles above. Cell types aren't their own
+  // annotation (only individual cells are), so a hidden cell type expands to
+  // every cell id sharing that cellTypeId.
+  const hiddenNetIds = usePreferences((s) => s.hiddenNetIds);
+  const hiddenCellTypeIds = usePreferences((s) => s.hiddenCellTypeIds);
+  const cellIdsByType = useMemo(() => {
+    const m = new Map<string, string[]>();
+    for (const c of annotations?.cells ?? []) {
+      const list = m.get(c.cellTypeId);
+      if (list) list.push(`cell:${c.id}`);
+      else m.set(c.cellTypeId, [`cell:${c.id}`]);
+    }
+    return m;
+  }, [annotations]);
+  useEffect(() => {
+    if (!annotationLayer) return;
+    const overrides = new Map<string, boolean>();
+    for (const [id, hidden] of Object.entries(hiddenNetIds)) {
+      overrides.set(id, !hidden);
+    }
+    for (const [cellTypeId, hidden] of Object.entries(hiddenCellTypeIds)) {
+      const cellIds = cellIdsByType.get(cellTypeId);
+      if (!cellIds) continue;
+      for (const cellId of cellIds) overrides.set(cellId, !hidden);
+    }
+    annotationLayer.setIdOverrides(overrides.size ? overrides : null);
+  }, [annotationLayer, hiddenNetIds, hiddenCellTypeIds, cellIdsByType]);
 
   // Push selection changes into the annotation layer so its draw highlights.
   // ML vias get the same set — the layer filters out non-`ml-via:` ids itself.
@@ -1150,8 +1240,78 @@ function DieViewer({ dieId }: { dieId: string }) {
     containerRef
   });
 
+  // Double-click on a net (select tool) → non-modal rename window anchored
+  // at the cursor (NetRenamePopover). The rename itself is undoable.
+  const [netRename, setNetRename] = useState<{ netId: string; at: { x: number; y: number } } | null>(null);
+  const renameNet = useCallback(
+    (netId: string) => {
+      if (!annotationsRef.current?.nets.some((n) => n.id === netId)) return;
+      const at = cursorLive.get() ?? { x: 0, y: 0 };
+      setNetRename({ netId, at: { x: at.x, y: at.y } });
+    },
+    [cursorLive]
+  );
+  const commitNetRename = useCallback(
+    async (netId: string, name: string, color: string | null | undefined) => {
+      // Re-read: the net may have changed while the window was open.
+      const current = annotationsRef.current?.nets.find((n) => n.id === netId);
+      if (!current) return false;
+      if (name !== current.name) {
+        const ok = await dispatcherRef.current.dispatch({
+          kind: "upsertNet",
+          net: { ...current, name },
+          prevNet: current
+        });
+        if (!ok) {
+          toast.error("Failed to rename net");
+          return false;
+        }
+      }
+      // Per-user color override (preferences, same as the outline swatch).
+      if (color !== undefined) usePreferences.getState().setNetColorsForIds([`net:${netId}`], color);
+      return true;
+    },
+    [toast]
+  );
+  const closeNetRename = useCallback(() => setNetRename(null), []);
+
+  // Double-click on a placed via (select tool) → color window for it, or for
+  // every placed via in the selection when it is part of it. Undoable.
+  const [viaColorEdit, setViaColorEdit] = useState<{ viaId: string; targetIds: string[]; at: { x: number; y: number } } | null>(null);
+  const openViaColor = useCallback((selectionId: string, at: { x: number; y: number }) => {
+    const anns = annotationsRef.current;
+    if (!anns) return;
+    const targetIds = viaColorTargets(anns, useDieViewerStore.getState().selectedIds, selectionId);
+    if (targetIds.length === 0) return;
+    setViaColorEdit({ viaId: selectionId.slice(5), targetIds, at });
+  }, []);
+  const commitViaColor = useCallback(
+    async (targetIds: string[], color: string | null) => {
+      // Re-read: the vias may have changed while the window was open.
+      const anns = annotationsRef.current;
+      if (!anns) return false;
+      const vias = targetIds.map((id) => viaFromSelectionId(anns, id)).filter((a) => a !== null);
+      const action = viaColorAction(vias, color);
+      if (!action) return true;
+      const ok = await dispatcherRef.current.dispatch(action);
+      if (!ok) toast.error("Failed to change via color");
+      return ok;
+    },
+    [toast]
+  );
+  const closeViaColor = useCallback(() => setViaColorEdit(null), []);
+  const viaLayerColorPrefs = usePreferences((s) => s.viaLayerColors);
+  const globalViaColor = usePreferences((s) => s.viaColor);
+  const sessionMetalStack = useSession((s) => s.metalStack);
+  const closeCellTypePicker = useCallback(() => setCellTypePicker(null), []);
+  // Dragged element windows re-anchor when their anchor point is deleted.
+  useWindowAnchorMaintenance(dieId, annotations);
+  const netColorOverrides = usePreferences((s) => s.netColors);
+  const globalNetColor = usePreferences((s) => s.netColor);
+  const customNetColorsEnabled = usePreferences((s) => s.customNetColorsEnabled);
+
   const { selectFromHit, clearSelectionFromEmpty, selectFromMarquee } =
-    useCanvasSelection();
+    useCanvasSelection({ onNetDoubleClick: renameNet });
 
   // Snap-to-vias plumbing (wire + multi-wire). Combines the user's manually-
   // placed vias (`annotations.annotations` of class point/irregular via, with
@@ -1482,22 +1642,6 @@ function DieViewer({ dieId }: { dieId: string }) {
     return m;
   }, [annotations]);
 
-  // Cell sibling set: when a cell or cellType is selected, all cells sharing
-  // that cellTypeId get a glow highlight on the die view.
-  const siblingIds = useMemo(() => {
-    if (!annotations || selectedIds.size === 0) return new Set<string>();
-    let ctId: string | undefined;
-    for (const s of selectedIds) {
-      if (s.startsWith("cellType:")) { ctId = s.slice(9); break; }
-      if (s.startsWith("cell:")) {
-        const c = annotations.cells.find((c) => c.id === s.slice(5));
-        if (c) { ctId = c.cellTypeId; break; }
-      }
-    }
-    if (!ctId) return new Set<string>();
-    return new Set(annotations.cells.filter((c) => c.cellTypeId === ctId).map((c) => c.id));
-  }, [annotations, selectedIds]);
-
   const totalProblems = useMemo(() => {
     if (!annotations || !analogDevices.length && !analogWarnings.length) return 0;
     try {
@@ -1559,6 +1703,24 @@ function DieViewer({ dieId }: { dieId: string }) {
   });
 
   const viaPoly = useViaPolyTool({ dispatcher, activeTool, setActiveTool });
+  const viaPolyPointsRef = useRef(viaPoly.points);
+  viaPolyPointsRef.current = viaPoly.points;
+  /** Next vertex of the floorplan / via polygon being drawn: `world`
+   *  constrained to that tool's angle mode from the previous vertex (free
+   *  for the first vertex or while Shift is held). */
+  const constrainPolyPoint = useCallback(
+    (tool: "floorplan" | "viaPoly", world: Point, shift: boolean): Point => {
+      let last: Point | undefined;
+      if (tool === "viaPoly") {
+        last = viaPolyPointsRef.current[viaPolyPointsRef.current.length - 1];
+      } else {
+        const d = useFloorplanStore.getState().draft;
+        if (d?.kind === "poly" && d.active) last = d.points[d.points.length - 1];
+      }
+      return last && !shift ? constrainPoint(last, world, currentAngleMode(tool)) : world;
+    },
+    []
+  );
   const guide = useGuideTool({ dispatcher, activeTool, setActiveTool });
   const multiWire = useMultiWireTool({
     dispatcher,
@@ -1575,9 +1737,15 @@ function DieViewer({ dieId }: { dieId: string }) {
         ? "click bus start points, then Enter"
         : `${n} start${n > 1 ? "s" : ""} · Enter to continue · Esc to cancel`;
     }
-    const left = multiWire.ends.reduce((a, e) => a + (e ? 0 : 1), 0);
-    return `click each wire to end · ${left} left`;
-  }, [multiWire.phase, multiWire.points, multiWire.ends]);
+    const d = multiWire.draft;
+    const running = d.points.filter((_, i) => !d.locked[i]).length;
+    const placed = d.pending.filter(Boolean).length;
+    const ended = d.locked.filter(Boolean).length;
+    const round = placed > 0
+      ? `corner ${placed + 1} of ${running}`
+      : `click near each wire to place its corner (${running})`;
+    return `${round} · Enter / double-click to finish${ended ? ` · ${ended} ended on vias` : ""} · Esc to cancel`;
+  }, [multiWire.phase, multiWire.points, multiWire.draft]);
 
   /**
    * Multi-wire phase-2 helper: find the via the cursor is pointing at and
@@ -1606,8 +1774,7 @@ function DieViewer({ dieId }: { dieId: string }) {
         !vp ||
         shift ||
         !usePreferences.getState().snapToVias ||
-        multiWire.phase !== 2 ||
-        multiWire.points.length === 0
+        multiWire.phase !== 2
       ) {
         return null;
       }
@@ -1615,15 +1782,13 @@ function DieViewer({ dieId }: { dieId: string }) {
       const via = findNearestVia(world, tol);
       if (!via) return null;
       const V: Point = { x: Math.round(via.x), y: Math.round(via.y) };
-      // Pick which wire to lock: the still-sweeping one whose projected
-      // endpoint (under the current bus geometry) is closest to the via.
-      const ref = multiWire.points[0];
-      const projected = snapTo45(ref, world);
+      // Pick which wire to end: the one still waiting for its corner whose
+      // live end (exactly what the overlay draws) is closest to the via.
+      const ends = previewEnds(multiWire.draft, world, false);
       let best = -1;
       let bestDist = Infinity;
-      multiWire.points.forEach((p, i) => {
-        if (multiWire.ends[i]) return; // already locked
-        const wireEnd = multiWireEndpoint(p, ref, projected);
+      ends.forEach((wireEnd, i) => {
+        if (!wireEnd) return; // ended, or corner already placed this round
         const d = Math.hypot(wireEnd.x - V.x, wireEnd.y - V.y);
         if (d < bestDist) {
           bestDist = d;
@@ -1655,19 +1820,15 @@ function DieViewer({ dieId }: { dieId: string }) {
         !vp ||
         shift ||
         !usePreferences.getState().wireAutoEndOnVia ||
-        multiWire.phase !== 2 ||
-        multiWire.points.length === 0
+        multiWire.phase !== 2
       ) {
         return [];
       }
       const tol = viaSnapTolerance(vp.zoom, usePreferences.getState().viaSize);
-      const ref = multiWire.points[0];
-      const projected = multiParallelEnd(ref, world, false);
-      if (projected.x === ref.x && projected.y === ref.y) return [];
       const out: Array<{ endpoint: Point; lockIndex: number }> = [];
-      multiWire.points.forEach((p, i) => {
-        if (multiWire.ends[i]) return;
-        const end = multiWireEndpoint(p, ref, projected);
+      previewEnds(multiWire.draft, world, false).forEach((end, i) => {
+        if (!end) return;
+        const p = tipOf(multiWire.draft, i);
         if (end.x === p.x && end.y === p.y) return;
         const via = findViaOnSegment(p, end, tol);
         if (via) {
@@ -1867,12 +2028,106 @@ function DieViewer({ dieId }: { dieId: string }) {
       if (!overlays.baseImageVisible) overlays.toggleBaseImage();
     }
   }, [dieId]);
-  const toggleKindForDie = useCallback((kind: "cell" | "net") => {
-    usePreferences.getState().toggleKindVisibility(kind);
+  const toggleKindForDie = useCallback((kind: "cell" | "net" | "floorplan" | "comment") => {
+    const prefs = usePreferences.getState();
+    if (kind !== "floorplan") {
+      prefs.toggleKindVisibility(kind);
+      return;
+    }
+    // Same as the outline's Floorplans eye: all-or-nothing, clearing per-name
+    // overrides. If the whole overlay is off (Settings), Space+H shows it.
+    prefs.resetHiddenFloorplanTypes();
+    if (!prefs.floorplanOverlayOn) {
+      prefs.setFloorplanOverlayOn(true);
+      if (prefs.hiddenKinds.includes("floorplan")) prefs.toggleKindVisibility("floorplan");
+      return;
+    }
+    prefs.toggleKindVisibility("floorplan");
   }, []);
   useOverlayHotkeys(toggleBaseImageForDie, toggleKindForDie);
 
+  // ── Cell edge resize (GIMP-style side handles) ──────────────────
+
+  /** Side of the single selected (unlocked) cell under `world`, if any. */
+  const selectedCellSideAt = useCallback(
+    (world: Point, zoom: number) => {
+      if (usePreferences.getState().cellsLocked) return null;
+      const sel = resolveSelectedCell(
+        useDieViewerStore.getState().selectedIds,
+        annotationsRef.current
+      );
+      if (!sel) return null;
+      const { width, height } = sel.cellType.cropRect;
+      const side = cellSideAt(
+        cellWorldRect(sel.cell, width, height),
+        world,
+        CELL_EDGE_GRAB_PX / zoom
+      );
+      return side ? { ...sel, side } : null;
+    },
+    []
+  );
+
   // ── Pointer move / leave ────────────────────────────────────────
+
+  /** Status-bar hover readout: the net under the cursor (via the annotation
+   *  hit-test, so hidden nets are skipped) and the type names of the visible
+   *  floorplan regions containing it. Region bodies are pointer-transparent,
+   *  so they're tested geometrically rather than via DOM events. */
+  const resolveHoverInfo = useCallback(
+    (world: Point, zoom: number): HoverInfo | null => {
+      let net: string | null = null;
+      if (annotationLayer) {
+        const tol = HIT_TOLERANCE_PX / zoom;
+        const hit = annotationLayer.hitTest(world, tol, Math.max(tol, netNodePickWorldRadius(zoom)));
+        const parsed = hit ? parseNetPartId(hit.partId) : null;
+        if (parsed) {
+          const n = annotationsRef.current?.nets.find((x) => x.id === parsed.netId);
+          net = n ? n.name || n.id : parsed.netId;
+        }
+      }
+      const prefs = usePreferences.getState();
+      // Cell type(s) of the visible cells whose footprint contains the cursor
+      // (same oriented footprint the canvas draws; overlapping cells → all).
+      const cells: string[] = [];
+      const anns = annotationsRef.current;
+      if (anns) {
+        const cellsHidden = prefs.hiddenKinds.includes("cell");
+        const typeById = new Map(anns.cellTypes.map((t) => [t.id, t]));
+        for (const c of anns.cells) {
+          const override = prefs.hiddenCellTypeIds[c.cellTypeId];
+          if (override === undefined ? cellsHidden : override) continue;
+          const t = typeById.get(c.cellTypeId);
+          if (!t) continue;
+          if (!pointInRect(world, cellWorldRect(c, t.cropRect.width, t.cropRect.height))) continue;
+          const name = t.name || "(unnamed)";
+          if (!cells.includes(name)) cells.push(name);
+        }
+      }
+      const floorplans: string[] = [];
+      if (prefs.floorplanOverlayOn) {
+        const globallyHidden = prefs.hiddenKinds.includes("floorplan");
+        for (const r of useFloorplanStore.getState().regions) {
+          const typeName = r.name || "(unnamed)";
+          const override = prefs.hiddenFloorplanTypeNames[typeName];
+          if (override === undefined ? globallyHidden : override) continue;
+          const pts = r.geometry;
+          if (pts.length < 2) continue;
+          const inside =
+            r.kind === "rect" || pts.length === 2
+              ? pointInRect(world, rectFromPoints(pts[0], pts[pts.length - 1]))
+              : pointInPolygon(world, pts);
+          if (!inside) continue;
+          const shown = floorplanNameInline(typeName) || typeName;
+          if (!floorplans.includes(shown)) floorplans.push(shown);
+        }
+      }
+      return net == null && cells.length === 0 && floorplans.length === 0
+        ? null
+        : { net, cells, floorplans };
+    },
+    [annotationLayer]
+  );
 
   const onPointerMove = useCallback(
     (event: React.PointerEvent<HTMLDivElement>) => {
@@ -1890,11 +2145,19 @@ function DieViewer({ dieId }: { dieId: string }) {
         y: vp.originY + cssY / vp.zoom
       };
       cursorLive.set(world);
+      const edge =
+        useDieViewerStore.getState().activeTool === "select" && !spacePanRef.current
+          ? selectedCellSideAt(world, vp.zoom)
+          : null;
+      setCellResizeCursor(edge ? sideCursor(edge.side) : null);
+      const hoverInfo = resolveHoverInfo(world, vp.zoom);
+      if (!sameHoverInfo(hoverInfo, hoverInfoLive.get())) hoverInfoLive.set(hoverInfo);
       shiftRef.current = event.shiftKey;
       shiftLive.set(event.shiftKey);
       wire.computeWirePreview(world, event.shiftKey, vp.zoom);
       const tool = useDieViewerStore.getState().activeTool;
-      viaPolyPreviewLive.set(tool === "viaPoly" ? world : null);
+      viaPolyPreviewLive.set(tool === "viaPoly" ? constrainPolyPoint("viaPoly", world, event.shiftKey) : null);
+      floorplanTipLive.set(tool === "floorplan" ? constrainPolyPoint("floorplan", world, event.shiftKey) : world);
       // Multi-wire preview snap. Phase 1: the halo previews the vertex /
       // via a start would snap to. Phase 2: `multiWireEndSnapLive` carries
       // which wire would lock onto a via and where — the overlay redraws
@@ -1952,6 +2215,8 @@ function DieViewer({ dieId }: { dieId: string }) {
     },
     [
       cursorLive,
+      hoverInfoLive,
+      resolveHoverInfo,
       shiftLive,
       wireSnapLive,
       wire,
@@ -1962,27 +2227,83 @@ function DieViewer({ dieId }: { dieId: string }) {
       annotationLayer,
       findNearestVia,
       findMultiWireEndpointViaSnap,
-      findMultiWireAutoEndSnaps
+      findMultiWireAutoEndSnaps,
+      selectedCellSideAt
     ]
   );
 
   const onPointerLeave = useCallback(() => {
     cursorLive.set(null);
+    hoverInfoLive.set(null);
     viaPolyPreviewLive.set(null);
     multiWireSnapLive.set(null);
     multiWireEndSnapLive.set(null);
     wireSnapLive.set(null);
   }, [
     cursorLive,
+    hoverInfoLive,
     viaPolyPreviewLive,
     multiWireSnapLive,
     multiWireEndSnapLive,
     wireSnapLive
   ]);
 
+  // ── Cell type reassignment (double-click picker) ─────────────────
+
+  // Moving the last instance off an unmatched, never-RE'd placeholder type
+  // would leave it orphaned — drop it in the same undo step.
+  const orphanCleanup = useCallback((cell: Cell): AnnotationAction[] => {
+    const ann = annotationsRef.current;
+    const old = ann?.cellTypes.find((t) => t.id === cell.cellTypeId);
+    if (!ann || !old || old.matched || old.layers) return [];
+    const others = ann.cells.some((c) => c.cellTypeId === old.id && c.id !== cell.id);
+    return others ? [] : [{ kind: "removeCellType", cellType: old }];
+  }, []);
+
+  const reassignCellType = useCallback(
+    (cellId: string, cellType: CellType) => {
+      setCellTypePicker(null);
+      const cell = annotationsRef.current?.cells.find((c) => c.id === cellId);
+      if (!cell || cell.cellTypeId === cellType.id) return;
+      void dispatcher.dispatch({
+        kind: "batch",
+        actions: [
+          // Adopts the target type's size, like its other instances.
+          { kind: "upsertCell", cell: retypeCell(cell, cellType.id), prevCell: cell },
+          ...orphanCleanup(cell)
+        ]
+      });
+    },
+    [dispatcher, orphanCleanup]
+  );
+
+  // Split: clone the current type (crop + RE'd layers carry over) under a
+  // new id, and move just this instance onto it.
+  const splitCellType = useCallback(
+    (cellId: string, name: string) => {
+      setCellTypePicker(null);
+      const ann = annotationsRef.current;
+      const cell = ann?.cells.find((c) => c.id === cellId);
+      const old = cell && ann?.cellTypes.find((t) => t.id === cell.cellTypeId);
+      if (!cell || !old) return;
+      const cellType: CellType = { ...structuredClone(old), id: uuid(), name, matched: false };
+      void dispatcher.dispatch({
+        kind: "batch",
+        actions: [
+          { kind: "upsertCellType", cellType, prevCellType: null },
+          { kind: "upsertCell", cell: { ...cell, cellTypeId: cellType.id }, prevCell: cell }
+        ]
+      });
+    },
+    [dispatcher]
+  );
+
   // ── Canvas pointer-down router ──────────────────────────────────
 
-  const onCanvasPointerDown = useCallback(
+  // Last plain (non-drag) click on an I/O pin, for double-click → rename.
+  const lastPinClickRef = useRef<{ pinId: string; time: number } | null>(null);
+
+  const routeCanvasPointerDown = useCallback(
     (e: PointerEventData): Interaction => {
       // Holding Space (or middle-drag, handled in the canvas) momentarily
       // forces pan regardless of the active tool.
@@ -1992,7 +2313,9 @@ function DieViewer({ dieId }: { dieId: string }) {
       if (tool === "measure" || tool === "select") {
         const vp = viewportLive.get();
         const tolerance = vp ? 10 / vp.zoom : 10;
+        const rulerPrefs = usePreferences.getState();
         const hit = (annotationsRef.current?.rulers ?? []).find((ruler) =>
+          (rulerPrefs.rulerVisibilityOverrides[ruler.id] ?? !rulerPrefs.rulersHidden) &&
           distancePointToSegment(e.worldPoint, { x: ruler.x1, y: ruler.y1 }, { x: ruler.x2, y: ruler.y2 }) <= tolerance
         );
         if (hit) {
@@ -2132,10 +2455,12 @@ function DieViewer({ dieId }: { dieId: string }) {
                 reservedByName: null,
                 reservedAt: null,
               };
-              apiPut(`/api/dies/${dieId}/floorplan/${region.id}`, region).catch((e) => toast.error("Failed to save floorplan", e instanceof Error ? e.message : String(e)));
+              // Undoable; the store mirrors annotations, upsert now for instant feedback.
               useFloorplanStore.getState().upsertRegion(region);
-              useFloorplanStore.getState().selectRegion(region.id);
-              queryClient.invalidateQueries({ queryKey: annotationKeys.forDie(dieId) });
+              useFloorplanStore.getState().openRegion(region.id);
+              void dispatcherRef.current
+                .dispatch({ kind: "upsertFloorplan", region, prevRegion: null })
+                .then((ok) => { if (!ok) toast.error("Failed to save floorplan"); });
             },
             onCancel: () => {
               useFloorplanStore.getState().setDraft(null);
@@ -2173,34 +2498,8 @@ function DieViewer({ dieId }: { dieId: string }) {
       // Ruler tool: measure distance. Draw on drag, commit on release.
       if (tool === "measure") {
         const origin = { x: e.worldPoint.x, y: e.worldPoint.y };
-        const snapOrtho = (wp: { x: number; y: number }) => {
-          const mode = useDieViewerStore.getState().measureMode;
-          const dx = wp.x - origin.x;
-          const dy = wp.y - origin.y;
-          if (mode === "h") return { x: wp.x, y: origin.y };
-          if (mode === "v") return { x: origin.x, y: wp.y };
-          if (mode === "ortho") {
-            // Snap to the dominant axis.
-            if (Math.abs(dx) >= Math.abs(dy)) {
-              return { x: wp.x, y: origin.y };
-            } else {
-              return { x: origin.x, y: wp.y };
-            }
-          }
-          if (mode === "diag") {
-            // Snap to nearest 45-degree angle.
-            const len = Math.sqrt(dx * dx + dy * dy);
-            if (len < 1) return wp;
-            const angle = Math.atan2(dy, dx);
-            // Round to nearest multiple of PI/4 (45°).
-            const rounded = Math.round(angle / (Math.PI / 4)) * (Math.PI / 4);
-            return {
-              x: origin.x + Math.cos(rounded) * len,
-              y: origin.y + Math.sin(rounded) * len
-            };
-          }
-          return wp;
-        };
+        const snapOrtho = (wp: { x: number; y: number }) =>
+          constrainPoint(origin, wp, currentAngleMode("measure"));
         const setLive = (wp: { x: number; y: number }) => {
           const s = snapOrtho(wp);
           rulerPendingLive.set({ x1: origin.x, y1: origin.y, x2: s.x, y2: s.y });
@@ -2272,6 +2571,81 @@ function DieViewer({ dieId }: { dieId: string }) {
       // Select tool — broad+narrow hit-test, then dispatch click vs marquee.
       const vp = viewportLive.get();
       if (!vp || !annotationLayer) return "pan";
+
+      // Dragging a side of the selected cell resizes its whole cell type:
+      // every linked instance changes the same way (see cellResize.ts). Checked before the
+      // hit-test since the grab zone straddles the cell outline.
+      const edgeGrab = selectedCellSideAt(e.worldPoint, vp.zoom);
+      if (edgeGrab) {
+        const { cell: rCell, cellType: rType, side } = edgeGrab;
+        const ann0 = annotationsRef.current!;
+        const horizontal = side === "left" || side === "right";
+        const snapTol = 32 / vp.zoom;
+        const compute = (wp: Point) => {
+          let pos = horizontal ? wp.x : wp.y;
+          const guides = ann0.guides;
+          if (usePreferences.getState().cellSnapToGuides && guides && guides.length > 0) {
+            // Snap only the dragged edge; the others stay where they are.
+            const r = cellWorldRect(rCell, rType.cropRect.width, rType.cropRect.height);
+            const moved: Rect =
+              side === "left"
+                ? { ...r, x: pos, width: r.x + r.width - pos }
+                : side === "right"
+                  ? { ...r, width: pos - r.x }
+                  : side === "top"
+                    ? { ...r, y: pos, height: r.y + r.height - pos }
+                    : { ...r, height: pos - r.y };
+            const sn = snapRectToGuides(moved, guides, snapTol);
+            pos =
+              side === "left" ? sn.x
+              : side === "right" ? sn.x + sn.width
+              : side === "top" ? sn.y
+              : sn.y + sn.height;
+          }
+          return resizeCellType(ann0, rCell, rType, side as CellSide, pos);
+        };
+        const instances = ann0.cells.filter((c) => c.cellTypeId === rType.id);
+        const restore = () => {
+          for (const c of instances) {
+            annotationLayer.update(buildCellAnnotation(c, rType, getCellC, getCellShapes));
+          }
+          editPreviewLive.set(null);
+        };
+        const handler: DragHandler = {
+          onDragMove: ({ worldPoint }) => {
+            const res = compute(worldPoint);
+            if (!res) {
+              restore();
+              return;
+            }
+            for (const { cell: c } of res.cells) {
+              annotationLayer.update(buildCellAnnotation(c, res.cellType, getCellC, getCellShapes));
+            }
+            const dragged = res.cells.find((x) => x.cell.id === rCell.id)!.cell;
+            const { width, height } = res.cellType.cropRect;
+            editPreviewLive.set({ kind: "cellRect", rect: cellWorldRect(dragged, width, height) });
+          },
+          onPointerUp: ({ dragged, worldPoint }) => {
+            if (!dragged) {
+              editPreviewLive.set(null);
+              return; // plain click on the edge keeps the selection
+            }
+            const res = compute(worldPoint);
+            if (!res) {
+              restore();
+              return;
+            }
+            // Preview stays on the final rect until the optimistic update
+            // lands, so the handles don't flash back (see cell move).
+            void dispatcher
+              .dispatch(cellTypeResizeAction(res))
+              .finally(() => editPreviewLive.set(null));
+          },
+          onCancel: restore
+        };
+        return handler;
+      }
+
       const tolerance = HIT_TOLERANCE_PX / vp.zoom;
       const hit = annotationLayer.hitTest(
         e.worldPoint,
@@ -2651,6 +3025,13 @@ function DieViewer({ dieId }: { dieId: string }) {
             const y = round ? Math.round(source.y + dy) : source.y + dy;
             return { ...source, x, y };
           };
+          // A lone moving cell carries its resize handles along: push its live
+          // footprint to the handles overlay (multi-cell moves show none).
+          const previewHandles = (moved: typeof original) => {
+            if (movingCells.length !== 1) return;
+            const { width, height } = movingCells[0].cellType.cropRect;
+            editPreviewLive.set({ kind: "cellRect", rect: cellWorldRect(moved, width, height) });
+          };
           const handler: DragHandler = {
             onDragStart: () => {
               if (movingCells.length === 1) {
@@ -2659,14 +3040,11 @@ function DieViewer({ dieId }: { dieId: string }) {
             },
             onDragMove: ({ worldPoint, startWorld, modifiers }) => {
               for (const entry of movingCells) {
+                const moved = moveCell(entry.cell, worldPoint, startWorld, modifiers.shift, false);
                 annotationLayer.update(
-                  buildCellAnnotation(
-                    moveCell(entry.cell, worldPoint, startWorld, modifiers.shift, false),
-                    entry.cellType,
-                    getCellC,
-                    getCellShapes
-                  )
+                  buildCellAnnotation(moved, entry.cellType, getCellC, getCellShapes)
                 );
+                previewHandles(moved);
               }
             },
             onPointerUp: ({ dragged, worldPoint, startWorld, modifiers }) => {
@@ -2674,14 +3052,18 @@ function DieViewer({ dieId }: { dieId: string }) {
                 selectFromHit(hit, modifiers.shift);
                 return;
               }
-              void dispatcher.dispatch({
-                kind: "batch",
-                actions: movingCells.map((entry) => ({
-                  kind: "upsertCell" as const,
-                  cell: moveCell(entry.cell, worldPoint, startWorld, modifiers.shift, true),
-                  prevCell: entry.cell
-                }))
-              });
+              const moved = movingCells.map((entry) => ({
+                kind: "upsertCell" as const,
+                cell: moveCell(entry.cell, worldPoint, startWorld, modifiers.shift, true),
+                prevCell: entry.cell
+              }));
+              // Keep the handles on the final spot until the optimistic
+              // update lands (dispatch applies it a tick later), else they'd
+              // flash back to the old position.
+              previewHandles(moved[0].cell);
+              void dispatcher
+                .dispatch({ kind: "batch", actions: moved })
+                .finally(() => editPreviewLive.set(null));
             },
             onCancel: () => {
               for (const entry of movingCells) {
@@ -2689,9 +3071,92 @@ function DieViewer({ dieId }: { dieId: string }) {
                   buildCellAnnotation(entry.cell, entry.cellType, getCellC, getCellShapes)
                 );
               }
+              editPreviewLive.set(null);
             }
           };
           return handler;
+        }
+
+        // Dragging an I/O pin repositions it — same live-update / commit-on-
+        // up scheme as the cell drag above.
+        if (hit.partId.startsWith("pin:")) {
+          const pinId = hit.partId.slice(4);
+          const original = annotationsRef.current?.pins?.find((p) => p.id === pinId) ?? null;
+          if (original) {
+            // Shift locks the move to the dominant axis (re-evaluated live, so
+            // tapping Shift mid-drag snaps it straight without restarting).
+            const movePin = (
+              worldPoint: { x: number; y: number },
+              startWorld: { x: number; y: number },
+              shift: boolean,
+              round: boolean
+            ) => {
+              let dx = worldPoint.x - startWorld.x;
+              let dy = worldPoint.y - startWorld.y;
+              if (shift) {
+                if (Math.abs(dx) >= Math.abs(dy)) dy = 0;
+                else dx = 0;
+              }
+              const x = round ? Math.round(original.x + dx) : original.x + dx;
+              const y = round ? Math.round(original.y + dy) : original.y + dy;
+              return { ...original, x, y };
+            };
+            const handler: DragHandler = {
+              onDragStart: () => {
+                useDieViewerStore.getState().select([hit.partId], "replace");
+              },
+              onDragMove: ({ worldPoint, startWorld, modifiers }) => {
+                annotationLayer.update(
+                  buildPin(
+                    movePin(worldPoint, startWorld, modifiers.shift, false),
+                    getPinNamesVisible
+                  )
+                );
+              },
+              onPointerUp: ({ dragged, worldPoint, startWorld, modifiers }) => {
+                if (!dragged) {
+                  selectFromHit(hit, modifiers.shift);
+                  // Second click on the same pin within 300ms → rename prompt.
+                  const last = lastPinClickRef.current;
+                  const now = Date.now();
+                  if (last && last.pinId === pinId && now - last.time < 300) {
+                    lastPinClickRef.current = null;
+                    void (async () => {
+                      const input = await dialog.prompt(
+                        `Rename pin ${original.pin}${(() => {
+                          const n = padCountByPin(annotationsRef.current?.pins).get(original.pin) ?? 1;
+                          return n > 1 ? ` (all ${n} pads)` : "";
+                        })()}:`,
+                        original.name,
+                        "I/O pin"
+                      );
+                      if (input === null) return;
+                      const name = input.trim();
+                      const current =
+                        annotationsRef.current?.pins?.find((p) => p.id === pinId) ?? original;
+                      if (!name || name === current.name) return;
+                      // Every pad of this pin number (pasted copies) follows.
+                      const actions = renamePinActions(annotationsRef.current?.pins, current.pin, name);
+                      if (actions.length > 0) void dispatcher.dispatch({ kind: "batch", actions });
+                    })();
+                  } else {
+                    lastPinClickRef.current = { pinId, time: now };
+                  }
+                  return;
+                }
+                lastPinClickRef.current = null;
+                void dispatcher.dispatch({
+                  kind: "upsertPin",
+                  pin: movePin(worldPoint, startWorld, modifiers.shift, true),
+                  prevPin: original
+                });
+              },
+              onCancel: () => {
+                annotationLayer.update(buildPin(original, getPinNamesVisible));
+              }
+            };
+            return handler;
+          }
         }
 
         // Editable ML shapes (via rectangle / polygon, ROI, ignore): grab a
@@ -2847,15 +3312,23 @@ function DieViewer({ dieId }: { dieId: string }) {
         }
       }
 
-      // Click on empty → marquee.
-      const startScreen = { x: e.screenPoint.x, y: e.screenPoint.y };
+      // Click on empty → marquee. The start corner is anchored in WORLD
+      // space and re-projected each move, so scrolling / zooming / edge
+      // auto-pan mid-drag stretches the rectangle instead of sliding it.
       const startWorld = { x: e.worldPoint.x, y: e.worldPoint.y };
+      const startOnScreen = () => {
+        const vp = viewportLive.get();
+        return vp
+          ? { x: (startWorld.x - vp.originX) * vp.zoom, y: (startWorld.y - vp.originY) * vp.zoom }
+          : e.screenPoint;
+      };
       const handler: DragHandler = {
+        autoPan: true,
         onDragStart: ({ screenPoint }) => {
-          marqueeLive.set(rectFromPoints(startScreen, screenPoint));
+          marqueeLive.set(rectFromPoints(startOnScreen(), screenPoint));
         },
         onDragMove: ({ screenPoint }) => {
-          marqueeLive.set(rectFromPoints(startScreen, screenPoint));
+          marqueeLive.set(rectFromPoints(startOnScreen(), screenPoint));
         },
         onPointerUp: ({ dragged, worldPoint, modifiers }) => {
           marqueeLive.set(null);
@@ -2873,6 +3346,15 @@ function DieViewer({ dieId }: { dieId: string }) {
               fullyContained
             )) {
               ids.push(`guide:${g.id}`);
+            }
+          }
+          // Visible floorplan regions (outline-based, see regionInMarquee).
+          const fpPrefs = usePreferences.getState();
+          if (fpPrefs.floorplanOverlayOn) {
+            const fpHidden = fpPrefs.hiddenKinds.includes("floorplan");
+            for (const r of useFloorplanStore.getState().regions) {
+              if (!isFloorplanVisible(r, fpHidden, fpPrefs.hiddenFloorplanTypeNames)) continue;
+              if (regionInMarquee(r, world, fullyContained)) ids.push(`floorplan:${r.id}`);
             }
           }
           // ML vias swept by the marquee — only those currently rendered
@@ -2893,6 +3375,8 @@ function DieViewer({ dieId }: { dieId: string }) {
       mlViasLayer,
       marqueeLive,
       selectFromHit,
+      selectedCellSideAt,
+      dialog,
       selectFromMarquee,
       clearSelectionFromEmpty,
       viewportLive,
@@ -2907,7 +3391,8 @@ function DieViewer({ dieId }: { dieId: string }) {
       getNetW,
       getNetC,
       getCellC,
-      getCellShapes
+      getCellShapes,
+      getPinNamesVisible
     ]
   );
 
@@ -2945,7 +3430,8 @@ function DieViewer({ dieId }: { dieId: string }) {
         if (fs.toolMode === "poly") {
           const draft = fs.draft;
           if (draft && draft.active) {
-            draft.points.push({ x: Math.round(x), y: Math.round(y) });
+            const p = constrainPolyPoint("floorplan", { x, y }, shiftRef.current);
+            draft.points.push({ x: Math.round(p.x), y: Math.round(p.y) });
             useFloorplanStore.getState().setDraft({ ...draft });
           } else {
             useFloorplanStore.getState().setDraft({
@@ -2959,7 +3445,7 @@ function DieViewer({ dieId }: { dieId: string }) {
         return;
       }
       if (tool === "viaPoly") {
-        viaPoly.addPoint({ x, y });
+        viaPoly.addPoint(constrainPolyPoint("viaPoly", { x, y }, shiftRef.current));
         return;
       }
       if (tool === "multiWire") {
@@ -2990,8 +3476,8 @@ function DieViewer({ dieId }: { dieId: string }) {
         } else {
           // Phase 2: auto-end-on-via wins when any wire's projection crosses
           // a via — all such wires lock in one click (they may target
-          // different vias). Then the snap-to-vias-near-cursor path; finally
-          // the normal nearest-preview lock on the parallel front.
+          // different vias). Then the snap-to-vias-near-cursor path (ends
+          // that one wire); otherwise the click places one wire's corner.
           const autos = findMultiWireAutoEndSnaps({ x, y }, shiftRef.current);
           if (autos.length > 0) {
             multiWire.endWires(autos);
@@ -3001,12 +3487,14 @@ function DieViewer({ dieId }: { dieId: string }) {
               shiftRef.current
             );
             if (snap) {
-              multiWire.endWire({ x, y }, false, {
-                endpoint: snap.endpoint,
-                lockIndex: snap.lockIndex
-              });
+              multiWire.endWire(snap.endpoint, snap.lockIndex);
             } else {
-              multiWire.endWire({ x, y }, shiftRef.current);
+              // Plain click: staggered turn — places the corner of the wire
+              // nearest the click; after one click per wire the bus keeps
+              // routing from the corners. Clicks within a few screen px of
+              // the previous one (a double-click's 2nd click) are ignored.
+              const zoom = viewportLive.get()?.zoom ?? 1;
+              multiWire.placeCorner({ x, y }, shiftRef.current, MULTI_WIRE_MIN_TURN_PX / zoom);
             }
           }
         }
@@ -3083,7 +3571,9 @@ function DieViewer({ dieId }: { dieId: string }) {
       let hitPartId: string | undefined;
       let canSplitNetAtNode = false;
       let hitRulerId: string | undefined;
+      const rulerHitPrefs = usePreferences.getState();
       const rulerHit = (annotationsRef.current?.rulers ?? []).find((ruler) =>
+        (rulerHitPrefs.rulerVisibilityOverrides[ruler.id] ?? !rulerHitPrefs.rulersHidden) &&
         distancePointToSegment(world, { x: ruler.x1, y: ruler.y1 }, { x: ruler.x2, y: ruler.y2 }) <= HIT_TOLERANCE_PX / vp.zoom
       );
       if (rulerHit) {
@@ -3172,8 +3662,8 @@ function DieViewer({ dieId }: { dieId: string }) {
    * Double-click on the canvas. In the wire tool this commits the in-flight
    * draft (dropping the spurious dbl-click second point). In the select tool
    * it's a shortcut for "start wiring from this via" — only fires when the
-   * dbl-click lands on a via (manual or ML), so net-vertex dbl-clicks keep
-   * their existing "promote sub-selection to whole net" meaning.
+   * dbl-click lands on a via (manual or ML), so net dbl-clicks keep their
+   * own meaning (rename the net — see `renameNet` / useCanvasSelection).
    */
   const onCanvasDoubleClick = useCallback(
     async (event: React.MouseEvent<HTMLDivElement>) => {
@@ -3182,31 +3672,14 @@ function DieViewer({ dieId }: { dieId: string }) {
         wire.commitWire({ dropLast: true });
         return;
       }
-      // Floorplan poly: double-click to finish polygon
+      // Bus: double-click finishes it (its 1st click placed the last turn).
+      if (tool === "multiWire" && multiWire.phase === 2) {
+        multiWire.finish();
+        return;
+      }
+      // Floorplan poly: double-click (or Enter) finishes the polygon.
       if (tool === "floorplan") {
-        const fs = useFloorplanStore.getState();
-        if (fs.toolMode === "poly" && fs.draft && fs.draft.active && fs.draft.points.length >= 3) {
-          const pts = fs.draft.points;
-          const au = useAuth.getState();
-          const region: import("shared").FloorplanRegion = {
-            id: uuid(),
-            name: "",
-            kind: "polygon",
-            geometry: pts,
-            color: "#4dabf7",
-            createdBy: au.userId ?? null,
-            createdByName: au.username ?? null,
-            createdAt: new Date().toISOString(),
-            reservedBy: null,
-            reservedByName: null,
-            reservedAt: null,
-          };
-          apiPut(`/api/dies/${dieId}/floorplan/${region.id}`, region).catch((e) => toast.error("Failed to save floorplan", e instanceof Error ? e.message : String(e)));
-          useFloorplanStore.getState().upsertRegion(region);
-          useFloorplanStore.getState().setDraft(null);
-          useFloorplanStore.getState().selectRegion(region.id);
-          queryClient.invalidateQueries({ queryKey: annotationKeys.forDie(dieId) });
-        }
+        finishFloorplanPolyRef.current();
         return;
       }
       // Measure tool double-click → prompt for known size to set scale.
@@ -3259,6 +3732,12 @@ function DieViewer({ dieId }: { dieId: string }) {
       // pickable region), then ML via as the fallback.
       const tol = HIT_TOLERANCE_PX / vp.zoom;
       const hit = annotationLayer?.hitTest(world, tol, Math.max(tol, netNodePickWorldRadius(vp.zoom))) ?? null;
+      // Plain double-click on a placed via → its color window;
+      // Ctrl/Cmd+double-click → start a wire from it.
+      if (hit && hit.annotation.kind === "via" && !(event.ctrlKey || event.metaKey)) {
+        openViaColor(hit.annotation.id, world);
+        return;
+      }
       if (hit && hit.annotation.kind === "via") {
         const annoId = hit.annotation.id.startsWith("anno:")
           ? hit.annotation.id.slice(5)
@@ -3292,7 +3771,8 @@ function DieViewer({ dieId }: { dieId: string }) {
         if (mlHit) startWireAt({ x: mlHit.x, y: mlHit.y }, null);
       }
 
-      // Double-click on ANY cell annotation → open in RE Cell
+      // Double-click on ANY cell annotation → change its cell type;
+      // Ctrl/Cmd+double-click → open in RE Cell.
       // Checks: analog device first, then annotation layer for cells.
       let cellId: string | null = null;
       let cellTypeId: string | null = null;
@@ -3320,11 +3800,13 @@ function DieViewer({ dieId }: { dieId: string }) {
           }
         }
       }
-      if (cellId && cellTypeId) {
+      if (cellId && cellTypeId && !(event.ctrlKey || event.metaKey)) {
+        setCellTypePicker({ cellId, at: { x: world.x, y: world.y } });
+      } else if (cellId && cellTypeId) {
         navigate(`/re?die=${encodeURIComponent(dieId)}&type=${encodeURIComponent(cellTypeId)}&cell=${encodeURIComponent(cellId)}`);
       }
     },
-    [annotationLayer, mlViasLayer, wire, startWireAt, navigate, dieId, dialog]
+    [annotationLayer, mlViasLayer, wire, multiWire, startWireAt, navigate, dieId, dialog, openViaColor]
   );
 
   // Zoom button handlers read the latest viewport from the live store at
@@ -3373,12 +3855,14 @@ function DieViewer({ dieId }: { dieId: string }) {
   // Double-clicking an Items-panel row frames that entity (or the union of a
   // group/category's entities) in the viewport, with a margin.
   const focusOnIds = useCallback(
-    (ids: string[]) => {
+    (ids: string[], opts?: { tight?: boolean }) => {
       if (!annotationLayer || !containerRef.current) return;
       const box = annotationLayer.unionBBox(ids);
       if (!box) return;
       const rect = containerRef.current.getBoundingClientRect();
-      const newVp = fitRectViewport(box, rect.width, rect.height, 56, 32);
+      // `tight`: bbox fills the viewport edge-to-edge (uniform zoom, so the
+      // limiting axis touches and the other is centered).
+      const newVp = fitRectViewport(box, rect.width, rect.height, opts?.tight ? 0 : 56, 32);
       if (canvasHandle.current) {
         canvasHandle.current.setViewport(newVp);
       } else {
@@ -3391,6 +3875,67 @@ function DieViewer({ dieId }: { dieId: string }) {
       }
     },
     [annotationLayer]
+  );
+
+  // ── Press & hold on a net (select tool) ─────────────────────────
+  // Same gesture as long-pressing a net's eye in the outline: holding still
+  // for NET_HOLD_MS selects the whole net and zoom-fits it edge-to-edge. A
+  // progress ring at the cursor shows from NET_HOLD_RING_DELAY_MS. Moving
+  // first (a drag) or releasing early keeps the normal click / drag.
+  const netHoldLive = useMemo(
+    () => createLiveValue<{ x: number; y: number; key: number } | null>(null),
+    []
+  );
+  const onCanvasPointerDown = useCallback(
+    (e: PointerEventData): Interaction => {
+      const result = routeCanvasPointerDown(e);
+      if (typeof result !== "object" || e.button !== 0 || !annotationLayer) return result;
+      if (useDieViewerStore.getState().activeTool !== "select") return result;
+      const vp = viewportLive.get();
+      if (!vp) return result;
+      const tol = HIT_TOLERANCE_PX / vp.zoom;
+      const hit = annotationLayer.hitTest(e.worldPoint, tol, Math.max(tol, netNodePickWorldRadius(vp.zoom)));
+      if (!hit || hit.annotation.kind !== "net") return result;
+
+      const netAnnotationId = hit.annotation.id;
+      let fired = false;
+      const ringTimer = window.setTimeout(
+        () => netHoldLive.set({ ...e.screenPoint, key: performance.now() }),
+        NET_HOLD_RING_DELAY_MS
+      );
+      const holdTimer = window.setTimeout(() => {
+        fired = true;
+        netHoldLive.set(null);
+        useDieViewerStore.getState().select([netAnnotationId], "replace");
+        focusOnIds([netAnnotationId], { tight: true });
+      }, NET_HOLD_MS);
+      const stop = () => {
+        window.clearTimeout(ringTimer);
+        window.clearTimeout(holdTimer);
+        netHoldLive.set(null);
+      };
+      // Once the hold fired, the rest of the gesture is swallowed (the view
+      // just changed under the pointer, so a late drag would be garbage).
+      return {
+        onDragStart: (d) => {
+          if (fired) return;
+          stop();
+          result.onDragStart?.(d);
+        },
+        onDragMove: (d) => {
+          if (!fired) result.onDragMove?.(d);
+        },
+        onPointerUp: (d) => {
+          stop();
+          if (!fired) result.onPointerUp(d);
+        },
+        onCancel: () => {
+          stop();
+          if (!fired) result.onCancel?.();
+        }
+      };
+    },
+    [routeCanvasPointerDown, annotationLayer, viewportLive, netHoldLive, focusOnIds]
   );
 
   // ── Cross-tab focus: analog netlist → frame cell on die ──
@@ -3440,49 +3985,85 @@ function DieViewer({ dieId }: { dieId: string }) {
 
   const minZoom = die ? (1 / Math.max(die.width, die.height)) * 50 : 0.01;
 
-  // Screenshot: composite main canvas + analog overlay at 4K resolution.
-  const takeScreenshot = useCallback(() => {
+  // Screenshot: the view re-rendered offscreen at `screenshotScale` × the
+  // screen's device pixels (image layers load the finer pyramid tiles it
+  // needs), with the DOM overlay canvases (analog highlights, comments…)
+  // stretched on top. Right-click the button for the resolution slider.
+  const screenshotScale = usePreferences((s) => s.screenshotScale);
+  const [screenshotBusy, setScreenshotBusy] = useState<string | null>(null);
+  const [screenshotPanel, setScreenshotPanel] = useState<DOMRect | null>(null);
+  const screenshotBusyRef = useRef(false);
+  const screenshotAbortRef = useRef<AbortController | null>(null);
+  const screenCanvasSize = useCallback(() => {
+    const c = containerRef.current?.querySelector("canvas");
+    return { width: c?.width ?? 0, height: c?.height ?? 0 };
+  }, []);
+  /** Source px per pixel of the die's finest pyramid level (native detail). */
+  const finestLevelScale = useMemo(
+    () => (die?.levels?.length ? Math.min(...die.levels.map((l) => l.scale)) : 1),
+    [die]
+  );
+  const takeScreenshot = useCallback(async () => {
     const section = containerRef.current;
-    if (!section) return;
-    const canvases = section.querySelectorAll("canvas");
+    const handle = canvasHandle.current;
+    if (!section || !handle || screenshotBusyRef.current) return;
+    const canvases = [...section.querySelectorAll("canvas")];
     if (canvases.length === 0) return;
-    // First canvas = main tiled canvas; subsequent canvases are overlays
-    // (analog highlights, comment overlay, etc.)
-    const mainCanvas = canvases[0] as HTMLCanvasElement;
-    const srcW = mainCanvas.width;
-    const srcH = mainCanvas.height;
+    // First canvas = main tiled canvas; subsequent canvases are overlays.
+    const { width: srcW, height: srcH } = canvases[0];
     if (srcW === 0 || srcH === 0) return;
-
-    // Target: 4K (3840px on longest side, keep aspect ratio).
-    const TARGET_LONGEST = 3840;
-    const scale = Math.min(TARGET_LONGEST / srcW, TARGET_LONGEST / srcH, 1);
-    const outW = Math.round(srcW * scale);
-    const outH = Math.round(srcH * scale);
-
-    const out = document.createElement("canvas");
-    out.width = outW;
-    out.height = outH;
-    const ctx = out.getContext("2d")!;
-    ctx.imageSmoothingEnabled = true;
-    ctx.imageSmoothingQuality = "high";
-
-    // Draw each canvas layer in order.
-    for (const c of canvases) {
-      ctx.drawImage(c as HTMLCanvasElement, 0, 0, outW, outH);
-    }
-
-    out.toBlob((blob) => {
+    const native = nativeScreenshotScale(handle.getViewport().zoom, handle.getDpr(), finestLevelScale);
+    const scale = resolveScreenshotScale(
+      usePreferences.getState().screenshotScale,
+      native,
+      maxScreenshotScale(srcW, srcH, native)
+    );
+    const abort = new AbortController();
+    screenshotAbortRef.current = abort;
+    screenshotBusyRef.current = true;
+    setScreenshotBusy("Rendering…");
+    try {
+      // Floorplans are SVG on screen: draw them as vectors into the snapshot.
+      const prefs = usePreferences.getState();
+      const floorplans = prefs.floorplanOverlayOn
+        ? useFloorplanStore.getState().regions.filter((r) =>
+            isFloorplanVisible(r, prefs.hiddenKinds.includes("floorplan"), prefs.hiddenFloorplanTypeNames)
+          )
+        : [];
+      const zoom = handle.getViewport().zoom;
+      const blob = await handle.snapshotPng(scale, {
+        overlays: canvases.slice(1),
+        drawWorld:
+          floorplans.length > 0
+            ? (ctx, { pxPerWorld, pxPerCss }) => drawFloorplansForSnapshot(ctx, floorplans, { zoom, pxPerWorld, pxPerCss })
+            : undefined,
+        signal: abort.signal,
+        onProgress: ({ band, bands, pendingTiles }) =>
+          setScreenshotBusy(
+            `${Math.floor((band / bands) * 100)}%` +
+              (pendingTiles > 0 ? ` · loading ${pendingTiles} tile${pendingTiles === 1 ? "" : "s"}` : "")
+          )
+      });
       if (!blob) return;
+      const { width, height } = screenshotSize(srcW, srcH, scale);
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = `${die?.name ?? "die"}_screenshot.png`;
+      a.download = `${die?.name ?? "die"}_screenshot_${width}x${height}.png`;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
-      URL.revokeObjectURL(url);
-    }, "image/png");
-  }, [die?.name]);
+      // Large files are still being read by the download when click() returns.
+      setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    } catch (error) {
+      console.error("[screenshot] failed", error);
+      void dialog.confirm(error instanceof Error ? error.message : String(error), "Screenshot failed");
+    } finally {
+      screenshotAbortRef.current = null;
+      screenshotBusyRef.current = false;
+      setScreenshotBusy(null);
+    }
+  }, [die?.name, finestLevelScale, dialog]);
 
   return (
     <AppShell
@@ -3509,14 +4090,14 @@ function DieViewer({ dieId }: { dieId: string }) {
               style={{ width: 1, height: 18, background: "var(--l2)", margin: "0 2px" }}
             />
 
-            <button className="btn ghost" title="Zoom out" onClick={zoomOut}>
+            <button className="btn ghost" title="Zoom out (−)" onClick={zoomOut}>
               {Ic.zoomOut}
             </button>
-            <button className="btn ghost" title="Zoom in" onClick={zoomIn}>
+            <button className="btn ghost" title="Zoom in (+)" onClick={zoomIn}>
               {Ic.zoomIn}
             </button>
             <ZoomChip store={viewportLive} />
-            <button className="btn ghost" title="Fit to screen" onClick={fitToScreen}>
+            <button className="btn ghost" title="Fit to screen (F)" onClick={fitToScreen}>
               {Ic.fit}
             </button>
             <button className="btn ghost" title="100%" onClick={oneToOne}>
@@ -3524,8 +4105,20 @@ function DieViewer({ dieId }: { dieId: string }) {
             </button>
             <button
               className="btn ghost"
-              title="Screenshot (Ctrl+Shift+S)"
-              onClick={takeScreenshot}
+              title={
+                screenshotBusy ??
+                `Screenshot ${
+                  screenshotScale === "native" ? "native" : `${+screenshotScale.toFixed(2)}×`
+                } (Ctrl+Shift+S) · right-click for resolution`
+              }
+              disabled={!!screenshotBusy}
+              style={screenshotBusy ? { opacity: 0.6, cursor: "progress" } : undefined}
+              onClick={() => void takeScreenshot()}
+              onContextMenu={(e) => {
+                e.preventDefault();
+                const r = e.currentTarget.getBoundingClientRect();
+                setScreenshotPanel((open) => (open ? null : r));
+              }}
             >
               {Ic.download}
             </button>
@@ -3571,6 +4164,10 @@ function DieViewer({ dieId }: { dieId: string }) {
               onDeviceSelect={(id) => { const d = analogDevices.find((x:any) => x._cellId === id || (x as any)._cellId === id); if(d) setSelectedDevice(d) }}
               onOpenInRE={dieId ? (cellId, cellTypeId) => navigate(`/re?die=${encodeURIComponent(dieId)}&type=${encodeURIComponent(cellTypeId)}&cell=${encodeURIComponent(cellId)}`) : undefined}
               searchOpenRef={outlineSearchRef}
+              onSetCellTypeColor={(cellTypeId, color) => {
+                const ct = annotations?.cellTypes.find((t) => t.id === cellTypeId);
+                if (ct) void dispatcher.dispatch({ kind: "upsertCellType", cellType: { ...ct, color }, prevCellType: ct });
+              }}
             />
           </aside>
         )}
@@ -3597,7 +4194,7 @@ function DieViewer({ dieId }: { dieId: string }) {
                 spacePan || activeTool === "pan"
                   ? "grab"
                   : activeTool === "select"
-                    ? "default"
+                    ? (cellResizeCursor ?? "default")
                     : "crosshair"
               }
               handleRef={canvasHandle}
@@ -3606,8 +4203,9 @@ function DieViewer({ dieId }: { dieId: string }) {
               onCanvasClick={onCanvasClick}
             />
           )}
+          <NetHoldRing store={netHoldLive} delayMs={NET_HOLD_RING_DELAY_MS} />
           <RulerOverlay
-            rulers={annotations?.rulers ?? []}
+            rulers={visibleRulers}
             draftStore={rulerDraftLive}
             pendingStore={rulerPendingLive}
             viewportStore={viewportLive}
@@ -3631,7 +4229,7 @@ function DieViewer({ dieId }: { dieId: string }) {
           <MultiWireOverlay
             points={multiWire.points}
             phase={multiWire.phase}
-            ends={multiWire.ends}
+            draft={multiWire.draft}
             cursorStore={cursorLive}
             snapStore={multiWireSnapLive}
             endSnapStore={multiWireEndSnapLive}
@@ -3702,10 +4300,67 @@ function DieViewer({ dieId }: { dieId: string }) {
               viewportStore={viewportLive}
             />
           )}
+          {cellTypePicker && annotations && (() => {
+            const pickerCell = annotations.cells.find((c) => c.id === cellTypePicker.cellId);
+            return pickerCell ? (
+              <CellTypePopover
+                dieId={dieId}
+                cell={pickerCell}
+                annotations={annotations}
+                anchor={cellTypePicker.at}
+                viewportStore={viewportLive}
+                onPick={(ct) => reassignCellType(pickerCell.id, ct)}
+                onSplit={(name) => splitCellType(pickerCell.id, name)}
+                onSetColor={(ct, color) =>
+                  void dispatcher.dispatch({ kind: "upsertCellType", cellType: { ...ct, color }, prevCellType: ct })
+                }
+                onClose={closeCellTypePicker}
+              />
+            ) : null;
+          })()}
+          {netRename && (() => {
+            const net = annotations?.nets.find((n) => n.id === netRename.netId);
+            const override = netColorOverrides[`net:${netRename.netId}`];
+            return net ? (
+              <NetRenamePopover
+                dieId={dieId}
+                net={net}
+                anchor={netRename.at}
+                viewportStore={viewportLive}
+                nameTaken={(name) => !!annotations?.nets.some((n) => n.id !== net.id && n.name === name)}
+                color={override ?? globalNetColor}
+                hasOverride={override !== undefined}
+                defaultColor={globalNetColor}
+                customColorsEnabled={customNetColorsEnabled}
+                onSave={(name, color) => commitNetRename(net.id, name, color)}
+                onClose={closeNetRename}
+              />
+            ) : null;
+          })()}
+          {viaColorEdit && annotations && (() => {
+            const via = viaFromSelectionId(annotations, `anno:${viaColorEdit.viaId}`);
+            const targets = viaColorEdit.targetIds
+              .map((id) => viaFromSelectionId(annotations, id))
+              .filter((a) => a !== null);
+            const stackVias = (sessionMetalStack ?? DEFAULT_METAL_STACK).vias;
+            return via && targets.length > 0 ? (
+              <ViaColorPopover
+                dieId={dieId}
+                via={via}
+                targets={targets}
+                anchor={viaColorEdit.at}
+                viewportStore={viewportLive}
+                baseColorOf={(a) => viaBaseColor(a, viaLayerColorPrefs, stackVias, globalViaColor)}
+                onSave={(color) => commitViaColor(viaColorEdit.targetIds, color)}
+                onClose={closeViaColor}
+              />
+            ) : null;
+          })()}
           <CommentOverlay
             annotations={annotations}
             viewportStore={viewportLive}
             dieId={dieId}
+            dispatcher={dispatcher}
             pendingNewComment={pendingNewComment}
             onConsumePendingComment={() => setPendingNewComment(null)}
             onAnnotationChange={() => canvasHandle.current?.invalidate()}
@@ -3714,8 +4369,10 @@ function DieViewer({ dieId }: { dieId: string }) {
             <FloorplanOverlay
               annotations={annotations}
               viewportStore={viewportLive}
+              cursorStore={floorplanTipLive}
               dieId={dieId}
               showIO={showFloorplanIO}
+              dispatcher={dispatcher}
               onAnnotationChange={() => canvasHandle.current?.invalidate()}
             />
           )}
@@ -3802,7 +4459,10 @@ function DieViewer({ dieId }: { dieId: string }) {
       <StatusBar
         items={[
           die?.name,
-          <CursorReadout key="cursor" store={cursorLive} />,
+          <span key="cursor">
+            <CursorReadout store={cursorLive} />
+            <HoverReadout store={hoverInfoLive} />
+          </span>,
           <ZoomReadout key="zoom" store={viewportLive} />,
           liveRenderStatusText,
           annotations ? annotationsSummary(annotations) : null,
@@ -3848,31 +4508,10 @@ function DieViewer({ dieId }: { dieId: string }) {
           onCopyCell={() => {
             const ann = annotationsRef.current;
             if (!ann || !contextMenu.hitCellId) return;
+            // The whole selection when the clicked cell is part of it.
             const selected = useDieViewerStore.getState().selectedIds;
-            const includeSelection = selected.has(`cell:${contextMenu.hitCellId}`);
-            const selectedCells = includeSelection
-              ? ann.cells.filter((c) => selected.has(`cell:${c.id}`))
-              : ann.cells.filter((c) => c.id === contextMenu.hitCellId);
-            if (selectedCells.length === 0) return;
-            const wireSelection = includeSelection ? selected : new Set<string>();
-            const wireBounds = wireSelectionBounds(ann.nets, wireSelection);
-            const minX = Math.min(...selectedCells.map((c) => c.x), wireBounds?.minX ?? Infinity);
-            const minY = Math.min(...selectedCells.map((c) => c.y), wireBounds?.minY ?? Infinity);
-            const viewerStore = useDieViewerStore.getState();
-            viewerStore.copyCells(
-              selectedCells.map((c) => ({
-                cellTypeId: c.cellTypeId,
-                offsetX: c.x - minX, offsetY: c.y - minY,
-                flippedV: c.flippedV,
-                flippedH: c.flippedH,
-                rotation: c.rotation,
-              }))
-            );
-            if (wireBounds) {
-              viewerStore.setWireClipboard(snapshotWireClipboard(ann.nets, wireSelection, { x: minX, y: minY })!);
-            } else {
-              viewerStore.clearWireClipboard();
-            }
+            const id = `cell:${contextMenu.hitCellId}`;
+            copySelectionToClipboard(ann, selected.has(id) ? selected : new Set([id]));
           }}
           onCopyNet={() => {
             const ann = annotationsRef.current;
@@ -3884,25 +4523,8 @@ function DieViewer({ dieId }: { dieId: string }) {
               : contextMenu.hitPartId
                 ? new Set([contextMenu.hitPartId])
                 : selected;
-            const wires = snapshotWireClipboard(ann.nets, wireSelection);
-            if (wires && contextMenu.hitPartId) {
-              const selectedCells = includeSelection
-                ? ann.cells.filter((c) => selected.has(`cell:${c.id}`))
-                : [];
-              const wireBounds = wireSelectionBounds(ann.nets, wireSelection);
-              const minX = Math.min(...selectedCells.map((c) => c.x), wireBounds?.minX ?? Infinity);
-              const minY = Math.min(...selectedCells.map((c) => c.y), wireBounds?.minY ?? Infinity);
-              const viewerStore = useDieViewerStore.getState();
-              if (selectedCells.length > 0) {
-                viewerStore.copyCells(selectedCells.map((c) => ({
-                  cellTypeId: c.cellTypeId,
-                  offsetX: c.x - minX, offsetY: c.y - minY,
-                  flippedV: c.flippedV, flippedH: c.flippedH, rotation: c.rotation,
-                })));
-              } else {
-                viewerStore.clearCellClipboard();
-              }
-              viewerStore.setWireClipboard(snapshotWireClipboard(ann.nets, wireSelection, { x: minX, y: minY })!);
+            if (contextMenu.hitPartId && snapshotWireClipboard(ann.nets, wireSelection)) {
+              copySelectionToClipboard(ann, wireSelection);
             }
           }}
           onSplitNetAtNode={() => {
@@ -3919,6 +4541,20 @@ function DieViewer({ dieId }: { dieId: string }) {
             const cell = ann.cells?.find((c) => c.id === contextMenu.hitCellId);
             if (!cell) return;
             void dispatcher.dispatch(buildMakeUniqueAction(ann, cell));
+          }}
+          cellsLocked={cellsLocked}
+          onOrientCell={(op) => {
+            const ann = annotationsRef.current;
+            if (!ann || !contextMenu.hitCellId || usePreferences.getState().cellsLocked) return;
+            // Like copy: the whole selection when the clicked cell is in it.
+            const selected = useDieViewerStore.getState().selectedIds;
+            const targets = selected.has(`cell:${contextMenu.hitCellId}`)
+              ? ann.cells.filter((c) => selected.has(`cell:${c.id}`))
+              : ann.cells.filter((c) => c.id === contextMenu.hitCellId);
+            // Each cell turns / mirrors about its own footprint centre.
+            const actions = targets.map((c) => buildOrientAction(c, orientOnDie(orientOf(c), op)));
+            if (actions.length === 1) void dispatcher.dispatch(actions[0]);
+            else if (actions.length > 1) void dispatcher.dispatch({ kind: "batch", actions });
           }}
           onDeleteRuler={() => {
             const ruler = annotationsRef.current?.rulers?.find((r) => r.id === contextMenu.hitRulerId);
@@ -3940,58 +4576,41 @@ function DieViewer({ dieId }: { dieId: string }) {
             if (!Number.isFinite(um) || um <= 0) return;
             void dispatcher.dispatch({ kind: "setUmPerPx", umPerPx: um / ruler.lengthPx, prevUmPerPx: annotationsRef.current?.umPerPx ?? null });
           }}
-          onPasteCell={() => {
-            const ann = annotationsRef.current;
-            if (!ann) return;
-            const store = useDieViewerStore.getState();
-            const clips = store.clipboardCells;
-            if (clips.length === 0 && !store.clipboardWires) return;
-            const baseX = Math.round(contextMenu.hitPoint.x);
-            const baseY = Math.round(contextMenu.hitPoint.y);
-            const actions: AnnotationAction[] = clips.map((clip) => ({
-                kind: "upsertCell" as const,
-                cell: {
-                  id: uuid(),
-                  cellTypeId: clip.cellTypeId,
-                  x: baseX + clip.offsetX,
-                  y: baseY + clip.offsetY,
-                  flippedV: clip.flippedV,
-                  flippedH: clip.flippedH,
-                  rotation: clip.rotation,
-                },
-                prevCell: null,
-              }));
-            if (store.clipboardWires) {
-              const wireAction = netChangesToAction(
-                pasteWireClipboard(ann.nets, store.clipboardWires, { x: baseX, y: baseY }),
-              );
-              if (wireAction?.kind === "batch") actions.push(...wireAction.actions);
-              else if (wireAction) actions.push(wireAction);
-            }
-            if (actions.length > 0) void dispatcher.dispatch({ kind: "batch", actions });
-          }}
-          onPasteNet={() => {
-            const ann = annotationsRef.current;
-            const store = useDieViewerStore.getState();
-            if (!ann || (!store.clipboardWires && store.clipboardCells.length === 0)) return;
-            const baseX = Math.round(contextMenu.hitPoint.x);
-            const baseY = Math.round(contextMenu.hitPoint.y);
-            const actions: AnnotationAction[] = store.clipboardCells.map((clip) => ({
-              kind: "upsertCell" as const,
-              cell: { id: uuid(), cellTypeId: clip.cellTypeId, x: baseX + clip.offsetX, y: baseY + clip.offsetY, flippedV: clip.flippedV, flippedH: clip.flippedH, rotation: clip.rotation },
-              prevCell: null,
-            }));
-            if (store.clipboardWires) {
-              const wireAction = netChangesToAction(pasteWireClipboard(ann.nets, store.clipboardWires, { x: baseX, y: baseY }));
-              if (wireAction?.kind === "batch") actions.push(...wireAction.actions);
-              else if (wireAction) actions.push(wireAction);
-            }
-            if (actions.length > 0) void dispatcher.dispatch({ kind: "batch", actions });
-          }}
+          onPasteCell={() => dispatchPaste(dispatcher, annotationsRef.current, contextMenu.hitPoint)}
+          onPasteNet={() => dispatchPaste(dispatcher, annotationsRef.current, contextMenu.hitPoint)}
           hasWireClipboard={useDieViewerStore.getState().clipboardWires !== null}
           hasCellClipboard={useDieViewerStore.getState().clipboardCells.length > 0}
+          hasPinClipboard={useDieViewerStore.getState().clipboardPins.length > 0}
+          hasFloorplanClipboard={useDieViewerStore.getState().clipboardFloorplans.length > 0}
+          onCopyPin={() => {
+            const ann = annotationsRef.current;
+            const partId = contextMenu.hitPartId;
+            if (!ann || !partId?.startsWith("pin:")) return;
+            // Like cells: the whole selection when the pad is part of it.
+            const selected = useDieViewerStore.getState().selectedIds;
+            copySelectionToClipboard(ann, selected.has(partId) ? selected : new Set([partId]));
+          }}
         />
       )}
+      {screenshotPanel && (() => {
+        const base = screenCanvasSize();
+        return (
+          <ScreenshotPanel
+            anchor={screenshotPanel}
+            scale={screenshotScale}
+            viewport={viewportLive}
+            dpr={canvasHandle.current?.getDpr() ?? window.devicePixelRatio ?? 1}
+            finestLevelScale={finestLevelScale}
+            baseWidth={base.width}
+            baseHeight={base.height}
+            busy={screenshotBusy}
+            onScale={(v) => usePreferences.getState().setScreenshotScale(v)}
+            onTake={() => void takeScreenshot()}
+            onCancel={() => screenshotAbortRef.current?.abort()}
+            onClose={() => setScreenshotPanel(null)}
+          />
+        );
+      })()}
       <ShortcutsPanel open={shortcutsOpen} onClose={() => setShortcutsOpen(false)} />
       <SettingsPanel
         open={settingsOpen}
@@ -4048,4 +4667,92 @@ function hitTestAnalogDevice(
     }
   }
   return best;
+}
+
+/**
+ * Copy the cells, I/O pads, wires and floorplan regions in `sel` to the
+ * clipboard, positioned relative to their common top-left. Kinds with nothing
+ * selected are cleared, so a paste brings back exactly this selection. False
+ * when there is nothing to copy (clipboard untouched).
+ */
+function copySelectionToClipboard(ann: DieAnnotations, sel: ReadonlySet<string>): boolean {
+  const cells = ann.cells?.filter((c) => sel.has(`cell:${c.id}`)) ?? [];
+  const wireBounds = wireSelectionBounds(ann.nets, sel);
+  const pins = selectedPins(ann.pins, sel);
+  const regions = selectedFloorplans(ann.floorplanRegions, sel);
+  const fpBounds = floorplanBounds(regions);
+  if (cells.length === 0 && !wireBounds && pins.length === 0 && !fpBounds) return false;
+  const minX = Math.min(...cells.map((c) => c.x), ...pins.map((p) => p.x), wireBounds?.minX ?? Infinity, fpBounds?.minX ?? Infinity);
+  const minY = Math.min(...cells.map((c) => c.y), ...pins.map((p) => p.y), wireBounds?.minY ?? Infinity, fpBounds?.minY ?? Infinity);
+  const viewerStore = useDieViewerStore.getState();
+  viewerStore.setPinClipboard(pinClips(pins, minX, minY));
+  viewerStore.setFloorplanClipboard(floorplanClips(regions, minX, minY));
+  if (cells.length > 0) {
+    viewerStore.copyCells(
+      cells.map((c) => ({
+        cellTypeId: c.cellTypeId,
+        offsetX: c.x - minX,
+        offsetY: c.y - minY,
+        flippedV: c.flippedV,
+        flippedH: c.flippedH,
+        rotation: c.rotation,
+        bounds: c.bounds,
+      }))
+    );
+  } else {
+    viewerStore.clearCellClipboard();
+  }
+  if (wireBounds) {
+    viewerStore.setWireClipboard(snapshotWireClipboard(ann.nets, sel, { x: minX, y: minY })!);
+  } else {
+    viewerStore.clearWireClipboard();
+  }
+  return true;
+}
+
+/** Anything to paste (cells, wires, pads or floorplans). */
+function clipboardHasContent(store: ReturnType<typeof useDieViewerStore.getState>): boolean {
+  return (
+    store.clipboardCells.length > 0 ||
+    store.clipboardWires !== null ||
+    store.clipboardPins.length > 0 ||
+    store.clipboardFloorplans.length > 0
+  );
+}
+
+/** Actions pasting the whole clipboard with its top-left at `base`. */
+function pasteClipboardActions(ann: DieAnnotations, base: { x: number; y: number }): AnnotationAction[] {
+  const store = useDieViewerStore.getState();
+  const actions: AnnotationAction[] = store.clipboardCells.map((clip) => ({
+    kind: "upsertCell" as const,
+    cell: {
+      id: uuid(),
+      cellTypeId: clip.cellTypeId,
+      x: base.x + clip.offsetX,
+      y: base.y + clip.offsetY,
+      flippedV: clip.flippedV,
+      flippedH: clip.flippedH,
+      rotation: clip.rotation,
+      ...(clip.bounds ? { bounds: clip.bounds } : {}),
+    },
+    prevCell: null,
+  }));
+  actions.push(...pastePinActions(store.clipboardPins, base));
+  if (store.clipboardWires) {
+    const wireAction = netChangesToAction(pasteWireClipboard(ann.nets, store.clipboardWires, base));
+    if (wireAction?.kind === "batch") actions.push(...wireAction.actions);
+    else if (wireAction) actions.push(wireAction);
+  }
+  const au = useAuth.getState();
+  actions.push(
+    ...pasteFloorplanActions(store.clipboardFloorplans, base, { userId: au.userId ?? null, username: au.username ?? null })
+  );
+  return actions;
+}
+
+/** Paste the clipboard at `at` (rounded) as one undoable batch. */
+function dispatchPaste(dispatcher: ActionDispatcher, ann: DieAnnotations | undefined, at: { x: number; y: number }): void {
+  if (!ann || !clipboardHasContent(useDieViewerStore.getState())) return;
+  const actions = pasteClipboardActions(ann, { x: Math.round(at.x), y: Math.round(at.y) });
+  if (actions.length > 0) void dispatcher.dispatch({ kind: "batch", actions });
 }

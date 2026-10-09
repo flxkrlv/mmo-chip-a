@@ -1,7 +1,9 @@
 import { useState, useRef, useEffect, type ReactNode } from "react";
+import { cellWorldRect } from "../../lib/cellFootprint";
+import { padCountByPin, renamePinActions } from "../../lib/pinClipboard";
 import { useDialog } from "../Dialog";
 import { useQueryClient } from "@tanstack/react-query";
-import type { AnalogDevice, AssistantFinding, DieAnnotations, FloorplanRegion, MLInferenceJob, WireLayer } from "shared";
+import type { AnalogDevice, AnnotationNet, AnnotationNetEdge, AssistantFinding, CellType, DieAnnotations, FloorplanRegion, HumanAnnotation, MLInferenceJob, WireLayer } from "shared";
 import type { ActionDispatcher } from "../../api/actions";
 import { uuid } from "../../lib/uuid";
 import {
@@ -15,6 +17,11 @@ import {
   useMLStatus
 } from "../../api/ml";
 import { parseNetPartId } from "../../lib/netGraph";
+import { selectedVias, viaBaseColor, viaColorAction } from "../../lib/viaColor";
+import { floorplanNameInline, normalizeFloorplanName } from "../../lib/floorplanName";
+import { cellTypeColor, edgeColor, netColors, toHex, type NetColorPrefs } from "../../lib/colorHex";
+import { WIRE_LAYER_COLOR } from "../../renderer/annotations/style";
+import { Ic } from "../../icons";
 import {
   isMlViaId,
   type MLViasLayer
@@ -63,17 +70,20 @@ function SubHeader({ children }: { children: React.ReactNode }) {
 }
 
 /** Editable name field. Uncontrolled + keyed by uid so it resets when the
- *  selection changes; commits on blur / Enter, reverts on Escape. */
+ *  selection changes; commits on blur / Enter, reverts on Escape.
+ *  `multiline`: a textarea where Enter adds a line and Ctrl/Cmd+Enter commits. */
 function NameField({
   uid,
   value,
-  onCommit
+  onCommit,
+  multiline
 }: {
   uid: string;
   value: string;
   onCommit: (next: string) => void;
+  multiline?: boolean;
 }) {
-  const commit = (el: HTMLInputElement) => {
+  const commit = (el: HTMLInputElement | HTMLTextAreaElement) => {
     const next = el.value.trim();
     if (!next || next === value) {
       el.value = value;
@@ -81,6 +91,30 @@ function NameField({
     }
     onCommit(next);
   };
+  if (multiline) {
+    return (
+      <textarea
+        // Re-keyed by value too, so a rename from the floorplan window shows here.
+        key={`${uid}:${value}`}
+        className="input"
+        defaultValue={value}
+        spellCheck={false}
+        rows={Math.min(6, Math.max(2, value.split("\n").length))}
+        title="Enter adds a line · Ctrl+Enter saves"
+        style={{ flex: 1, width: "100%", boxSizing: "border-box", resize: "vertical", fontFamily: "inherit", lineHeight: 1.35 }}
+        onBlur={(e) => commit(e.currentTarget)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
+            e.preventDefault();
+            e.currentTarget.blur();
+          } else if (e.key === "Escape") {
+            e.currentTarget.value = value;
+            e.currentTarget.blur();
+          }
+        }}
+      />
+    );
+  }
   return (
     <label className="input" style={{ flex: 1 }}>
       <input
@@ -109,7 +143,7 @@ interface Resolved {
   displayName: string;
   uid: string;
   /** Present only when the entity carries an editable name. */
-  name?: { value: string; onCommit: (next: string) => void };
+  name?: { value: string; onCommit: (next: string) => void; multiline?: boolean };
   /** Extra property rows shown after `uid` (text or interactive controls,
    *  e.g. the ROI class selector). */
   rows?: [string, ReactNode][];
@@ -163,6 +197,7 @@ function resolve(
       typeLabel: "Net",
       displayName: n.name || `Net ${short(n.id)}`,
       uid: n.id,
+      rows: [["color", <NetColorValue key="color" net={n} />]],
       name: {
         value: n.name ?? "",
         onCommit: (name) =>
@@ -200,6 +235,7 @@ function resolve(
             ["from", `(${Math.round(a.x)}, ${Math.round(a.y)})`],
             ["to", `(${Math.round(b.x)}, ${Math.round(b.y)})`],
             ["length", `${len} px`],
+            ["color", <EdgeColorValue key="color" netId={n.id} edge={e} />],
             [
               "layer",
               <WireLayerSelect
@@ -248,7 +284,8 @@ function resolve(
               cellType: { ...ct, name },
               prevCellType: ct
             })
-        }
+        },
+        rows: [["color", <CellColorValue key="color" cellType={ct} />]]
       };
     }
     case "cell": {
@@ -270,7 +307,8 @@ function resolve(
                   cellType: { ...ct, name },
                   prevCellType: ct
                 })
-            }
+            },
+            rows: [["color", <CellColorValue key="color" cellType={ct} />]]
           }
         : { typeLabel: "Cell", displayName: `Cell ${short(c.id)}`, uid: c.id };
       const rows: [string, string][] = [
@@ -278,7 +316,14 @@ function resolve(
       ];
       if (c.rotation) rows.push(["rotation", `${c.rotation}°`]);
       if (ct) {
-        rows.push(["size", `${ct.cropRect.width}×${ct.cropRect.height}`]);
+        // Die footprint (oriented); a resized cell differs from its type's box.
+        const box = cellWorldRect(c, ct.cropRect.width, ct.cropRect.height);
+        rows.push([
+          "size",
+          c.bounds
+            ? `${box.width}×${box.height} (type ${ct.cropRect.width}×${ct.cropRect.height})`
+            : `${box.width}×${box.height}`
+        ]);
         const count = cellTypeCounts?.get(ct.id) ?? 1;
         rows.push(["relationship", count > 1 ? `Linked (×${count})` : "Unique"]);
       }
@@ -293,19 +338,54 @@ function resolve(
     case "pin": {
       const p = ann.pins?.find((x) => x.id === eid);
       if (!p) return null;
+      const pads = padCountByPin(ann.pins).get(p.pin) ?? 1;
       return {
-        typeLabel: "I/O pin",
+        typeLabel: pads > 1 ? `I/O pin · ${pads} pads` : "I/O pin",
         displayName: p.name || `pin ${p.pin}`,
         uid: p.id,
         name: {
           value: p.name ?? "",
+          // Every pad of this pin number (pasted copies) is renamed with it.
+          onCommit: (name) => {
+            const actions = renamePinActions(ann.pins, p.pin, name);
+            if (actions.length > 0) void dispatcher.dispatch({ kind: "batch", actions });
+          }
+        }
+      };
+    }
+    case "floorplan": {
+      const f = ann.floorplanRegions?.find((x) => x.id === eid);
+      if (!f) return null;
+      const xs = f.geometry.map((p) => p.x);
+      const ys = f.geometry.map((p) => p.y);
+      const w = Math.round(Math.max(...xs) - Math.min(...xs));
+      const h = Math.round(Math.max(...ys) - Math.min(...ys));
+      const rows: [string, ReactNode][] = [
+        ["shape", f.kind === "rect" ? "rectangle" : `polygon · ${f.geometry.length} pts`],
+        ["position", `(${Math.round(Math.min(...xs))}, ${Math.round(Math.min(...ys))})`],
+        ["size", `${w}×${h}`],
+        [
+          "color",
+          <ColorValue key="color" color={f.color || "#4dabf7"} />
+        ]
+      ];
+      if (f.createdByName) rows.push(["created by", f.createdByName]);
+      if (f.reservedByName) rows.push(["reserved by", f.reservedByName]);
+      return {
+        typeLabel: "Floorplan",
+        displayName: floorplanNameInline(f.name ?? "") || `Floorplan ${short(f.id)}`,
+        uid: f.id,
+        name: {
+          value: f.name ?? "",
+          multiline: true,
           onCommit: (name) =>
             void dispatcher.dispatch({
-              kind: "upsertPin",
-              pin: { ...p, name },
-              prevPin: p
+              kind: "upsertFloorplan",
+              region: { ...f, name: normalizeFloorplanName(name) },
+              prevRegion: f
             })
-        }
+        },
+        rows
       };
     }
     case "anno": {
@@ -327,6 +407,7 @@ function resolve(
           ["class", a.class],
           geomRow,
           ...(a.layer ? [["via layer", a.layer] as [string, ReactNode]] : []),
+          ["color", <ViaColorField key="color" vias={[a]} dispatcher={dispatcher} />]
         ]
       };
     }
@@ -486,7 +567,23 @@ function InspectorBody({
 }) {
   if (!annotations) return <Empty>loading…</Empty>;
   if (ids.size === 0) return <Empty>Nothing selected</Empty>;
-  if (ids.size > 1) return <Empty>{ids.size} items selected</Empty>;
+  if (ids.size > 1) {
+    const vias = selectedVias(annotations, ids);
+    if (vias.length === 0) return <Empty>{ids.size} items selected</Empty>;
+    return (
+      <div>
+        <div style={{ padding: "10px 12px", borderBottom: "1px solid var(--l1)" }}>
+          <div className="u">Selection</div>
+          <div style={{ fontSize: 15, fontWeight: 600, color: "var(--ink)", marginTop: 3, fontFamily: "var(--mono)" }}>
+            {vias.length === ids.size ? `${vias.length} vias` : `${ids.size} items · ${vias.length} vias`}
+          </div>
+        </div>
+        <Prop label={vias.length === ids.size ? "color" : "via color"}>
+          <ViaColorField vias={vias} dispatcher={dispatcher} />
+        </Prop>
+      </div>
+    );
+  }
 
   const only = ids.values().next().value as string;
   const r = resolve(only, annotations, dispatcher, mlViasLayer, cellTypeCounts);
@@ -512,7 +609,7 @@ function InspectorBody({
 
       {r.name && (
         <Prop label="name">
-          <NameField uid={r.uid} value={r.name.value} onCommit={r.name.onCommit} />
+          <NameField uid={r.uid} value={r.name.value} onCommit={r.name.onCommit} multiline={r.name.multiline} />
         </Prop>
       )}
       <Prop label="uid">
@@ -1077,6 +1174,149 @@ function MLSlider({
         onChange={(e) => onChange(Number(e.target.value))}
       />
     </div>
+  );
+}
+
+/** Hex of a color in the Inspector's mono style. */
+function HexText({ color }: { color: string }) {
+  return (
+    <span style={{ color: "var(--ink2)", fontFamily: "var(--mono)", fontSize: 11 }}>{toHex(color)}</span>
+  );
+}
+
+/** Copies the color's hex (#rrggbb, #rrggbbaa if translucent); ✓ briefly. */
+function CopyHexButton({ color }: { color: string }) {
+  const [copied, setCopied] = useState(false);
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => { if (timer.current) clearTimeout(timer.current); }, []);
+  const hex = toHex(color);
+  return (
+    <button
+      type="button"
+      className="btn sm plain"
+      title={`Copy ${hex}`}
+      style={{ padding: "0 4px", minWidth: 0 }}
+      onClick={() => {
+        void navigator.clipboard?.writeText(hex).then(() => {
+          setCopied(true);
+          if (timer.current) clearTimeout(timer.current);
+          timer.current = setTimeout(() => setCopied(false), 1200);
+        });
+      }}
+    >
+      {copied ? "✓" : Ic.copy}
+    </button>
+  );
+}
+
+/** Swatch + hex + copy button. */
+function ColorValue({ color, note }: { color: string; note?: string }) {
+  return (
+    <span style={{ display: "inline-flex", alignItems: "center", gap: 6, minWidth: 0 }}>
+      <span style={{ width: 12, height: 12, borderRadius: 2, flex: "none", background: color, border: "1px solid var(--l2)" }} />
+      <HexText color={color} />
+      <CopyHexButton color={color} />
+      {note && <span style={{ color: "var(--ink3)", fontSize: 10 }}>{note}</span>}
+    </span>
+  );
+}
+
+function useNetColorPrefs(): NetColorPrefs {
+  const netColor = usePreferences((s) => s.netColor);
+  const netColorsPref = usePreferences((s) => s.netColors);
+  const customNetColorsEnabled = usePreferences((s) => s.customNetColorsEnabled);
+  const wireLayerColors = usePreferences((s) => s.wireLayerColors);
+  return { netColor, netColors: netColorsPref, customNetColorsEnabled, wireLayerColors };
+}
+
+/** Colors a net is drawn with (one per distinct segment color, e.g. by layer). */
+function NetColorValue({ net }: { net: AnnotationNet }) {
+  const prefs = useNetColorPrefs();
+  const colors = netColors(net, prefs, WIRE_LAYER_COLOR);
+  const own = prefs.customNetColorsEnabled && prefs.netColors[`net:${net.id}`];
+  return (
+    <span style={{ display: "inline-flex", flexDirection: "column", gap: 2, minWidth: 0 }}>
+      {colors.map((c) => (
+        <ColorValue key={c} color={c} note={own ? "own" : colors.length > 1 ? "by layer" : undefined} />
+      ))}
+    </span>
+  );
+}
+
+/** Color one wire segment is drawn with. */
+function EdgeColorValue({ netId, edge }: { netId: string; edge: AnnotationNetEdge }) {
+  const prefs = useNetColorPrefs();
+  return <ColorValue color={edgeColor(netId, edge, prefs, WIRE_LAYER_COLOR)} />;
+}
+
+/** Color cells of a type are drawn with (the type's own, else the global cell color). */
+function CellColorValue({ cellType }: { cellType: CellType }) {
+  const globalCellColor = usePreferences((s) => s.cellColor);
+  return <ColorValue color={cellTypeColor(cellType, globalCellColor)} note={cellType.color ? undefined : "default"} />;
+}
+
+/**
+ * Color of one or several placed vias: swatch + custom color input + reset
+ * to the via layer / global color. One undoable step for all of them.
+ */
+function ViaColorField({ vias, dispatcher }: { vias: HumanAnnotation[]; dispatcher: ActionDispatcher }) {
+  const viaLayerColors = usePreferences((s) => s.viaLayerColors);
+  const globalViaColor = usePreferences((s) => s.viaColor);
+  const stackVias = (useSession((s) => s.metalStack) ?? DEFAULT_METAL_STACK).vias;
+  const shown = vias.map((a) => a.color ?? viaBaseColor(a, viaLayerColors, stackVias, globalViaColor));
+  const mixed = shown.some((c) => c !== shown[0]);
+  const overridden = vias.some((a) => a.color);
+  const hex = !mixed && /^#[0-9a-f]{6}$/i.test(shown[0] ?? "") ? shown[0] : "#2e97ff";
+  const apply = (color: string | null) => {
+    const action = viaColorAction(vias, color);
+    if (action) void dispatcher.dispatch(action);
+  };
+  // Live value while the native picker is open; committed once on its
+  // "change" (picker closed), not per drag step (each would be an undo step
+  // and a server write).
+  const [draft, setDraft] = useState<string | null>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const applyRef = useRef(apply);
+  applyRef.current = apply;
+  useEffect(() => {
+    const el = inputRef.current;
+    if (!el) return;
+    const onCommit = () => {
+      setDraft(null);
+      applyRef.current(el.value);
+    };
+    el.addEventListener("change", onCommit);
+    return () => el.removeEventListener("change", onCommit);
+  }, []);
+  return (
+    <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+      <input
+        ref={inputRef}
+        type="color"
+        value={draft ?? hex}
+        onChange={(e) => setDraft(e.target.value)}
+        title={vias.length > 1 ? `Color of ${vias.length} vias` : "Via color"}
+        style={{ width: 28, height: 20, padding: 0, cursor: "pointer", border: "1px solid var(--l2)", borderRadius: 3, background: "none" }}
+      />
+      {mixed ? (
+        <span style={{ color: "var(--ink2)", fontFamily: "var(--mono)", fontSize: 11 }}>mixed</span>
+      ) : (
+        <>
+          <HexText color={shown[0]} />
+          <CopyHexButton color={shown[0]} />
+        </>
+      )}
+      {overridden && (
+        <button
+          type="button"
+          className="btn sm plain"
+          title="Back to the via layer color"
+          onClick={() => apply(null)}
+        >
+          ↺
+        </button>
+      )}
+    </span>
   );
 }
 

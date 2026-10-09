@@ -1,4 +1,5 @@
 import { useEffect, useRef } from "react";
+import type { OrientOp } from "../../lib/mergeCells";
 
 /**
  * What the canvas right-click handler resolved at the cursor: the world point
@@ -42,11 +43,26 @@ interface Props {
   onPasteNet?: () => void;
   hasWireClipboard?: boolean;
   hasCellClipboard?: boolean;
+  /** Copy the clicked I/O pad (or the selection it is part of). */
+  onCopyPin?: () => void;
+  hasPinClipboard?: boolean;
+  hasFloorplanClipboard?: boolean;
   onMakeUnique?: () => void;
+  /** Rotate / mirror the clicked cell (or the selected cells it belongs to)
+   *  in place on the die. */
+  onOrientCell?: (op: OrientOp) => void;
+  /** Cells are locked — orientation items are shown disabled. */
+  cellsLocked?: boolean;
   onDeleteRuler?: () => void;
   onSetScaleFromRuler?: () => void;
   onSplitNetAtNode?: () => void;
 }
+
+const ORIENT_ITEMS: [OrientOp, string][] = [
+  ["rotateCw", "Rotate 90° clockwise"],
+  ["flipH", "Flip horizontally"],
+  ["flipV", "Flip vertically"]
+];
 
 /** Right-click menu on the die-viewer canvas. Items today: start a single
  *  wire from the cursor (always available), and start a multi-wire bus from
@@ -62,7 +78,12 @@ export function DieContextMenu({
   onPasteNet,
   hasWireClipboard,
   hasCellClipboard,
+  onCopyPin,
+  hasPinClipboard,
+  hasFloorplanClipboard,
   onMakeUnique,
+  onOrientCell,
+  cellsLocked,
   onDeleteRuler,
   onSetScaleFromRuler,
   onSplitNetAtNode
@@ -144,6 +165,34 @@ export function DieContextMenu({
           <button className="menu-item" onClick={() => { onMakeUnique?.(); onClose(); }}>
             Make Unique  <span style={{ marginLeft: "auto", color: "var(--ink3)" }}>⇧U</span>
           </button>
+          {onOrientCell && (
+            <>
+              <div className="menu-sep" />
+              {ORIENT_ITEMS.map(([op, label]) => (
+                <button
+                  key={op}
+                  className="menu-item"
+                  disabled={cellsLocked}
+                  title={cellsLocked ? "Cells are locked" : undefined}
+                  onClick={() => { if (cellsLocked) return; onOrientCell(op); onClose(); }}
+                >
+                  {label}
+                </button>
+              ))}
+            </>
+          )}
+        </>
+      )}
+      {!menu.hitCellId && onCopyPin && menu.hitPartId?.startsWith("pin:") && (
+        <>
+          <div className="menu-sep" />
+          <button
+            className="menu-item"
+            title="Paste makes another pad of the same pin (same number and name) elsewhere"
+            onClick={() => { onCopyPin(); onClose(); }}
+          >
+            Copy pad <span style={{ marginLeft: "auto", color: "var(--ink3)" }}>Ctrl+C</span>
+          </button>
         </>
       )}
       {!menu.hitCellId && onCopyNet && menu.hitPartId?.startsWith("net:") && (
@@ -171,16 +220,23 @@ export function DieContextMenu({
           </button>
         </>
       )}
-      {!menu.hitCellId && onPasteCell && (hasCellClipboard || hasWireClipboard) && (
+      {/* Wires alone get "Paste Wire" below. */}
+      {!menu.hitCellId && onPasteCell && (hasCellClipboard || hasPinClipboard || hasFloorplanClipboard) && (
         <>
           <div className="menu-sep" />
           <button className="menu-item" onClick={() => { onPasteCell(); onClose(); }}>
-            {hasCellClipboard && hasWireClipboard ? "Paste Selection" : "Paste Cell"}
+            {[hasCellClipboard, hasWireClipboard, hasPinClipboard, hasFloorplanClipboard].filter(Boolean).length > 1
+              ? "Paste Selection"
+              : hasPinClipboard
+                ? "Paste Pad"
+                : hasFloorplanClipboard
+                  ? "Paste Floorplan"
+                  : "Paste Cell"}
             <span style={{ marginLeft: "auto", color: "var(--ink3)" }}>Ctrl+V</span>
           </button>
         </>
       )}
-      {!menu.hitCellId && onPasteNet && hasWireClipboard && !hasCellClipboard && (
+      {!menu.hitCellId && onPasteNet && hasWireClipboard && !hasCellClipboard && !hasPinClipboard && !hasFloorplanClipboard && (
         <>
           <div className="menu-sep" />
           <button className="menu-item" onClick={() => { onPasteNet(); onClose(); }}>

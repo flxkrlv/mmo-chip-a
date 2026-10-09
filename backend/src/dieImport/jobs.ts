@@ -228,5 +228,9 @@ function extensionForMimeType(mimeType: string) {
     return ".jpg";
   }
 
+  if (mimeType === "image/tiff" || mimeType === "image/x-tiff") {
+    return ".tif";
+  }
+
   return "";
 }

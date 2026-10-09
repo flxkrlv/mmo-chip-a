@@ -27,7 +27,9 @@ import type { DragHandler } from "../../renderer/interaction";
  *  overlay can track the cursor (committed state lags until release). */
 export type EditPreview =
   | { kind: "rect"; rect: Rect }
-  | { kind: "poly"; points: Point[] };
+  | { kind: "poly"; points: Point[] }
+  // Cell being edge-resized: drawn with side bars instead of corner squares.
+  | { kind: "cellRect"; rect: Rect };
 
 export type EditableShape =
   | {

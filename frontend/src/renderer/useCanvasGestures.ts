@@ -10,6 +10,10 @@ import type { Viewport } from "./types";
 
 const WHEEL_ZOOM_FACTOR = 0.01;
 const CLICK_MOVE_THRESHOLD_PX = 4;
+/** Auto-pan starts when the pointer is this close to (or past) an edge. */
+const AUTO_PAN_EDGE_PX = 32;
+/** Pan speed (CSS px per 60 Hz frame) at the edge; grows past it up to 2×. */
+const AUTO_PAN_SPEED_PX = 14;
 
 type GestureMode = "pan" | "ignore" | { kind: "custom"; handler: DragHandler };
 
@@ -22,6 +26,7 @@ interface GestureState {
   startWorldY: number;
   lastScreenX: number;
   lastScreenY: number;
+  lastModifiers: PointerModifiers;
   moved: boolean;
   mode: GestureMode;
 }
@@ -57,6 +62,7 @@ export function useCanvasGestures({
   maxZoom
 }: CanvasGestureOptions) {
   const gestureRef = useRef<GestureState | null>(null);
+  const autoPanFrameRef = useRef<number | null>(null);
 
   const screenToWorld = useCallback(
     (sx: number, sy: number): { x: number; y: number } => {
@@ -75,7 +81,7 @@ export function useCanvasGestures({
   );
 
   const modifiersFrom = (
-    event: React.PointerEvent<HTMLCanvasElement>
+    event: React.PointerEvent<HTMLCanvasElement> | PointerEvent
   ): PointerModifiers => ({
     shift: event.shiftKey,
     alt: event.altKey,
@@ -115,12 +121,88 @@ export function useCanvasGestures({
         startWorldY: world.y,
         lastScreenX: event.clientX,
         lastScreenY: event.clientY,
+        lastModifiers: modifiersFrom(event),
         moved: false,
         mode
       };
     },
     [screenPointFromEvent, screenToWorld, onPointerDownRef]
   );
+
+  /** Re-fire the active drag's `onDragMove` at the last pointer position —
+   *  the pointer is still, but the world under it changed (wheel scroll /
+   *  zoom, keyboard zoom, auto-pan). */
+  const viewportChanged = useCallback(() => {
+    const g = gestureRef.current;
+    const canvas = canvasRef.current;
+    if (!g || !g.moved || g.mode === "pan" || g.mode === "ignore" || !canvas) return;
+    const rect = canvas.getBoundingClientRect();
+    const screen = { x: g.lastScreenX - rect.left, y: g.lastScreenY - rect.top };
+    g.mode.handler.onDragMove?.({
+      worldPoint: screenToWorld(screen.x, screen.y),
+      startWorld: { x: g.startWorldX, y: g.startWorldY },
+      screenPoint: screen,
+      modifiers: g.lastModifiers
+    });
+  }, [canvasRef, screenToWorld]);
+
+  const stopAutoPan = useCallback(() => {
+    if (autoPanFrameRef.current !== null) {
+      cancelAnimationFrame(autoPanFrameRef.current);
+      autoPanFrameRef.current = null;
+    }
+  }, []);
+
+  /** Pan velocity (CSS px / 60 Hz frame) for a pointer at client (x, y):
+   *  zero inside the edge band, rising to AUTO_PAN_SPEED_PX at the edge and
+   *  up to twice that further out. */
+  const autoPanVelocity = useCallback(
+    (clientX: number, clientY: number) => {
+      const canvas = canvasRef.current;
+      if (!canvas) return { vx: 0, vy: 0 };
+      const r = canvas.getBoundingClientRect();
+      const axis = (p: number, lo: number, hi: number) => {
+        const depth = (d: number) =>
+          Math.min(2, Math.max(0, (AUTO_PAN_EDGE_PX - d) / AUTO_PAN_EDGE_PX)) * AUTO_PAN_SPEED_PX;
+        if (p - lo < AUTO_PAN_EDGE_PX) return -depth(p - lo);
+        if (hi - p < AUTO_PAN_EDGE_PX) return depth(hi - p);
+        return 0;
+      };
+      return { vx: axis(clientX, r.left, r.right), vy: axis(clientY, r.top, r.bottom) };
+    },
+    [canvasRef]
+  );
+
+  /** Start the auto-pan loop if the active drag wants it and the pointer is
+   *  in the edge band; the loop stops itself once it leaves. */
+  const maybeAutoPan = useCallback(() => {
+    if (autoPanFrameRef.current !== null) return;
+    let last = performance.now();
+    const step = (now: number) => {
+      const g = gestureRef.current;
+      if (!g || !g.moved || g.mode === "pan" || g.mode === "ignore" || !g.mode.handler.autoPan) {
+        autoPanFrameRef.current = null;
+        return;
+      }
+      const { vx, vy } = autoPanVelocity(g.lastScreenX, g.lastScreenY);
+      if (vx === 0 && vy === 0) {
+        autoPanFrameRef.current = null;
+        return;
+      }
+      const frames = Math.min(4, Math.max(0, (now - last) / (1000 / 60)));
+      last = now;
+      const vp = viewportRef.current;
+      setViewport({
+        originX: vp.originX + (vx * frames) / vp.zoom,
+        originY: vp.originY + (vy * frames) / vp.zoom,
+        zoom: vp.zoom
+      });
+      autoPanFrameRef.current = requestAnimationFrame(step);
+    };
+    autoPanFrameRef.current = requestAnimationFrame(step);
+  }, [autoPanVelocity, setViewport, viewportRef]);
+
+  useEffect(() => stopAutoPan, [stopAutoPan]);
 
   const onPointerMove = useCallback(
     (event: React.PointerEvent<HTMLCanvasElement>) => {
@@ -134,6 +216,7 @@ export function useCanvasGestures({
         if (Math.hypot(totalDx, totalDy) > CLICK_MOVE_THRESHOLD_PX) g.moved = true;
       }
 
+      g.lastModifiers = modifiersFrom(event);
       if (g.mode === "ignore") {
         g.lastScreenX = event.clientX;
         g.lastScreenY = event.clientY;
@@ -166,8 +249,9 @@ export function useCanvasGestures({
 
       g.lastScreenX = event.clientX;
       g.lastScreenY = event.clientY;
+      if (g.moved && g.mode !== "pan" && g.mode.handler.autoPan) maybeAutoPan();
     },
-    [setViewport, screenPointFromEvent, screenToWorld, viewportRef]
+    [setViewport, screenPointFromEvent, screenToWorld, viewportRef, maybeAutoPan]
   );
 
   const onPointerUp = useCallback(
@@ -176,6 +260,7 @@ export function useCanvasGestures({
       if (!g || g.pointerId !== event.pointerId) return;
       event.currentTarget.releasePointerCapture(event.pointerId);
       gestureRef.current = null;
+      stopAutoPan();
 
       if (g.mode === "ignore") return;
 
@@ -196,7 +281,7 @@ export function useCanvasGestures({
         });
       }
     },
-    [screenPointFromEvent, screenToWorld, onCanvasClickRef]
+    [screenPointFromEvent, screenToWorld, onCanvasClickRef, stopAutoPan]
   );
 
   const onPointerCancel = useCallback(
@@ -204,9 +289,10 @@ export function useCanvasGestures({
       const g = gestureRef.current;
       if (!g || g.pointerId !== event.pointerId) return;
       gestureRef.current = null;
+      stopAutoPan();
       if (g.mode !== "pan" && g.mode !== "ignore") g.mode.handler.onCancel?.();
     },
-    []
+    [stopAutoPan]
   );
 
   // Native wheel handler bound non-passively so we can preventDefault.
@@ -251,5 +337,5 @@ export function useCanvasGestures({
     };
   }, [canvasRef, viewportRef, minZoom, maxZoom, setViewport]);
 
-  return { onPointerDown, onPointerMove, onPointerUp, onPointerCancel };
+  return { onPointerDown, onPointerMove, onPointerUp, onPointerCancel, viewportChanged };
 }

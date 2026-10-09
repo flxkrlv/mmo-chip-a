@@ -301,8 +301,15 @@ function IcPackageView({ dieId }: { dieId: string }) {
     for (const b of pkgBonds) { const n = nameByNum.get(b.pinNumber); if (n) padIdToName.set(b.diePadId, n); }
     if (padIdToName.size === 0) { toast.warning("No named bonds."); return; }
     let updated = 0;
-    const nextPins = (annotations.pins ?? []).map((p) => {
+    // Pads sharing a pin number are one pin: a name reaching any of them
+    // (through its bond) names all of them.
+    const nameByPadNumber = new Map<number, string>();
+    for (const p of annotations.pins ?? []) {
       const n = padIdToName.get(p.id);
+      if (n && !nameByPadNumber.has(p.pin)) nameByPadNumber.set(p.pin, n);
+    }
+    const nextPins = (annotations.pins ?? []).map((p) => {
+      const n = padIdToName.get(p.id) ?? nameByPadNumber.get(p.pin);
       if (n && p.name !== n) { updated++; return { ...p, name: n }; }
       return p;
     });

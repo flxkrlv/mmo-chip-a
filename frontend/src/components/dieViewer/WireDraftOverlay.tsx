@@ -2,7 +2,8 @@ import { useEffect, useRef } from "react";
 import type { Point } from "../../lib/geometry";
 import type { LiveValue } from "../../lib/liveValue";
 import type { Viewport } from "../../renderer/types";
-import { usePreferences } from "../../state/preferences";
+import { usePreferences, selectNetWidth } from "../../state/preferences";
+import { useSession } from "../../state/session";
 import {
   drawSnapHalo,
   drawTerminalHalo,
@@ -96,7 +97,7 @@ export function WireDraftOverlay({
           const s = toScreen(snap);
           const r = snapRingRadiusPx(
             vp.zoom,
-            usePreferences.getState().netWidth
+            selectNetWidth(useSession.getState().dieId)(usePreferences.getState())
           );
           if (snap.terminal) {
             drawTerminalHalo(ctx, s.x, s.y, r);
@@ -162,7 +163,7 @@ export function WireDraftOverlay({
       // Snap indicator — start (anchor) and end. Drawn when the endpoint
       // snapped to an existing net vertex (`onNode`), a via (`onVia`), or a
       // cell-instance terminal (`onTerminal`). Each draws a distinct halo.
-      const netWidth = usePreferences.getState().netWidth;
+      const netWidth = selectNetWidth(useSession.getState().dieId)(usePreferences.getState());
       const ringR = snapRingRadiusPx(vp.zoom, netWidth);
       const ring = (s: { x: number; y: number }) =>
         drawSnapHalo(ctx, s.x, s.y, ringR);

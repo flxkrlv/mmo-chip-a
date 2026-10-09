@@ -1,6 +1,7 @@
 import type { Cell, CellType, DieAnnotations } from "shared";
 import type { AnnotationAction } from "../api/actions";
 import { uuid } from "./uuid";
+import { withBounds } from "./cellFootprint";
 
 // ── Orientation ──────────────────────────────────────────────────────
 
@@ -22,6 +23,41 @@ export function orientOf(cell: Cell): Orient {
 
 export function rotateCw(r: Rotation): Rotation {
   return (((r + 90) % 360) as Rotation);
+}
+
+export type OrientOp = "rotateCw" | "flipH" | "flipV";
+
+const rot = (r: number): Rotation => ((((r % 360) + 360) % 360) as Rotation);
+
+/**
+ * Orientation after turning / mirroring a placed cell *as seen on the die*
+ * (die viewer): the content and footprint rotate 90° clockwise or mirror
+ * left-right / top-bottom about the footprint centre.
+ *
+ * The die shows M = R(θ)·F(type). Rotating gives R(90)·M, so θ + 90.
+ * Mirroring gives Fh·R(θ)·F = R(−θ)·(Fh·F): θ negates and the flag toggles.
+ */
+export function orientOnDie(o: Orient, op: OrientOp): Orient {
+  if (op === "rotateCw") return { ...o, rotation: rot(o.rotation + 90) };
+  const next = { ...o, rotation: rot(-o.rotation) };
+  if (op === "flipH") next.flippedH = !o.flippedH;
+  else next.flippedV = !o.flippedV;
+  return next;
+}
+
+/**
+ * Orientation after turning / mirroring the cell *as shown in Merge cells*,
+ * where the die crop is drawn un-oriented into the type frame (M⁻¹·die).
+ *
+ * Mirroring the view gives Fh·M⁻¹ = (R(θ)·F·Fh)⁻¹: only the flag toggles.
+ * Rotating it clockwise gives R(90)·M⁻¹ = (R(θ)·F·R(−90))⁻¹, and
+ * F·R(−90) = R(∓90)·F — so θ − 90 unless exactly one mirror is set.
+ */
+export function orientInTypeFrame(o: Orient, op: OrientOp): Orient {
+  if (op === "flipH") return { ...o, flippedH: !o.flippedH };
+  if (op === "flipV") return { ...o, flippedV: !o.flippedV };
+  const oneMirror = o.flippedH !== o.flippedV;
+  return { ...o, rotation: rot(o.rotation + (oneMirror ? 90 : -90)) };
 }
 
 // ── Size / grouping helpers ──────────────────────────────────────────
@@ -152,17 +188,25 @@ export function candidatesFor(
 
 // ── Crop URLs ────────────────────────────────────────────────────────
 //
-// The server cache key for a cell crop is `${cellId}-${left}-${top}.jpg`, so
-// re-aligning (which changes the cell's x/y) naturally yields a fresh crop.
-// We mirror x/y into the query so the *browser* cache busts too.
+// A cell crop is the cell's die footprint (`cellWorldRect`), un-oriented: the
+// server cache key carries its position and size, so re-aligning or rotating
+// naturally yields a fresh crop. We mirror x/y, orientation and any bounds
+// override into the query so the *browser* cache busts too.
 
 export function cellCropUrl(dieId: string, cell: Cell, overlaySourceId?: string): string {
   const x = Math.max(0, Math.round(cell.x));
   const y = Math.max(0, Math.round(cell.y));
+  const o = orientOf(cell);
+  const orient =
+    o.rotation || o.flippedH || o.flippedV
+      ? `&o=${o.rotation}${o.flippedH ? "h" : ""}${o.flippedV ? "v" : ""}`
+      : "";
+  const b = cell.bounds;
+  const bounds = b ? `&b=${b.x},${b.y},${b.width},${b.height}` : "";
   const source = overlaySourceId
     ? `&overlaySourceId=${encodeURIComponent(overlaySourceId)}`
     : "";
-  return `/api/dies/${dieId}/cells/${cell.id}/crop?x=${x}&y=${y}${source}`;
+  return `/api/dies/${dieId}/cells/${cell.id}/crop?x=${x}&y=${y}${orient}${bounds}${source}`;
 }
 
 export function cellTypeCropUrl(dieId: string, cellTypeId: string, overlaySourceId?: string): string {
@@ -191,7 +235,11 @@ function hasLayerShapes(ct: CellType | null): boolean {
 /**
  * Re-type `candidate` into `specimenType` with the given orientation/position,
  * promote the specimen to a matched type, and clean up the candidate's now
- * orphaned placeholder type. One batched (single-undo) action.
+ * orphaned placeholder type. One batched (single-undo) action. The cell
+ * adopts the specimen type's size (any `bounds` override is dropped), so all
+ * instances of a type share one size. The type-box centre stays put on the
+ * die — the merge canvas lines the two boxes up by their centres, and the
+ * content is oriented about that centre.
  */
 export function buildMergeAction(
   annotations: DieAnnotations,
@@ -202,16 +250,19 @@ export function buildMergeAction(
   const prevCell = candidate;
   const prevType = cellTypeById(annotations, candidate.cellTypeId);
 
-  const nextCell: Cell = {
+  const candW = prevType?.cropRect.width ?? specimenType.cropRect.width;
+  const candH = prevType?.cropRect.height ?? specimenType.cropRect.height;
+  const merged: Cell = {
     ...candidate,
     cellTypeId: specimenType.id,
-    x: Math.round(orient.x),
-    y: Math.round(orient.y),
+    x: Math.round(orient.x + (candW - specimenType.cropRect.width) / 2),
+    y: Math.round(orient.y + (candH - specimenType.cropRect.height) / 2),
     flippedH: orient.flippedH || undefined,
     flippedV: orient.flippedV || undefined,
     rotation: orient.rotation === 0 ? undefined : orient.rotation,
     merged: true
   };
+  const nextCell = withBounds(merged, undefined);
 
   const actions: AnnotationAction[] = [
     { kind: "upsertCell", cell: nextCell, prevCell }
@@ -305,15 +356,18 @@ export function buildMakeUniqueAction(
 }
 
 /** A single-field orientation/position edit on a candidate (flip/rotate/align)
- *  — its own undo step. */
+ *  — its own undo step. Rotation / mirrors only change how the cell is
+ *  presented (the die footprint ignores orientation); `x`/`y` are die-axis
+ *  translations (MergeCanvas un-rotates drags) and move the footprint. */
 export function buildOrientAction(
   cell: Cell,
-  patch: Partial<Pick<Cell, "flippedH" | "flippedV" | "rotation" | "x" | "y">>
+  patch: Partial<Pick<Cell, "flippedH" | "flippedV" | "rotation" | "x" | "y" | "warp">>
 ): AnnotationAction {
   const next: Cell = { ...cell, ...patch };
   // Normalise falsy orientation to absent so the JSON stays clean.
   if (next.flippedH === false) delete next.flippedH;
   if (next.flippedV === false) delete next.flippedV;
   if (next.rotation === 0) delete next.rotation;
+  if (next.warp === undefined) delete next.warp;
   return { kind: "upsertCell", cell: next, prevCell: cell };
 }

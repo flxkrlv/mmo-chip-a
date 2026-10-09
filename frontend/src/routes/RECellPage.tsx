@@ -7,6 +7,7 @@ import {
   useState
 } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
+import { cellWorldRect } from "../lib/cellFootprint";
 import type {
   Cell,
   ForcedDiffusionType,
@@ -387,12 +388,12 @@ function RE({ dieId }: { dieId: string }) {
     (target: Cell) => {
       const ct = annotations ? cellTypeById(annotations, target.cellTypeId) : null;
       if (ct) {
-        const rect = {
-          x: target.x,
-          y: target.y,
-          width: ct.cropRect.width || 64,
-          height: ct.cropRect.height || 64
-        };
+        // Frame the cell's real die footprint (honours a resized cell).
+        const rect = cellWorldRect(
+          target,
+          ct.cropRect.width || 64,
+          ct.cropRect.height || 64
+        );
         const v = fitRectViewport(
           rect,
           Math.max(320, window.innerWidth - 568),

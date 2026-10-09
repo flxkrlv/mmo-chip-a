@@ -144,6 +144,14 @@ describe("junction cross", () => {
     );
     expect(strokeCount(annotation)).toBe(1);
   });
+
+  it("omits the junction cross when it is toggled off", () => {
+    const annotation = buildNetAnnotation(
+      branch, () => 2, () => "#fff", () => false, undefined, undefined,
+      () => 1, () => false, undefined, () => false,
+    );
+    expect(strokeCount(annotation)).toBe(1);
+  });
 });
 
 describe("node hitbox matches the drawn dot", () => {

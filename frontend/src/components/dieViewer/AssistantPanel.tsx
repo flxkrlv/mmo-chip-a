@@ -12,6 +12,7 @@ import { useAssistantSession } from "../../state/assistantSession";
 import { usePreferences } from "../../state/preferences";
 import { renderDeviceCrop, getTopVisibleLayerName, resolveLayerNameToSourceId } from "../../lib/vision/renderDeviceCrop";
 import { topVisibleOverlaySourceId, useOverlayLayers } from "../../state/overlayLayers";
+import { floorplanNameInline } from "../../lib/floorplanName";
 
 interface Props {
   dieId: string;
@@ -552,7 +553,7 @@ export function AssistantPanel({ dieId, annotations, devices, netNames, warnings
             style={{ font: "inherit", background: "var(--l1)", color: "#fff", border: "1px solid var(--l2)", borderRadius: 4, padding: "4px 6px" }}
           >
             <option value="">Whole die</option>
-            {floorplanRegions.map((r) => <option key={r.id} value={r.id}>{r.name || r.id}</option>)}
+            {floorplanRegions.map((r) => <option key={r.id} value={r.id}>{floorplanNameInline(r.name) || r.id}</option>)}
           </select>
         </label>
       )}

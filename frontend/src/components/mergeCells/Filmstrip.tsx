@@ -1,5 +1,6 @@
 import type { Cell } from "shared";
 import { cellCropUrl, type Candidate } from "../../lib/mergeCells";
+import { CellThumb } from "./CellThumb";
 import { topVisibleOverlaySourceId, useOverlayLayers } from "../../state/overlayLayers";
 
 interface Props {
@@ -62,11 +63,9 @@ export function Filmstrip({ dieId, candidates, selectedId, onPick, onContextMenu
               outline: sel ? "1px solid var(--accent)" : "none"
             }}
           >
-            <img
+            <CellThumb
               src={cellCropUrl(dieId, cell, overlaySourceId)}
-              alt=""
-              loading="lazy"
-              style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }}
+              style={{ width: "100%", height: "100%" }}
             />
           </div>
         );

@@ -1,4 +1,4 @@
-import { promises as fs } from "node:fs";
+import { promises as fs, readdirSync } from "node:fs";
 import path from "node:path";
 import { ensureTileForRecord } from "./dieImport/importer.js";
 import { resolveProjectDirSync } from "./projectLayout.js";
@@ -27,7 +27,12 @@ interface TileTask {
 
 interface DieProgressState {
   totalTiles: number;
-  /** Files confirmed available during this backend session, including cache hits. */
+  /**
+   * Tiles present on disk: seeded from a directory scan when the state is
+   * created, then incremented for every tile rendered afterwards. Counting
+   * only this session's work made any lazy viewport render after a restart
+   * show the die as "tiling 0%" again although most of it was already built.
+   */
   completedTiles: number;
   /** Files actually rendered during this session; excludes the fast cache scan. */
   generatedTiles: number;
@@ -73,9 +78,11 @@ export function createTileScheduler(config: {
   function ensureProgressState(record: DieRecord) {
     let progress = progressByDie.get(record.id);
     if (!progress) {
+      const totalTiles = record.levels.reduce((sum, level) => sum + level.columns * level.rows, 0);
+      const onDisk = scanTilesOnDisk(projectDirFor(record), record);
       progress = {
-        totalTiles: record.levels.reduce((sum, level) => sum + level.columns * level.rows, 0),
-        completedTiles: 0,
+        totalTiles,
+        completedTiles: Math.min(totalTiles, onDisk.count),
         generatedTiles: 0,
         lastLoggedStep: -1,
         backgroundQueued: false,
@@ -128,12 +135,24 @@ export function createTileScheduler(config: {
       return;
     }
 
+    // Queue only the tiles still missing on disk, so an already-built pyramid
+    // costs one directory scan instead of thousands of no-op tasks.
+    const onDisk = scanTilesOnDisk(projectDirFor(record), record);
+    const missing = progress.totalTiles - onDisk.count;
+    if (missing <= 0) {
+      return;
+    }
+
     progress.backgroundQueued = true;
-    console.log(`[tiles:${record.id}] queued background generation for ${progress.totalTiles} tiles`);
+    console.log(
+      `[tiles:${record.id}] queued background generation for ${missing} missing tiles (${onDisk.count}/${progress.totalTiles} on disk)`
+    );
 
     for (const level of record.levels) {
+      const present = onDisk.byLevel.get(level.z);
       for (let y = 0; y < level.rows; y += 1) {
         for (let x = 0; x < level.columns; x += 1) {
+          if (present?.has(`${x}_${y}`)) continue;
           getOrCreateTask(record, level.z, x, y, "low");
         }
       }
@@ -173,6 +192,10 @@ export function createTileScheduler(config: {
       }
       return existing;
     }
+
+    // Seed progress before the task can run: a tile rendered by this task must
+    // be counted by runTask, not already by the disk scan.
+    ensureProgressState(record);
 
     let resolve!: (tilePath: string) => void;
     let reject!: (error: unknown) => void;
@@ -291,8 +314,8 @@ export function createTileScheduler(config: {
       }
 
       const progress = ensureProgressState(task.record);
-      progress.completedTiles += 1;
       if (!wasCached) {
+        progress.completedTiles = Math.min(progress.totalTiles, progress.completedTiles + 1);
         const generatedAt = Date.now();
         if (progress.generationStartedAt === null) {
           progress.generationStartedAt = generatedAt;
@@ -439,6 +462,35 @@ async function isTilePresent(tilePath: string) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
     throw error;
   }
+}
+
+/**
+ * List the finished base tiles of every level. Only in-range `x_y.jpg` names
+ * count: `.tmp` leftovers of a render killed mid-write are ignored.
+ */
+function scanTilesOnDisk(projectDir: string, record: DieRecord) {
+  const byLevel = new Map<number, Set<string>>();
+  let count = 0;
+  for (const level of record.levels) {
+    let names: string[];
+    try {
+      names = readdirSync(path.join(projectDir, "tiles", String(level.z)));
+    } catch {
+      continue;
+    }
+    const present = new Set<string>();
+    for (const name of names) {
+      const match = /^(\d+)_(\d+)\.jpg$/.exec(name);
+      if (!match) continue;
+      const x = Number(match[1]);
+      const y = Number(match[2]);
+      if (x >= level.columns || y >= level.rows) continue;
+      present.add(`${x}_${y}`);
+    }
+    byLevel.set(level.z, present);
+    count += present.size;
+  }
+  return { count, byLevel };
 }
 
 function buildTilePath(projectDir: string, z: number, x: number, y: number) {

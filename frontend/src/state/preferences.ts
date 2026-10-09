@@ -13,7 +13,10 @@ import {
   NET_NODE_RADIUS_MULT
 } from "../renderer/annotations/style";
 import type { Viewport } from "../renderer/types";
+import type { WindowAnchor } from "../lib/windowAnchor";
 import type { InspectorTab } from "./dieViewer";
+import type { ScreenshotScale } from "../lib/screenshot";
+import type { AngleMode, AngleTool } from "../lib/angleConstraint";
 import {
   ANNOTATION_KIND_VALUES,
   type AnnotationKind
@@ -32,9 +35,17 @@ export interface OverlayLayerPersistedSettings {
 }
 
 interface PreferencesState {
-  /** Base width (world units) for net wires. The renderer's screen clamp
-   *  applies on top of this. */
+  /** Global fallback wire width (world units), used for a die with no entry
+   *  in `netWidthByDie` yet. The renderer's screen clamp applies on top of
+   *  this. */
   netWidth: number;
+  /** Per-die net wire width, keyed by dieId. Absent = fall back to
+   *  `netWidth`. Each die has its own magnification/scale, so a single
+   *  global width doesn't read well on every chip. */
+  netWidthByDie: Record<string, number>;
+  /** Per-die angle mode of each drawing tool (ruler, wire / bus, floorplan
+   *  polygon, via polygon). Absent = DEFAULT_ANGLE_MODES (lib/angleConstraint). */
+  angleModesByDie: Record<string, Partial<Record<AngleTool, AngleMode>>>;
   /** Base color for unselected wires + vertices (one of NET_COLOR_OPTIONS). */
   netColor: string;
   /** Cell outline + block-fill color (one of CELL_COLOR_OPTIONS). */
@@ -47,12 +58,58 @@ interface PreferencesState {
   cellSnapToGuides: boolean;
   /** Per-net color overrides, keyed by `net:<netId>`. Absent = use `netColor`. */
   netColors: Record<string, string>;
+  /** Where each dragged element window (net / cell / floorplan / comment)
+   *  reopens, keyed by `windowAnchorKey(dieId, kind, id)`. */
+  windowAnchors: Record<string, WindowAnchor>;
+  /** When true, per-net color overrides (`netColors`) render on the canvas.
+   *  When false, they're kept (nothing is lost) but every net falls back to
+   *  its per-conductor-layer color, so the die reads by metal/silicon type
+   *  instead of by net. Toggle lets the user flip between the two views
+   *  without re-picking colors. Default true (custom colors visible). */
+  customNetColorsEnabled: boolean;
+  /** Per-net visibility override, keyed by `net:<netId>` (same key shape as
+   *  `netColors`). `true` = explicitly hidden, `false` = explicitly shown,
+   *  absent = follow `hiddenKinds`'s "net" entry (the section-wide default).
+   *  A per-net click can override the default in *either* direction — most
+   *  notably, showing a single net back on even while "net" is in
+   *  `hiddenKinds` ("solo" a net after hiding the whole layer). The "Nets"
+   *  section eye stays all-or-nothing: every click flips the "net" kind AND
+   *  resets this map, so hiding is always a clean slate and showing again
+   *  always reveals every net, not just whichever ones had a stale override. */
+  hiddenNetIds: Record<string, boolean>;
+  /** Per-cell-type visibility override, keyed by `cellTypeId` (the same id
+   *  used in `Cell.cellTypeId`). Same override semantics as `hiddenNetIds`,
+   *  composed against `hiddenKinds`'s "cell" entry instead of "net". */
+  hiddenCellTypeIds: Record<string, boolean>;
+  /** Per-floorplan-type visibility override, keyed by the region's `name`
+   *  (floorplan regions sharing a name are treated as one "type", grouped
+   *  together in the Items outline the same way `cellTypeId` groups cells).
+   *  Same override semantics as `hiddenCellTypeIds`, composed against
+   *  `hiddenKinds`'s "floorplan" entry instead of "cell". */
+  hiddenFloorplanTypeNames: Record<string, boolean>;
+  /** Global ruler-layer visibility. Unlike `hiddenKinds` (nets/cells), a
+   *  ruler isn't an AnnotationKind — it renders via its own overlay — so this
+   *  is a plain boolean rather than a kind-array entry. Default false (all
+   *  rulers visible). */
+  rulersHidden: boolean;
+  /** Per-ruler visibility override, keyed by ruler id. Absent = follow
+   *  `rulersHidden`. Unlike `hiddenNetIds` (which only ever marks something
+   *  hidden, since the "net" kind is never solo'd back on once globally
+   *  hidden), this stores the ruler's *explicit* visible/hidden state so a
+   *  single ruler can be re-shown even while the rest of the layer is
+   *  globally off: `toggleRulersVisibility` flips `rulersHidden` AND clears
+   *  this map, so every global click is a clean slate, while a per-ruler
+   *  click only ever affects that one ruler. */
+  rulerVisibilityOverrides: Record<string, boolean>;
   /** Cell-grid guides hidden on the canvas. */
   guidesHidden: boolean;
   /** Guides locked — not selectable / movable (still visible). */
   guidesLocked: boolean;
   /** Cells locked — can't be dragged/repositioned. */
   cellsLocked: boolean;
+  /** Die-viewer screenshot resolution: × the on-screen device pixels, or
+   *  "native" (the die's full tile resolution for the current view). */
+  screenshotScale: ScreenshotScale;
   /** Classes a newly-drawn ML ROI fully labels (schema §1 — load-bearing).
    *  Editable in the ROI tool options; each new ROI is stamped with this. */
   roiClasses: AnnotationClass[];
@@ -68,7 +125,7 @@ interface PreferencesState {
   /** Outline tree sections that should render expanded. */
   expandedSections: AnnotationKind[];
   /** Merge-cells canvas mode. */
-  mergeMode: "overlay" | "sxs" | "diff" | "specimen" | "candidate";
+  mergeMode: "overlay" | "sxs" | "diff" | "specimen" | "candidate" | "multi";
   /** Candidate opacity 0..1 in merge-cells overlay mode. */
   mergeOpacity: number;
   /** Show cell-type layer annotations over the merge-cells crops. */
@@ -144,6 +201,13 @@ interface PreferencesState {
   /** Show via type label (VIA12, VIA23, …) above each via annotation on the
    *  die viewer canvas. */
   viaLabelsVisible: boolean;
+  /** Show the name label next to each I/O pin marker on the die viewer
+   *  canvas. Independent of `hiddenKinds`'s "pin" entry, which hides/shows
+   *  the whole pin marker (+ its name) at once — the "I/O pins" section eye
+   *  toggles that AND resets this back to true, so re-showing pins always
+   *  brings their names back too, regardless of what this toggle was set to
+   *  before. Default true (names always shown). */
+  pinNamesVisible: boolean;
   /** Die viewer: show the analog devices overlay (extracted instances + highlights). */
   deviceOverlayOn: boolean;
   /** Die viewer: render net IDs next to terminals/wires instead of just net colors. */
@@ -167,6 +231,9 @@ interface PreferencesState {
    *  - false → legacy behaviour: a dot on EVERY net vertex (ends + turns).
    *  Only affects drawing; vertices stay grabbable in both modes. */
   netNodeJunctionsOnly: boolean;
+  /** Draw a contrasting cross inside junction dots (vertices where ≥ 3
+   *  segments of a net meet). Drawing only. Default true. */
+  netNodeJunctionCross: boolean;
   /** Resistor body layers opacity (0..1) in the RE canvas. Default 1.
    *  Helps superimpose the drawn polyline onto the image to verify width. */
   resistorOpacity: number;
@@ -224,10 +291,41 @@ interface PreferencesState {
 }
 
 interface PreferencesActions {
-  setNetWidth: (width: number) => void;
+  /** Set the net wire width for a specific die (each chip has its own scale). */
+  setNetWidth: (dieId: string, width: number) => void;
+  setAngleMode: (dieId: string, tool: AngleTool, mode: AngleMode) => void;
   setNetColor: (color: string) => void;
   /** Override color for a specific net (id like "net:abc"). null = clear. */
   setNetColorOverride: (netId: string, color: string | null) => void;
+  /** Override color for several nets at once (multi-select bulk assign).
+   *  null = clear all of them back to the global/layer default. */
+  setNetColorsForIds: (netIds: string[], color: string | null) => void;
+  /** Store (or with `null`, forget) an element window's placement. */
+  setWindowAnchor: (key: string, anchor: WindowAnchor | null) => void;
+  /** Show/hide one net (keyed by `net:<netId>`), independent of the others. */
+  setNetHidden: (netId: string, hidden: boolean) => void;
+  /** Clear all individual net hidden overrides (back to "all visible"). Used
+   *  by the "Nets" section eye so each all-or-nothing toggle starts from a
+   *  clean slate. */
+  resetHiddenNets: () => void;
+  /** Show/hide one cell type (keyed by `cellTypeId`), independent of the others. */
+  setCellTypeHidden: (cellTypeId: string, hidden: boolean) => void;
+  /** Clear all individual cell-type hidden overrides (back to "all visible"). */
+  resetHiddenCellTypes: () => void;
+  /** Show/hide one floorplan type (keyed by region `name`), independent of the others. */
+  setFloorplanTypeHidden: (name: string, hidden: boolean) => void;
+  /** Clear all individual floorplan-type hidden overrides (back to "all visible"). */
+  resetHiddenFloorplanTypes: () => void;
+  /** Flip the global ruler-layer visibility and clear every per-ruler
+   *  override, so each click is an unambiguous "hide everything" /
+   *  "show everything". */
+  toggleRulersVisibility: () => void;
+  /** Show/hide one ruler (by id), independent of the others and of the
+   *  global toggle. */
+  setRulerVisible: (rulerId: string, visible: boolean) => void;
+  /** Toggle whether per-net color overrides render on the canvas (see
+   *  `customNetColorsEnabled`). */
+  setCustomNetColorsEnabled: (enabled: boolean) => void;
   /** Set colour for a specific conductor layer (metal1, metal2, poly, etc.). */
   setWireLayerColor: (layer: string, color: string) => void;
   /** Toggle auto-via placement on cross-layer snap. */
@@ -236,6 +334,8 @@ interface PreferencesActions {
   setViaPlaceMode: (mode: "cursor" | "wire-end") => void;
   /** Toggle via type labels on the die viewer canvas. */
   setViaLabelsVisible: (visible: boolean) => void;
+  /** Toggle I/O pin name labels on the die viewer canvas. */
+  setPinNamesVisible: (visible: boolean) => void;
   /** Toggle analog devices overlay on the die viewer canvas. */
   setDeviceOverlayOn: (visible: boolean) => void;
   /** Toggle net ID overlay on the die viewer canvas. */
@@ -254,6 +354,8 @@ interface PreferencesActions {
   setNetNodeVisible: (visible: boolean) => void;
   /** Toggle junction-only wire node drawing (see `netNodeJunctionsOnly`). */
   setNetNodeJunctionsOnly: (junctionsOnly: boolean) => void;
+  /** Toggle the cross inside junction dots (see `netNodeJunctionCross`). */
+  setNetNodeJunctionCross: (cross: boolean) => void;
   setViaColor: (color: string) => void;
   setCellColor: (color: string) => void;
   setCellShowShapes: (show: boolean) => void;
@@ -261,10 +363,11 @@ interface PreferencesActions {
   setGuidesHidden: (hidden: boolean) => void;
   setGuidesLocked: (locked: boolean) => void;
   setCellsLocked: (locked: boolean) => void;
+  setScreenshotScale: (scale: ScreenshotScale) => void;
   setBaseImageHidden: (id: string, hidden: boolean) => void;
   setBaseImageOpacity: (id: string, opacity: number) => void;
   setMergeMode: (
-    mode: "overlay" | "sxs" | "diff" | "specimen" | "candidate"
+    mode: "overlay" | "sxs" | "diff" | "specimen" | "candidate" | "multi"
   ) => void;
   setMergeOpacity: (opacity: number) => void;
   setMergeShowAnno: (show: boolean) => void;
@@ -336,14 +439,24 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
     persist(
       (set) => ({
         netWidth: NET_DEFAULT_WIDTH,
+        netWidthByDie: {},
+        angleModesByDie: {},
         netColor: NET_COLOR,
         netColors: {},
+        windowAnchors: {},
+        hiddenNetIds: {},
+        hiddenCellTypeIds: {},
+        hiddenFloorplanTypeNames: {},
+        rulersHidden: false,
+        rulerVisibilityOverrides: {},
+        customNetColorsEnabled: true,
         cellColor: CELL_COLOR,
         cellShowShapes: true,
         cellSnapToGuides: false,
         guidesHidden: false,
         guidesLocked: false,
         cellsLocked: false,
+        screenshotScale: 1,
         baseImageHidden: {},
         baseImageOpacity: {},
         roiClasses: ["point_via", "irregular_via"],
@@ -378,6 +491,7 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
         viaPlaceMode: "wire-end",
         viaLayerColors: {},
         viaLabelsVisible: true,
+        pinNamesVisible: true,
         deviceOverlayOn: true,
         showTermNetIds: false,
         floorplanOverlayOn: true,
@@ -386,6 +500,7 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
               netNodeSize: NET_NODE_RADIUS_MULT,
         netNodeVisible: true,
         netNodeJunctionsOnly: true,
+        netNodeJunctionCross: true,
         resistorOpacity: 1,
         reDeviceLabelsVisible: true,
         reTerminalLabelsVisible: true,
@@ -412,7 +527,15 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
           ? "C:\\Program Files\\Spice64\\bin\\ngspice.exe"
           : "ngspice",
 
-        setNetWidth: (width) => set({ netWidth: width }),
+        setNetWidth: (dieId, width) =>
+          set((state) => ({ netWidthByDie: { ...state.netWidthByDie, [dieId]: width } })),
+        setAngleMode: (dieId, tool, mode) =>
+          set((state) => ({
+            angleModesByDie: {
+              ...state.angleModesByDie,
+              [dieId]: { ...state.angleModesByDie[dieId], [tool]: mode }
+            }
+          })),
         setNetColor: (color) => set({ netColor: color }),
         setWireLayerColor: (layer, color) =>
           set((state) => ({
@@ -421,6 +544,7 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
         setAutoViaEnabled: (enabled) => set({ autoViaEnabled: enabled }),
         setViaPlaceMode: (mode) => set({ viaPlaceMode: mode }),
         setViaLabelsVisible: (visible) => set({ viaLabelsVisible: visible }),
+        setPinNamesVisible: (visible) => set({ pinNamesVisible: visible }),
         setDeviceOverlayOn: (visible) => set({ deviceOverlayOn: visible }),
         setShowTermNetIds: (visible) => set({ showTermNetIds: visible }),
         setFloorplanOverlayOn: (visible) => set({ floorplanOverlayOn: visible }),
@@ -435,7 +559,17 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
         setNetNodeVisible: (visible) => set({ netNodeVisible: visible }),
         setNetNodeJunctionsOnly: (junctionsOnly) =>
           set({ netNodeJunctionsOnly: junctionsOnly }),
+        setNetNodeJunctionCross: (cross) => set({ netNodeJunctionCross: cross }),
         setViaColor: (color) => set({ viaColor: color }),
+        setWindowAnchor: (key, anchor) =>
+          set((state) => {
+            if (anchor === null) {
+              if (!(key in state.windowAnchors)) return state;
+              const { [key]: _, ...rest } = state.windowAnchors;
+              return { windowAnchors: rest };
+            }
+            return { windowAnchors: { ...state.windowAnchors, [key]: anchor } };
+          }),
         setNetColorOverride: (netId, color) =>
           set((state) => {
             if (color === null || color === state.netColor) {
@@ -445,12 +579,97 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
             }
             return { netColors: { ...state.netColors, [netId]: color } };
           }),
+        setNetColorsForIds: (netIds, color) =>
+          set((state) => {
+            const next = { ...state.netColors };
+            let changed = false;
+            for (const netId of netIds) {
+              if (color === null || color === state.netColor) {
+                if (netId in next) {
+                  delete next[netId];
+                  changed = true;
+                }
+              } else if (next[netId] !== color) {
+                next[netId] = color;
+                changed = true;
+              }
+            }
+            return changed ? { netColors: next } : state;
+          }),
+        setNetHidden: (netId, hidden) =>
+          set((state) => {
+            const isDefault = hidden === state.hiddenKinds.includes("net");
+            if (isDefault) {
+              if (!(netId in state.hiddenNetIds)) return state;
+              const { [netId]: _, ...rest } = state.hiddenNetIds;
+              return { hiddenNetIds: rest };
+            }
+            return { hiddenNetIds: { ...state.hiddenNetIds, [netId]: hidden } };
+          }),
+        resetHiddenNets: () =>
+          set((state) =>
+            Object.keys(state.hiddenNetIds).length === 0
+              ? state
+              : { hiddenNetIds: {} }
+          ),
+        setCellTypeHidden: (cellTypeId, hidden) =>
+          set((state) => {
+            const isDefault = hidden === state.hiddenKinds.includes("cell");
+            if (isDefault) {
+              if (!(cellTypeId in state.hiddenCellTypeIds)) return state;
+              const { [cellTypeId]: _, ...rest } = state.hiddenCellTypeIds;
+              return { hiddenCellTypeIds: rest };
+            }
+            return { hiddenCellTypeIds: { ...state.hiddenCellTypeIds, [cellTypeId]: hidden } };
+          }),
+        resetHiddenCellTypes: () =>
+          set((state) =>
+            Object.keys(state.hiddenCellTypeIds).length === 0
+              ? state
+              : { hiddenCellTypeIds: {} }
+          ),
+        setFloorplanTypeHidden: (name, hidden) =>
+          set((state) => {
+            const isDefault = hidden === state.hiddenKinds.includes("floorplan");
+            if (isDefault) {
+              if (!(name in state.hiddenFloorplanTypeNames)) return state;
+              const { [name]: _, ...rest } = state.hiddenFloorplanTypeNames;
+              return { hiddenFloorplanTypeNames: rest };
+            }
+            return { hiddenFloorplanTypeNames: { ...state.hiddenFloorplanTypeNames, [name]: hidden } };
+          }),
+        resetHiddenFloorplanTypes: () =>
+          set((state) =>
+            Object.keys(state.hiddenFloorplanTypeNames).length === 0
+              ? state
+              : { hiddenFloorplanTypeNames: {} }
+          ),
+        toggleRulersVisibility: () =>
+          set((state) => ({
+            rulersHidden: !state.rulersHidden,
+            rulerVisibilityOverrides: {}
+          })),
+        setRulerVisible: (rulerId, visible) =>
+          set((state) => {
+            const isDefault = visible === !state.rulersHidden;
+            if (isDefault) {
+              if (!(rulerId in state.rulerVisibilityOverrides)) return state;
+              const { [rulerId]: _, ...rest } = state.rulerVisibilityOverrides;
+              return { rulerVisibilityOverrides: rest };
+            }
+            return {
+              rulerVisibilityOverrides: { ...state.rulerVisibilityOverrides, [rulerId]: visible }
+            };
+          }),
+        setCustomNetColorsEnabled: (enabled) =>
+          set({ customNetColorsEnabled: enabled }),
         setCellColor: (color) => set({ cellColor: color }),
         setCellShowShapes: (show) => set({ cellShowShapes: show }),
         setCellSnapToGuides: (snap) => set({ cellSnapToGuides: snap }),
         setGuidesHidden: (hidden) => set({ guidesHidden: hidden }),
         setGuidesLocked: (locked) => set({ guidesLocked: locked }),
         setCellsLocked: (locked) => set({ cellsLocked: locked }),
+        setScreenshotScale: (scale) => set({ screenshotScale: scale }),
         setBaseImageHidden: (id, hidden) =>
           set((state) => ({
             baseImageHidden: { ...state.baseImageHidden, [id]: hidden }
@@ -615,6 +834,8 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
         // schema change, so the UI never references a removed kind.
         partialize: (state) => ({
           netWidth: state.netWidth,
+          netWidthByDie: state.netWidthByDie,
+          angleModesByDie: state.angleModesByDie,
           netColor: state.netColor,
           cellColor: state.cellColor,
           cellShowShapes: state.cellShowShapes,
@@ -622,6 +843,7 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
           guidesHidden: state.guidesHidden,
           guidesLocked: state.guidesLocked,
           cellsLocked: state.cellsLocked,
+          screenshotScale: state.screenshotScale,
           baseImageHidden: state.baseImageHidden,
           baseImageOpacity: state.baseImageOpacity,
           roiClasses: state.roiClasses,
@@ -639,6 +861,13 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
           reLayerHidden: state.reLayerHidden,
           reLayerSelectable: state.reLayerSelectable,
           netColors: state.netColors,
+          windowAnchors: state.windowAnchors,
+          hiddenNetIds: state.hiddenNetIds,
+          hiddenCellTypeIds: state.hiddenCellTypeIds,
+          hiddenFloorplanTypeNames: state.hiddenFloorplanTypeNames,
+          rulersHidden: state.rulersHidden,
+          rulerVisibilityOverrides: state.rulerVisibilityOverrides,
+          customNetColorsEnabled: state.customNetColorsEnabled,
           mlResultsHidden: state.mlResultsHidden,
           snapToVias: state.snapToVias,
           wireAutoEndOnVia: state.wireAutoEndOnVia,
@@ -653,6 +882,7 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
           autoViaEnabled: state.autoViaEnabled,
           viaPlaceMode: state.viaPlaceMode,
           viaLabelsVisible: state.viaLabelsVisible,
+          pinNamesVisible: state.pinNamesVisible,
           deviceOverlayOn: state.deviceOverlayOn,
           showTermNetIds: state.showTermNetIds,
           floorplanOverlayOn: state.floorplanOverlayOn,
@@ -662,6 +892,7 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
           netNodeSize: state.netNodeSize,
           netNodeVisible: state.netNodeVisible,
           netNodeJunctionsOnly: state.netNodeJunctionsOnly,
+          netNodeJunctionCross: state.netNodeJunctionCross,
           resistorOpacity: state.resistorOpacity,
           reDeviceLabelsVisible: state.reDeviceLabelsVisible,
           reTerminalLabelsVisible: state.reTerminalLabelsVisible,
@@ -694,6 +925,49 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
 /** Select the effective color for a net: override if set, else global netColor. */
 export function selectNetColor(netId: string) {
   return (state: PreferencesState) => state.netColors[netId] ?? state.netColor;
+}
+
+/** Select the effective net wire width for a die: per-die override if set,
+ *  else the global fallback `netWidth`. */
+export function selectNetWidth(dieId: string | null | undefined) {
+  return (state: PreferencesState) =>
+    (dieId ? state.netWidthByDie[dieId] : undefined) ?? state.netWidth;
+}
+
+/** Helper selector: is this net (keyed by `net:<netId>`) currently visible?
+ *  An explicit per-net override wins; otherwise falls back to whether "net"
+ *  is in `hiddenKinds`. */
+export function selectNetVisible(netId: string) {
+  return (state: PreferencesState) => {
+    const override = state.hiddenNetIds[netId];
+    return override === undefined ? !state.hiddenKinds.includes("net") : !override;
+  };
+}
+
+/** Helper selector: is this cell type currently visible? Same override
+ *  semantics as `selectNetVisible`, composed against "cell" instead. */
+export function selectCellTypeVisible(cellTypeId: string) {
+  return (state: PreferencesState) => {
+    const override = state.hiddenCellTypeIds[cellTypeId];
+    return override === undefined ? !state.hiddenKinds.includes("cell") : !override;
+  };
+}
+
+/** Helper selector: is this floorplan type (grouped by region `name`)
+ *  currently visible? Same override semantics as `selectCellTypeVisible`,
+ *  composed against "floorplan" instead. */
+export function selectFloorplanTypeVisible(name: string) {
+  return (state: PreferencesState) => {
+    const override = state.hiddenFloorplanTypeNames[name];
+    return override === undefined ? !state.hiddenKinds.includes("floorplan") : !override;
+  };
+}
+
+/** Helper selector: is this ruler currently visible? Explicit per-ruler
+ *  override wins; otherwise falls back to the global `rulersHidden` toggle. */
+export function selectRulerVisible(rulerId: string) {
+  return (state: PreferencesState) =>
+    state.rulerVisibilityOverrides[rulerId] ?? !state.rulersHidden;
 }
 
 /** Helper selector: is this annotation kind currently visible on the canvas? */

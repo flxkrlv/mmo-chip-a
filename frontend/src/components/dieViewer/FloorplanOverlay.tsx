@@ -2,22 +2,37 @@
  * FloorplanOverlay.tsx — Renders floorplan region outlines on the canvas
  * as positioned HTML divs.
  *
- * Popover opens on double-click on the body, or single-click on the label.
- * This leaves single-click free for cell/wire drawing on the canvas.
+ * Single click on the outline or the label selects the region (Shift: toggle
+ * it in the selection); double click opens its window. Only the outline and
+ * label catch the mouse — the interior passes through to the canvas.
  */
 
-import { useCallback, useMemo } from "react";
+import { useCallback, useMemo, useState } from "react";
 import type { DieAnnotations, FloorplanRegion } from "shared";
 import type { LiveValue } from "../../lib/liveValue";
 import { useLiveValue } from "../../lib/liveValue";
 import { useFloorplanStore } from "../../state/floorplan";
+import { useDieViewerStore } from "../../state/dieViewer";
+import { usePreferences } from "../../state/preferences";
 import type { Viewport } from "../../renderer/types";
 import { FloorplanRegionPopover } from "./FloorplanRegionPopover";
+import { FloorplanEditHandles } from "./FloorplanEditHandles";
+import { FloorplanPolyDraft } from "./FloorplanPolyDraft";
+import { floorplanNameLines } from "../../lib/floorplanName";
+import { isFloorplanVisible } from "../../lib/floorplanSnapshot";
+import type { ActionDispatcher } from "../../api/actions";
+import { useAuth } from "../../state/auth";
+import { useToast } from "../Toast";
 
 interface Props {
   annotations: DieAnnotations | undefined;
   viewportStore: LiveValue<Viewport | null>;
+  /** Rubber-band tip of the polygon draft (world; the cursor constrained to
+   *  the floorplan angle mode — see DieViewerPage.constrainPolyPoint). */
+  cursorStore: LiveValue<{ x: number; y: number } | null>;
   dieId: string;
+  /** Floorplan edits go through it, so they are undoable. */
+  dispatcher: ActionDispatcher;
   /** When true, show port dot markers on all region blocks */
   showIO?: boolean;
   /** Called when annotations have changed (to trigger a refetch). */
@@ -25,44 +40,83 @@ interface Props {
 }
 
 const FLOORPLAN_STROKE_WIDTH = 2.2;
+
+/** A (possibly multiline) region name as <tspan> rows; the first row sits on
+ *  the parent <text>'s y. Blank rows keep their height. */
+function NameLines({ name, x, fontSize }: { name: string; x: number; fontSize: number }) {
+  return (
+    <>
+      {floorplanNameLines(name).map((line, i) => (
+        <tspan key={i} x={x} dy={i === 0 ? 0 : fontSize * 1.2}>
+          {line || "\u00a0"}
+        </tspan>
+      ))}
+    </>
+  );
+}
 const FLOORPLAN_DRAFT_STROKE_WIDTH = 2.2;
 
 /**
  * Renders floorplan region outlines + popover.
- * - Single-click on label → opens popover
- * - Double-click on region body → opens popover
- * - Single-click on body → passes through to canvas (no interception)
+ * - Click on outline / label → select (Shift: toggle)
+ * - Double-click on outline / label → open the window (Shift: keep selection)
+ * - Clicks inside the region → pass through to the canvas
  */
 export function FloorplanOverlay({
   annotations,
   viewportStore,
+  cursorStore,
   dieId,
+  dispatcher,
   showIO,
   onAnnotationChange,
 }: Props) {
   const viewport = useLiveValue(viewportStore);
   const regions = useFloorplanStore((s) => s.regions);
-  const selectedRegionId = useFloorplanStore((s) => s.selectedRegionId);
+  const openRegionId = useFloorplanStore((s) => s.openRegionId);
   const selectRegion = useFloorplanStore((s) => s.selectRegion);
+  const openRegion = useFloorplanStore((s) => s.openRegion);
+  const viewerSelection = useDieViewerStore((s) => s.selectedIds);
   const draft = useFloorplanStore((s) => s.draft);
+  const editingRegionId = useFloorplanStore((s) => s.editingRegionId);
+  const upsertRegion = useFloorplanStore((s) => s.upsertRegion);
+  const userId = useAuth((s) => s.userId);
+  const toast = useToast();
+  /** Geometry of the region being reshaped, while a handle drag is live. */
+  const [liveEdit, setLiveEdit] = useState<{ id: string; geometry: FloorplanRegion["geometry"] } | null>(null);
+  const floorplanGloballyHidden = usePreferences((s) => s.hiddenKinds.includes("floorplan"));
+  const hiddenFloorplanTypeNames = usePreferences((s) => s.hiddenFloorplanTypeNames);
+  const isRegionVisible = useCallback(
+    (region: FloorplanRegion) => isFloorplanVisible(region, floorplanGloballyHidden, hiddenFloorplanTypeNames),
+    [floorplanGloballyHidden, hiddenFloorplanTypeNames]
+  );
 
-  const openPopover = useCallback(
-    (region: FloorplanRegion) => {
-      selectRegion(region.id);
-    },
+  const clickRegion = useCallback(
+    (region: FloorplanRegion, e: React.MouseEvent) => selectRegion(region.id, e.shiftKey ? "toggle" : "replace"),
     [selectRegion],
+  );
+  // Stop the double-click here so the canvas underneath doesn't treat it as
+  // its own (e.g. opening the cell type picker for a cell under the outline).
+  const openPopover = useCallback(
+    (region: FloorplanRegion, e: React.MouseEvent) => {
+      e.stopPropagation();
+      openRegion(region.id, e.shiftKey);
+    },
+    [openRegion],
   );
 
   const handlePopoverClose = useCallback(() => {
-    selectRegion(null);
-  }, [selectRegion]);
+    openRegion(null);
+  }, [openRegion]);
 
   // Build rendered items from saved regions + draft
   const renderedRegions = useMemo(() => {
     if (!viewport) return [];
     const items: { region: FloorplanRegion; cssLeft: number; cssTop: number; cssW: number; cssH: number; isDraft: boolean }[] = [];
 
-    for (const r of regions) {
+    for (const saved of regions) {
+      if (!isRegionVisible(saved)) continue;
+      const r = liveEdit?.id === saved.id ? { ...saved, geometry: liveEdit.geometry } : saved;
       const pts = r.geometry;
       const minX = Math.min(...pts.map((p) => p.x));
       const minY = Math.min(...pts.map((p) => p.y));
@@ -79,7 +133,9 @@ export function FloorplanOverlay({
     }
 
     // Draft (in-progress rect drag or poly)
-    if (draft && draft.active && draft.points.length >= 2) {
+    // Polygon drafts are drawn by FloorplanPolyDraft (from the first click,
+    // with a rubber band to the cursor); only the rect drag lives here.
+    if (draft && draft.active && draft.kind === "rect" && draft.points.length >= 2) {
       const pts = draft.points;
       const minX = Math.min(...pts.map((p) => p.x));
       const minY = Math.min(...pts.map((p) => p.y));
@@ -109,11 +165,41 @@ export function FloorplanOverlay({
     }
 
     return items;
-  }, [regions, draft, viewport]);
+  }, [regions, draft, viewport, isRegionVisible, liveEdit]);
+
+  // ── Geometry editing ────────────────────────────────────
+  // Regions reserved by someone else keep their shape.
+  const editingRegion = editingRegionId
+    ? regions.find((r) => r.id === editingRegionId) ?? null
+    : null;
+  const canEdit =
+    !!editingRegion &&
+    isRegionVisible(editingRegion) &&
+    (!editingRegion.reservedBy || editingRegion.reservedBy === userId);
+
+  const commitGeometry = useCallback(
+    (updated: FloorplanRegion) => {
+      const previous = regions.find((r) => r.id === updated.id);
+      if (!previous) return;
+      // Instant feedback; the store re-syncs from annotations (incl. rollback).
+      upsertRegion(updated);
+      setLiveEdit(null);
+      void dispatcher
+        .dispatch({ kind: "upsertFloorplan", region: updated, prevRegion: previous })
+        .then((ok) => {
+          if (ok) onAnnotationChange?.();
+          else {
+            upsertRegion(previous);
+            toast.error("Failed to save floorplan");
+          }
+        });
+    },
+    [regions, upsertRegion, dispatcher, onAnnotationChange, toast],
+  );
 
   // Selected region for popover
-  const selectedRegion = selectedRegionId
-    ? regions.find((r) => r.id === selectedRegionId) ?? null
+  const selectedRegion = openRegionId
+    ? regions.find((r) => r.id === openRegionId) ?? null
     : null;
 
   // ── Port visualization ──────────────────────────────────
@@ -183,7 +269,7 @@ export function FloorplanOverlay({
     <>
       {/* Region outlines */}
       {renderedRegions.map(({ region, cssLeft, cssTop, cssW, cssH, isDraft }) => {
-        const isSelected = region.id === selectedRegionId;
+        const isSelected = region.id === openRegionId || viewerSelection.has(`floorplan:${region.id}`);
         const color = region.color || "#4dabf7";
         const sw = isDraft ? FLOORPLAN_DRAFT_STROKE_WIDTH : FLOORPLAN_STROKE_WIDTH;
 
@@ -191,8 +277,7 @@ export function FloorplanOverlay({
         const isPoly = (region.kind as string) === "poly" || region.kind === "polygon";
         if (isPoly) {
           // SVG polygon for poly regions
-          // Polygon: double-click opens popover; single-click passes through.
-          // Text label: single-click opens popover.
+          // Polygon outline + label: click selects, double-click opens the window.
           return (
             <svg
               key={region.id}
@@ -224,9 +309,10 @@ export function FloorplanOverlay({
                 strokeDasharray={isDraft ? "5 4" : "7 4"}
                 opacity={isDraft ? 0.6 : 1}
                 style={{ pointerEvents: "auto", cursor: "pointer" }}
-                onDoubleClick={() => !isDraft && openPopover(region)}
+                onClick={(e) => !isDraft && clickRegion(region, e)}
+                onDoubleClick={(e) => !isDraft && openPopover(region, e)}
               />
-              {/* Label — single-click opens popover */}
+              {/* Label — click selects, double-click opens the window */}
               {region.name && !isDraft && viewport && (
                 <text
                   x={(region.geometry[0].x - viewport.originX) * viewport.zoom + 8}
@@ -235,9 +321,14 @@ export function FloorplanOverlay({
                   fontSize={Math.max(13, 14 * viewport.zoom / 1000)}
                   fontWeight="600"
                   style={{ pointerEvents: "auto", cursor: "pointer", textShadow: "0 0 4px rgba(0,0,0,0.7)" }}
-                  onClick={() => !isDraft && openPopover(region)}
+                  onClick={(e) => !isDraft && clickRegion(region, e)}
+                  onDoubleClick={(e) => !isDraft && openPopover(region, e)}
                 >
-                  {region.name}
+                  <NameLines
+                    name={region.name}
+                    x={(region.geometry[0].x - viewport.originX) * viewport.zoom + 8}
+                    fontSize={Math.max(13, 14 * viewport.zoom / 1000)}
+                  />
                 </text>
               )}
               {/* Draft vertex dots */}
@@ -260,8 +351,7 @@ export function FloorplanOverlay({
 
         // Rect region: SVG rect with fill="none" so only the border
         // line catches events — interior passes through to canvas.
-        // Double-click on rect → opens popover.
-        // Single-click on text label → opens popover.
+        // Outline + label: click selects, double-click opens the window.
         // This mirrors the poly region SVG approach.
         return (
           <svg
@@ -289,9 +379,10 @@ export function FloorplanOverlay({
               ry={3}
               opacity={isDraft ? 0.6 : 1}
               style={{ pointerEvents: isDraft ? "none" : "auto", cursor: "pointer" }}
-              onDoubleClick={() => !isDraft && openPopover(region)}
+              onClick={(e) => !isDraft && clickRegion(region, e)}
+                onDoubleClick={(e) => !isDraft && openPopover(region, e)}
             />
-            {/* Label — clickable on single-click */}
+            {/* Label — click selects, double-click opens the window */}
             {region.name && !isDraft && (
               <text
                 x={cssLeft + 6}
@@ -300,9 +391,10 @@ export function FloorplanOverlay({
                 fontSize={Math.max(13, 14 * viewport!.zoom / 1000)}
                 fontWeight="600"
                 style={{ pointerEvents: "auto", cursor: "pointer", textShadow: "0 0 4px rgba(0,0,0,0.8)" }}
-                onClick={() => openPopover(region)}
+                onClick={(e) => clickRegion(region, e)}
+                onDoubleClick={(e) => openPopover(region, e)}
               >
-                {region.name}
+                <NameLines name={region.name} x={cssLeft + 6} fontSize={Math.max(13, 14 * viewport!.zoom / 1000)} />
               </text>
             )}
             {/* Draft size readout */}
@@ -322,12 +414,29 @@ export function FloorplanOverlay({
         );
       })}
 
+      {/* Polygon being drawn */}
+      {draft && draft.active && draft.kind === "poly" && viewport && (
+        <FloorplanPolyDraft draft={draft} viewport={viewport} cursorStore={cursorStore} />
+      )}
+
+      {/* Geometry edit handles */}
+      {canEdit && editingRegion && viewport && (
+        <FloorplanEditHandles
+          region={editingRegion}
+          viewport={viewport}
+          live={liveEdit?.id === editingRegion.id ? liveEdit.geometry : null}
+          setLive={(geometry) => setLiveEdit(geometry ? { id: editingRegion.id, geometry } : null)}
+          onCommit={commitGeometry}
+        />
+      )}
+
       {/* Popover */}
       {selectedRegion && viewport && (
         <FloorplanRegionPopover
           region={selectedRegion}
           dieId={dieId}
-          viewport={viewport}
+          dispatcher={dispatcher}
+          viewportStore={viewportStore}
           annotations={annotations}
           onClose={handlePopoverClose}
           onSaved={onAnnotationChange}

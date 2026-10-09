@@ -46,6 +46,7 @@ export class DieImageLayer implements Layer {
   private readonly metadata: DieMetadata;
   private readonly cache = new Map<string, CachedImageTile>();
   private useCounter = 0;
+  private cacheHeld = false;
   private invalidateCb: ((rect?: Rect) => void) | null = null;
   private readonly display: DieImageDisplay;
   /** Reused scratch canvas for opacity compositing (tiles render serially, so
@@ -84,7 +85,7 @@ export class DieImageLayer implements Layer {
     }
 
     const { world, zoom } = bounds;
-    const targetLevel = this.pickLevel(zoom);
+    const targetLevel = this.pickLevel(zoom * (bounds.detail ?? 1));
 
     const drawPyramid = (g: CanvasRenderingContext2D) => {
       for (let level = 0; level < targetLevel; level++) {
@@ -308,8 +309,19 @@ export class DieImageLayer implements Layer {
     return entry;
   }
 
+  pendingLoads(): number {
+    let n = 0;
+    for (const t of this.cache.values()) if (!t.loaded && !t.failed) n++;
+    return n;
+  }
+
+  holdCache(hold: boolean): void {
+    this.cacheHeld = hold;
+    if (!hold) this.evictIfNeeded();
+  }
+
   private evictIfNeeded() {
-    if (this.cache.size <= MAX_IMAGE_TILES_CACHED) return;
+    if (this.cacheHeld || this.cache.size <= MAX_IMAGE_TILES_CACHED) return;
     const entries = [...this.cache.entries()].sort((a, b) => a[1].lastUsed - b[1].lastUsed);
     const drop = this.cache.size - MAX_IMAGE_TILES_CACHED;
     for (let i = 0; i < drop; i++) this.cache.delete(entries[i][0]);

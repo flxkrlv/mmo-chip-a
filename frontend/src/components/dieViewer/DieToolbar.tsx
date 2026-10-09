@@ -1,5 +1,6 @@
 import { Fragment, type ReactNode } from "react";
 import { Ic } from "../../icons";
+import { DIE_VIEWER_HOTKEYS, hotkeyFor, withShortcut } from "../../lib/hotkeys";
 import { useDieViewerStore, type ToolKind } from "../../state/dieViewer";
 import { useFloorplanStore } from "../../state/floorplan";
 import { usePreferences } from "../../state/preferences";
@@ -8,6 +9,8 @@ import { ToolDivider } from "../shell/SubBar";
 import { AnnotationClassSelect } from "./AnnotationClassSelect";
 import { BigToolDivider, Tool } from "./DieViewerUI";
 import { WireLayerSelect } from "./WireLayerSelect";
+import { ANGLE_MODES, type AngleTool } from "../../lib/angleConstraint";
+import { useAngleMode } from "../../state/angleMode";
 
 /** One toolbar entry: either a real, selectable tool (`kind`) or a not-yet-
  *  built placeholder (`todo`) rendered disabled. */
@@ -108,6 +111,9 @@ export function DieToolbar({
                 key={item.kind}
                 icon={item.icon}
                 label={item.label}
+                // "f" is bound to "pan" in the registry but actually fits the
+                // view; the pan label already explains Space / middle-drag.
+                shortcut={item.kind === "pan" ? undefined : hotkeyFor(DIE_VIEWER_HOTKEYS, item.kind)}
                 on={activeTool === item.kind}
                 onClick={() => setActiveTool(item.kind)}
               />
@@ -143,7 +149,7 @@ function toolOptions(tool: ToolKind, multiWireHint?: string): ReactNode {
   if (tool === "wire") return <WireOptions />;
   if (tool === "multiWire") return <WireOptions hint={multiWireHint} />;
   if (tool === "addCell") return <CellOptions />;
-  if (tool === "via" || tool === "viaRect" || tool === "viaPoly") return <ViaOptions />;
+  if (tool === "via" || tool === "viaRect" || tool === "viaPoly") return <ViaOptions polygon={tool === "viaPoly"} />;
   if (tool === "roi") return <RoiOptions />;
   if (tool === "cellGuideLine") return <GuideLineOptions />;
   if (tool === "measure") return <MeasureOptions />;
@@ -152,39 +158,41 @@ function toolOptions(tool: ToolKind, multiWireHint?: string): ReactNode {
   return null;
 }
 
-function MeasureOptions() {
-  const mode = useDieViewerStore((s) => s.measureMode);
-  const setMode = useDieViewerStore((s) => s.setMeasureMode);
-  const showPx = useDieViewerStore((s) => s.showRulerPx);
-  const showUm = useDieViewerStore((s) => s.showRulerUm);
-  const showNm = useDieViewerStore((s) => s.showRulerNm);
-  const setDisplay = useDieViewerStore((s) => s.setRulerDisplay);
+/** Angle mode chips (free / orthogonal / horizontal / vertical / diagonal)
+ *  for one drawing tool; remembered per die. */
+function AngleModeChips({ tool, shiftFree }: { tool: AngleTool; shiftFree?: boolean }) {
+  const [mode, setMode] = useAngleMode(tool);
   return (
     <>
       <span className="u" style={{ fontSize: 10 }}>
-        Mode
+        Angle
       </span>
       <span className="row" style={{ gap: 4 }}>
-        {(
-          [
-            ["free" as const, "free"],
-            ["ortho" as const, "orthogonal"],
-            ["h" as const, "horizontal"],
-            ["v" as const, "vertical"],
-            ["diag" as const, "diagonal"]
-          ] as const
-        ).map(([m, label]) => (
+        {ANGLE_MODES.map(({ mode: m, label }) => (
           <button
             key={m}
             type="button"
             className={"chip" + (mode === m ? " on" : "")}
             style={{ cursor: "pointer" }}
+            title={shiftFree && m !== "free" ? `${label} · hold Shift to place freely` : label}
             onClick={() => setMode(m)}
           >
             {label}
           </button>
         ))}
       </span>
+    </>
+  );
+}
+
+function MeasureOptions() {
+  const showPx = useDieViewerStore((s) => s.showRulerPx);
+  const showUm = useDieViewerStore((s) => s.showRulerUm);
+  const showNm = useDieViewerStore((s) => s.showRulerNm);
+  const setDisplay = useDieViewerStore((s) => s.setRulerDisplay);
+  return (
+    <>
+      <AngleModeChips tool="measure" />
       <span className="row" style={{ gap: 6, marginLeft: 6 }}>
         <label className="check" title="Show source-pixel length">
           <input type="checkbox" checked={showPx} onChange={(e) => setDisplay({ showRulerPx: e.target.checked })} />
@@ -254,11 +262,13 @@ function FloorplanOptions() {
           type="button"
           className={"chip" + (toolMode === "poly" ? " on" : "")}
           style={{ cursor: "pointer" }}
+          title="Click to add vertices · Enter / double-click to finish · Esc to cancel"
           onClick={() => setToolMode("poly")}
         >
           Poly
         </button>
       </span>
+      {toolMode === "poly" && <AngleModeChips tool="floorplan" shiftFree />}
     </>
   );
 }
@@ -292,10 +302,11 @@ function WireOptions({ hint }: { hint?: string }) {
   const setViaPlaceMode = usePreferences((s) => s.setViaPlaceMode);
   return (
     <>
+      <AngleModeChips tool="wire" shiftFree />
       <span className="u" style={{ fontSize: 10 }}>
         Layer
       </span>
-      <WireLayerSelect metals={metals} value={activeMetalId != null ? metals.find(m => m.id === activeMetalId)?.layer ?? null : null} onChange={(layer) => { const m = metals.find(m => m.layer === layer); setActiveMetalId(m?.id ?? null); }} />
+      <WireLayerSelect metals={metals} showHotkeys value={activeMetalId != null ? metals.find(m => m.id === activeMetalId)?.layer ?? null : null} onChange={(layer) => { const m = metals.find(m => m.layer === layer); setActiveMetalId(m?.id ?? null); }} />
       <label
         className="check"
         title="Snap click positions to the nearest via (ML or manually placed)"
@@ -363,7 +374,7 @@ function WireOptions({ hint }: { hint?: string }) {
   );
 }
 
-function ViaOptions() {
+function ViaOptions({ polygon }: { polygon?: boolean }) {
   const activeViaId = useDieViewerStore((s) => s.activeViaId);
   const setActiveViaId = useDieViewerStore((s) => s.setActiveViaId);
   const vias = (useSession((s) => s.metalStack) ?? DEFAULT_METAL_STACK).vias;
@@ -373,12 +384,13 @@ function ViaOptions() {
         Via layer
       </span>
       <span className="row" style={{ gap: 4 }}>
-        {vias.map((v) => (
+        {vias.map((v, i) => (
           <button
             key={v.id}
             type="button"
             className={"chip" + (activeViaId === v.id ? " on" : "")}
             style={{ cursor: "pointer" }}
+            title={withShortcut(v.id, i < 9 ? `Alt+${i + 1}` : undefined)}
             onClick={() => setActiveViaId(v.id)}
           >
             {v.id.toLowerCase()}
@@ -390,6 +402,7 @@ function ViaOptions() {
           O to cycle
         </span>
       )}
+      {polygon && <AngleModeChips tool="viaPoly" shiftFree />}
     </>
   );
 }

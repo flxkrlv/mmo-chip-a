@@ -7,22 +7,30 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { DieAnnotations, FloorplanRegion } from "shared";
-import { apiPut, apiDelete } from "../../api/client";
+import type { ActionDispatcher, AnnotationAction } from "../../api/actions";
+import { normalizeFloorplanName } from "../../lib/floorplanName";
+import { isTypingTarget } from "../../lib/keyboard";
 import { collectDieWideAnalogDevices } from "../../api/dieWideAnalog";
 import { useAuth } from "../../state/auth";
 import { useToast } from "../Toast";
 import { useFloorplanStore } from "../../state/floorplan";
+import { useDieViewerStore } from "../../state/dieViewer";
 import {
   deviceInRegion,
   detectBoundaryNets,
   resolveGlobalPortAliases,
 } from "../../lib/export/hierarchical";
 import type { Viewport } from "../../renderer/types";
+import type { LiveValue } from "../../lib/liveValue";
+import { floorplanAnchorPoints, windowAnchorKey } from "../../lib/windowAnchor";
+import { useElementWindow } from "./useElementWindow";
 
 interface Props {
   region: FloorplanRegion;
   dieId: string;
-  viewport: Viewport;
+  /** Saves / deletes / reserves go through it, so they are undoable. */
+  dispatcher: ActionDispatcher;
+  viewportStore: LiveValue<Viewport | null>;
   annotations?: DieAnnotations;
   onClose: () => void;
   onSaved?: () => void;
@@ -85,7 +93,8 @@ function detectRegionPorts(
 export function FloorplanRegionPopover({
   region,
   dieId,
-  viewport,
+  dispatcher,
+  viewportStore,
   annotations,
   onClose,
   onSaved,
@@ -105,11 +114,20 @@ export function FloorplanRegionPopover({
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [saveWarnings, setSaveWarnings] = useState<string[]>([]);
-  const upsertRegion = useFloorplanStore((s) => s.upsertRegion);
-  const removeRegion = useFloorplanStore((s) => s.removeRegion);
-  const selectRegion = useFloorplanStore((s) => s.selectRegion);
+  const openRegion = useFloorplanStore((s) => s.openRegion);
   const toast = useToast();
-  const popoverRef = useRef<HTMLDivElement>(null);
+  const popoverRef = useRef<HTMLDivElement | null>(null);
+  // Draggable; reopens where last dropped, relative to the nearest vertex
+  // (polygon) or corner (rect). Before the first drag: beside vertex 0.
+  const anchorPoints = floorplanAnchorPoints(region);
+  const firstP = region.geometry[0] || { x: 0, y: 0 };
+  const { windowProps } = useElementWindow({
+    anchorKey: windowAnchorKey(dieId, "floorplan", region.id),
+    points: anchorPoints.points,
+    sig: anchorPoints.sig,
+    fallback: { ...firstP, dx: 12, dy: -100 },
+    viewportStore
+  });
 
   // ── Port detection (B3) ───────────────────────────────────
   const detectedPorts = useMemo(
@@ -133,6 +151,18 @@ export function FloorplanRegionPopover({
     return result;
   }, [portAliases]);
 
+  // Undo / redo (or another user) can change the region under an open
+  // popover: follow it unless the user has unsaved edits here.
+  useEffect(() => {
+    if (dirty) return;
+    setName(region.name);
+    setColor(region.color || "#4dabf7");
+    const next: Record<string, string> = {};
+    for (const [netIdStr, alias] of Object.entries(region.portAliases ?? {})) next[`n${netIdStr}`] = alias;
+    setPortAliases(next);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- only on region changes
+  }, [region.name, region.color, region.portAliases]);
+
   // Clear warnings when region changes
   useEffect(() => {
     setSaveWarnings([]);
@@ -141,6 +171,8 @@ export function FloorplanRegionPopover({
   // Click outside → close
   useEffect(() => {
     const handler = (e: MouseEvent) => {
+      // Grabbing a geometry edit handle of this region keeps the popover open.
+      if ((e.target as Element | null)?.closest?.("[data-fp-edit]")) return;
       if (popoverRef.current && !popoverRef.current.contains(e.target as Node)) {
         onClose();
       }
@@ -177,8 +209,9 @@ export function FloorplanRegionPopover({
     originalNetNamesRef.current = map;
   }
 
-  const handleSave = useCallback(async () => {
-    if (saving) return;
+  /** Persist the edits; resolves true once saved. */
+  const handleSave = useCallback(async (): Promise<boolean> => {
+    if (saving) return false;
     setSaving(true);
     try {
       const newAliases = buildPortAliasesForSave();
@@ -278,33 +311,15 @@ export function FloorplanRegionPopover({
             }
           }
 
-          // Execute renames and reverts
-          const renamePromises: Promise<void>[] = [];
+          // Net renames/reverts and the region save form ONE undoable step.
+          const netActions: AnnotationAction[] = [];
           for (const { uuid, newName } of toRename) {
             const annNet = annotations.nets?.find((n) => n.id === uuid);
-            if (annNet) {
-              const renamed = { ...annNet, name: newName };
-              renamePromises.push(
-                apiPut(`/api/dies/${dieId}/nets/${uuid}`, renamed)
-                  .then(() => {})
-                  .catch((e) => toast.error(`Failed to rename net ${uuid}`, e instanceof Error ? e.message : String(e)))
-              );
-            }
+            if (annNet) netActions.push({ kind: "upsertNet", net: { ...annNet, name: newName }, prevNet: annNet });
           }
           for (const { uuid, originalName } of toRevert) {
             const annNet = annotations.nets?.find((n) => n.id === uuid);
-            if (annNet) {
-              const reverted = { ...annNet, name: originalName };
-              renamePromises.push(
-                apiPut(`/api/dies/${dieId}/nets/${uuid}`, reverted)
-                  .then(() => {})
-                  .catch((e) => toast.error(`Failed to revert net ${uuid}`, e instanceof Error ? e.message : String(e)))
-              );
-            }
-          }
-
-          if (renamePromises.length > 0) {
-            await Promise.all(renamePromises);
+            if (annNet) netActions.push({ kind: "upsertNet", net: { ...annNet, name: originalName }, prevNet: annNet });
           }
 
           // Use resolved aliases (with suffixed collisions) for the region save
@@ -315,19 +330,22 @@ export function FloorplanRegionPopover({
           // Override newAliases for the save below
           const updated: FloorplanRegion = {
             ...region,
-            name,
+            name: normalizeFloorplanName(name),
             color,
             createdByName: region.createdByName ?? null,
             reservedByName: region.reservedByName ?? null,
             portAliases: Object.keys(finalAliases).length > 0 ? finalAliases : undefined,
           };
-          await apiPut(`/api/dies/${dieId}/floorplan/${region.id}`, updated);
-          upsertRegion(updated);
+          const regionAction: AnnotationAction = { kind: "upsertFloorplan", region: updated, prevRegion: region };
+          const ok = await dispatcher.dispatch(
+            netActions.length > 0 ? { kind: "batch", actions: [...netActions, regionAction] } : regionAction
+          );
+          if (!ok) throw new Error("The server rejected the change");
           setDirty(false);
           // Reset original names ref so it picks up new state on next save
           originalNetNamesRef.current = null;
           onSaved?.();
-          return; // ← early return, we already saved the region
+          return true; // ← early return, we already saved the region
         } catch (e) {
           toast.error("Failed to rename annotation nets", e instanceof Error ? e.message : String(e));
           // Fall through to the regular save below
@@ -337,62 +355,82 @@ export function FloorplanRegionPopover({
       // ── Save the region with aliases (no die rename needed) ──
       const updated: FloorplanRegion = {
         ...region,
-        name,
+        name: normalizeFloorplanName(name),
         color,
         createdByName: region.createdByName ?? null,
         reservedByName: region.reservedByName ?? null,
         portAliases: Object.keys(newAliases).length > 0 ? newAliases : undefined,
       };
-      await apiPut(`/api/dies/${dieId}/floorplan/${region.id}`, updated);
-      upsertRegion(updated);
+      if (!(await dispatcher.dispatch({ kind: "upsertFloorplan", region: updated, prevRegion: region }))) {
+        throw new Error("The server rejected the change");
+      }
       setDirty(false);
       // Reset original names ref so it picks up new state on next save
       originalNetNamesRef.current = null;
       onSaved?.();
+      return true;
     } catch (err) {
       toast.error("Failed to save floorplan region", err instanceof Error ? err.message : String(err));
+      return false;
     } finally {
       setSaving(false);
     }
-  }, [region, dieId, name, color, saving, upsertRegion, onSaved, buildPortAliasesForSave, annotations, toast]);
+  }, [region, name, color, saving, dispatcher, onSaved, buildPortAliasesForSave, annotations, toast]);
+
+  /** Ctrl/Cmd+Enter: save (when there are edits) and close; stays open if
+   *  the save fails. */
+  const saveAndClose = useCallback(async () => {
+    if (!dirty || (await handleSave())) onClose();
+  }, [dirty, handleSave, onClose]);
+  const saveAndCloseRef = useRef(saveAndClose);
+  saveAndCloseRef.current = saveAndClose;
+  // Window-level so it also works right after the double-click, while focus
+  // is still on the canvas — but not while typing in a field elsewhere.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Enter" || !(e.ctrlKey || e.metaKey) || e.repeat) return;
+      const inside = !!popoverRef.current?.contains(e.target as Node);
+      if (!inside && isTypingTarget(e.target)) return;
+      e.preventDefault();
+      e.stopPropagation();
+      void saveAndCloseRef.current();
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, []);
 
   const handleDelete = useCallback(async () => {
     if (deleting) return;
     setSaveWarnings([]);
     setDeleting(true);
     try {
-      await apiDelete(`/api/dies/${dieId}/floorplan/${region.id}`);
-      removeRegion(region.id);
-      selectRegion(null);
+      if (!(await dispatcher.dispatch({ kind: "removeFloorplan", region }))) {
+        throw new Error("The server rejected the change");
+      }
+      openRegion(null);
+      // Drop the deleted region from the selection (Inspector, copy).
+      const viewer = useDieViewerStore.getState();
+      if (viewer.selectedIds.has(`floorplan:${region.id}`)) viewer.select([`floorplan:${region.id}`], "toggle");
       onSaved?.();
     } catch (err) {
       toast.error("Failed to delete floorplan region", err instanceof Error ? err.message : String(err));
     } finally {
       setDeleting(false);
     }
-  }, [region.id, dieId, deleting, removeRegion, selectRegion, onSaved, toast]);
+  }, [region, deleting, dispatcher, openRegion, onSaved, toast]);
 
-  // Compute popover position from region's first point
-  const firstP = region.geometry[0] || { x: 0, y: 0 };
-  const cssX = (firstP.x - viewport.originX) * viewport.zoom;
-  const cssY = (firstP.y - viewport.originY) * viewport.zoom;
   const popW = 280;
-  const margin = 12;
-  let left = cssX + margin;
-  let top = cssY - 100;
-  if (left + popW > window.innerWidth - margin) {
-    left = cssX - popW - margin;
-  }
-  left = Math.max(margin, left);
-  top = Math.max(margin, top);
 
   return (
     <div
-      ref={popoverRef}
+      {...windowProps}
+      ref={(el) => {
+        popoverRef.current = el;
+        windowProps.ref.current = el;
+      }}
+      data-fp-popover
       style={{
-        position: "fixed",
-        left,
-        top,
+        ...windowProps.style,
         zIndex: 1000,
         background: "#2a2a2e",
         border: "1px solid #444",
@@ -409,16 +447,18 @@ export function FloorplanRegionPopover({
         <span style={{ fontSize: 10, color: "#888", textTransform: "uppercase", marginBottom: 2, display: "block" }}>
           Name
         </span>
-        <input
+        <textarea
           className="input"
           value={name}
+          rows={Math.min(6, Math.max(1, name.split("\n").length))}
           onChange={(e) => {
             setName(e.target.value);
             setDirty(true);
             setSaveWarnings([]);
           }}
-          placeholder="e.g. VCC_UVLO"
-          style={{ width: "100%", boxSizing: "border-box" }}
+          placeholder="e.g. VCC_UVLO (Enter: new line)"
+          title="Enter adds a line · Ctrl+Enter saves and closes"
+          style={{ width: "100%", boxSizing: "border-box", resize: "vertical", fontFamily: "inherit", lineHeight: 1.35 }}
         />
       </label>
 
@@ -457,7 +497,7 @@ export function FloorplanRegionPopover({
         <span style={{ fontSize: 10, color: "#888", textTransform: "uppercase", marginBottom: 4, display: "block" }}>
           Color
         </span>
-        <span className="row" style={{ gap: 4, flexWrap: "wrap" }}>
+        <span className="row" style={{ gap: 4, flexWrap: "wrap", alignItems: "center" }}>
           {COLORS.map((c) => (
             <button
               key={c}
@@ -477,6 +517,25 @@ export function FloorplanRegionPopover({
               }}
             />
           ))}
+          <input
+            type="color"
+            value={/^#[0-9a-f]{6}$/i.test(color) ? color : "#4dabf7"}
+            onChange={(e) => {
+              setColor(e.target.value);
+              setDirty(true);
+              setSaveWarnings([]);
+            }}
+            title="Pick a custom color"
+            style={{
+              width: 28,
+              height: 22,
+              padding: 0,
+              cursor: "pointer",
+              border: "1px solid var(--l2)",
+              borderRadius: 3,
+              background: "none",
+            }}
+          />
         </span>
       </label>
 
@@ -508,13 +567,15 @@ export function FloorplanRegionPopover({
             onClick={async () => {
               try {
                 const au = useAuth.getState();
-                await apiPut(`/api/dies/${dieId}/floorplan/${region.id}`, {
-                  ...region, name, color,
+                const reserved: FloorplanRegion = {
+                  ...region, name: normalizeFloorplanName(name), color,
                   reservedBy: au.userId ?? null,
                   reservedByName: au.username ?? null,
                   reservedAt: new Date().toISOString(),
-                });
-                upsertRegion({ ...region, reservedBy: au.userId ?? null, reservedByName: au.username ?? null, reservedAt: new Date().toISOString() });
+                };
+                if (!(await dispatcher.dispatch({ kind: "upsertFloorplan", region: reserved, prevRegion: region }))) {
+                  throw new Error("The server rejected the change");
+                }
                 setDirty(false);
                 onSaved?.();
               } catch (err) {
@@ -565,7 +626,8 @@ export function FloorplanRegionPopover({
         </button>
         <button
           className="btn sm accent"
-          onClick={handleSave}
+          onClick={() => void handleSave()}
+          title="Save · Ctrl+Enter saves and closes"
           disabled={saving || !dirty}
         >
           {saving ? "Saving…" : "Save"}

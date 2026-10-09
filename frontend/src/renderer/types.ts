@@ -20,6 +20,8 @@ export interface RenderFrame {
   world: Rect;
   /** Viewport used to construct the frame. */
   viewport: Viewport;
+  /** See `TileBounds.detail`. */
+  detail?: number;
 }
 
 export interface TileBounds {
@@ -34,6 +36,10 @@ export interface TileBounds {
   dpr: number;
   /** Current zoom factor (CSS px per world unit). */
   zoom: number;
+  /** Extra resolution wanted from image layers: they pick their pyramid
+   *  level for `zoom × detail` (output px per world unit). Absent ⇒ 1, the
+   *  on-screen behaviour. Set by high-resolution screenshots. */
+  detail?: number;
 }
 
 /**
@@ -51,4 +57,9 @@ export interface Layer {
   beginFrame?(frame: RenderFrame): void;
   draw(ctx: CanvasRenderingContext2D, bounds: TileBounds): void;
   subscribe?(invalidate: (worldRect?: Rect) => void): () => void;
+  /** Image tiles requested but not loaded yet (screenshots wait for 0). */
+  pendingLoads?(): number;
+  /** While true, keep every cached tile (a screenshot may need more tiles
+   *  than the cache normally holds); trimmed again once released. */
+  holdCache?(hold: boolean): void;
 }

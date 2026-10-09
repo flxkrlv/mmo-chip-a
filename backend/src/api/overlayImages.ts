@@ -19,13 +19,25 @@ import { ensurePreviewImage } from "../imagePreview.js";
 import type { OverlayTileProgress, OverlayTileSourceProgress } from "shared";
 import { buildLevels } from "../dieImport/importer.js";
 import { resolveProjectDir } from "../projectLayout.js";
+import type { PyramidSource } from "../tileCrop.js";
+import { extractForScale, isPyramidalTiff } from "../dieImport/tiffPyramid.js";
 
 const DEFAULT_TILE_SIZE = 512;
 const SUPPORTED_MIME_TYPES = new Set([
   "image/png",
   "image/jpeg",
-  "image/webp"
+  "image/webp",
+  "image/tiff",
+  "image/x-tiff"
 ]);
+// Browsers report the MIME type from the extension and some leave TIFF blank.
+const SUPPORTED_EXTENSIONS = /\.(?:png|jpe?g|webp|tiff?)$/i;
+const EXTENSION_BY_FORMAT: Record<string, string> = {
+  png: ".png",
+  jpeg: ".jpg",
+  webp: ".webp",
+  tiff: ".tif"
+};
 const SAFE_ID = /^[a-zA-Z0-9_-]+$/;
 
 type TileFormat = "jpg" | "png";
@@ -184,6 +196,17 @@ const MAX_CONCURRENT_HUGE_OVERLAY_GENERATIONS = 2;
 // consumes at most the other slot, so it cannot make a viewport wait behind it.
 const MAX_CONCURRENT_HUGE_OVERLAY_BACKGROUND_GENERATIONS = 1;
 
+/**
+ * Whether cutting a tile means decoding a huge image. A pyramidal TIFF never
+ * does: every tile comes from a small region of its closest stored level.
+ */
+async function isHugeOverlay(manifest: OverlayImageManifest): Promise<boolean> {
+  return (
+    manifest.width * manifest.height >= HUGE_OVERLAY_PIXELS &&
+    !(await isPyramidalTiff(manifest.originalPath))
+  );
+}
+
 interface TileGenerationResult {
   tilePath: string;
   cache: "disk" | "generated";
@@ -217,6 +240,8 @@ let tileGenerationSequence = 0;
 const pendingPyramidPrebuilds = new Map<string, Promise<void>>();
 const overlayPrebuildStates = new Map<string, OverlayPrebuildState>();
 const pausedOverlayDieIds = new Set<string>();
+/** Prebuild keys of sources deleted while a prebuild may still be running. */
+const deletedOverlaySources = new Set<string>();
 
 function drainTileGenerationQueue(): void {
   while (
@@ -303,16 +328,16 @@ async function ensureTile(params: {
   const existing = pendingTileGenerations.get(key);
   if (existing) return existing;
 
-  const task = scheduleTileGeneration(
+  const task = isHugeOverlay(params.manifest).then((isHuge) => scheduleTileGeneration(
     params.priority,
-    params.manifest.width * params.manifest.height >= HUGE_OVERLAY_PIXELS,
+    isHuge,
     params.priority < 0,
     async () => {
       const generationStartedAt = Date.now();
       const tilePath = await ensureTileImpl(params);
       return { tilePath, generationMs: Date.now() - generationStartedAt };
     }
-  )
+  ))
     .then(({ value, queueMs }) => ({
       tilePath: value.tilePath,
       cache: "generated" as const,
@@ -364,12 +389,13 @@ async function ensureTileImpl(params: {
   await fs.mkdir(path.dirname(target), { recursive: true });
   const temp = `${target}.${crypto.randomBytes(4).toString("hex")}.tmp`;
   try {
-    const pipeline = sharp(manifest.originalPath, {
-      limitInputPixels: false,
-      sequentialRead: true
-    })
-      .extract({ left: sourceLeft, top: sourceTop, width: sourceWidth, height: sourceHeight })
-      .resize({ width, height, fit: "fill", kernel: sharp.kernel.lanczos2 });
+    const source = await extractForScale(
+      manifest.originalPath,
+      level.scale,
+      { left: sourceLeft, top: sourceTop, width: sourceWidth, height: sourceHeight },
+      { limitInputPixels: false, sequentialRead: true }
+    );
+    const pipeline = source.resize({ width, height, fit: "fill", kernel: sharp.kernel.lanczos2 });
     if (manifest.tileFormat === "png") {
       await pipeline.png({ compressionLevel: 6 }).toFile(temp);
     } else {
@@ -381,6 +407,37 @@ async function ensureTileImpl(params: {
     throw error;
   }
   return target;
+}
+
+/**
+ * Tile pyramid (already-built tiles only) and original of an overlay, for
+ * cell crop assembly (tileCrop.ts).
+ */
+export async function getOverlayCropSource(params: {
+  dataRoot: string;
+  dieId: string;
+  sourceId: string;
+}): Promise<{ pyramid: PyramidSource; originalPath: string } | null> {
+  if (!SAFE_ID.test(params.sourceId)) return null;
+  const manifest = await readManifest(params.dataRoot, params.dieId, params.sourceId);
+  if (!manifest || manifest.levels.length === 0) return null;
+  const tilesDir = path.join(await sourceDir(params.dataRoot, params.dieId, manifest.id), "tiles");
+  return {
+    originalPath: manifest.originalPath,
+    pyramid: {
+      levels: manifest.levels,
+      tileSize: manifest.tileSize,
+      peekTile: async (z, x, y) => {
+        const tilePath = path.join(tilesDir, String(z), `${x}_${y}.${manifest.tileFormat}`);
+        try {
+          await fs.access(tilePath);
+          return tilePath;
+        } catch {
+          return null;
+        }
+      }
+    }
+  };
 }
 
 /** Resolve a tiled overlay original in the shared namespace. */
@@ -460,8 +517,79 @@ export function preGenerateFullPyramid(params: {
   state.status = state.completedTiles >= totalTiles ? "completed" : "queued";
   overlayPrebuildStates.set(key, state);
 
+  const task = isPyramidalTiff(params.manifest.originalPath).then((pyramidal) =>
+    pyramidal ? prebuildFromStoredLevels(params, state) : prebuildInOnePass(params, state)
+  )
+    .finally(() => pendingPyramidPrebuilds.delete(key));
+  pendingPyramidPrebuilds.set(key, task);
+  return task;
+}
+
+/** Number of tiles cut concurrently by a stored-levels prebuild. */
+const STORED_LEVEL_PREBUILD_CONCURRENCY = 2;
+
+/**
+ * Full prebuild of a pyramidal TIFF: each tile is a cheap cut from a stored
+ * level, so go tile by tile (coarse levels first) through the shared queue at
+ * background priority instead of decoding the full-resolution image at once.
+ * A pause stops after the current batch; a later prebuild skips tiles on disk.
+ */
+async function prebuildFromStoredLevels(
+  params: { manifest: OverlayImageManifest; dataRoot: string; dieId: string },
+  state: OverlayPrebuildState
+): Promise<void> {
+  const { manifest } = params;
+  const totalTiles = totalTilesForManifest(manifest);
+  const root = await sourceDir(params.dataRoot, params.dieId, manifest.id);
+  const tilesOnDisk = Math.min(
+    totalTiles,
+    await countTileFiles(path.join(root, "tiles"), manifest.tileFormat)
+  );
+  state.completedTiles = tilesOnDisk;
+  state.diskScanned = true;
+  if (state.completedTiles >= totalTiles) {
+    state.status = "completed";
+    return;
+  }
+
+  const label = `${params.dieId}/${manifest.id}`;
+  console.log(`[overlay-prebuild:${label}] started from stored TIFF levels`);
+  state.status = "generating";
+  const coords = manifest.levels.flatMap((level) =>
+    Array.from({ length: level.columns * level.rows }, (_, i) => ({
+      z: level.z,
+      x: i % level.columns,
+      y: Math.floor(i / level.columns)
+    }))
+  );
+  for (let i = 0; i < coords.length; i += STORED_LEVEL_PREBUILD_CONCURRENCY) {
+    if (deletedOverlaySources.has(overlayPrebuildKey(params.dieId, manifest.id))) return;
+    if (pausedOverlayDieIds.has(params.dieId)) {
+      state.status = "queued";
+      console.log(`[overlay-prebuild:${label}] paused`);
+      return;
+    }
+    const batch = coords.slice(i, i + STORED_LEVEL_PREBUILD_CONCURRENCY);
+    await Promise.all(
+      batch.map((coord) => ensureTile({ ...params, ...coord, priority: -1_000_000_000 }))
+    );
+    // Both the startup scan and the tiles walked so far are lower bounds of
+    // what is on disk. Counting each "generated" result on top of the scan
+    // could count a viewport tile twice and report completion too early.
+    state.completedTiles = Math.max(tilesOnDisk, i + batch.length);
+  }
+  state.completedTiles = totalTiles;
+  state.status = "completed";
+  console.log(`[overlay-prebuild:${label}] completed from stored TIFF levels`);
+}
+
+function prebuildInOnePass(
+  params: { manifest: OverlayImageManifest; dataRoot: string; dieId: string },
+  state: OverlayPrebuildState
+): Promise<void> {
+  const totalTiles = totalTilesForManifest(params.manifest);
   const isHuge = params.manifest.width * params.manifest.height >= HUGE_OVERLAY_PIXELS;
-  const task = scheduleTileGeneration(
+  return scheduleTileGeneration(
     -1_000_000_000,
     isHuge,
     true,
@@ -506,12 +634,10 @@ export function preGenerateFullPyramid(params: {
         await fs.rm(stagingRoot, { recursive: true, force: true }).catch(() => {});
       }
     },
-    () => !pausedOverlayDieIds.has(params.dieId)
-  )
-    .then(() => undefined)
-    .finally(() => pendingPyramidPrebuilds.delete(key));
-  pendingPyramidPrebuilds.set(key, task);
-  return task;
+    () =>
+      !pausedOverlayDieIds.has(params.dieId) &&
+      !deletedOverlaySources.has(overlayPrebuildKey(params.dieId, params.manifest.id))
+  ).then(() => undefined);
 }
 
 /** Queue full overlay prebuild for every source of one project. */
@@ -659,6 +785,45 @@ async function collectFiles(root: string): Promise<string[]> {
   return files;
 }
 
+/**
+ * Delete one overlay source for everyone: a tiled source's folder (original,
+ * manifest, tiles) or a legacy flat file, plus its cached preview. A prebuild
+ * still running for it is stopped, and its folder removed again once it
+ * settles (tile writes may recreate it). Returns false when nothing matched.
+ */
+export async function deleteOverlaySource(dataRoot: string, dieId: string, id: string): Promise<boolean> {
+  assertSafeId(dieId);
+  const { dir: projectDir } = await resolveProjectDir(dataRoot, dieId);
+  const preview = path.join(projectDir, "previews", `overlay-${path.basename(id)}.4096.jpg`);
+  if (SAFE_ID.test(id)) {
+    const dir = await sourceDir(dataRoot, dieId, id);
+    if (!(await readManifest(dataRoot, dieId, id))) return false;
+    const key = overlayPrebuildKey(dieId, id);
+    deletedOverlaySources.add(key);
+    overlayPrebuildStates.delete(key);
+    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(preview, { force: true });
+    const running = pendingPyramidPrebuilds.get(key);
+    if (running) {
+      void running
+        .catch(() => {})
+        .then(() => fs.rm(dir, { recursive: true, force: true }))
+        .catch(() => {});
+    }
+    return true;
+  }
+  const safeName = path.basename(id);
+  if (safeName !== id || !/\.(png|jpe?g|webp)$/i.test(safeName)) return false;
+  try {
+    await fs.rm(path.join(await dieOverlayDir(dataRoot, dieId), safeName));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+    throw error;
+  }
+  await fs.rm(preview, { force: true });
+  return true;
+}
+
 export function createOverlayImagesRouter(config: { dataRoot: string }) {
   const router = Router();
   const upload = multer({ dest: path.join(config.dataRoot, "tmp") });
@@ -702,12 +867,24 @@ export function createOverlayImagesRouter(config: { dataRoot: string }) {
           response.status(400).json({ error: "No file uploaded" });
           return;
         }
-        if (!SUPPORTED_MIME_TYPES.has(tempFile.mimetype)) {
-          response.status(400).json({ error: "Only PNG, JPEG and WebP images are supported" });
+        const unsupported = { error: "Only PNG, JPEG, WebP and TIFF images are supported" };
+        if (
+          !SUPPORTED_MIME_TYPES.has(tempFile.mimetype) &&
+          !SUPPORTED_EXTENSIONS.test(tempFile.originalname)
+        ) {
+          response.status(400).json(unsupported);
           return;
         }
         const dieId = String(request.params.dieId);
         const metadata = await sharp(tempFile.path, { limitInputPixels: false }).metadata();
+        // Trust the decoded format over the client-supplied MIME type; the
+        // stored extension also decides whether TIFF levels are looked for.
+        const extension = metadata.format ? EXTENSION_BY_FORMAT[metadata.format] : undefined;
+        if (!extension) {
+          await fs.rm(tempFile.path, { force: true }).catch(() => {});
+          response.status(400).json(unsupported);
+          return;
+        }
         if (!metadata.width || !metadata.height) {
           response.status(400).json({ error: "Unable to read image dimensions" });
           return;
@@ -715,7 +892,6 @@ export function createOverlayImagesRouter(config: { dataRoot: string }) {
         const id = crypto.randomUUID().replace(/-/g, "");
         const dir = await sourceDir(config.dataRoot, dieId, id);
         await fs.mkdir(dir, { recursive: true });
-        const extension = path.extname(tempFile.originalname).toLowerCase() || ".img";
         const originalPath = path.join(dir, `original${extension}`);
         await fs.rename(tempFile.path, originalPath);
         const maxDimension = Math.max(metadata.width, metadata.height);
@@ -832,6 +1008,19 @@ export function createOverlayImagesRouter(config: { dataRoot: string }) {
       response.setHeader("Cache-Control", "public, max-age=86400");
       response.type("image/jpeg");
       response.sendFile(previewPath);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.delete("/api/dies/:dieId/overlay-images/:id", async (request, response, next) => {
+    try {
+      const deleted = await deleteOverlaySource(config.dataRoot, request.params.dieId, request.params.id);
+      if (!deleted) {
+        response.status(404).json({ error: "Overlay image not found" });
+        return;
+      }
+      response.json({ ok: true });
     } catch (error) {
       next(error);
     }
