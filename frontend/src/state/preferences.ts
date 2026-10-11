@@ -288,6 +288,11 @@ interface PreferencesState {
   ngspiceMode: "wasm" | "server";
   /** Path to ngspice binary (only used in server mode). */
   ngspicePath: string;
+  /** When true, Ctrl/Cmd+wheel and pinch zoom the whole browser page (native
+   *  behaviour). Default false: wheel-zoom is blocked app-wide. Ctrl/Cmd +
+   *  "+"/"-"/"0" keyboard zoom is never blocked. Canvas-internal zoom is
+   *  unaffected either way. */
+  browserWheelZoomEnabled: boolean;
 }
 
 interface PreferencesActions {
@@ -430,6 +435,7 @@ interface PreferencesActions {
   setNetlistDragMode: (v: "surgical" | "full") => void;
   setNgspiceMode: (v: "wasm" | "server") => void;
   setNgspicePath: (v: string) => void;
+  setBrowserWheelZoomEnabled: (v: boolean) => void;
 }
 
 const DEFAULT_EXPANDED_SECTIONS: AnnotationKind[] = ["net", "via", "roi"];
@@ -453,6 +459,7 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
         cellColor: CELL_COLOR,
         cellShowShapes: true,
         cellSnapToGuides: false,
+        browserWheelZoomEnabled: false,
         guidesHidden: false,
         guidesLocked: false,
         cellsLocked: false,
@@ -826,6 +833,7 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
         setNetlistDragMode: (v) => set({ netlistDragMode: v }),
         setNgspiceMode: (v) => set({ ngspiceMode: v }),
         setNgspicePath: (v) => set({ ngspicePath: v }),
+        setBrowserWheelZoomEnabled: (v) => set({ browserWheelZoomEnabled: v }),
       }),
       {
         name: "mmo-chip-preferences",
@@ -916,6 +924,7 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
           netlistDragMode: state.netlistDragMode,
           ngspiceMode: state.ngspiceMode,
           ngspicePath: state.ngspicePath,
+          browserWheelZoomEnabled: state.browserWheelZoomEnabled,
         })
       }
     )

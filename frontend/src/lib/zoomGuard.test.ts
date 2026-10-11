@@ -119,6 +119,25 @@ describe("installWheelZoomGuard", () => {
     expect(stopped).toBe(false);
   });
 
+  it("does not block browser zoom when isAllowed() returns true", () => {
+    const target = new FakeTarget();
+    uninstall = installWheelZoomGuard(target as unknown as Window, { isAllowed: () => true });
+    expect(target.dispatch("wheel", { ctrlKey: true, deltaY: -100 }).prevented).toBe(false);
+    expect(target.dispatch("wheel", { metaKey: true, deltaY: 100 }).prevented).toBe(false);
+    expect(target.dispatch("gesturestart").prevented).toBe(false);
+  });
+
+  it("re-reads isAllowed() on every event, so toggling takes effect without reinstall", () => {
+    const target = new FakeTarget();
+    let allowed = false;
+    uninstall = installWheelZoomGuard(target as unknown as Window, { isAllowed: () => allowed });
+    expect(target.dispatch("wheel", { ctrlKey: true }).prevented).toBe(true);
+    allowed = true;
+    expect(target.dispatch("wheel", { ctrlKey: true }).prevented).toBe(false);
+    allowed = false;
+    expect(target.dispatch("wheel", { ctrlKey: true }).prevented).toBe(true);
+  });
+
   it("uninstall removes all listeners", () => {
     const target = new FakeTarget();
     const off = installWheelZoomGuard(target as unknown as Window);
