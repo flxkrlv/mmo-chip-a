@@ -10,6 +10,7 @@
 import { useEffect, useRef } from "react";
 import type { AssistantDataFlags, AssistantLlmConfig } from "shared";
 import { SheetRConfigPanel } from "../config/SheetRConfigPanel";
+import { usePreferences } from "../../state/preferences";
 
 type Props = {
   open: boolean;
@@ -99,6 +100,9 @@ export function SettingsPanel({
   ngspicePath, setNgspicePath,
 }: Props) {
   const backdropRef = useRef<HTMLDivElement>(null);
+  // Browser-zoom toggle lives in the preferences store (persisted per browser profile).
+  const browserWheelZoomEnabled = usePreferences((s) => s.browserWheelZoomEnabled);
+  const setBrowserWheelZoomEnabled = usePreferences((s) => s.setBrowserWheelZoomEnabled);
 
   useEffect(() => {
     if (!open) return;
@@ -178,6 +182,26 @@ export function SettingsPanel({
             <Toggle label="Via labels" checked={viaLabelsVisible} onChange={setViaLabelsVisible} />
             <Toggle label="Floorplan overlay" checked={floorplanOverlayOn} onChange={setFloorplanOverlayOn} />
             <Toggle label="Floorplan I/O" checked={showFloorplanIO} onChange={setShowFloorplanIO} />
+          </div>
+        </div>
+
+        {/* Browser zoom */}
+        <div style={{ marginBottom: 16 }}>
+          <div
+            style={{
+              fontSize: 10, fontWeight: 600, color: "var(--ink3)",
+              textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 8,
+            }}
+          >
+            Browser zoom
+          </div>
+          <Toggle
+            label="Allow Ctrl/Cmd+wheel and pinch to zoom the page"
+            checked={browserWheelZoomEnabled}
+            onChange={setBrowserWheelZoomEnabled}
+          />
+          <div style={{ fontSize: 10, color: "var(--ink3)", marginTop: 2 }}>
+            Off by default. Ctrl/Cmd + "+" / "-" / "0" keeps working either way.
           </div>
         </div>
 
