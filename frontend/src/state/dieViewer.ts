@@ -7,7 +7,7 @@ import type { FloorplanClip } from "../lib/floorplanClipboard";
 
 /** Which right-panel tab is showing. The ML tab also drives a render mode:
  *  traces/vias size from `mlConfig` instead of display preferences. */
-export type InspectorTab = "inspector" | "ml" | "cv" | "ai";
+export type InspectorTab = "inspector" | "ml" | "cells" | "cv" | "ai";
 
 /** Mockup defaults for the ML config until a real per-die value is seeded
  *  from the annotations blob. Source-pixel units. */
@@ -110,6 +110,14 @@ interface DieViewerState {
  *  having to walk the cache itself. Partial: it's the count for tiles
  *  fetched so far this session, not a die-wide ground truth. */
   mlViasCount: number;
+  /** Cell type picked in the Cells (detection) tab — from the dropdown or by
+   *  selecting a placed cell on the canvas while the tab is open. */
+  cellDetectionTypeId: string | null;
+  /** Proposals currently shown on the canvas (after threshold / overlap
+   *  filtering). Drives the outline-tree count. */
+  cellDetectionsCount: number;
+  /** A wire-likelihood map exists for this die (drives the outline row). */
+  wireMapAvailable: boolean;
   /** Copied cell data for paste (cellTypeId + orientation, no position). */
   clipboardCells: { cellTypeId: string; offsetX: number; offsetY: number; flippedV?: boolean; flippedH?: boolean; rotation?: 0 | 90 | 180 | 270; bounds?: AnnotationRect }[];
   clipboardWires: WireClipboard | null;
@@ -143,6 +151,9 @@ interface DieViewerActions {
   setMlConfig: (patch: Partial<DieMLConfig>) => void;
   /** Set the live ML-via cardinality — called by the layer when tiles load. */
   setMlViasCount: (count: number) => void;
+  setCellDetectionTypeId: (id: string | null) => void;
+  setCellDetectionsCount: (count: number) => void;
+  setWireMapAvailable: (available: boolean) => void;
   /** Copy selected cell instance(s) to clipboard. */
   copyCells: (cells: { cellTypeId: string; offsetX: number; offsetY: number; flippedV?: boolean; flippedH?: boolean; rotation?: 0 | 90 | 180 | 270 }[]) => void;
   setWireClipboard: (clipboard: WireClipboard) => void;
@@ -175,6 +186,9 @@ const INITIAL_STATE: DieViewerState = {
   showRulerNm: false,
   mlConfig: { ...DEFAULT_ML_CONFIG },
   mlViasCount: 0,
+  cellDetectionTypeId: null,
+  cellDetectionsCount: 0,
+  wireMapAvailable: false,
   clipboardCells: [],
   clipboardPins: [],
   clipboardFloorplans: [],
@@ -264,6 +278,15 @@ export const useDieViewerStore = create<DieViewerState & DieViewerActions>()((se
   setMlViasCount: (count) => {
     if (get().mlViasCount === count) return;
     set({ mlViasCount: count });
+  },
+  setCellDetectionTypeId: (id) => set({ cellDetectionTypeId: id }),
+  setCellDetectionsCount: (count) => {
+    if (get().cellDetectionsCount === count) return;
+    set({ cellDetectionsCount: count });
+  },
+  setWireMapAvailable: (available) => {
+    if (get().wireMapAvailable === available) return;
+    set({ wireMapAvailable: available });
   },
 
   copyCells: (cells) => set({ clipboardCells: cells }),
