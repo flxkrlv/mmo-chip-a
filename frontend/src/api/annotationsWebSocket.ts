@@ -1,6 +1,6 @@
 import { useEffect } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import type { MLInferenceJob } from "shared";
+import type { CellDetectionJob, CellImagingJob, MLInferenceJob } from "shared";
 import { annotationKeys } from "./annotations";
 import { getAuthToken } from "../state/auth";
 import { useOnlineUsers, type OnlineUser } from "../state/onlineUsers";
@@ -14,6 +14,8 @@ import { useOnlineUsers, type OnlineUser } from "../state/onlineUsers";
 export type DieSocketMessage =
   | { type: "annotations"; dieId: string; rev: number }
   | { type: "mlJob"; dieId: string; job: MLInferenceJob }
+  | { type: "cellJob"; dieId: string; job: CellDetectionJob }
+  | { type: "imagingJob"; dieId: string; job: CellImagingJob }
   | { type: "user/list"; users: Array<{ userId: string; username: string; dieId: string | null; tool: string | null }> }
   | { type: "user/online"; userId: string; username: string; dieId: string | null; tool: string | null }
   | { type: "user/offline"; userId: string }
