@@ -24,9 +24,10 @@ import {
   INFERENCE_THRESHOLD,
   resolveTile,
   SidecarUnavailable,
-  toPrediction
+  toPrediction,
+  type MLPredictor
 } from "../ml/predict.js";
-import { clearMLJobs, readAnnotations, readDieRecord } from "../store.js";
+import { readAnnotations, readDieRecord } from "../store.js";
 import type { AnnotationBroadcaster } from "../ws.js";
 
 const HEALTH_TIMEOUT_MS = 3000;
@@ -68,9 +69,11 @@ export function createMLRouter(config: {
   dataRoot: string;
   mlPredictPad: number;
   broadcaster?: AnnotationBroadcaster;
+  /** Share one predictor (and its memory cache) with other routers. */
+  predictor?: MLPredictor;
 }) {
   const router = Router();
-  const predictor = createMLPredictor(config);
+  const predictor = config.predictor ?? createMLPredictor(config);
   const jobs = createMLJobManager({
     dataRoot: config.dataRoot,
     predictor,
@@ -163,6 +166,15 @@ export function createMLRouter(config: {
         response.status(400).json({ error: "name is required" });
         return;
       }
+      // A running sweep files tiles under the checkpoint it started with;
+      // switching underneath it would corrupt that cache and race the wipe
+      // below (rm on a directory being written to fails with ENOTEMPTY).
+      if (jobs.hasActiveJobs()) {
+        response.status(409).json({
+          error: "cannot switch model while an inference sweep is running — stop it first"
+        });
+        return;
+      }
       let res: Response;
       try {
         res = await fetchSidecar(
@@ -191,11 +203,10 @@ export function createMLRouter(config: {
           .json({ error: `sidecar /model/reload ${res.status}`, detail });
         return;
       }
-      await fs.rm(path.join(config.dataRoot, "predictions"), {
-        recursive: true,
-        force: true
-      });
-      await clearMLJobs(config.dataRoot);
+      // Caches (and the per-die job records that count them) are keyed by
+      // checkpoint hash, so the previous model's predictions simply become
+      // invisible until it's selected again — nothing is deleted. Only the
+      // in-memory tile LRU is dropped, to free the old model's entries.
       predictor.clearMemCache();
       const data = (await res.json()) as {
         checkpoint: string | null;

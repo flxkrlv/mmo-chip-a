@@ -1849,3 +1849,194 @@ export interface IcPackageConfig {
   /** Bond wire thickness in micrometres (0.03 mm = 30 µm default). */
   bondWireWidthUm?: number;
 }
+// ── Cell detection (via-constellation matching of annotated cell types) ──
+
+/**
+ * One proposed placement of a cell type, produced by the cell-detection job
+ * from the cached ML via predictions. Shaped like a `Cell` (same orientation
+ * convention: canonical point p lands at (x, y) + orient(p)) plus a score,
+ * so the die overlay and the merge-cells canvas can treat it as a virtual
+ * cell instance until the user approves it into a real one.
+ */
+export interface CellDetection {
+  id: string;
+  cellTypeId: string;
+  x: number;
+  y: number;
+  flippedH?: boolean;
+  flippedV?: boolean;
+  rotation?: 0 | 90 | 180 | 270;
+  /** 0..1 — F1 between the template's vias and the die vias under the
+   *  footprint. The confidence slider filters on this client-side. */
+  score: number;
+  /** Template vias that found a die via within tolerance. */
+  matched: number;
+  /** Die vias inside the footprint the template doesn't explain. */
+  extra: number;
+}
+
+/** How well a placement matches a type's via template (same F1 as a
+ *  detection's `score`). Computed for the type's own members at run time so
+ *  misclassified members stand out as low scores. */
+export interface CellPlacementScore {
+  score: number;
+  matched: number;
+  extra: number;
+}
+
+/** Persisted output of one detection run for one cell type. Lives beside
+ *  the die's annotations (never inside them) so clearing results can't touch
+ *  human work. */
+export interface CellDetectionResult {
+  version: 1;
+  dieId: string;
+  cellTypeId: string;
+  /** Name at run time — shown when the type has since been renamed/removed. */
+  cellTypeName: string;
+  /** Via checkpoint the die vias came from. */
+  checkpointHash: string | null;
+  /** `annotations.rev` when the template was built — a later rev means the
+   *  members may have changed and the results could be stale. */
+  annotationsRev: number;
+  /** Member cells the template was averaged from. */
+  memberCount: number;
+  /** Fingerprint of the members' ids + placements at run time. Differs from
+   *  the live annotations → the template may no longer match the type. */
+  memberSignature?: string;
+  /** Vias in the consensus template. */
+  templateVias: number;
+  /** The type's placed members scored against the template, keyed by cell
+   *  id. Absent on results from before this existed. */
+  memberScores?: Record<string, CellPlacementScore>;
+  /** Orientation options the run used (absent on results from before the
+   *  option existed → both flips allowed). */
+  options?: CellDetectionOptions;
+  createdAt: string;
+  detections: CellDetection[];
+  /** Detection ids the user explicitly rejected in merge-cells. */
+  dismissed: string[];
+}
+
+export type CellDetectionJobStatus =
+  | "running"
+  | "stopped"
+  | "completed"
+  | "failed";
+
+/** A cell-detection run. At most one per die at a time; the cell type is
+ *  fixed for the run's lifetime. Broadcast over WS as `cellJob`. */
+export interface CellDetectionJob {
+  dieId: string;
+  cellTypeId: string;
+  cellTypeName: string;
+  status: CellDetectionJobStatus;
+  /** Human-readable stage: "loading vias", "matching", "scoring". */
+  phase: string;
+  /** 0–100 across the whole run. */
+  percentage: number;
+  /** Detections written (completed runs only). */
+  detections: number | null;
+  error: string | null;
+  startedAt: string;
+  updatedAt: string;
+  finishedAt: string | null;
+}
+
+/** Which mirrored placements the matcher may propose. Rotations (90°/180°/
+ *  270°) are always searched; these gate the reflected orientations — a
+ *  "flipped X" copy is the cell mirrored across its vertical axis (any
+ *  rotation of it), "flipped Y" across its horizontal axis. Both default on. */
+export interface CellDetectionOptions {
+  allowFlipX: boolean;
+  allowFlipY: boolean;
+  /** Drop candidates whose footprint overlaps any placed cell (of any type)
+   *  by more than ~30%. Off → only near-duplicates of the type's own placed
+   *  members are dropped, so proposals may sit on cells of other types.
+   *  Default on. */
+  avoidExistingCells: boolean;
+}
+
+export interface CellDetectionStartRequest {
+  cellTypeId: string;
+  allowFlipX?: boolean;
+  allowFlipY?: boolean;
+  avoidExistingCells?: boolean;
+}
+
+export interface CellDetectionDismissRequest {
+  ids: string[];
+  /** false → un-dismiss. Default true. */
+  dismissed?: boolean;
+}
+
+// ── Cell imaging (clean specimens + wire-likelihood map) ──────────────
+
+/** One cell type's clean specimen: the per-pixel robust centre of its
+ *  aligned instances, in the type's canonical orientation. */
+export interface CellSpecimenInfo {
+  cellTypeId: string;
+  cellTypeName: string;
+  width: number;
+  height: number;
+  /** Instances stacked (capped per type). */
+  instancesUsed: number;
+  /** Resolution of the display image relative to the cell (2 = reconstructed
+   *  at twice the source resolution from sub-pixel-registered instances).
+   *  Absent → 1. */
+  displayScale?: number;
+  /** Instances that went into the display image (the sharpest subset). */
+  displayInstances?: number;
+  /** Instances that only registered once mirrored relative to their
+   *  annotation — the annotation's flip flags are probably wrong for them. */
+  orientationMismatches?: number;
+  /** Cell ids of those instances. */
+  orientationMismatchIds?: string[];
+  /** Fingerprint of the type's members when it was built (see
+   *  `CellDetectionResult.memberSignature`). */
+  memberSignature: string;
+  createdAt: string;
+}
+
+export interface CellSpecimenIndex {
+  version: 1;
+  dieId: string;
+  /** Percentile of the stack used as the specimen (50 = median). */
+  percentile: number;
+  createdAt: string;
+  specimens: CellSpecimenInfo[];
+}
+
+/** Die-wide overlay of "pixels under a recognised cell that don't belong to
+ *  the cell" — dominated by wires routed over it. Served as RGBA tiles. */
+export interface WireMapInfo {
+  version: 1;
+  dieId: string;
+  createdAt: string;
+  /** `CellSpecimenIndex.createdAt` it was computed against. */
+  specimensCreatedAt: string;
+  annotationsRev: number;
+  cellsProcessed: number;
+  cellsSkipped: number;
+  /** Lowest pyramid level that has tiles (overlay hides below it). */
+  minZoomLevel: number;
+  maxZoomLevel: number;
+}
+
+export type CellImagingJobKind = "specimens" | "wireMap";
+
+export interface CellImagingJob {
+  dieId: string;
+  kind: CellImagingJobKind;
+  status: "running" | "stopped" | "completed" | "failed";
+  phase: string;
+  percentage: number;
+  error: string | null;
+  startedAt: string;
+  updatedAt: string;
+  finishedAt: string | null;
+}
+
+export interface CellImagingStartRequest {
+  kind: CellImagingJobKind;
+}
+

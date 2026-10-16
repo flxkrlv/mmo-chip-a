@@ -1,5 +1,5 @@
 import type { Server as HttpServer } from "node:http";
-import type { MLInferenceJob } from "shared";
+import type { CellDetectionJob, CellImagingJob, MLInferenceJob } from "shared";
 import { WebSocketServer, type WebSocket } from "ws";
 import type { AuthPayload } from "./types.js";
 
@@ -13,6 +13,8 @@ import type { AuthPayload } from "./types.js";
  *                      { "type": "ping" }
  *   server → client :  { "type": "annotations", "dieId": "<id>", "rev": <number> }
  *                      { "type": "mlJob",       "dieId": "<id>", "job": <MLInferenceJob> }
+ *                      { "type": "cellJob",     "dieId": "<id>", "job": <CellDetectionJob> }
+ *                      { "type": "imagingJob",  "dieId": "<id>", "job": <CellImagingJob> }
  *                      { "type": "user/online",  "userId": "<id>", "username": "<name>",
  *                                                          "dieId": "<id>|null", "tool": "<tool>|null" }
  *                      { "type": "user/offline", "userId": "<id>" }
@@ -26,6 +28,8 @@ import type { AuthPayload } from "./types.js";
 type ServerMessage =
   | { type: "annotations"; dieId: string; rev: number }
   | { type: "mlJob"; dieId: string; job: MLInferenceJob }
+  | { type: "cellJob"; dieId: string; job: CellDetectionJob }
+  | { type: "imagingJob"; dieId: string; job: CellImagingJob }
   | { type: "user/list"; users: Array<{ userId: string; username: string; dieId: string | null; tool: string | null }> }
   | { type: "user/online"; userId: string; username: string; dieId: string | null; tool: string | null }
   | { type: "user/offline"; userId: string }
@@ -52,6 +56,10 @@ export interface AnnotationBroadcaster {
   emitAnnotationChange(dieId: string, rev: number): void;
   /** Push an ML inference job-state change to subscribed clients. */
   emitMLJob(job: MLInferenceJob): void;
+  /** Push a cell-detection job-state change to subscribed clients. */
+  emitCellJob(job: CellDetectionJob): void;
+  /** Push a cell-imaging (specimens / wire map) job-state change. */
+  emitImagingJob(job: CellImagingJob): void;
   /** Get current list of online users with their status. */
   getOnlineUsers(): Array<{ userId: string; username: string; dieId: string | null; tool: string | null }>;
   /** Close the server. */
@@ -196,6 +204,18 @@ export function attachWebSocketBroadcaster(
       for (const sub of subscriptions.values()) {
         if (!sub.dies.has(job.dieId)) continue;
         send(sub.socket, { type: "mlJob", dieId: job.dieId, job });
+      }
+    },
+    emitCellJob(job) {
+      for (const sub of subscriptions.values()) {
+        if (!sub.dies.has(job.dieId)) continue;
+        send(sub.socket, { type: "cellJob", dieId: job.dieId, job });
+      }
+    },
+    emitImagingJob(job) {
+      for (const sub of subscriptions.values()) {
+        if (!sub.dies.has(job.dieId)) continue;
+        send(sub.socket, { type: "imagingJob", dieId: job.dieId, job });
       }
     },
     getOnlineUsers() {
