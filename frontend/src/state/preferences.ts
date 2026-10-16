@@ -188,6 +188,9 @@ interface PreferencesState {
   /** Per-conductor-layer wire colour override (metal1, metal2, etc.).
    *  Absent = use WIRE_LAYER_COLOR defaults from style.ts. */
   wireLayerColors: Record<string, string>;
+  /** Show metal 2+ in the wire layer chips when the die has a process (the
+   *  silicon layers + metal 1 are the everyday set; upper metals are opt-in). */
+  showUpperMetals: boolean;
   /** When enabled, clicking a vertex on an adjacent metal auto-places the
    *  via and connects, instead of requiring manual via placement. */
   autoViaEnabled: boolean;
@@ -328,6 +331,7 @@ interface PreferencesActions {
   setCustomNetColorsEnabled: (enabled: boolean) => void;
   /** Set colour for a specific conductor layer (metal1, metal2, poly, etc.). */
   setWireLayerColor: (layer: string, color: string) => void;
+  setShowUpperMetals: (show: boolean) => void;
   /** Toggle auto-via placement on cross-layer snap. */
   setAutoViaEnabled: (enabled: boolean) => void;
   /** Switch via placement mode for E/Q: "cursor" or "wire-end". */
@@ -487,6 +491,7 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
           metal1: WIRE_LAYER_COLOR.metal1,
           metal2: WIRE_LAYER_COLOR.metal2
         },
+        showUpperMetals: false,
         autoViaEnabled: false,
         viaPlaceMode: "wire-end",
         viaLayerColors: {},
@@ -541,6 +546,7 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
           set((state) => ({
             wireLayerColors: { ...state.wireLayerColors, [layer]: color }
           })),
+        setShowUpperMetals: (show) => set({ showUpperMetals: show }),
         setAutoViaEnabled: (enabled) => set({ autoViaEnabled: enabled }),
         setViaPlaceMode: (mode) => set({ viaPlaceMode: mode }),
         setViaLabelsVisible: (visible) => set({ viaLabelsVisible: visible }),
@@ -879,6 +885,7 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
           sheetR: state.sheetR,
           analogOverrides: state.analogOverrides,
           wireLayerColors: state.wireLayerColors,
+          showUpperMetals: state.showUpperMetals,
           autoViaEnabled: state.autoViaEnabled,
           viaPlaceMode: state.viaPlaceMode,
           viaLabelsVisible: state.viaLabelsVisible,

@@ -29,7 +29,7 @@ const MAX_HISTORY = 200;
 /** A list section, or a whole-value section (then `id` is the section name). */
 export type McpTarget = McpCollection | McpValueSection;
 
-export const MCP_VALUE_SECTIONS: McpValueSection[] = ["analogLayers", "umPerPx", "mlConfig", "icPackage"];
+export const MCP_VALUE_SECTIONS: McpValueSection[] = ["analogLayers", "umPerPx", "mlConfig", "icPackage", "process"];
 
 export function isValueSection(section: string): section is McpValueSection {
   return (MCP_VALUE_SECTIONS as string[]).includes(section);
@@ -319,6 +319,7 @@ export function describe(collection: McpTarget): string {
     analogLayers: "analog layers section",
     umPerPx: "scale (umPerPx)",
     mlConfig: "ML config",
-    icPackage: "IC package section"
+    icPackage: "IC package section",
+    process: "process (silicon layers)"
   }[collection];
 }

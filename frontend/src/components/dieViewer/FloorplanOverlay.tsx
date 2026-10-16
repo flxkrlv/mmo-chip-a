@@ -18,7 +18,7 @@ import type { Viewport } from "../../renderer/types";
 import { FloorplanRegionPopover } from "./FloorplanRegionPopover";
 import { FloorplanEditHandles } from "./FloorplanEditHandles";
 import { FloorplanPolyDraft } from "./FloorplanPolyDraft";
-import { floorplanNameLines } from "../../lib/floorplanName";
+import { floorplanDisplayName, floorplanNameLines } from "../../lib/floorplanName";
 import { isFloorplanVisible } from "../../lib/floorplanSnapshot";
 import type { ActionDispatcher } from "../../api/actions";
 import { useAuth } from "../../state/auth";
@@ -313,7 +313,7 @@ export function FloorplanOverlay({
                 onDoubleClick={(e) => !isDraft && openPopover(region, e)}
               />
               {/* Label — click selects, double-click opens the window */}
-              {region.name && !isDraft && viewport && (
+              {floorplanDisplayName(region) && !isDraft && viewport && (
                 <text
                   x={(region.geometry[0].x - viewport.originX) * viewport.zoom + 8}
                   y={(region.geometry[0].y - viewport.originY) * viewport.zoom + 18}
@@ -325,7 +325,7 @@ export function FloorplanOverlay({
                   onDoubleClick={(e) => !isDraft && openPopover(region, e)}
                 >
                   <NameLines
-                    name={region.name}
+                    name={floorplanDisplayName(region)}
                     x={(region.geometry[0].x - viewport.originX) * viewport.zoom + 8}
                     fontSize={Math.max(13, 14 * viewport.zoom / 1000)}
                   />
@@ -383,7 +383,7 @@ export function FloorplanOverlay({
                 onDoubleClick={(e) => !isDraft && openPopover(region, e)}
             />
             {/* Label — click selects, double-click opens the window */}
-            {region.name && !isDraft && (
+            {floorplanDisplayName(region) && !isDraft && (
               <text
                 x={cssLeft + 6}
                 y={cssTop + 16}
@@ -394,7 +394,7 @@ export function FloorplanOverlay({
                 onClick={(e) => clickRegion(region, e)}
                 onDoubleClick={(e) => openPopover(region, e)}
               >
-                <NameLines name={region.name} x={cssLeft + 6} fontSize={Math.max(13, 14 * viewport!.zoom / 1000)} />
+                <NameLines name={floorplanDisplayName(region)} x={cssLeft + 6} fontSize={Math.max(13, 14 * viewport!.zoom / 1000)} />
               </text>
             )}
             {/* Draft size readout */}

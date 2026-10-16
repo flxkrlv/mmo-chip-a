@@ -297,6 +297,11 @@ export function DieViewerPage() {
 function DieViewer({ dieId }: { dieId: string }) {
   const { data: die, isLoading, error } = useDie(dieId);
   const { data: annotations } = useAnnotations(dieId);
+  // The die's process adds its silicon layers to the session's layer stack.
+  const dieProcess = annotations?.process ?? null;
+  useEffect(() => {
+    useSession.getState().setProcess(dieProcess);
+  }, [dieProcess]);
   const toast = useToast();
   const dialog = useDialog();
   useAnnotationsWebSocket(dieId);
@@ -632,12 +637,26 @@ function DieViewer({ dieId }: { dieId: string }) {
               pos = { x: Math.round(cursorWorld.x), y: Math.round(cursorWorld.y) };
             }
             const metalStack = useSession.getState().metalStack ?? DEFAULT_METAL_STACK;
+            // Metals come first in the stack (vias[i] joins metals i and i+1);
+            // the die's silicon layers follow, each reaching metal 1 through
+            // its contact (CT_*) — so from silicon only "up" is defined.
+            const metalCount = metalStack.metals.filter(m => m.z >= 1).length;
             const curIdx = metalStack.metals.findIndex(m => m.id === cur.activeMetalId);
             if (curIdx < 0) return;
-            const nextIdx = modDef.action === "viaUp" ? curIdx + 1 : curIdx - 1;
-            if (nextIdx < 0 || nextIdx >= metalStack.metals.length) return;
-            const via = metalStack.vias[nextIdx < curIdx ? nextIdx : curIdx];
-            if (!via) return;
+            let via: { id: string } | undefined;
+            let nextMetalId: string | undefined;
+            if (curIdx >= metalCount) {
+              if (modDef.action !== "viaUp") return;
+              const metal1 = metalStack.metals[0];
+              via = metalStack.vias.find(v => v.from === metalStack.metals[curIdx].id && v.to === metal1?.id);
+              nextMetalId = metal1?.id;
+            } else {
+              const nextIdx = modDef.action === "viaUp" ? curIdx + 1 : curIdx - 1;
+              if (nextIdx < 0 || nextIdx >= metalCount) return;
+              via = metalStack.vias[nextIdx < curIdx ? nextIdx : curIdx];
+              nextMetalId = metalStack.metals[nextIdx].id;
+            }
+            if (!via || !nextMetalId) return;
             e.preventDefault();
             const viaPoint = w.insertDraftPoint(pos);
             if (!viaPoint) return;
@@ -651,7 +670,7 @@ function DieViewer({ dieId }: { dieId: string }) {
               },
               prevAnnotation: null
             });
-            cur.setActiveMetalId(metalStack.metals[nextIdx].id);
+            cur.setActiveMetalId(nextMetalId);
             return;
           }
         }
@@ -672,9 +691,10 @@ function DieViewer({ dieId }: { dieId: string }) {
 
       const metalStack = useSession.getState().metalStack ?? DEFAULT_METAL_STACK;
 
-      // Metal layer hotkeys: bare digits 1..N
+      // Metal layer hotkeys: bare digits 1..N (metals only — the silicon
+      // layers that follow them in the stack are picked from the toolbar / W).
       const metalIdx = !e.shiftKey && !e.altKey ? METAL_HOTKEYS[e.key] : undefined;
-      if (metalIdx != null && metalIdx < metalStack.metals.length) {
+      if (metalIdx != null && metalIdx < metalStack.metals.filter(m => m.z >= 1).length) {
         e.preventDefault();
         useDieViewerStore.getState().setActiveMetalId(metalStack.metals[metalIdx].id);
         if (useDieViewerStore.getState().activeTool !== "wire") setActiveTool("wire");

@@ -1,5 +1,5 @@
 import sharp from "sharp";
-import type { DieAnnotations, LayerShape, MetalStack } from "shared";
+import { processTagName, type DieAnnotations, type LayerShape, type MetalStack } from "shared";
 import { listManifests } from "../api/overlayImages.js";
 import { cellDieRect, renderDieCrop } from "../api/tiles.js";
 import type { DieRecord } from "../types.js";
@@ -318,8 +318,9 @@ export async function renderAnnotated(params: {
       out.push(
         `<polygon points="${d}" fill="none" stroke="${esc(region.color)}" stroke-width="2.2" stroke-dasharray="7 4"${fade(on)}/>`
       );
-      if (region.name) {
-        labels.push(text(X(Math.min(...xs)) + 4, Y(Math.min(...ys)) + 14, region.name, { size: 12, color: region.color, opacity: anyHl && spec.dimOthers && !on ? 0.4 : undefined }));
+      const label = [region.name, region.layerTag ? processTagName(region.layerTag) : ""].filter(Boolean).join(" · ");
+      if (label) {
+        labels.push(text(X(Math.min(...xs)) + 4, Y(Math.min(...ys)) + 14, label, { size: 12, color: region.color, opacity: anyHl && spec.dimOthers && !on ? 0.4 : undefined }));
       }
     }
   }

@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import sharp from "sharp";
+import { isProcessLayer, PROCESS_LAYERS, SUBSTRATE_NAMES, type ProcessTag } from "shared";
 import type {
   CommentAnnotation,
   CommentImage,
@@ -39,7 +40,7 @@ import {
   type McpToolResult,
   type ToolDef
 } from "./mcpToolKit.js";
-import { metalStackOf, WIRE_TOOLS } from "./mcpWires.js";
+import { layerStackOf, WIRE_TOOLS } from "./mcpWires.js";
 
 export type { McpToolContext, McpToolResult } from "./mcpToolKit.js";
 
@@ -72,6 +73,14 @@ function points(value: unknown, kind: FloorplanRegion["kind"]): { x: number; y: 
   }
   if (pts.length < 3) throw new ToolInputError(`A polygon region needs at least 3 points`);
   return pts;
+}
+
+function processTag(value: string | undefined): ProcessTag | undefined {
+  if (value === undefined) return undefined;
+  if (value !== "psub" && value !== "nsub" && !isProcessLayer(value)) {
+    throw new ToolInputError(`"layerTag" must be psub, nsub or one of: ${Object.keys(PROCESS_LAYERS).join(", ")}`);
+  }
+  return value as ProcessTag;
 }
 
 function regionKind(value: unknown): FloorplanRegion["kind"] {
@@ -169,7 +178,7 @@ const getDieInfo: ToolDef = {
     const annotations = await readAnnotations(ctx.dataRoot, ctx.dieId);
     const state = await readMcpState(ctx.dataRoot, ctx.dieId);
     const overlays = await listManifests(ctx.dataRoot, ctx.dieId).catch(() => []);
-    const stack = metalStackOf(record);
+    const stack = layerStackOf(record, annotations);
     return textResult({
       dieId: record.id,
       name: record.name,
@@ -194,8 +203,16 @@ const getDieInfo: ToolDef = {
       mcpFullEdits: state.full
         ? "ON: edit_annotations may change any annotation (human-made too), and the ownership limits above are lifted"
         : "off",
+      process: annotations.process
+        ? {
+            kind: annotations.process.kind,
+            substrate: SUBSTRATE_NAMES[annotations.process.substrate],
+            layers: annotations.process.layers.map((l) => ({ layer: l, name: PROCESS_LAYERS[l].name })),
+            note: "Process layers are wire layers like metals; CT_* vias contact them to metal 1, TAP_* vias tap wells / epi / isolation / buried layer."
+          }
+        : null,
       metalStack: {
-        wireLayers: ["poly", ...stack.metals.map((m) => m.layer)],
+        wireLayers: [...new Set(["poly", ...stack.metals.map((m) => m.layer)])],
         metals: stack.metals.map(({ id, layer, name }) => ({ id, layer, name })),
         vias: stack.vias.map(({ id, from, to }) => ({ id, from, to }))
       }
@@ -379,7 +396,7 @@ const renderAnnotatedImage: ToolDef = {
       dataRoot: ctx.dataRoot,
       record,
       annotations,
-      stack: metalStackOf(record),
+      stack: layerStackOf(record, annotations),
       spec
     });
     const k = meta.diePixelsPerOutputPixel;
@@ -417,11 +434,12 @@ async function attachImage(ctx: McpToolContext, args: Record<string, unknown>): 
   const caption = str(image, "caption", true);
   const record = await readDieRecord(ctx.dataRoot, ctx.dieId);
   const spec = await parseRenderSpec(ctx.dataRoot, record, image);
+  const annotations = await readAnnotations(ctx.dataRoot, ctx.dieId);
   const rendered = await renderAnnotated({
     dataRoot: ctx.dataRoot,
     record,
-    annotations: await readAnnotations(ctx.dataRoot, ctx.dieId),
-    stack: metalStackOf(record),
+    annotations,
+    stack: layerStackOf(record, annotations),
     spec
   });
   return [
@@ -531,7 +549,11 @@ const addFloorplanRegion: ToolDef = {
         type: "array",
         items: { type: "object", properties: { x: point, y: point }, required: ["x", "y"] }
       },
-      color: { type: "string", description: "Outline color #rrggbb (default #4dabf7)" }
+      color: { type: "string", description: "Outline color #rrggbb (default #4dabf7)" },
+      layerTag: {
+        type: "string",
+        description: "Canonical process layer the region outlines (psub, nsub, nwell, pwell, ndiff, pdiff, poly, nbl, nepi, pbase, piso…); flips with the die's polarity toggle"
+      }
     },
     required: ["name", "kind", "points"],
     additionalProperties: false
@@ -544,6 +566,7 @@ const addFloorplanRegion: ToolDef = {
     const geometry = points(args.points, kind);
     assertOnDie(record, geometry);
     const regionColor = color(str(args, "color", true)) ?? "#4dabf7";
+    const layerTag = processTag(str(args, "layerTag", true));
     return write(ctx, "create", () => {
       const region: FloorplanRegion = {
         id: randomUUID(),
@@ -556,7 +579,8 @@ const addFloorplanRegion: ToolDef = {
         createdAt: new Date().toISOString(),
         reservedBy: null,
         reservedByName: null,
-        reservedAt: null
+        reservedAt: null,
+        ...(layerTag ? { layerTag } : {})
       };
       return {
         tool: "add_floorplan_region",
@@ -748,6 +772,10 @@ const updateFloorplanRegion: ToolDef = {
       regionId: { type: "string" },
       name: { type: "string" },
       color: { type: "string", description: "#rrggbb" },
+      layerTag: {
+        type: "string",
+        description: "Canonical process layer the region outlines (psub, nsub, nwell, pwell, ndiff, pdiff, poly, nbl, nepi, pbase, piso…); \"none\" removes it; flips with the die's polarity toggle"
+      },
       kind: { type: "string", enum: ["rect", "polygon"] },
       points: {
         type: "array",
@@ -770,8 +798,10 @@ const updateFloorplanRegion: ToolDef = {
     const kind = args.kind === undefined ? undefined : regionKind(args.kind);
     const geometry = kind ? points(args.points, kind) : undefined;
     if (geometry) assertOnDie(record, geometry);
-    if (name === undefined && regionColor === undefined && !geometry) {
-      throw new ToolInputError(`Nothing to change: pass name, color and/or kind + points`);
+    const rawTag = str(args, "layerTag", true);
+    const layerTag = rawTag === "none" ? null : processTag(rawTag);
+    if (name === undefined && regionColor === undefined && !geometry && rawTag === undefined) {
+      throw new ToolInputError(`Nothing to change: pass name, color, layerTag and/or kind + points`);
     }
     return write(ctx, "edit", (annotations, state) => {
       const region = requireOwned<FloorplanRegion>(annotations, state, "floorplanRegions", regionId);
@@ -782,6 +812,8 @@ const updateFloorplanRegion: ToolDef = {
         ...(regionColor !== undefined ? { color: regionColor } : {}),
         ...(kind && geometry ? { kind, geometry } : {})
       };
+      if (layerTag === null) delete next.layerTag;
+      else if (layerTag !== undefined) next.layerTag = layerTag;
       return {
         tool: "update_floorplan_region",
         summary: `Edit floorplan "${clip(next.name)}"`,

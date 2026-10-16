@@ -246,14 +246,16 @@ export function createAnnotationsRouter(config: AnnotationsRouterConfig) {
     }
   });
 
-  // ─── Config (umPerPx) ─────────────────────────────────────────-
+  // ─── Config (umPerPx, process) ─────────────────────────────────────────-
 
   router.put("/api/dies/:dieId/config", async (request, response, next) => {
     const { dieId } = request.params;
     try {
-      const body = request.body as { umPerPx?: number };
+      const body = request.body as { umPerPx?: number; process?: DieAnnotations["process"] | null };
       const result = await mutateAnnotations(config.dataRoot, dieId, (annotations) => {
         if (body.umPerPx !== undefined) annotations.umPerPx = body.umPerPx;
+        if (body.process === null) delete annotations.process;
+        else if (body.process !== undefined) annotations.process = body.process;
         return null;
       });
       sendMutationResult(response, dieId, result, notify);

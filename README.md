@@ -14,6 +14,13 @@ This fork tracks [flxkrlv/mmo-chip-a](https://github.com/flxkrlv/mmo-chip-a) (it
 - **Pyramidal TIFF import** — dies and overlays can be imported as pyramidal / tiled TIFF (libvips `tiffsave --pyramid`, SubIFD/OME-TIFF, SVS). Coarse zoom levels are cut from the matching stored resolution and full-resolution tiles only decode the region they cover, so tiling huge mosaics is far faster than from PNG.
 - **Resumable tiling** — background tile generation resumes after a backend restart, only renders tiles missing on disk, and the progress counter is seeded from the tiles already present (no more "tiling" again for an already-tiled die).
 
+### Process layers (CMOS / bipolar)
+
+- **Per-die process** — *Net settings → Process*: *Metals only*, *CMOS* (P-substrate + N-well, N+ / P+ diffusion, polysilicon) or *Bipolar* (NPN on P-substrate: N+ buried layer, N-epi, P-base, N+ diffusion, P+ isolation). Checkboxes pick which of these layers the die has.
+- **Silicon wire layers** — the die's process layers become wire layers below metal 1 (chips N+, P+, NW, PO… in the wire tool and the Inspector). Metal 1 is always shown; metal 2+ sit behind a `+N` chip. `CT_*` contacts join poly / diffusion / base to metal 1 and `TAP_*` taps join a well / epi / isolation to same-type diffusion, with the usual via snapping and checks; `E` from a silicon layer climbs to metal 1.
+- **Polarity flip** — the `P-sub ⇄` button (wire tool bar or Net settings) turns P-substrate into N-substrate, N-well into P-well, N+ into P+ and so on, relabelling every wire segment, contact and floorplan tag on those layers in one undo step. The link button next to each layer group takes it out of the flip (e.g. keep N+ / P+ that were annotated after spotting the real polarity).
+- **Floorplan layer tag** — a region can carry a canonical layer (P-substrate, N-well, N+ diffusion…), shown under its name, and it flips with the toggle.
+
 ### Nets and wires
 
 - **Per-net colors** — assign colors to one or many nets at once from the Outline Tree; a switch flips between custom net colors and per-layer colors without losing the assignments.

@@ -177,7 +177,19 @@ export interface AnnotationNetNode {
  *  RE/verilog metadata only - ML trace derivation ignores material. */
 export type WireLayer =
   | "poly"
-  | "metal1" | "metal2" | "metal3" | "metal4" | "metal5" | "metal6";
+  | "metal1" | "metal2" | "metal3" | "metal4" | "metal5" | "metal6"
+  | ProcessLayer;
+
+/** Front-end-of-line (silicon) wire layers, available when a die has a
+ *  process configured (see ProcessConfig / PROCESS_LAYERS). */
+export type ProcessLayer =
+  | "nwell" | "pwell"
+  | "ndiff" | "pdiff"
+  | "poly"
+  | "nbl" | "pbl"
+  | "nepi" | "pepi"
+  | "pbase" | "nbase"
+  | "piso" | "niso";
 
 // ── Metal stack configuration ─────────────────────────────────
 
@@ -611,6 +623,10 @@ export interface FloorplanRegion {
   reservedAt: string | null;
   /** User-visible port name overrides: netId → alias */
   portAliases?: Record<number, string>;
+  /** Canonical process layer this region outlines (e.g. "nwell", "psub").
+   *  Shown with the name, and swapped by the die's polarity flip like the
+   *  wires on that layer. */
+  layerTag?: ProcessTag;
 }
 
 // ── Comments (Phase 2.2) ────────────────────────────────────────
@@ -692,6 +708,8 @@ export interface DieAnnotations {
   floorplanRegions?: FloorplanRegion[];
   /** IC Package bond mapping — die pad to package pin wirebond connections. */
   icPackage?: IcPackageConfig;
+  /** Silicon process of the die (layers below metal 1). Absent ⇒ metals only. */
+  process?: ProcessConfig;
 }
 
 export interface MLExportRequest {
@@ -1897,7 +1915,7 @@ export type McpCollection =
   | "guides";
 
 /** Non-list annotation sections, written whole (full edits only). */
-export type McpValueSection = "analogLayers" | "umPerPx" | "mlConfig" | "icPackage";
+export type McpValueSection = "analogLayers" | "umPerPx" | "mlConfig" | "icPackage" | "process";
 
 /** One MCP change, as listed in the MCP panel's undo / redo stacks. */
 export interface McpHistoryItem {
@@ -1928,4 +1946,231 @@ export interface McpStatus {
   undo: McpHistoryItem[];
   /** Oldest first; the last entry is what Redo re-applies. */
   redo: McpHistoryItem[];
+}
+
+// ── Silicon process (layers below metal 1) ────────────────────────
+
+export type Polarity = "n" | "p";
+export type ProcessKind = "cmos" | "bipolar";
+
+/** Layer groups that flip together. The substrate is the master switch. */
+export type ProcessGroup = "substrate" | "well" | "diff" | "buried" | "epi" | "base" | "iso";
+
+/** Floorplan layer tag: a process layer or the substrate. */
+export type ProcessTag = ProcessLayer | "psub" | "nsub";
+
+/**
+ * Per-die process (stored in DieAnnotations.process so a flip is one
+ * undoable annotation batch). `layers` are the silicon layers this die has,
+ * offered as wire layers below the metal stack.
+ */
+export interface ProcessConfig {
+  kind: ProcessKind;
+  substrate: Polarity;
+  layers: ProcessLayer[];
+  /** Groups whose link is off: the flip toggle leaves them (layers, wires,
+   *  vias and floorplan tags) as they are. */
+  unlinked?: ProcessGroup[];
+}
+
+export interface ProcessLayerDef {
+  group: Exclude<ProcessGroup, "substrate"> | null;
+  polarity: Polarity | null;
+  name: string;
+  short: string;
+  /** Level id in the layer stack (like "ME1"). */
+  id: string;
+  /** Height relative to metal 1 (z = 1): 0 = contacted to metal 1. */
+  z: number;
+  color: string;
+  /** Metal 1 can contact this layer directly (CT_<id> via). */
+  contact: boolean;
+}
+
+export const PROCESS_LAYERS: Record<ProcessLayer, ProcessLayerDef> = {
+  nwell: { group: "well", polarity: "n", name: "N-well", short: "NW", id: "NWELL", z: -1, color: "#7dd3fc", contact: false },
+  pwell: { group: "well", polarity: "p", name: "P-well", short: "PW", id: "PWELL", z: -1, color: "#fda4af", contact: false },
+  ndiff: { group: "diff", polarity: "n", name: "N+ diffusion", short: "N+", id: "NDIFF", z: 0, color: "#22c55e", contact: true },
+  pdiff: { group: "diff", polarity: "p", name: "P+ diffusion", short: "P+", id: "PDIFF", z: 0, color: "#eab308", contact: true },
+  poly: { group: null, polarity: null, name: "Polysilicon", short: "PO", id: "POLY", z: 0, color: "#fb923c", contact: true },
+  nbl: { group: "buried", polarity: "n", name: "N+ buried layer", short: "NBL", id: "NBL", z: -2, color: "#64748b", contact: false },
+  pbl: { group: "buried", polarity: "p", name: "P+ buried layer", short: "PBL", id: "PBL", z: -2, color: "#a8a29e", contact: false },
+  nepi: { group: "epi", polarity: "n", name: "N-epi", short: "NEPI", id: "NEPI", z: -1, color: "#38bdf8", contact: false },
+  pepi: { group: "epi", polarity: "p", name: "P-epi", short: "PEPI", id: "PEPI", z: -1, color: "#f9a8d4", contact: false },
+  pbase: { group: "base", polarity: "p", name: "P-base", short: "PB", id: "PBASE", z: 0, color: "#f472b6", contact: true },
+  nbase: { group: "base", polarity: "n", name: "N-base", short: "NB", id: "NBASE", z: 0, color: "#818cf8", contact: true },
+  piso: { group: "iso", polarity: "p", name: "P+ isolation", short: "PISO", id: "PISO", z: -1, color: "#c084fc", contact: false },
+  niso: { group: "iso", polarity: "n", name: "N+ isolation", short: "NISO", id: "NISO", z: -1, color: "#2dd4bf", contact: false }
+};
+
+export const PROCESS_GROUP_NAMES: Record<ProcessGroup, string> = {
+  substrate: "Substrate",
+  well: "Well",
+  diff: "N+ / P+ diffusion",
+  buried: "Buried layer",
+  epi: "Epi",
+  base: "Base",
+  iso: "Isolation"
+};
+
+export const SUBSTRATE_NAMES: Record<Polarity, string> = { p: "P-substrate", n: "N-substrate" };
+
+const opposite = (p: Polarity): Polarity => (p === "n" ? "p" : "n");
+
+/** Layers a process kind can have, for a substrate polarity (preset). */
+export function processPreset(kind: ProcessKind, substrate: Polarity = "p"): ProcessConfig {
+  const o = opposite(substrate);
+  const pick = (group: Exclude<ProcessGroup, "substrate">, polarity: Polarity) =>
+    (Object.keys(PROCESS_LAYERS) as ProcessLayer[]).find(
+      (l) => PROCESS_LAYERS[l].group === group && PROCESS_LAYERS[l].polarity === polarity
+    )!;
+  const layers: ProcessLayer[] =
+    kind === "cmos"
+      ? [pick("well", o), "ndiff", "pdiff", "poly"]
+      : // NPN on P-substrate: N+ buried, N-epi, P-base, N+ emitter, P+ isolation.
+        [pick("buried", o), pick("epi", o), pick("base", substrate), pick("diff", o), pick("iso", substrate)];
+  return { kind, substrate, layers };
+}
+
+/** Every layer a process kind may offer (both polarities), for presence toggles. */
+export function processCandidateLayers(kind: ProcessKind): ProcessLayer[] {
+  return kind === "cmos"
+    ? ["nwell", "pwell", "ndiff", "pdiff", "poly"]
+    : ["nbl", "pbl", "nepi", "pepi", "pbase", "nbase", "ndiff", "pdiff", "piso", "niso", "poly"];
+}
+
+export function isProcessLayer(layer: string | undefined): layer is ProcessLayer {
+  return !!layer && layer in PROCESS_LAYERS;
+}
+
+/** Opposite-polarity twin of a layer (poly has none). */
+export function flippedLayer(layer: ProcessLayer): ProcessLayer {
+  const def = PROCESS_LAYERS[layer];
+  if (!def.group || !def.polarity) return layer;
+  return (Object.keys(PROCESS_LAYERS) as ProcessLayer[]).find(
+    (l) => PROCESS_LAYERS[l].group === def.group && PROCESS_LAYERS[l].polarity !== def.polarity
+  )!;
+}
+
+export function isGroupLinked(process: ProcessConfig, group: ProcessGroup): boolean {
+  return group === "substrate" || !(process.unlinked ?? []).includes(group);
+}
+
+/** What the flip toggle maps a wire layer to (unchanged when unlinked / not a process layer). */
+export function flipWireLayer(process: ProcessConfig, layer: string | undefined): string | undefined {
+  if (!isProcessLayer(layer)) return layer;
+  const group = PROCESS_LAYERS[layer].group;
+  return group && isGroupLinked(process, group) ? flippedLayer(layer) : layer;
+}
+
+export function flipProcessTag(process: ProcessConfig, tag: ProcessTag): ProcessTag {
+  if (tag === "psub") return "nsub";
+  if (tag === "nsub") return "psub";
+  return flipWireLayer(process, tag) as ProcessLayer;
+}
+
+export function processTagName(tag: ProcessTag): string {
+  if (tag === "psub") return SUBSTRATE_NAMES.p;
+  if (tag === "nsub") return SUBSTRATE_NAMES.n;
+  return PROCESS_LAYERS[tag]?.name ?? tag;
+}
+
+/** The process config after the flip toggle. */
+export function flipProcessConfig(process: ProcessConfig): ProcessConfig {
+  return {
+    ...process,
+    substrate: opposite(process.substrate),
+    layers: process.layers.map((l) => flipWireLayer(process, l) as ProcessLayer)
+  };
+}
+
+/** Contact (CT_*) and tap (TAP_*) vias between the process layers and metal 1. */
+function processVias(layers: ProcessLayer[], metal1Id: string | undefined): ViaLevel[] {
+  const vias: ViaLevel[] = [];
+  const present = new Set(layers);
+  const twin = (group: Exclude<ProcessGroup, "substrate">, polarity: Polarity | null) =>
+    layers.find((l) => PROCESS_LAYERS[l].group === group && PROCESS_LAYERS[l].polarity === polarity);
+  for (const layer of layers) {
+    const def = PROCESS_LAYERS[layer];
+    if (def.contact && metal1Id) {
+      vias.push({ id: `CT_${def.id}`, from: def.id, to: metal1Id, layer: "contact", color: "rgba(226, 232, 240, 0.85)" });
+    }
+    // Well / epi / isolation taps through same-polarity N+ / P+; buried layer through the epi.
+    const tapTo =
+      def.group === "well" || def.group === "epi" || def.group === "iso"
+        ? twin("diff", def.polarity)
+        : def.group === "buried"
+          ? twin("epi", def.polarity)
+          : undefined;
+    if (tapTo && present.has(tapTo)) {
+      vias.push({ id: `TAP_${def.id}`, from: def.id, to: PROCESS_LAYERS[tapTo].id, layer: "tap", color: "rgba(253, 224, 71, 0.85)" });
+    }
+  }
+  return vias;
+}
+
+/**
+ * The layer stack the wire tools work with: the die's metals (metal 1 first,
+ * unchanged indices for the metal hotkeys) followed by its process layers,
+ * and the metal vias followed by the process contacts / taps.
+ */
+export function effectiveLayerStack(metalStack: MetalStack, process: ProcessConfig | null | undefined): MetalStack {
+  if (!process || process.layers.length === 0) return metalStack;
+  const metal1 = metalStack.metals.find((m) => m.z === 1) ?? metalStack.metals[0];
+  const levels: MetalLevel[] = process.layers.map((layer) => {
+    const def = PROCESS_LAYERS[layer];
+    return { id: def.id, layer, z: def.z, name: def.name, color: def.color };
+  });
+  return {
+    ...metalStack,
+    metals: [...metalStack.metals, ...levels],
+    vias: [...metalStack.vias, ...processVias(process.layers, metal1?.id)]
+  };
+}
+
+/** Via id after the flip: CT_NDIFF → CT_PDIFF, TAP_NWELL → TAP_PWELL, … */
+export function flipViaId(process: ProcessConfig, viaId: string): string {
+  const m = viaId.match(/^(CT|TAP)_(.+)$/);
+  if (!m) return viaId;
+  const layer = (Object.keys(PROCESS_LAYERS) as ProcessLayer[]).find((l) => PROCESS_LAYERS[l].id === m[2]);
+  if (!layer) return viaId;
+  return `${m[1]}_${PROCESS_LAYERS[flipWireLayer(process, layer) as ProcessLayer].id}`;
+}
+
+/**
+ * Everything the flip toggle changes: the process config, and every net,
+ * via and floorplan region on a linked layer (changed items only).
+ */
+export function planProcessFlip(annotations: DieAnnotations): {
+  process: ProcessConfig;
+  nets: { prev: AnnotationNet; next: AnnotationNet }[];
+  vias: { prev: HumanAnnotation; next: HumanAnnotation }[];
+  floorplans: { prev: FloorplanRegion; next: FloorplanRegion }[];
+} | null {
+  const process = annotations.process;
+  if (!process) return null;
+  const nets: { prev: AnnotationNet; next: AnnotationNet }[] = [];
+  for (const net of annotations.nets) {
+    let changed = false;
+    const edges = net.edges.map((e) => {
+      const layer = flipWireLayer(process, e.layer);
+      if (layer === e.layer) return e;
+      changed = true;
+      return { ...e, layer: layer as WireLayer };
+    });
+    if (changed) nets.push({ prev: net, next: { ...net, edges } });
+  }
+  const vias: { prev: HumanAnnotation; next: HumanAnnotation }[] = [];
+  for (const a of annotations.annotations ?? []) {
+    if (!a.layer) continue;
+    const layer = flipViaId(process, a.layer);
+    if (layer !== a.layer) vias.push({ prev: a, next: { ...a, layer } });
+  }
+  const floorplans: { prev: FloorplanRegion; next: FloorplanRegion }[] = [];
+  for (const region of annotations.floorplanRegions ?? []) {
+    if (!region.layerTag) continue;
+    const tag = flipProcessTag(process, region.layerTag);
+    if (tag !== region.layerTag) floorplans.push({ prev: region, next: { ...region, layerTag: tag } });
+  }
+  return { process: flipProcessConfig(process), nets, vias, floorplans };
 }

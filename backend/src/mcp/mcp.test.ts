@@ -296,6 +296,36 @@ test("renders annotated images and attaches them to comments", async () => {
   assert.equal((await request(app).get(`/api/dies/${dieId}/comment-images/..%2Fannotations.json`)).status, 404);
 });
 
+test("process layers: silicon wire layers, contacts and floorplan layer tags", async () => {
+  const { app, dieId } = await createHarness();
+  await setWires(app, dieId, true);
+  await setMode(app, dieId, "edit");
+  // No process: diffusion is not a layer of this die yet.
+  assert.equal((await call(app, dieId, "add_wire", { points: [{ x: 10, y: 10 }, { x: 50, y: 10 }], layer: "ndiff" })).isError, true);
+
+  await request(app)
+    .put(`/api/dies/${dieId}/config`)
+    .send({ process: { kind: "cmos", substrate: "p", layers: ["nwell", "ndiff", "pdiff", "poly"] } })
+    .expect(200);
+  const info = JSON.parse((await call(app, dieId, "get_die_info", {})).content[0].text);
+  assert.equal(info.process.substrate, "P-substrate");
+  assert.ok(info.metalStack.wireLayers.includes("nwell"));
+  assert.ok(info.metalStack.vias.some((v: { id: string }) => v.id === "CT_NDIFF"));
+
+  ok(await call(app, dieId, "add_wire", { points: [{ x: 10, y: 10 }, { x: 50, y: 10 }], layer: "ndiff" }));
+  ok(await call(app, dieId, "add_via", { x: 50, y: 10, via: "CT_NDIFF" }));
+  assert.equal((await call(app, dieId, "add_wire", { points: [{ x: 1, y: 1 }, { x: 5, y: 1 }], layer: "pwell" })).isError, true);
+
+  const fp = ok(
+    await call(app, dieId, "add_floorplan_region", { name: "bias", kind: "rect", points: [{ x: 0, y: 0 }, { x: 40, y: 40 }], layerTag: "nwell" })
+  );
+  assert.equal((await request(app).get(`/api/dies/${dieId}/annotations`)).body.floorplanRegions[0].layerTag, "nwell");
+  ok(await call(app, dieId, "update_floorplan_region", { regionId: fp.regionId, layerTag: "none" }));
+  const ann = (await request(app).get(`/api/dies/${dieId}/annotations`)).body;
+  assert.equal(ann.floorplanRegions[0].layerTag, undefined);
+  assert.equal(ann.process.kind, "cmos");
+});
+
 async function setMode(app: Server, dieId: string, mode: string) {
   await request(app).put(`/api/dies/${dieId}/mcp/settings`).send({ mode }).expect(200);
 }

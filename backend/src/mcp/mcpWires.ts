@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { effectiveLayerStack } from "shared";
 import type {
   AnnotationNet,
   AnnotationNetEdge,
@@ -41,8 +42,10 @@ import {
 type Pt = { x: number; y: number };
 type Owned = { nodes: string[]; edges: string[] };
 
-export function metalStackOf(record: DieRecord): MetalStack {
-  return record.config?.metalStack ?? DEFAULT_METAL_STACK;
+/** Wire layers + vias of the die: its metal stack plus its process layers
+ *  (poly, diffusions, wells… with their contacts / taps), as in the GUI. */
+export function layerStackOf(record: DieRecord, annotations: Pick<DieAnnotations, "process">): MetalStack {
+  return effectiveLayerStack(record.config?.metalStack ?? DEFAULT_METAL_STACK, annotations.process);
 }
 
 // ─── Pure graph helpers ─────────────────────────────────────────────
@@ -389,7 +392,7 @@ const addWire: ToolDef = {
   annotations: { readOnlyHint: false, destructiveHint: false },
   run: async (ctx, args) => {
     const record = await readDieRecord(ctx.dataRoot, ctx.dieId);
-    const stack = metalStackOf(record);
+    const stack = layerStackOf(record, await readAnnotations(ctx.dataRoot, ctx.dieId));
     let pts = pointList(args.points, "points");
     let from = netRef(args.from, "from");
     let to = netRef(args.to, "to");
@@ -544,7 +547,7 @@ const updateWire: ToolDef = {
   annotations: { readOnlyHint: false, destructiveHint: false },
   run: async (ctx, args) => {
     const record = await readDieRecord(ctx.dataRoot, ctx.dieId);
-    const stack = metalStackOf(record);
+    const stack = layerStackOf(record, await readAnnotations(ctx.dataRoot, ctx.dieId));
     const netId = str(args, "netId");
     const name = str(args, "name", true);
     if (name !== undefined) nonEmpty(name, "name");
@@ -701,7 +704,7 @@ const addVia: ToolDef = {
     const record = await readDieRecord(ctx.dataRoot, ctx.dieId);
     const p = { x: Math.round(num(args, "x")), y: Math.round(num(args, "y")) };
     assertOnDie(record, [p]);
-    const via = viaLayer(args.via, metalStackOf(record));
+    const via = viaLayer(args.via, layerStackOf(record, await readAnnotations(ctx.dataRoot, ctx.dieId)));
     return write(ctx, "wires", () => {
       const annotation: HumanAnnotation = {
         id: randomUUID(),
@@ -742,7 +745,7 @@ const updateVia: ToolDef = {
     const viaId = str(args, "viaId");
     const x = num(args, "x", true);
     const y = num(args, "y", true);
-    const via = args.via === undefined ? undefined : viaLayer(args.via, metalStackOf(record));
+    const via = args.via === undefined ? undefined : viaLayer(args.via, layerStackOf(record, await readAnnotations(ctx.dataRoot, ctx.dieId)));
     if (x === undefined && y === undefined && via === undefined) {
       throw new ToolInputError(`Nothing to change: pass x, y and/or via`);
     }

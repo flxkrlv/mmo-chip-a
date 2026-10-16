@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { floorplanNameInline, floorplanNameLines, normalizeFloorplanName } from "./floorplanName";
+import { floorplanDisplayName, floorplanNameInline, floorplanNameLines, normalizeFloorplanName } from "./floorplanName";
 
 describe("multiline floorplan names", () => {
   it("normalizes line endings, trailing spaces and blank edge lines", () => {
@@ -16,5 +16,13 @@ describe("multiline floorplan names", () => {
   it("joins non-blank lines for single-line display", () => {
     expect(floorplanNameInline("Bandgap\n\n  1.2 V ref ")).toBe("Bandgap · 1.2 V ref");
     expect(floorplanNameInline("OSC")).toBe("OSC");
+  });
+});
+
+describe("floorplan layer tag", () => {
+  it("adds the canonical layer name as the last line, or shows it alone", () => {
+    expect(floorplanDisplayName({ name: "UVLO", layerTag: "nwell" })).toBe("UVLO\nN-well");
+    expect(floorplanDisplayName({ name: "", layerTag: "psub" })).toBe("P-substrate");
+    expect(floorplanDisplayName({ name: "UVLO" })).toBe("UVLO");
   });
 });

@@ -14,6 +14,7 @@ import type {
   IgnoreRect,
   IOPin,
   ROIRectangle,
+  ProcessConfig,
   RulerMeasurement as Ruler
 } from "shared";
 import type { NetChange } from "../lib/netGraph";
@@ -65,6 +66,8 @@ export type AnnotationAction =
   | { kind: "upsertGuide"; guide: Guide; prevGuide: Guide | null }
   | { kind: "removeGuide"; guide: Guide }
   | { kind: "setUmPerPx"; umPerPx: number; prevUmPerPx: number | null }
+  /** Die process (silicon layers); null = metals only. */
+  | { kind: "setProcess"; process: ProcessConfig | null; prevProcess: ProcessConfig | null }
   | { kind: "upsertRuler"; ruler: Ruler; prevRuler: Ruler | null }
   | { kind: "removeRuler"; ruler: Ruler }
   // ── Analog layers (Phase 1) — stores the entire CellLayers blob
@@ -151,6 +154,8 @@ export function inverseOf(action: AnnotationAction): AnnotationAction {
         : { kind: "upsertGuide", guide: action.prevGuide, prevGuide: action.guide };
     case "removeGuide":
       return { kind: "upsertGuide", guide: action.guide, prevGuide: null };
+    case "setProcess":
+      return { kind: "setProcess", process: action.prevProcess, prevProcess: action.process };
     case "setUmPerPx":
       return {
         kind: "setUmPerPx",
@@ -278,6 +283,11 @@ export function applyAction(annotations: DieAnnotations, action: AnnotationActio
       };
     case "setUmPerPx":
       return { ...annotations, umPerPx: action.umPerPx };
+    case "setProcess": {
+      if (action.process) return { ...annotations, process: action.process };
+      const { process: _process, ...rest } = annotations;
+      return rest;
+    }
     case "upsertRuler":
       return {
         ...annotations,
@@ -400,6 +410,8 @@ export async function requestAction(
       return apiDelete(`/api/dies/${dieId}/guides/${action.guide.id}`);
     case "setUmPerPx":
       return apiPut(`/api/dies/${dieId}/config`, { umPerPx: action.umPerPx });
+    case "setProcess":
+      return apiPut(`/api/dies/${dieId}/config`, { process: action.process });
     case "upsertRuler":
       return apiPut(`/api/dies/${dieId}/rulers/${action.ruler.id}`, action.ruler);
     case "removeRuler":

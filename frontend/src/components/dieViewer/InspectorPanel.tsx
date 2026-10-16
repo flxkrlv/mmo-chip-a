@@ -18,7 +18,7 @@ import {
 } from "../../api/ml";
 import { parseNetPartId } from "../../lib/netGraph";
 import { selectedVias, viaBaseColor, viaColorAction } from "../../lib/viaColor";
-import { floorplanNameInline, normalizeFloorplanName } from "../../lib/floorplanName";
+import { floorplanDisplayName, floorplanNameInline, normalizeFloorplanName } from "../../lib/floorplanName";
 import { cellTypeColor, edgeColor, netColors, toHex, type NetColorPrefs } from "../../lib/colorHex";
 import { WIRE_LAYER_COLOR } from "../../renderer/annotations/style";
 import { Ic } from "../../icons";
@@ -242,6 +242,7 @@ function resolve(
               <WireLayerSelect
                 key="layer"
                 metals={stack.metals}
+                wrap
                 value={e.layer ?? null}
                 onChange={setLayer}
               />
@@ -374,7 +375,7 @@ function resolve(
       if (f.reservedByName) rows.push(["reserved by", f.reservedByName]);
       return {
         typeLabel: "Floorplan",
-        displayName: floorplanNameInline(f.name ?? "") || `Floorplan ${short(f.id)}`,
+        displayName: floorplanNameInline(floorplanDisplayName(f)) || `Floorplan ${short(f.id)}`,
         uid: f.id,
         name: {
           value: f.name ?? "",
