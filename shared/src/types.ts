@@ -615,12 +615,23 @@ export interface FloorplanRegion {
 
 // ── Comments (Phase 2.2) ────────────────────────────────────────
 
+/** An image attached to a comment or reply (e.g. an annotated render from an
+ *  MCP client). Served from GET /api/dies/:dieId/comment-images/:id.jpg and
+ *  stored in the project's `comment-images/` folder. */
+export interface CommentImage {
+  id: string;
+  width: number;
+  height: number;
+  caption?: string;
+}
+
 export interface CommentReply {
   id: string;
   text: string;
   authorId: string;
   authorName: string;
   createdAt: string;
+  images?: CommentImage[];
 }
 
 export interface CommentAnnotation {
@@ -632,6 +643,7 @@ export interface CommentAnnotation {
   authorName: string;
   createdAt: string;
   replies: CommentReply[];
+  images?: CommentImage[];
 }
 
 export interface RulerMeasurement {
@@ -1848,4 +1860,72 @@ export interface IcPackageConfig {
   transform: DieTransform;
   /** Bond wire thickness in micrometres (0.03 mm = 30 µm default). */
   bondWireWidthUm?: number;
+}
+
+// ── MCP (Model Context Protocol) access ───────────────────────────
+
+/**
+ * What an MCP client may write on a die. It can always read the die image
+ * and every annotation. Writes are limited to markup (comments + replies,
+ * floorplan regions, rulers):
+ *  - off:    read-only (default)
+ *  - create: add new markup only
+ *  - edit:   add, and also modify / delete markup the MCP client created
+ *            itself. Human-made items are never touched.
+ */
+export type McpWriteMode = "off" | "create" | "edit";
+
+/** authorId / createdBy stamped on items an MCP client creates. Any user may
+ *  delete MCP-authored comments and replies from the comment window. */
+export const MCP_AUTHOR_ID = "mcp";
+
+/** Annotation list sections (items with an `id`) an MCP client can write:
+ *  markup by mode, nets + vias (`annotations`) with wire edits, and every
+ *  list with full edits. */
+export type McpCollection =
+  | "comments"
+  | "floorplanRegions"
+  | "rulers"
+  | "nets"
+  | "annotations"
+  | "cellTypes"
+  | "cells"
+  | "grids"
+  | "pins"
+  | "rois"
+  | "ignores"
+  | "guides";
+
+/** Non-list annotation sections, written whole (full edits only). */
+export type McpValueSection = "analogLayers" | "umPerPx" | "mlConfig" | "icPackage";
+
+/** One MCP change, as listed in the MCP panel's undo / redo stacks. */
+export interface McpHistoryItem {
+  id: string;
+  /** ISO timestamp of the original change. */
+  at: string;
+  /** MCP tool that made the change, e.g. "add_comment". */
+  tool: string;
+  /** Human-readable one-liner, e.g. `Comment "check this bias"`. */
+  summary: string;
+  /** clientInfo.name the MCP client sent on initialize, if any. */
+  clientName: string | null;
+}
+
+/** GET /api/dies/:dieId/mcp */
+export interface McpStatus {
+  mode: McpWriteMode;
+  /** Wire edits allowed (separate from `mode`, since they change the
+   *  netlist): create nets, extend / connect into any net, edit or delete
+   *  the nodes, segments and vias the MCP client created. */
+  wires: boolean;
+  /** Full edits: overrides `mode` and `wires` — any annotation kind, including
+   *  human-made items, may be created, changed or deleted. */
+  full: boolean;
+  /** Path of the Streamable HTTP endpoint for this die, e.g. "/mcp/<dieId>". */
+  endpointPath: string;
+  /** Oldest first; the last entry is what Undo reverts. */
+  undo: McpHistoryItem[];
+  /** Oldest first; the last entry is what Redo re-applies. */
+  redo: McpHistoryItem[];
 }

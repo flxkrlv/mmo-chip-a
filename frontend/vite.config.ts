@@ -26,6 +26,8 @@ export default defineConfig({
         timeout: 600000,
         proxyTimeout: 600000,
       },
+      // MCP clients connect to /mcp/<dieId> (see the die viewer's MCP tab).
+      "/mcp": "http://localhost:3001",
     },
   },
 }); 

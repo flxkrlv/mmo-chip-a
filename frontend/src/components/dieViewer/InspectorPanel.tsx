@@ -34,6 +34,7 @@ import { WireLayerSelect } from "./WireLayerSelect";
 import { AnnotationClassSelect } from "./AnnotationClassSelect";
 import { CVPanel } from "./CVPanel";
 import { AssistantPanel } from "./AssistantPanel";
+import { McpPanel } from "./McpPanel";
 
 /** A single labelled property row (`.prop` matches the hifi spec). */
 function Prop({
@@ -509,7 +510,7 @@ export function InspectorPanel({
         className="ph"
         style={{ padding: 0, gap: 0, height: 30 }}
       >
-        {(["inspector", "ml", "cv", "ai"] as const).map((k) => (
+        {(["inspector", "ml", "cv", "ai", "mcp"] as const).map((k) => (
           <button
             key={k}
             type="button"
@@ -517,7 +518,7 @@ export function InspectorPanel({
             style={{ background: "transparent", cursor: "pointer" }}
             onClick={() => setTab(k)}
           >
-            {k === "inspector" ? "Inspector" : k === "ml" ? "ML" : k === "cv" ? "CV" : "AI"}
+            {k === "inspector" ? "Inspector" : k === "ml" ? "ML" : k === "cv" ? "CV" : k === "ai" ? "AI" : "MCP"}
           </button>
         ))}
       </div>
@@ -538,6 +539,8 @@ export function InspectorPanel({
           <MLPanel dieId={dieId} annotations={annotations} dispatcher={dispatcher} mlViasLayer={mlViasLayer} />
         ) : tab === "cv" ? (
           <CVPanel dieId={dieId} annotations={annotations} dispatcher={dispatcher} />
+        ) : tab === "mcp" ? (
+          <McpPanel dieId={dieId} />
         ) : (
           <InspectorBody
             annotations={annotations}

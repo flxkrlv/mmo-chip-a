@@ -124,7 +124,7 @@ async function listFullManifests(
   }
 }
 
-async function listManifests(
+export async function listManifests(
   dataRoot: string,
   dieId: string
 ): Promise<OverlayImageListItem[]> {
