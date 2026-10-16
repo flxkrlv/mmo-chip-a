@@ -3,6 +3,7 @@ import express from "express";
 import { createImportJobManager } from "./dieImport/jobs.js";
 import { createAnnotationsRouter } from "./api/annotations.js";
 import { createCellDetectionRouter } from "./api/cellDetection.js";
+import { createCellImagingRouter } from "./api/cellImaging.js";
 import { createDiesRouter } from "./api/dies.js";
 import { createHealthRouter } from "./api/health.js";
 import { createJobsRouter } from "./api/jobs.js";
@@ -112,6 +113,13 @@ export function createApp(config: {
     createCellDetectionRouter({
       dataRoot: config.dataRoot,
       predictor,
+      broadcaster: config.broadcaster
+    })
+  );
+  app.use(
+    createCellImagingRouter({
+      dataRoot: config.dataRoot,
+      tileScheduler,
       broadcaster: config.broadcaster
     })
   );
