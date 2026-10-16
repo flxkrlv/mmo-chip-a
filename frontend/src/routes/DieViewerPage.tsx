@@ -6,6 +6,7 @@ import { annotationKeys, useAnnotations } from "../api/annotations";
 import { useAnnotationsWebSocket } from "../api/annotationsWebSocket";
 import { netChangesToAction, useActionDispatcher } from "../api/actions";
 import { useDie } from "../api/dies";
+import { useWireMapInfo, wireTileUrl } from "../api/cellImaging";
 import { AppShell } from "../components/shell/AppShell";
 import { StatusBar } from "../components/shell/StatusBar";
 import { SubBar } from "../components/shell/SubBar";
@@ -792,6 +793,37 @@ function DieViewer({ dieId }: { dieId: string }) {
     ];
   }, [die]);
 
+  // Wire-likelihood overlay (pixels under recognised cells that aren't part
+  // of the cell — mostly wires routed over them). Same tile geometry as the
+  // die image, so it reuses the image layer with its own RGBA tile source.
+  // Rebuilt when the map is regenerated (the version busts tile caches).
+  const wireMapInfo = useWireMapInfo(die?.id ?? null).data ?? null;
+  const wireMapVersion = wireMapInfo?.createdAt ?? null;
+  const wireMapMinLevel = wireMapInfo?.minZoomLevel ?? 0;
+  const wireMapLayer = useMemo(
+    () =>
+      die && wireMapVersion
+        ? new DieImageLayer(
+            die,
+            {
+              getHidden: () => usePreferences.getState().wireMapHidden,
+              getOpacity: () => usePreferences.getState().wireMapOpacity
+            },
+            {
+              id: "wire-map",
+              tileUrl: (z, x, y) => wireTileUrl(die.id, wireMapVersion, z, x, y),
+              pyramid: false,
+              minLevel: wireMapMinLevel
+            }
+          )
+        : null,
+    [die, wireMapVersion, wireMapMinLevel]
+  );
+  useEffect(() => {
+    useDieViewerStore.getState().setWireMapAvailable(wireMapLayer !== null);
+    return () => useDieViewerStore.getState().setWireMapAvailable(false);
+  }, [wireMapLayer]);
+
   // ML via predictions, fetched per backend tile (server-side cached). Lives
   // above the die image but below the annotation layer so user-drawn
   // geometry still wins for picks / selection. Recreated per die so each
@@ -956,7 +988,7 @@ function DieViewer({ dieId }: { dieId: string }) {
   // need the redraw to kick.
   useEffect(() => {
     const unsubs = (
-      ["baseImageHidden", "baseImageOpacity", "mlResultsHidden"] as const
+      ["baseImageHidden", "baseImageOpacity", "mlResultsHidden", "wireMapHidden", "wireMapOpacity"] as const
     ).map((key) =>
       usePreferences.subscribe(
         (s) => s[key],
@@ -1226,10 +1258,11 @@ function DieViewer({ dieId }: { dieId: string }) {
     // Paint order: die image → overlay layers → ML via overlay → user annotations.
     const out: Layer[] = [...layers];
     for (const ol of overlayLayerInstances) out.push(ol);
+    if (wireMapLayer) out.push(wireMapLayer);
     if (mlViasLayer) out.push(mlViasLayer);
     if (annotationLayer) out.push(annotationLayer);
     return out;
-  }, [layers, overlayLayerInstances, mlViasLayer, annotationLayer]);
+  }, [layers, wireMapLayer, overlayLayerInstances, mlViasLayer, annotationLayer]);
 
   // ── Behaviors (extracted hooks) ─────────────────────────────────
 
