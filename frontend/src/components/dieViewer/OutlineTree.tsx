@@ -98,6 +98,8 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
 
   const mlResultsHidden = usePreferences((s) => s.mlResultsHidden);
   const setMlResultsHidden = usePreferences((s) => s.setMlResultsHidden);
+  const wireMapHidden = usePreferences((s) => s.wireMapHidden);
+  const setWireMapHidden = usePreferences((s) => s.setWireMapHidden);
 
   // Read per-net color overrides once (not inside the .map, hooks rules).
   const netColors = usePreferences((s) => s.netColors);
@@ -123,6 +125,7 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
   const expandedGroups = useDieViewerStore((s) => s.expandedGroups);
   const toggleGroup = useDieViewerStore((s) => s.toggleGroup);
   const mlViasCount = useDieViewerStore((s) => s.mlViasCount);
+  const wireMapAvailable = useDieViewerStore((s) => s.wireMapAvailable);
 
   // Whole-net ids present in the current selection — includes nets selected
   // by clicking a sub-part (edge/node id like "net:abc/edge:1") on the canvas,
@@ -749,19 +752,41 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
         label="ML Results"
         meta={mlViasCount}
         visibility={{
-          visible: !mlResultsHidden,
-          onToggle: () => setMlResultsHidden(!mlResultsHidden)
+          visible: !mlResultsHidden || (wireMapAvailable && !wireMapHidden),
+          onToggle: () => {
+            const hide = !mlResultsHidden || (wireMapAvailable && !wireMapHidden);
+            setMlResultsHidden(hide);
+            if (wireMapAvailable) setWireMapHidden(hide);
+          }
         }}
         onToggleExpand={() => toggleGroup(ML_RESULTS_KEY)}
         onSelect={() => toggleGroup(ML_RESULTS_KEY)}
       />
       {mlResultsOpen && (
-        <TreeRow
-          depth={1}
-          swatch="rgba(130, 214, 166, 0.85)"
-          label="vias"
-          meta={mlViasCount}
-        />
+        <>
+          <TreeRow
+            depth={1}
+            swatch="rgba(130, 214, 166, 0.85)"
+            label="vias"
+            meta={mlViasCount}
+            visibility={{
+              visible: !mlResultsHidden,
+              onToggle: () => setMlResultsHidden(!mlResultsHidden)
+            }}
+          />
+          <TreeRow
+            depth={1}
+            swatch="rgb(255, 60, 0)"
+            label="wires over cells"
+            meta={wireMapAvailable ? "map" : "—"}
+            dimmed={!wireMapAvailable}
+            visibility={
+              wireMapAvailable
+                ? { visible: !wireMapHidden, onToggle: () => setWireMapHidden(!wireMapHidden) }
+                : undefined
+            }
+          />
+        </>
       )}
 
       <TreeSep />
