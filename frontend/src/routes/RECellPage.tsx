@@ -790,7 +790,7 @@ function RE({ dieId }: { dieId: string }) {
   const imageUrl = cleanSpecimen
     ? specimenImageUrl(dieId, cellType!.id, cleanSpecimen.createdAt)
     : !cell && cellType
-      ? (foreignImageUrl ?? cellTypeCropUrl(dieId, cellType.id, previewOverlaySourceId))
+      ? (foreignImageUrl ?? cellTypeCropUrl(dieId, cellType, previewOverlaySourceId))
       : null;
   const cellInstanceCount = cellType
     ? membersOf(annotations!, cellType.id).length

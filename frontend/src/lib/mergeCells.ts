@@ -419,11 +419,19 @@ export function cellCropUrl(dieId: string, cell: Cell, overlaySourceId?: string)
   return `/api/dies/${dieId}/cells/${cell.id}/crop?x=${x}&y=${y}${orient}${bounds}${source}`;
 }
 
-export function cellTypeCropUrl(dieId: string, cellTypeId: string, overlaySourceId?: string): string {
-  const source = overlaySourceId
-    ? `?overlaySourceId=${encodeURIComponent(overlaySourceId)}`
-    : "";
-  return `/api/dies/${dieId}/cell-types/${cellTypeId}/crop${source}`;
+export function cellTypeCropUrl(
+  dieId: string,
+  cellType: Pick<CellType, "id" | "cropRect">,
+  overlaySourceId?: string
+): string {
+  // A type's box is not immutable: a quarter turn swaps cropRect W×H (and the
+  // server then crops a different region). Mirror the box into the query so
+  // both the browser and the progressive-image cache key on it — otherwise a
+  // rotation keeps serving the pre-turn crop, stretched into the new box.
+  const r = cellType.cropRect;
+  const box = `w=${Math.round(r.width)}&h=${Math.round(r.height)}&x=${Math.round(r.x)}&y=${Math.round(r.y)}`;
+  const source = overlaySourceId ? `&overlaySourceId=${encodeURIComponent(overlaySourceId)}` : "";
+  return `/api/dies/${dieId}/cell-types/${cellType.id}/crop?${box}${source}`;
 }
 
 // ── Action builders ──────────────────────────────────────────────────

@@ -403,7 +403,7 @@ function Merge({ dieId }: { dieId: string }) {
           : specimenCell
             ? cellCropUrl(dieId, specimenCell, previewOverlaySourceId)
             : (foreignSpecimenUrl ??
-              cellTypeCropUrl(dieId, specimenType.id, previewOverlaySourceId)),
+              cellTypeCropUrl(dieId, specimenType, previewOverlaySourceId)),
         mlVias: specimenViasQ.data ?? null
       }
     : null;

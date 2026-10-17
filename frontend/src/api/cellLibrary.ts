@@ -101,5 +101,5 @@ export function useForeignTypeImageUrl(
       )
     : undefined;
   if (clean) return specimenImageUrl(f.ownerDieId, f.type.id, clean.createdAt);
-  return cropFallback ? cellTypeCropUrl(f.ownerDieId, f.type.id) : null;
+  return cropFallback ? cellTypeCropUrl(f.ownerDieId, f.type) : null;
 }
