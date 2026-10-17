@@ -6,6 +6,8 @@ import { annotationKeys, useAnnotations } from "../api/annotations";
 import { useAnnotationsWebSocket } from "../api/annotationsWebSocket";
 import { netChangesToAction, useActionDispatcher } from "../api/actions";
 import { useDie } from "../api/dies";
+import { useCellLibrary } from "../api/cellLibrary";
+import { routeLibraryAction, withLibraryTypes } from "../lib/cellLibrary";
 import { useWireMapInfo, wireTileUrl } from "../api/cellImaging";
 import { useCellDetections } from "../api/cellDetection";
 import { proposalsFor, type Proposal } from "../lib/cellDetection";
@@ -103,6 +105,8 @@ import {
 } from "../components/dieViewer/useWireTool";
 import { buildInstanceTerminalMap } from "../lib/extraction/terminalDetect";
 import { useCellTool } from "../components/dieViewer/useCellTool";
+import { useLibraryCellTool } from "../components/dieViewer/useLibraryCellTool";
+import { LibraryCellOverlay } from "../components/dieViewer/LibraryCellOverlay";
 import { useViaPolyTool } from "../components/dieViewer/useViaPolyTool";
 import {
   previewEnds,
@@ -300,10 +304,24 @@ export function DieViewerPage() {
 
 function DieViewer({ dieId }: { dieId: string }) {
   const { data: die, isLoading, error } = useDie(dieId);
-  const { data: annotations } = useAnnotations(dieId);
+  const { data: ownAnnotations } = useAnnotations(dieId);
   const toast = useToast();
   const dialog = useDialog();
   useAnnotationsWebSocket(dieId);
+  // The cell library: other dies' types this die uses or is offered, merged
+  // into the annotations at this die's scale (the page draws, hit-tests and
+  // edits them like its own); edits to them are routed to their die.
+  const library = useCellLibrary(dieId, ownAnnotations);
+  const libraryRef = useRef(library);
+  libraryRef.current = library;
+  const annotations = useMemo(
+    () => (ownAnnotations ? withLibraryTypes(ownAnnotations, library) : undefined),
+    [ownAnnotations, library]
+  );
+  const foreignTypeOwners = useMemo(
+    () => new Map([...library.foreign].map(([id, f]) => [id, f.ownerName])),
+    [library]
+  );
 
   // Scope the per-project analog device name store to this die.
   useEffect(() => {
@@ -350,7 +368,9 @@ function DieViewer({ dieId }: { dieId: string }) {
   // Broadcast status to other users
   useUserStatus(dieId, activeTool);
   const navigate = useNavigate();
-  const dispatcher = useActionDispatcher(dieId);
+  const dispatcher = useActionDispatcher(dieId, {
+    route: (action) => routeLibraryAction(action, libraryRef.current)
+  });
 
   // Hot-path live values. These never trigger DieViewer re-renders — only the
   // tiny readout subcomponents subscribe via `useLiveValue`. The renderer
@@ -1777,6 +1797,15 @@ function DieViewer({ dieId }: { dieId: string }) {
     setActiveTool
   });
 
+  const libraryCell = useLibraryCellTool({
+    dieId,
+    library,
+    dispatcher,
+    viewportLive,
+    containerRef,
+    activeTool
+  });
+
   const viaPoly = useViaPolyTool({ dispatcher, activeTool, setActiveTool });
   const viaPolyPointsRef = useRef(viaPoly.points);
   viaPolyPointsRef.current = viaPoly.points;
@@ -2384,6 +2413,10 @@ function DieViewer({ dieId }: { dieId: string }) {
       // forces pan regardless of the active tool.
       if (spacePanRef.current) return "pan";
       const tool = useDieViewerStore.getState().activeTool;
+
+      // Place library cell: drag the template's body to move it, a corner to
+      // scale it; anywhere else pans (and a click moves the template there).
+      if (tool === "libraryCell") return libraryCell.pointerDown(e);
 
       if (tool === "measure" || tool === "select") {
         const vp = viewportLive.get();
@@ -3487,7 +3520,8 @@ function DieViewer({ dieId }: { dieId: string }) {
       getNetC,
       getCellC,
       getCellShapes,
-      getPinNamesVisible
+      getPinNamesVisible,
+      libraryCell.pointerDown
     ]
   );
 
@@ -3495,6 +3529,10 @@ function DieViewer({ dieId }: { dieId: string }) {
   const onCanvasClick = useCallback(
     ({ x, y }: { x: number; y: number }) => {
       const tool = useDieViewerStore.getState().activeTool;
+      if (tool === "libraryCell") {
+        libraryCell.moveTo({ x, y });
+        return;
+      }
       if (tool === "wire") {
         wire.addWirePoint({ x, y }, shiftRef.current);
         return;
@@ -3630,7 +3668,8 @@ function DieViewer({ dieId }: { dieId: string }) {
       viewportLive,
       findNearestVia,
       findMultiWireEndpointViaSnap,
-      findMultiWireAutoEndSnaps
+      findMultiWireAutoEndSnaps,
+      libraryCell.moveTo
     ]
   );
 
@@ -4228,6 +4267,7 @@ function DieViewer({ dieId }: { dieId: string }) {
           activeTool={activeTool}
           setActiveTool={setActiveTool}
           multiWireHint={multiWireHint}
+          libraryCell={libraryCell}
         />
       </SubBar>
       <main
@@ -4263,6 +4303,7 @@ function DieViewer({ dieId }: { dieId: string }) {
                 const ct = annotations?.cellTypes.find((t) => t.id === cellTypeId);
                 if (ct) void dispatcher.dispatch({ kind: "upsertCellType", cellType: { ...ct, color }, prevCellType: ct });
               }}
+              foreignTypeOwners={foreignTypeOwners}
             />
           </aside>
         )}
@@ -4471,6 +4512,9 @@ function DieViewer({ dieId }: { dieId: string }) {
               onAnnotationChange={() => canvasHandle.current?.invalidate()}
             />
           )}
+          {activeTool === "libraryCell" && (
+            <LibraryCellOverlay tool={libraryCell} library={library} viewportStore={viewportLive} />
+          )}
         </section>
         {!rightCollapsed && (
         <aside style={{ ...panelStyle, gridColumn: 3 }}>
@@ -4479,6 +4523,8 @@ function DieViewer({ dieId }: { dieId: string }) {
             annotations={annotations}
             dispatcher={dispatcher}
             dieId={dieId}
+            die={die}
+            library={library}
             mlViasLayer={mlViasLayer}
             proposals={proposals}
             cellTypeCounts={cellTypeCounts}
@@ -4579,6 +4625,11 @@ function DieViewer({ dieId }: { dieId: string }) {
             : null,
           activeTool === "addCell"
             ? "add cell — drag to draw · corners resize · Enter to add · Esc to cancel"
+            : null,
+          activeTool === "libraryCell"
+            ? libraryCell.hasDraft
+              ? "place library cell — drag to move · corners scale · click to move here · Enter to accept · Esc to cancel"
+              : (libraryCell.notice ?? "place library cell — pick a cell in the toolbar")
             : null,
           extractionRunning
             ? `extracting ${extractionProgress?.done ?? 0}/${extractionProgress?.total ?? 1}…`

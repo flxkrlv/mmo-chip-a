@@ -34,6 +34,7 @@ import {
   type Proposal
 } from "../../lib/cellDetection";
 import { buildApproveAction, orientOf } from "../../lib/mergeCells";
+import { libraryMemberCount, type CellLibraryView } from "../../lib/cellLibrary";
 import { useDieViewerStore } from "../../state/dieViewer";
 import { usePreferences } from "../../state/preferences";
 
@@ -46,10 +47,14 @@ import { usePreferences } from "../../state/preferences";
  */
 export function CellDetectionPanel({
   dieId,
-  annotations
+  annotations,
+  library
 }: {
   dieId: string;
   annotations: DieAnnotations | undefined;
+  /** Other dies' types (shared through the cell library) are detectable
+   *  here too — from their owner's template while few are placed here. */
+  library: CellLibraryView;
 }) {
   const qc = useQueryClient();
   const job = useCellDetectionJob(dieId);
@@ -68,6 +73,10 @@ export function CellDetectionPanel({
   const setAllowFlipY = usePreferences((s) => s.setCellDetectAllowFlipY);
   const avoidExisting = usePreferences((s) => s.cellDetectAvoidExisting);
   const setAvoidExisting = usePreferences((s) => s.setCellDetectAvoidExisting);
+  const allDiesPref = usePreferences((s) => s.cellDetectAllDies);
+  const setAllDies = usePreferences((s) => s.setCellDetectAllDies);
+  // Pooling only means something inside a cell library.
+  const allDies = !!library.name && allDiesPref;
   const [busy, setBusy] = useState<null | "job" | "clear">(null);
   const [err, setErr] = useState<string | null>(null);
 
@@ -75,9 +84,16 @@ export function CellDetectionPanel({
   const cellTypes = [...(annotations?.cellTypes ?? [])].sort((a, b) =>
     a.name.localeCompare(b.name, undefined, { numeric: true })
   );
+  // Another die's type counts its instances there too: its template can be
+  // borrowed from them.
   const memberCount = (id: string) =>
-    !annotations ? 0 : annotations.cells.filter((c) => c.cellTypeId === id).length;
-  const typeLabel = (_id: string, name: string) => name;
+    !annotations
+      ? 0
+      : library.foreign.has(id) || allDies
+        ? libraryMemberCount(library, annotations, id)
+        : annotations.cells.filter((c) => c.cellTypeId === id).length;
+  const typeLabel = (id: string, name: string) =>
+    library.foreign.has(id) ? `${name} (other die)` : name;
   const chosen = cellTypes.find((ct) => ct.id === typeId) ?? null;
   const chosenMembers = chosen ? memberCount(chosen.id) : 0;
 
@@ -114,7 +130,8 @@ export function CellDetectionPanel({
         const next = await startCellDetection(dieId, typeId, {
           allowFlipX,
           allowFlipY,
-          avoidExistingCells: avoidExisting
+          avoidExistingCells: avoidExisting,
+          allDies
         });
         qc.setQueryData(cellDetectionKeys.job(dieId), next);
       }
@@ -169,7 +186,15 @@ export function CellDetectionPanel({
               {cellTypes.length === 0 ? "no cell types yet" : "pick a cell type…"}
             </option>
             {cellTypes.map((ct) => (
-              <option key={ct.id} value={ct.id}>
+              <option
+                key={ct.id}
+                value={ct.id}
+                title={
+                  library.foreign.has(ct.id)
+                    ? `Cell type of ${library.foreign.get(ct.id)!.ownerName} (cell library)`
+                    : undefined
+                }
+              >
                 {typeLabel(ct.id, ct.name)} · {memberCount(ct.id)} placed
               </option>
             ))}
@@ -222,6 +247,21 @@ export function CellDetectionPanel({
           />
           Avoid existing cells
         </label>
+        {library.name && (
+          <label
+            className="check"
+            style={{ marginBottom: 10 }}
+            title="Build the via template from this type's instances on every die of the cell library (scaled to this die), not just the ones placed here"
+          >
+            <input
+              type="checkbox"
+              checked={allDies}
+              disabled={running}
+              onChange={(e) => setAllDies(e.target.checked)}
+            />
+            Instances from all dies
+          </label>
+        )}
 
         <button
           type="button"
@@ -303,7 +343,12 @@ export function CellDetectionPanel({
                 }}
                 title={
                   `${r.detections.length} detections · template ${r.templateVias} vias ` +
-                  `from ${r.memberCount} member(s)` +
+                  (r.pooledFrom
+                    ? `from ${r.pooledFrom.reduce((n, p) => n + p.memberCount, 0)} instance(s) on ${r.pooledFrom.length} die(s): ` +
+                      r.pooledFrom.map((p) => `${p.dieName} ${p.memberCount}`).join(", ")
+                    : r.templateSource
+                      ? `from ${r.templateSource.memberCount} member(s) on ${r.templateSource.dieName} (×${r.templateSource.ratio.toFixed(3)})`
+                      : `from ${r.memberCount} member(s)`) +
                   ` · ${new Date(r.createdAt).toLocaleString()}` +
                   (dismissed ? ` · ${dismissed} dismissed` : "") +
                   (r.options
@@ -401,7 +446,7 @@ export function CellDetectionPanel({
         </label>
       </div>
 
-      <CellImagingSection dieId={dieId} annotations={annotations} />
+      <CellImagingSection dieId={dieId} annotations={annotations} inLibrary={!!library.name} />
     </div>
   );
 }
@@ -429,10 +474,13 @@ function imagingLine(job: CellImagingJob | null | undefined): string {
  */
 function CellImagingSection({
   dieId,
-  annotations
+  annotations,
+  inLibrary
 }: {
   dieId: string;
   annotations: DieAnnotations | undefined;
+  /** The die shares a cell library: specimens can pool other dies' instances. */
+  inLibrary: boolean;
 }) {
   const qc = useQueryClient();
   const job = useCellImagingJob(dieId);
@@ -444,6 +492,9 @@ function CellImagingSection({
   const setWireMapOpacity = usePreferences((s) => s.setWireMapOpacity);
   const useClean = usePreferences((s) => s.useCleanSpecimens);
   const setUseClean = usePreferences((s) => s.setUseCleanSpecimens);
+  const allDiesPref = usePreferences((s) => s.specimensAllDies);
+  const setAllDies = usePreferences((s) => s.setSpecimensAllDies);
+  const allDies = inLibrary && allDiesPref;
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
@@ -473,7 +524,7 @@ function CellImagingSection({
     try {
       const next = running
         ? await stopCellImaging(dieId)
-        : await startCellImaging(dieId, kind);
+        : await startCellImaging(dieId, kind, { allDies: kind === "specimens" && allDies });
       qc.setQueryData(cellImagingKeys.job(dieId), next);
     } catch (e) {
       setErr(e instanceof Error ? e.message : "imaging job failed");
@@ -531,10 +582,26 @@ function CellImagingSection({
         >
           {runningKind === "specimens" ? "Cancel" : specimens ? "Regenerate specimens" : "Generate specimens"}
         </button>
+        {inLibrary && (
+          <label
+            className="check"
+            style={{ marginTop: 6 }}
+            title="Also stack each type's instances from the other dies of the cell library — resampled to this die's scale and matched in brightness / contrast. More instances, cleaner median; the sharpest are used for the display image."
+          >
+            <input
+              type="checkbox"
+              checked={allDies}
+              disabled={running}
+              onChange={(e) => setAllDies(e.target.checked)}
+            />
+            Instances from all dies
+          </label>
+        )}
         <div className="row" style={{ gap: 6, alignItems: "center", margin: "6px 0 10px" }}>
           <span className="m" style={{ fontSize: 10, color: "var(--ink3)", flex: 1 }}>
             {specimens
-              ? `${specimens.specimens.length} types · ${new Date(specimens.createdAt).toLocaleString()}`
+              ? `${specimens.specimens.length} types · ${new Date(specimens.createdAt).toLocaleString()}` +
+                (specimens.specimens.some((sp) => (sp.dies ?? 1) > 1) ? " · pooled across dies" : "")
               : "not generated yet"}
           </span>
           {flippedCount > 0 && (

@@ -78,7 +78,7 @@ export function getCellDetectionJob(
 export function startCellDetection(
   dieId: string,
   cellTypeId: string,
-  options: { allowFlipX: boolean; allowFlipY: boolean; avoidExistingCells: boolean }
+  options: { allowFlipX: boolean; allowFlipY: boolean; avoidExistingCells: boolean; allDies?: boolean }
 ): Promise<CellDetectionJob> {
   const body: CellDetectionStartRequest = { cellTypeId, ...options };
   return apiPost<CellDetectionJob>(

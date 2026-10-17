@@ -175,6 +175,11 @@ interface PreferencesState {
   cellDetectAllowFlipY: boolean;
   /** Cell detection: drop candidates overlapping any placed cell. */
   cellDetectAvoidExisting: boolean;
+  /** Cell detection: build the template from the type's instances on every
+   *  die of the cell library. */
+  cellDetectAllDies: boolean;
+  /** Specimens: stack instances from every die of the cell library too. */
+  specimensAllDies: boolean;
   /** Die-viewer: hide the wire-likelihood overlay. */
   wireMapHidden: boolean;
   /** Wire-likelihood overlay opacity 0..1. */
@@ -430,6 +435,8 @@ interface PreferencesActions {
   setCellDetectAllowFlipX: (allow: boolean) => void;
   setCellDetectAllowFlipY: (allow: boolean) => void;
   setCellDetectAvoidExisting: (avoid: boolean) => void;
+  setCellDetectAllDies: (all: boolean) => void;
+  setSpecimensAllDies: (all: boolean) => void;
   setWireMapHidden: (hidden: boolean) => void;
   setWireMapOpacity: (opacity: number) => void;
   setUseCleanSpecimens: (use: boolean) => void;
@@ -518,6 +525,8 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
         cellDetectAllowFlipX: true,
         cellDetectAllowFlipY: true,
         cellDetectAvoidExisting: true,
+        cellDetectAllDies: false,
+        specimensAllDies: false,
         wireMapHidden: false,
         wireMapOpacity: 0.8,
         useCleanSpecimens: true,
@@ -825,6 +834,8 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
         setCellDetectAllowFlipX: (allow) => set({ cellDetectAllowFlipX: allow }),
         setCellDetectAllowFlipY: (allow) => set({ cellDetectAllowFlipY: allow }),
         setCellDetectAvoidExisting: (avoid) => set({ cellDetectAvoidExisting: avoid }),
+        setCellDetectAllDies: (all) => set({ cellDetectAllDies: all }),
+        setSpecimensAllDies: (all) => set({ specimensAllDies: all }),
         setWireMapHidden: (hidden) => set({ wireMapHidden: hidden }),
         setWireMapOpacity: (opacity) => set({ wireMapOpacity: Math.min(1, Math.max(0, opacity)) }),
         setUseCleanSpecimens: (use) => set({ useCleanSpecimens: use }),
@@ -933,6 +944,8 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
           cellDetectAllowFlipX: state.cellDetectAllowFlipX,
           cellDetectAllowFlipY: state.cellDetectAllowFlipY,
           cellDetectAvoidExisting: state.cellDetectAvoidExisting,
+          cellDetectAllDies: state.cellDetectAllDies,
+          specimensAllDies: state.specimensAllDies,
           wireMapHidden: state.wireMapHidden,
           wireMapOpacity: state.wireMapOpacity,
           useCleanSpecimens: state.useCleanSpecimens,

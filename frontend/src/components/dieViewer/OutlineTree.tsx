@@ -31,6 +31,7 @@ import { useDieViewerStore } from "../../state/dieViewer";
 import { usePreferences, selectNetWidth } from "../../state/preferences";
 import { TreeRow, TreeSep } from "../tree/TreeRow";
 import { NetColorPickerBody } from "./NetColorPickerBody";
+import { OtherDieBadge } from "../cellLibrary/OtherDieBadge";
 import { floorplanNameInline } from "../../lib/floorplanName";
 
 // Re-export so existing imports keep working.
@@ -55,6 +56,9 @@ type Props = {
   searchOpenRef?: React.MutableRefObject<(() => void) | null>;
   /** Set / clear (undefined) a cell type's own color. Absent ⇒ no picker. */
   onSetCellTypeColor?: (cellTypeId: string, color: string | undefined) => void;
+  /** Cell types owned by another die of the cell library ⇒ that die's
+   *  name (badged in the cell list). */
+  foreignTypeOwners?: ReadonlyMap<string, string>;
 };
 
 /** Session-group key for the "ML Regions" parent (it spans two annotation
@@ -76,7 +80,7 @@ const BASE_IMAGES_KEY = "base-images";
 /** Session-group key for the "Overlay Layers" section. */
 const OVERLAY_LAYERS_KEY = "overlay-layers";
 
-export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabels, onDeviceSelect, onOpenInRE, searchOpenRef, onSetCellTypeColor }: Props) {
+export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabels, onDeviceSelect, onOpenInRE, searchOpenRef, onSetCellTypeColor, foreignTypeOwners }: Props) {
   const toast = useToast();
   const expandedSections = usePreferences((s) => s.expandedSections);
   const hiddenKinds = usePreferences((s) => s.hiddenKinds);
@@ -460,7 +464,16 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
               <TreeRow
                 depth={1}
                 expand={open ? "open" : "closed"}
-                label={group.cellType.name || group.cellType.id}
+                label={
+                  foreignTypeOwners?.has(group.cellType.id) ? (
+                    <>
+                      {group.cellType.name || group.cellType.id}
+                      <OtherDieBadge owner={foreignTypeOwners.get(group.cellType.id)!} />
+                    </>
+                  ) : (
+                    group.cellType.name || group.cellType.id
+                  )
+                }
                 meta={group.cells.length}
                 controls={onSetCellTypeColor ? (
                   <CellTypeColorPicker
@@ -476,7 +489,13 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
                 }}
                 selected={selectedIds.has(groupKey)}
                 onToggleExpand={() => toggleGroup(groupKey)}
-                onSelect={() => select([groupKey])}
+                // Select the type together with every placed instance: the
+                // canvas highlights them all, Delete removes them all (and
+                // the then-empty type), and the inspector keeps showing the
+                // type because the selection is "one type + only its cells".
+                onSelect={() =>
+                  select([groupKey, ...group.cells.map((c) => `cell:${c.id}`)])
+                }
                 onDoubleClick={() =>
                   focus(group.cells.map((c) => `cell:${c.id}`))
                 }

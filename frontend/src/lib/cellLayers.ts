@@ -239,6 +239,92 @@ export function translateShape(shape: LayerShape, dx: number, dy: number): Layer
   }
 }
 
+/** Apply a point map to every coordinate of a shape. Pure: same id and
+ *  metadata. */
+export function mapShapePoints(shape: LayerShape, f: (p: Point) => Point): LayerShape {
+  switch (shape.kind) {
+    case "rect": {
+      const a = f({ x: shape.x, y: shape.y });
+      const b = f({ x: shape.x + shape.width, y: shape.y + shape.height });
+      return {
+        ...shape,
+        ...normalizeRect({ x: a.x, y: a.y, width: b.x - a.x, height: b.y - a.y })
+      };
+    }
+    case "point":
+    case "circle":
+      return { ...shape, ...f({ x: shape.x, y: shape.y }) };
+    case "polygon":
+      return { ...shape, points: shape.points.map((p) => f(p)) };
+    case "line": {
+      const a = f({ x: shape.x1, y: shape.y1 });
+      const b = f({ x: shape.x2, y: shape.y2 });
+      return { ...shape, x1: a.x, y1: a.y, x2: b.x, y2: b.y };
+    }
+  }
+}
+
+/** Point map: a quarter turn of a W×H cell box into the H×W box it becomes. */
+function boxTurn(deg: 90 | -90, boxW: number, boxH: number): (p: Point) => Point {
+  return deg === 90 ? (p) => ({ x: boxH - p.y, y: p.x }) : (p) => ({ x: p.y, y: boxW - p.x });
+}
+
+/** Turn a shape a quarter turn inside its W×H cell box (`deg` 90 = clockwise
+ *  on screen, −90 = counter-clockwise), landing in the H×W box the turn
+ *  produces. Pure: same id and metadata. */
+export function rotateShape(
+  shape: LayerShape,
+  deg: 90 | -90,
+  boxW: number,
+  boxH: number
+): LayerShape {
+  return mapShapePoints(shape, boxTurn(deg, boxW, boxH));
+}
+
+/** `mapShapePoints` over every layer of a cell type. */
+export function mapLayerPoints(layers: CellLayers, f: (p: Point) => Point): CellLayers {
+  const out: CellLayers = {};
+  for (const [layer, shapes] of Object.entries(layers) as Array<
+    [LayerType, LayerShape[] | undefined]
+  >) {
+    if (shapes) out[layer] = shapes.map((s) => mapShapePoints(s, f));
+  }
+  return out;
+}
+
+/** `rotateShape` over every layer of a cell type. */
+export function rotateLayers(
+  layers: CellLayers,
+  deg: 90 | -90,
+  boxW: number,
+  boxH: number
+): CellLayers {
+  return mapLayerPoints(layers, boxTurn(deg, boxW, boxH));
+}
+
+/** Point map: a quarter turn about `c` (90 = clockwise on screen). */
+export function quarterTurnAbout(c: Point, deg: 90 | -90): (p: Point) => Point {
+  return deg === 90
+    ? (p) => ({ x: c.x - (p.y - c.y), y: c.y + (p.x - c.x) })
+    : (p) => ({ x: c.x + (p.y - c.y), y: c.y - (p.x - c.x) });
+}
+
+/** Point map: a mirror across the vertical (`"h"`: flips left↔right) or
+ *  horizontal (`"v"`: top↔bottom) line through `c`. */
+export function mirrorAbout(c: Point, axis: "h" | "v"): (p: Point) => Point {
+  return axis === "h"
+    ? (p) => ({ x: 2 * c.x - p.x, y: p.y })
+    : (p) => ({ x: p.x, y: 2 * c.y - p.y });
+}
+
+/** Point map: scale by `(sx, sy)` about `anchor`. */
+export function scaleAbout(anchor: Point, sx: number, sy: number): (p: Point) => Point {
+  return (p) => ({
+    x: anchor.x + (p.x - anchor.x) * sx,
+    y: anchor.y + (p.y - anchor.y) * sy
+  });
+}
+
 // ── Per-vertex handles ────────────────────────────────────────────────
 
 /** Vertices to render as drag handles for `shape` — corners for rect-likes,

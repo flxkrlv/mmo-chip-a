@@ -3,8 +3,9 @@ import { cellWorldRect } from "../../lib/cellFootprint";
 import { padCountByPin, renamePinActions } from "../../lib/pinClipboard";
 import { useDialog } from "../Dialog";
 import { useQueryClient } from "@tanstack/react-query";
-import type { AnalogDevice, AnnotationNet, AnnotationNetEdge, AssistantFinding, CellType, DieAnnotations, FloorplanRegion, HumanAnnotation, MLInferenceJob, WireLayer } from "shared";
+import type { AnalogDevice, AnnotationNet, AnnotationNetEdge, AssistantFinding, CellType, DieAnnotations, DieMetadata, FloorplanRegion, HumanAnnotation, MLInferenceJob, WireLayer } from "shared";
 import type { ActionDispatcher } from "../../api/actions";
+import type { CellLibraryView } from "../../lib/cellLibrary";
 import { uuid } from "../../lib/uuid";
 import {
   exportMlData,
@@ -35,6 +36,7 @@ import { AnnotationClassSelect } from "./AnnotationClassSelect";
 import { CVPanel } from "./CVPanel";
 import { AssistantPanel } from "./AssistantPanel";
 import { CellDetectionPanel, ProposalInspector } from "./CellDetectionPanel";
+import { DieProperties } from "./DieProperties";
 import { isMlCellId, type Proposal } from "../../lib/cellDetection";
 
 /** A single labelled property row (`.prop` matches the hifi spec). */
@@ -159,8 +161,14 @@ function resolve(
   ann: DieAnnotations,
   dispatcher: ActionDispatcher,
   mlViasLayer: MLViasLayer | null,
+  library: CellLibraryView,
   cellTypeCounts?: Map<string, number>
 ): Resolved | null {
+  // A type shared from another die of the cell library says whose it is.
+  const ownerRow = (typeId: string): [string, ReactNode][] => {
+    const f = library.foreign.get(typeId);
+    return f ? [["from", `${f.ownerName} · ×${f.ratio.toFixed(3)}`]] : [];
+  };
   // ── ML vias (synthetic position id; no persistent annotation) ──────
   // Checked first because the prefix is unambiguous and the layer lookup
   // is cheap — keeps `parseNetPartId` and the prefix switch focused on
@@ -310,7 +318,7 @@ function resolve(
                   prevCellType: ct
                 })
             },
-            rows: [["color", <CellColorValue key="color" cellType={ct} />]]
+            rows: [["color", <CellColorValue key="color" cellType={ct} />], ...ownerRow(ct.id)]
           }
         : { typeLabel: "Cell", displayName: `Cell ${short(c.id)}`, uid: c.id };
       const rows: [string, string][] = [
@@ -475,6 +483,8 @@ export function InspectorPanel({
   annotations,
   dispatcher,
   dieId,
+  die,
+  library,
   mlViasLayer,
   cellTypeCounts,
   proposals = [],
@@ -488,6 +498,9 @@ export function InspectorPanel({
   annotations: DieAnnotations | undefined;
   dispatcher: ActionDispatcher;
   dieId: string;
+  die: DieMetadata | undefined;
+  /** The die's cell library (other dies' types it shares). */
+  library: CellLibraryView;
   /** Live ML via layer — the inspector resolves `ml-via:` selection ids
    *  through it to fetch score / class. May be null while the page is still
    *  bootstrapping. */
@@ -550,7 +563,7 @@ export function InspectorPanel({
         ) : tab === "ml" ? (
           <MLPanel dieId={dieId} annotations={annotations} dispatcher={dispatcher} mlViasLayer={mlViasLayer} />
         ) : tab === "cells" ? (
-          <CellDetectionPanel dieId={dieId} annotations={annotations} />
+          <CellDetectionPanel dieId={dieId} annotations={annotations} library={library} />
         ) : tab === "cv" ? (
           <CVPanel dieId={dieId} annotations={annotations} dispatcher={dispatcher} />
         ) : (
@@ -558,6 +571,8 @@ export function InspectorPanel({
             annotations={annotations}
             dispatcher={dispatcher}
             dieId={dieId}
+            die={die}
+            library={library}
             ids={selectedIds}
             mlViasLayer={mlViasLayer}
             proposals={proposals}
@@ -573,6 +588,8 @@ function InspectorBody({
   annotations,
   dispatcher,
   dieId,
+  die,
+  library,
   ids,
   mlViasLayer,
   proposals,
@@ -581,32 +598,57 @@ function InspectorBody({
   annotations: DieAnnotations | undefined;
   dispatcher: ActionDispatcher;
   dieId: string;
+  die: DieMetadata | undefined;
+  library: CellLibraryView;
   ids: ReadonlySet<string>;
   mlViasLayer: MLViasLayer | null;
   proposals: Proposal[];
   cellTypeCounts?: Map<string, number>;
 }) {
+  // Nothing selected: the die itself.
+  if (ids.size === 0) return <DieProperties die={die} library={library} />;
   if (!annotations) return <Empty>loading…</Empty>;
-  if (ids.size === 0) return <Empty>Nothing selected</Empty>;
+
+  // A cell type selected from the outline tree comes with all of its placed
+  // instances (so they highlight / delete together). Keep the type's
+  // inspector up in that case and just report how many instances are in.
+  let only: string;
+  let extraRows: [string, ReactNode][] = [];
   if (ids.size > 1) {
-    const vias = selectedVias(annotations, ids);
-    if (vias.length === 0) return <Empty>{ids.size} items selected</Empty>;
-    return (
-      <div>
-        <div style={{ padding: "10px 12px", borderBottom: "1px solid var(--l1)" }}>
-          <div className="u">Selection</div>
-          <div style={{ fontSize: 15, fontWeight: 600, color: "var(--ink)", marginTop: 3, fontFamily: "var(--mono)" }}>
-            {vias.length === ids.size ? `${vias.length} vias` : `${ids.size} items · ${vias.length} vias`}
+    const typeIds = [...ids].filter((id) => id.startsWith("cellType:"));
+    const typeId = typeIds.length === 1 ? typeIds[0] : null;
+    const allOwnCells =
+      typeId !== null &&
+      [...ids].every((id) => {
+        if (id === typeId) return true;
+        if (!id.startsWith("cell:")) return false;
+        const c = annotations.cells.find((x) => x.id === id.slice(5));
+        return !!c && `cellType:${c.cellTypeId}` === typeId;
+      });
+    if (allOwnCells && typeId !== null) {
+      only = typeId;
+      extraRows = [["selected", `${ids.size - 1} instance${ids.size - 1 === 1 ? "" : "s"} — Delete removes them all`]];
+    } else {
+      const vias = selectedVias(annotations, ids);
+      if (vias.length === 0) return <Empty>{ids.size} items selected</Empty>;
+      return (
+        <div>
+          <div style={{ padding: "10px 12px", borderBottom: "1px solid var(--l1)" }}>
+            <div className="u">Selection</div>
+            <div style={{ fontSize: 15, fontWeight: 600, color: "var(--ink)", marginTop: 3, fontFamily: "var(--mono)" }}>
+              {vias.length === ids.size ? `${vias.length} vias` : `${ids.size} items · ${vias.length} vias`}
+            </div>
           </div>
+          <Prop label={vias.length === ids.size ? "color" : "via color"}>
+            <ViaColorField vias={vias} dispatcher={dispatcher} />
+          </Prop>
         </div>
-        <Prop label={vias.length === ids.size ? "color" : "via color"}>
-          <ViaColorField vias={vias} dispatcher={dispatcher} />
-        </Prop>
-      </div>
-    );
+      );
+    }
+  } else {
+    only = ids.values().next().value as string;
   }
 
-  const only = ids.values().next().value as string;
   if (isMlCellId(only)) {
     return (
       <ProposalInspector
@@ -617,7 +659,7 @@ function InspectorBody({
       />
     );
   }
-  const r = resolve(only, annotations, dispatcher, mlViasLayer, cellTypeCounts);
+  const r = resolve(only, annotations, dispatcher, mlViasLayer, library, cellTypeCounts);
   if (!r) return <Empty>Selection not found</Empty>;
 
   return (
@@ -657,7 +699,7 @@ function InspectorBody({
         </span>
       </Prop>
 
-      {r.rows?.map(([label, value]) => (
+      {[...(r.rows ?? []), ...extraRows].map(([label, value]) => (
         <Prop key={label} label={label}>
           {value}
         </Prop>

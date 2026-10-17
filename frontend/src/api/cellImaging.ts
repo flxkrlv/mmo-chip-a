@@ -50,8 +50,12 @@ export function wireTileUrl(dieId: string, version: string, z: number, x: number
   return `/api/dies/${dieId}/wire-map/tiles/${z}/${x}/${y}?v=${encodeURIComponent(version)}`;
 }
 
-export function startCellImaging(dieId: string, kind: CellImagingJobKind): Promise<CellImagingJob> {
-  const body: CellImagingStartRequest = { kind };
+export function startCellImaging(
+  dieId: string,
+  kind: CellImagingJobKind,
+  options: { allDies?: boolean } = {}
+): Promise<CellImagingJob> {
+  const body: CellImagingStartRequest = { kind, ...(options.allDies ? { allDies: true } : {}) };
   return apiPost<CellImagingJob>(`/api/dies/${dieId}/cell-imaging/job/start`, body);
 }
 

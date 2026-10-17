@@ -39,6 +39,7 @@ export type ToolKind =
   | "cellGuideLine"
   | "cellGuideSeg"
   | "ioPoint"
+  | "libraryCell"
   | "roi"
   | "ignore"
   | "measure"
