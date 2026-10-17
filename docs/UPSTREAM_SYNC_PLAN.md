@@ -25,9 +25,10 @@
 
 **Порядок фаз (пересмотрен 2026-10-17):** Ф0 подготовка → Ф1 цифровое ядро →
 Ф2 clean specimens + wire-map → Ф3 детекция + Cells-панель → **Ф4 cross-die cell
-library** → Ф5 мелочи/wire-tool/ориентация → Ф6 merge → Ф7 `/batch` + хвосты →
-Ф8 валидация. Library перенесена вперёд (до merge), чтобы merge не пришлось
-делать дважды, а library-блоки в Cells-панели ожили сразу после Ф3.
+library** → Ф5 мелочи/wire-tool/ориентация → Ф6 merge → **Ф6b cellRE** (добавлена
+2026-10-17: cellRE-строки таблицы не покрывались «merge-only» Ф6) → Ф7 `/batch`
++ хвосты → Ф8 валидация. Library перенесена вперёд (до merge), чтобы merge не
+пришлось делать дважды, а library-блоки в Cells-панели ожили сразу после Ф3.
 
 ## Решения (locked)
 
@@ -292,11 +293,61 @@ analog-тесты из `frontend` (README: 22 extraction-теста).
 - `MergeBottomBar`: форковые warp-кнопки сохранены + апстримные
   proposal/type-merge/scale.
 
+## Ф6b — Cell RE (добавлено в ходе Ф6)
+
+**Статус: ✅ сделано** — `5e9a462` (frontend `tsc` чисто, `vitest` 43 файла / 329
+тестов зелёные). План относил cellRE-строки таблицы к Ф4/Ф6, но нарратив Ф6 и
+реализованный коммит покрывали только merge; по решению пользователя cellRE
+портирован отдельной фазой сразу после Ф6:
+
+- Групповые трансформы выделения фигур относительно его bounds (поворот/отражение
+  всей пачки) + рамка группового выделения и угловые ручки масштаба
+  (`shapesBounds`/`cornerScale`, `liveScaleRef`, `hoverCornerRef`, `GROUP_PAD_PX`)
+  в `CellRECanvas`.
+- **Общий между вкладками буфер фигур** (`state/cellRE.ts`: `CellREClipboard`,
+  `CLIPBOARD_KEY`/`CLIPBOARD_VERSION`/`CLIPBOARD_LAYERS`, `read/writeSharedClipboard`,
+  `storage`-слушатель); вставка через localStorage переносится между вкладками,
+  дие и типами ячеек.
+- Меню правого клика по типу ячейки (`CellTypeContextMenu.tsx`): flip/rotate всех
+  инстансов, «Mark as matched».
+- Кросс-die типы библиотеки с удалёнными инстансами (бейдж `OtherDieBadge`,
+  маршрутизация правок `routeLibraryAction`, рендер тайл-пирамидой в масштабе
+  die) в `CellRELeftPanel`/`RECellPage`; `lib/cellRE.ts` — `selectedShapes`,
+  `parseShapeKey`; новый `state/cellRE.test.ts` (node:test → vitest).
+
+Отклонения от апстрима (зафиксировано при реализации):
+- `CLIPBOARD_LAYERS` перечисляет **все 39** форковых `LayerType` (базовые 7 +
+  аналоговые), а не только 7 апстрима.
+- `state/cellRE.test.ts` стабилизирует `globalThis.window` **и** `globalThis.localStorage`
+  (форковый `INITIAL` читает ширину polyline из голого `localStorage`).
+- Форковая вставка **от курсора** сохранена (у апстрима только offset по типу) с
+  тем же type-offset как fallback; форковые overlay/base-toggle и fallback
+  `drawCellCrop` сохранены поверх чистой тайл-пирамиды.
+- Форковые `onForceSource`/`isContact`/polyline сохранены в `ShapeContextMenu`.
+
 ## Ф7 — `/batch` (условно) и хвосты
 
-`POST /api/dies/:id/batch` + адаптация `frontend/src/api/actions.ts` (если
-дёшево); `ce03ef3` CodePage; README; test-скрипты; `frontend/tsconfig.json`
-exclude.
+**Статус: ✅ сделано** — `45c50f2`.
+
+- `ml/sidecar.py`: запоминает последний удачно загруженный чекпойнт
+  (`.resident`) и перезапускается на нём (чтобы кэш предсказаний Node,
+  ключованный по хэшу чекпойнта, не «терял» via после рестарта); явный
+  `--checkpoint` по-прежнему приоритетен (сохранён форковый `_find_checkpoint`).
+- `ce03ef3` `CodePage.tsx`: кнопки prev/next поиска через общий `stepMatch`,
+  фокус не крадётся у поля (`onNavMouseDown`), ширина поля 248.
+- `README.md`: раздел про clean specimens, wire map и кросс-die библиотеку.
+
+Отклонения / пропущено (зафиксировано):
+- `POST /api/dies/:id/batch` **не берём** — форковые мульти-сущностные правки уже
+  пишутся атомарно одним `PUT /annotations`; соответствующий новый
+  `backend/src/api/annotations.test.ts` (два теста про `/batch` + тест
+  ориентированного кропа) не портирован.
+- `frontend/tsconfig.json` **не исключаем** `src/**/*.test.ts` — форк
+  типизирует тесты и полагается на это (апстрим исключал из-за node:test-типов).
+- `frontend/package.json` test-скрипт — остаётся **vitest**, не апстримный
+  `node --import tsx --test`.
+- `backend/package.json` — без изменений (апстрим лишь добавлял
+  `src/api/annotations.test.ts`, который мы не берём).
 
 ## Ф8 — Валидация
 
