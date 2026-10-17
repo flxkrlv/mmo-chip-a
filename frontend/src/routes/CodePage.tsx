@@ -143,15 +143,21 @@ function Code({ dieId }: { dieId: string }) {
     URL.revokeObjectURL(url);
   }, [editorSource, code.data]);
 
+  // Advance the focused match by `delta`, wrapping at both ends. Shared by
+  // the Enter/Shift+Enter keys and the prev/next buttons in the search bar.
+  const stepMatch = useCallback(
+    (delta: number) => {
+      if (matchTotal === 0) return;
+      setMatchIndex((idx) => (idx + delta + matchTotal) % matchTotal);
+    },
+    [matchTotal],
+  );
+
   // ── Search input keyboard: Enter / Shift+Enter / Esc ─────────────
   const onSearchKey = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === "Enter") {
       e.preventDefault();
-      if (matchTotal === 0) return;
-      setMatchIndex((idx) => {
-        const delta = e.shiftKey ? -1 : 1;
-        return (idx + delta + matchTotal) % matchTotal;
-      });
+      stepMatch(e.shiftKey ? -1 : 1);
     } else if (e.key === "Escape") {
       e.preventDefault();
       setSearch("");
@@ -256,6 +262,7 @@ function Code({ dieId }: { dieId: string }) {
                   value={search}
                   onChange={setSearch}
                   onKeyDown={onSearchKey}
+                  onStep={stepMatch}
                   onFocus={() => setSearchFocused(true)}
                   onBlur={() => setSearchFocused(false)}
                   matchIndex={matchIndex}
@@ -375,6 +382,7 @@ function SearchInput({
   value,
   onChange,
   onKeyDown,
+  onStep,
   onFocus,
   onBlur,
   matchIndex,
@@ -384,6 +392,7 @@ function SearchInput({
   value: string;
   onChange: (v: string) => void;
   onKeyDown: (e: React.KeyboardEvent<HTMLInputElement>) => void;
+  onStep: (delta: number) => void;
   onFocus: () => void;
   onBlur: () => void;
   matchIndex: number;
@@ -396,8 +405,12 @@ function SearchInput({
       : matchTotal === 0
         ? "0/0"
         : `${matchIndex + 1}/${matchTotal}`;
+  const hasMatches = matchTotal > 0;
+  // Keep focus in the text input when stepping via the buttons, so the user
+  // can keep typing — mousedown would otherwise steal it from the field.
+  const onNavMouseDown = (e: React.MouseEvent) => e.preventDefault();
   return (
-    <div className="input" style={{ width: 220, height: 24 }}>
+    <div className="input" style={{ width: 248, height: 24 }}>
       <span style={{ color: "var(--ink3)", display: "inline-flex" }}>{Ic.search}</span>
       <input
         ref={inputRef}
@@ -420,6 +433,30 @@ function SearchInput({
           {counter}
         </span>
       )}
+      <button
+        type="button"
+        className="btn ghost sm"
+        title="Previous match (⇧⏎)"
+        aria-label="previous match"
+        disabled={!hasMatches}
+        onMouseDown={onNavMouseDown}
+        onClick={() => onStep(-1)}
+        style={{ padding: "0 2px", height: 18, display: "inline-flex" }}
+      >
+        <span style={{ display: "inline-flex", transform: "rotate(180deg)" }}>{Ic.caretD}</span>
+      </button>
+      <button
+        type="button"
+        className="btn ghost sm"
+        title="Next match (⏎)"
+        aria-label="next match"
+        disabled={!hasMatches}
+        onMouseDown={onNavMouseDown}
+        onClick={() => onStep(1)}
+        style={{ padding: "0 2px", height: 18, display: "inline-flex" }}
+      >
+        {Ic.caretD}
+      </button>
     </div>
   );
 }

@@ -1,5 +1,5 @@
 import { useEffect, useRef } from "react";
-import type { OrientOp } from "../../lib/mergeCells";
+import type { DieOrientOp } from "../../lib/mergeCells";
 
 /**
  * What the canvas right-click handler resolved at the cursor: the world point
@@ -50,7 +50,7 @@ interface Props {
   onMakeUnique?: () => void;
   /** Rotate / mirror the clicked cell (or the selected cells it belongs to)
    *  in place on the die. */
-  onOrientCell?: (op: OrientOp) => void;
+  onOrientCell?: (op: DieOrientOp) => void;
   /** Cells are locked — orientation items are shown disabled. */
   cellsLocked?: boolean;
   onDeleteRuler?: () => void;
@@ -58,8 +58,9 @@ interface Props {
   onSplitNetAtNode?: () => void;
 }
 
-const ORIENT_ITEMS: [OrientOp, string][] = [
+const ORIENT_ITEMS: [DieOrientOp, string][] = [
   ["rotateCw", "Rotate 90° clockwise"],
+  ["rotateCcw", "Rotate 90° counter-clockwise"],
   ["flipH", "Flip horizontally"],
   ["flipV", "Flip vertically"]
 ];

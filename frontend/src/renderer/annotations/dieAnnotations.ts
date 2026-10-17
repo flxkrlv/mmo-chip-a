@@ -19,7 +19,6 @@ import { buildNetAnnotation } from "./nets";
 import { drawCellLayers } from "./shapes";
 import {
   CELL_COLOR,
-  CELL_DETAIL_ZOOM,
   CELL_FILL_ALPHA,
   CELL_OUTLINE_ALPHA,
   CELL_OUTLINE_PX,
@@ -239,10 +238,9 @@ export function buildCellAnnotation(
     pickPriority: PICK.cell,
     bbox,
     draw(ctx, bounds, state) {
-      // Draw inner shapes only when the user wants them AND zoomed in enough
-      // AND there are shapes; otherwise the cell renders as a solid block.
-      const showShapes =
-        getShowShapes() && bounds.zoom >= CELL_DETAIL_ZOOM && hasShapes;
+      // Draw inner shapes whenever the user wants them (at any zoom) and
+      // there are shapes; otherwise the cell renders as a solid block.
+      const showShapes = getShowShapes() && hasShapes;
       // A per-type color wins over the global cell color.
       const color = cellType.color ?? getColor();
 

@@ -299,6 +299,37 @@ export function applyOrientation(
   return { x: rx + boxW / 2, y: ry + boxH / 2 };
 }
 
+/** Inverse of `applyOrientation`: oriented cell-local → canonical (un-rotate,
+ *  then un-flip). Subtract the cell's `(x, y)` from a die point first. */
+export function toCanonical(
+  p: Point,
+  o: Orientation,
+  boxW: number,
+  boxH: number
+): Point {
+  const rx = p.x - boxW / 2;
+  const ry = p.y - boxH / 2;
+  let qx = rx;
+  let qy = ry;
+  switch (o.rotation ?? 0) {
+    case 90:
+      qx = ry;
+      qy = -rx;
+      break;
+    case 180:
+      qx = -rx;
+      qy = -ry;
+      break;
+    case 270:
+      qx = -ry;
+      qy = rx;
+      break;
+  }
+  if (o.flippedH) qx = -qx;
+  if (o.flippedV) qy = -qy;
+  return { x: qx + boxW / 2, y: qy + boxH / 2 };
+}
+
 // ── Internal ─────────────────────────────────────────────────────────
 
 function cross(ax: number, ay: number, bx: number, by: number): number {

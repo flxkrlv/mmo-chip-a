@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { DieAnnotations, FloorplanRegion } from "shared";
+import { COLOR_ML_CELL } from "../../renderer/annotations/cellDetections";
 import { Ic } from "../../icons";
 import { useToast } from "../Toast";
 import { useOverlayLayers } from "../../state/overlayLayers";
@@ -30,6 +31,7 @@ import { useDieViewerStore } from "../../state/dieViewer";
 import { usePreferences, selectNetWidth } from "../../state/preferences";
 import { TreeRow, TreeSep } from "../tree/TreeRow";
 import { NetColorPickerBody } from "./NetColorPickerBody";
+import { OtherDieBadge } from "../cellLibrary/OtherDieBadge";
 import { floorplanNameInline } from "../../lib/floorplanName";
 
 // Re-export so existing imports keep working.
@@ -54,6 +56,9 @@ type Props = {
   searchOpenRef?: React.MutableRefObject<(() => void) | null>;
   /** Set / clear (undefined) a cell type's own color. Absent ⇒ no picker. */
   onSetCellTypeColor?: (cellTypeId: string, color: string | undefined) => void;
+  /** Cell types owned by another die of the cell library ⇒ that die's
+   *  name (badged in the cell list). */
+  foreignTypeOwners?: ReadonlyMap<string, string>;
 };
 
 /** Session-group key for the "ML Regions" parent (it spans two annotation
@@ -75,7 +80,7 @@ const BASE_IMAGES_KEY = "base-images";
 /** Session-group key for the "Overlay Layers" section. */
 const OVERLAY_LAYERS_KEY = "overlay-layers";
 
-export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabels, onDeviceSelect, onOpenInRE, searchOpenRef, onSetCellTypeColor }: Props) {
+export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabels, onDeviceSelect, onOpenInRE, searchOpenRef, onSetCellTypeColor, foreignTypeOwners }: Props) {
   const toast = useToast();
   const expandedSections = usePreferences((s) => s.expandedSections);
   const hiddenKinds = usePreferences((s) => s.hiddenKinds);
@@ -98,6 +103,10 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
 
   const mlResultsHidden = usePreferences((s) => s.mlResultsHidden);
   const setMlResultsHidden = usePreferences((s) => s.setMlResultsHidden);
+  const wireMapHidden = usePreferences((s) => s.wireMapHidden);
+  const setWireMapHidden = usePreferences((s) => s.setWireMapHidden);
+  const cellDetectionsHidden = usePreferences((s) => s.cellDetectionsHidden);
+  const setCellDetectionsHidden = usePreferences((s) => s.setCellDetectionsHidden);
 
   // Read per-net color overrides once (not inside the .map, hooks rules).
   const netColors = usePreferences((s) => s.netColors);
@@ -123,6 +132,8 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
   const expandedGroups = useDieViewerStore((s) => s.expandedGroups);
   const toggleGroup = useDieViewerStore((s) => s.toggleGroup);
   const mlViasCount = useDieViewerStore((s) => s.mlViasCount);
+  const cellDetectionsCount = useDieViewerStore((s) => s.cellDetectionsCount);
+  const wireMapAvailable = useDieViewerStore((s) => s.wireMapAvailable);
 
   // Whole-net ids present in the current selection — includes nets selected
   // by clicking a sub-part (edge/node id like "net:abc/edge:1") on the canvas,
@@ -453,7 +464,16 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
               <TreeRow
                 depth={1}
                 expand={open ? "open" : "closed"}
-                label={group.cellType.name || group.cellType.id}
+                label={
+                  foreignTypeOwners?.has(group.cellType.id) ? (
+                    <>
+                      {group.cellType.name || group.cellType.id}
+                      <OtherDieBadge owner={foreignTypeOwners.get(group.cellType.id)!} />
+                    </>
+                  ) : (
+                    group.cellType.name || group.cellType.id
+                  )
+                }
                 meta={group.cells.length}
                 controls={onSetCellTypeColor ? (
                   <CellTypeColorPicker
@@ -469,7 +489,13 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
                 }}
                 selected={selectedIds.has(groupKey)}
                 onToggleExpand={() => toggleGroup(groupKey)}
-                onSelect={() => select([groupKey])}
+                // Select the type together with every placed instance: the
+                // canvas highlights them all, Delete removes them all (and
+                // the then-empty type), and the inspector keeps showing the
+                // type because the selection is "one type + only its cells".
+                onSelect={() =>
+                  select([groupKey, ...group.cells.map((c) => `cell:${c.id}`)])
+                }
                 onDoubleClick={() =>
                   focus(group.cells.map((c) => `cell:${c.id}`))
                 }
@@ -747,21 +773,56 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
       <TreeRow
         expand={mlResultsOpen ? "open" : "closed"}
         label="ML Results"
-        meta={mlViasCount}
+        meta={mlViasCount + cellDetectionsCount}
         visibility={{
-          visible: !mlResultsHidden,
-          onToggle: () => setMlResultsHidden(!mlResultsHidden)
+          visible:
+            !mlResultsHidden || !cellDetectionsHidden || (wireMapAvailable && !wireMapHidden),
+          onToggle: () => {
+            const hide =
+              !mlResultsHidden || !cellDetectionsHidden || (wireMapAvailable && !wireMapHidden);
+            setMlResultsHidden(hide);
+            setCellDetectionsHidden(hide);
+            if (wireMapAvailable) setWireMapHidden(hide);
+          }
         }}
         onToggleExpand={() => toggleGroup(ML_RESULTS_KEY)}
         onSelect={() => toggleGroup(ML_RESULTS_KEY)}
       />
       {mlResultsOpen && (
-        <TreeRow
-          depth={1}
-          swatch="rgba(130, 214, 166, 0.85)"
-          label="vias"
-          meta={mlViasCount}
-        />
+        <>
+          <TreeRow
+            depth={1}
+            swatch="rgba(130, 214, 166, 0.85)"
+            label="vias"
+            meta={mlViasCount}
+            visibility={{
+              visible: !mlResultsHidden,
+              onToggle: () => setMlResultsHidden(!mlResultsHidden)
+            }}
+          />
+          <TreeRow
+            depth={1}
+            swatch={COLOR_ML_CELL}
+            label="cells"
+            meta={cellDetectionsCount}
+            visibility={{
+              visible: !cellDetectionsHidden,
+              onToggle: () => setCellDetectionsHidden(!cellDetectionsHidden)
+            }}
+          />
+          <TreeRow
+            depth={1}
+            swatch="rgb(255, 60, 0)"
+            label="wires over cells"
+            meta={wireMapAvailable ? "map" : "—"}
+            dimmed={!wireMapAvailable}
+            visibility={
+              wireMapAvailable
+                ? { visible: !wireMapHidden, onToggle: () => setWireMapHidden(!wireMapHidden) }
+                : undefined
+            }
+          />
+        </>
       )}
 
       <TreeSep />
@@ -1549,7 +1610,7 @@ function CellSettingsButton() {
           checked={cellShowShapes}
           onChange={(e) => setCellShowShapes(e.target.checked)}
         />
-        Show cell details when zoomed in
+        Show cell details
       </label>
     </SettingsPopover>
   );
