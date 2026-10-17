@@ -16,6 +16,7 @@ import {
 } from "../../lib/libraryPlacement";
 import { createLiveValue, type LiveValue } from "../../lib/liveValue";
 import { orientOnDie, type DieOrientOp } from "../../lib/mergeCells";
+import { uuid } from "../../lib/uuid";
 import type { Interaction, PointerEventData } from "../../renderer/interaction";
 import type { Viewport } from "../../renderer/types";
 import { useDieViewerStore, type ToolKind } from "../../state/dieViewer";
@@ -194,7 +195,7 @@ export function useLibraryCellTool({
       // This die's pixels per library unit: the owner's, times the fit.
       const scale = cellScaleOf(libraryRef.current.dies.get(f.ownerDieId)) * d.k;
       applyDieUpdate(qc, await updateDie(dieId, { cellScale: scale }));
-      const cell = placementCell(d, f.type, f.ownerDieId, crypto.randomUUID());
+      const cell = placementCell(d, f.type, f.ownerDieId, uuid());
       await dispatcher.dispatch({ kind: "upsertCell", cell, prevCell: null });
       setDraft(null);
       useDieViewerStore.getState().select([`cell:${cell.id}`], "replace");
