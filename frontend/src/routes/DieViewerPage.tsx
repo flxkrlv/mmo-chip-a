@@ -7,6 +7,9 @@ import { useAnnotationsWebSocket } from "../api/annotationsWebSocket";
 import { netChangesToAction, useActionDispatcher } from "../api/actions";
 import { useDie } from "../api/dies";
 import { useWireMapInfo, wireTileUrl } from "../api/cellImaging";
+import { useCellDetections } from "../api/cellDetection";
+import { proposalsFor, type Proposal } from "../lib/cellDetection";
+import { populateCellDetectionLayer } from "../renderer/annotations/cellDetections";
 import { AppShell } from "../components/shell/AppShell";
 import { StatusBar } from "../components/shell/StatusBar";
 import { SubBar } from "../components/shell/SubBar";
@@ -883,6 +886,36 @@ function DieViewer({ dieId }: { dieId: string }) {
     mlViasLayer?.clearCache();
   }, [mlCheckpointHash, mlViasLayer]);
 
+  // ML cell proposals (cell-detection results). Their own rbush layer so
+  // picks / marquee / visibility behave like real annotations without mixing
+  // into the persisted-annotation layer. Rebuilt whenever the results, the
+  // placed cells (approvals hide the proposal underneath) or the confidence
+  // threshold change.
+  const proposalLayer = useMemo(
+    () => (die ? new AnnotationLayer("cell-detections") : null),
+    [die]
+  );
+  const cellDetectionsQ = useCellDetections(die?.id ?? null);
+  const cellDetectionThreshold = usePreferences((s) => s.cellDetectionThreshold);
+  const proposals = useMemo<Proposal[]>(
+    () =>
+      annotations && cellDetectionsQ.data
+        ? proposalsFor(cellDetectionsQ.data, annotations, {
+            threshold: cellDetectionThreshold
+          })
+        : [],
+    [annotations, cellDetectionsQ.data, cellDetectionThreshold]
+  );
+  useEffect(() => {
+    if (!proposalLayer) return;
+    populateCellDetectionLayer(proposalLayer, proposals);
+    useDieViewerStore.getState().setCellDetectionsCount(proposals.length);
+  }, [proposalLayer, proposals]);
+  const cellDetectionsHidden = usePreferences((s) => s.cellDetectionsHidden);
+  useEffect(() => {
+    proposalLayer?.setVisibleKinds(cellDetectionsHidden ? new Set() : null);
+  }, [proposalLayer, cellDetectionsHidden]);
+
   // Analog-device terminal points that are genuinely connected to a net,
   // grouped per net (annotation net UUID) and quantised into a grid. The net
   // renderer reads this live so a mid-net vertex that sits on a device
@@ -1124,7 +1157,8 @@ function DieViewer({ dieId }: { dieId: string }) {
   useEffect(() => {
     annotationLayer?.setSelectedIds(selectedIds);
     mlViasLayer?.setSelectedIds(selectedIds);
-  }, [annotationLayer, mlViasLayer, selectedIds]);
+    proposalLayer?.setSelectedIds(selectedIds);
+  }, [annotationLayer, mlViasLayer, proposalLayer, selectedIds]);
 
   // Overlay image layers — one Layer instance per user-loaded image.
   // Instances live in a ref so they persist across renders; the map is
@@ -1260,9 +1294,17 @@ function DieViewer({ dieId }: { dieId: string }) {
     for (const ol of overlayLayerInstances) out.push(ol);
     if (wireMapLayer) out.push(wireMapLayer);
     if (mlViasLayer) out.push(mlViasLayer);
+    if (proposalLayer) out.push(proposalLayer);
     if (annotationLayer) out.push(annotationLayer);
     return out;
-  }, [layers, wireMapLayer, overlayLayerInstances, mlViasLayer, annotationLayer]);
+  }, [
+    layers,
+    wireMapLayer,
+    overlayLayerInstances,
+    mlViasLayer,
+    proposalLayer,
+    annotationLayer
+  ]);
 
   // ── Behaviors (extracted hooks) ─────────────────────────────────
 
@@ -3219,6 +3261,22 @@ function DieViewer({ dieId }: { dieId: string }) {
         };
       }
 
+      // No annotation hit → maybe an ML cell proposal (dashed pink box).
+      // Click selects it; the inspector then offers approve / dismiss.
+      if (proposalLayer) {
+        const pHit = proposalLayer.hitTest(e.worldPoint, tolerance);
+        if (pHit) {
+          return {
+            onPointerUp: ({ dragged, modifiers }) => {
+              if (dragged) return;
+              useDieViewerStore
+                .getState()
+                .select([pHit.partId], modifiers.shift ? "toggle" : "replace");
+            }
+          };
+        }
+      }
+
       // No annotation hit → maybe an ML via. The hit-area matches the visible
       // via dot (same tolerance as the snap-to-vias path) so clicking on a
       // via reliably selects it.
@@ -3397,6 +3455,9 @@ function DieViewer({ dieId }: { dieId: string }) {
               ids.push(v.id);
             }
           }
+          if (proposalLayer) {
+            for (const a of proposalLayer.queryRect(world)) ids.push(a.id);
+          }
           selectFromMarquee(ids, modifiers.shift);
         },
         onCancel: () => marqueeLive.set(null)
@@ -3406,6 +3467,7 @@ function DieViewer({ dieId }: { dieId: string }) {
     [
       annotationLayer,
       mlViasLayer,
+      proposalLayer,
       marqueeLive,
       selectFromHit,
       selectedCellSideAt,
@@ -4418,6 +4480,7 @@ function DieViewer({ dieId }: { dieId: string }) {
             dispatcher={dispatcher}
             dieId={dieId}
             mlViasLayer={mlViasLayer}
+            proposals={proposals}
             cellTypeCounts={cellTypeCounts}
             devices={analogDevices}
             netNames={netNames}

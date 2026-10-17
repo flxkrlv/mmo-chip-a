@@ -34,6 +34,8 @@ import { WireLayerSelect } from "./WireLayerSelect";
 import { AnnotationClassSelect } from "./AnnotationClassSelect";
 import { CVPanel } from "./CVPanel";
 import { AssistantPanel } from "./AssistantPanel";
+import { CellDetectionPanel, ProposalInspector } from "./CellDetectionPanel";
+import { isMlCellId, type Proposal } from "../../lib/cellDetection";
 
 /** A single labelled property row (`.prop` matches the hifi spec). */
 function Prop({
@@ -475,6 +477,7 @@ export function InspectorPanel({
   dieId,
   mlViasLayer,
   cellTypeCounts,
+  proposals = [],
   devices = [],
   netNames = new Map<number, string>(),
   warnings = [],
@@ -489,6 +492,8 @@ export function InspectorPanel({
    *  through it to fetch score / class. May be null while the page is still
    *  bootstrapping. */
   mlViasLayer: MLViasLayer | null;
+  /** Visible ML cell proposals — resolves `ml-cell:` selection ids. */
+  proposals?: Proposal[];
   /** cellTypeId → instance count for relationship display. */
   cellTypeCounts?: Map<string, number>;
   /** Current browser extraction projection; submitted read-only for analysis. */
@@ -509,7 +514,7 @@ export function InspectorPanel({
         className="ph"
         style={{ padding: 0, gap: 0, height: 30 }}
       >
-        {(["inspector", "ml", "cv", "ai"] as const).map((k) => (
+        {(["inspector", "ml", "cells", "cv", "ai"] as const).map((k) => (
           <button
             key={k}
             type="button"
@@ -517,7 +522,15 @@ export function InspectorPanel({
             style={{ background: "transparent", cursor: "pointer" }}
             onClick={() => setTab(k)}
           >
-            {k === "inspector" ? "Inspector" : k === "ml" ? "ML" : k === "cv" ? "CV" : "AI"}
+            {k === "inspector"
+              ? "Inspector"
+              : k === "ml"
+                ? "ML"
+                : k === "cells"
+                  ? "Cells"
+                  : k === "cv"
+                    ? "CV"
+                    : "AI"}
           </button>
         ))}
       </div>
@@ -536,14 +549,18 @@ export function InspectorPanel({
           />
         ) : tab === "ml" ? (
           <MLPanel dieId={dieId} annotations={annotations} dispatcher={dispatcher} mlViasLayer={mlViasLayer} />
+        ) : tab === "cells" ? (
+          <CellDetectionPanel dieId={dieId} annotations={annotations} />
         ) : tab === "cv" ? (
           <CVPanel dieId={dieId} annotations={annotations} dispatcher={dispatcher} />
         ) : (
           <InspectorBody
             annotations={annotations}
             dispatcher={dispatcher}
+            dieId={dieId}
             ids={selectedIds}
             mlViasLayer={mlViasLayer}
+            proposals={proposals}
             cellTypeCounts={cellTypeCounts}
           />
         )}
@@ -555,14 +572,18 @@ export function InspectorPanel({
 function InspectorBody({
   annotations,
   dispatcher,
+  dieId,
   ids,
   mlViasLayer,
+  proposals,
   cellTypeCounts,
 }: {
   annotations: DieAnnotations | undefined;
   dispatcher: ActionDispatcher;
+  dieId: string;
   ids: ReadonlySet<string>;
   mlViasLayer: MLViasLayer | null;
+  proposals: Proposal[];
   cellTypeCounts?: Map<string, number>;
 }) {
   if (!annotations) return <Empty>loading…</Empty>;
@@ -586,6 +607,16 @@ function InspectorBody({
   }
 
   const only = ids.values().next().value as string;
+  if (isMlCellId(only)) {
+    return (
+      <ProposalInspector
+        dieId={dieId}
+        id={only}
+        dispatcher={dispatcher}
+        proposals={proposals}
+      />
+    );
+  }
   const r = resolve(only, annotations, dispatcher, mlViasLayer, cellTypeCounts);
   if (!r) return <Empty>Selection not found</Empty>;
 

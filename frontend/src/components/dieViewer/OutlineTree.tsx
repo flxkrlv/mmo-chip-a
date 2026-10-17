@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { DieAnnotations, FloorplanRegion } from "shared";
+import { COLOR_ML_CELL } from "../../renderer/annotations/cellDetections";
 import { Ic } from "../../icons";
 import { useToast } from "../Toast";
 import { useOverlayLayers } from "../../state/overlayLayers";
@@ -100,6 +101,8 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
   const setMlResultsHidden = usePreferences((s) => s.setMlResultsHidden);
   const wireMapHidden = usePreferences((s) => s.wireMapHidden);
   const setWireMapHidden = usePreferences((s) => s.setWireMapHidden);
+  const cellDetectionsHidden = usePreferences((s) => s.cellDetectionsHidden);
+  const setCellDetectionsHidden = usePreferences((s) => s.setCellDetectionsHidden);
 
   // Read per-net color overrides once (not inside the .map, hooks rules).
   const netColors = usePreferences((s) => s.netColors);
@@ -125,6 +128,7 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
   const expandedGroups = useDieViewerStore((s) => s.expandedGroups);
   const toggleGroup = useDieViewerStore((s) => s.toggleGroup);
   const mlViasCount = useDieViewerStore((s) => s.mlViasCount);
+  const cellDetectionsCount = useDieViewerStore((s) => s.cellDetectionsCount);
   const wireMapAvailable = useDieViewerStore((s) => s.wireMapAvailable);
 
   // Whole-net ids present in the current selection — includes nets selected
@@ -750,12 +754,15 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
       <TreeRow
         expand={mlResultsOpen ? "open" : "closed"}
         label="ML Results"
-        meta={mlViasCount}
+        meta={mlViasCount + cellDetectionsCount}
         visibility={{
-          visible: !mlResultsHidden || (wireMapAvailable && !wireMapHidden),
+          visible:
+            !mlResultsHidden || !cellDetectionsHidden || (wireMapAvailable && !wireMapHidden),
           onToggle: () => {
-            const hide = !mlResultsHidden || (wireMapAvailable && !wireMapHidden);
+            const hide =
+              !mlResultsHidden || !cellDetectionsHidden || (wireMapAvailable && !wireMapHidden);
             setMlResultsHidden(hide);
+            setCellDetectionsHidden(hide);
             if (wireMapAvailable) setWireMapHidden(hide);
           }
         }}
@@ -772,6 +779,16 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
             visibility={{
               visible: !mlResultsHidden,
               onToggle: () => setMlResultsHidden(!mlResultsHidden)
+            }}
+          />
+          <TreeRow
+            depth={1}
+            swatch={COLOR_ML_CELL}
+            label="cells"
+            meta={cellDetectionsCount}
+            visibility={{
+              visible: !cellDetectionsHidden,
+              onToggle: () => setCellDetectionsHidden(!cellDetectionsHidden)
             }}
           />
           <TreeRow

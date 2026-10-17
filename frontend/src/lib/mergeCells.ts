@@ -296,6 +296,37 @@ export function buildMergeAction(
 }
 
 /**
+ * Approve an ML proposal: create a real, merged member of `specimenType` at
+ * the (possibly tweaked) placement, promoting the type if needed. The
+ * proposal then hides itself because it overlaps the new cell — undoing the
+ * approval brings it back.
+ */
+export function buildApproveAction(
+  specimenType: CellType,
+  orient: Orient & { x: number; y: number }
+): AnnotationAction {
+  const cell: Cell = {
+    id: newId(),
+    cellTypeId: specimenType.id,
+    x: Math.round(orient.x),
+    y: Math.round(orient.y),
+    flippedH: orient.flippedH || undefined,
+    flippedV: orient.flippedV || undefined,
+    rotation: orient.rotation === 0 ? undefined : orient.rotation,
+    merged: true
+  };
+  const actions: AnnotationAction[] = [{ kind: "upsertCell", cell, prevCell: null }];
+  if (specimenType.matched !== true) {
+    actions.push({
+      kind: "upsertCellType",
+      cellType: { ...specimenType, matched: true },
+      prevCellType: specimenType
+    });
+  }
+  return actions.length === 1 ? actions[0] : { kind: "batch", actions };
+}
+
+/**
  * Detach `cell` from its (matched) type back into a fresh standalone unmatched
  * placeholder type — the inverse intent of a merge. One batched action.
  */
