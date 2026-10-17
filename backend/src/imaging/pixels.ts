@@ -73,6 +73,53 @@ export function toCanonicalImage(
   return out;
 }
 
+/**
+ * `toCanonicalImage` for an instance on another die whose pixels are 1/`k` of
+ * this die's: the padded canonical frame is in this die's pixels (the type's
+ * W×H box here, `margin` around it), sampled bilinearly from `region` — the
+ * instance's own die, covering `paddedDieBox(cell, W / k, H / k, margin / k)`
+ * plus a pixel. `k` 1 is the exact permutation of `toCanonicalImage`.
+ */
+export function toCanonicalImageScaled(
+  region: Region,
+  cell: Pick<Cell, "x" | "y" | "flippedH" | "flippedV" | "rotation">,
+  W: number,
+  H: number,
+  margin: number,
+  k: number
+): Float32Array {
+  if (k === 1) return toCanonicalImage(region, cell, W, H, margin);
+  const o = orientOf(cell);
+  const w = W / k;
+  const h = H / k;
+  const pw = W + 2 * margin;
+  const ph = H + 2 * margin;
+  const out = new Float32Array(pw * ph * 3);
+  const rw = region.w;
+  for (let py = 0; py < ph; py++) {
+    for (let px = 0; px < pw; px++) {
+      // This die's canonical pixel centre → that die's canonical point → die.
+      const p = applyOrient({ x: (px - margin + 0.5) / k, y: (py - margin + 0.5) / k }, o, w, h);
+      const fx = p.x + cell.x - region.x0 - 0.5;
+      const fy = p.y + cell.y - region.y0 - 0.5;
+      if (fx < 0 || fy < 0 || fx > rw - 1 || fy > region.h - 1) continue;
+      const x0 = Math.floor(fx);
+      const y0 = Math.floor(fy);
+      const x1 = Math.min(rw - 1, x0 + 1);
+      const y1 = Math.min(region.h - 1, y0 + 1);
+      const ax = fx - x0;
+      const ay = fy - y0;
+      const d = (py * pw + px) * 3;
+      for (let c = 0; c < 3; c++) {
+        const top = region.data[(y0 * rw + x0) * 3 + c] * (1 - ax) + region.data[(y0 * rw + x1) * 3 + c] * ax;
+        const bot = region.data[(y1 * rw + x0) * 3 + c] * (1 - ax) + region.data[(y1 * rw + x1) * 3 + c] * ax;
+        out[d + c] = top * (1 - ay) + bot * ay;
+      }
+    }
+  }
+  return out;
+}
+
 /** Inverse lookup used when pasting canonical data back onto the die:
  *  canonical pixel index for a die pixel, or -1 outside the cell. */
 export function canonicalIndexForDiePixel(

@@ -13,7 +13,7 @@ import {
   resampleBand,
   sharpnessOf,
   stackCentre,
-  toCanonicalImage,
+  toCanonicalImageScaled,
   unsharp,
   type ChannelStats,
   type PhotoParams,
@@ -76,6 +76,14 @@ export function pickInstances<T>(members: ReadonlyArray<T>, max: number): T[] {
   return out;
 }
 
+/** An instance of the type on another die (cell library): read through that
+ *  die's `reader`; `k` = this die's pixels per that die's pixel. */
+export interface ForeignInstance {
+  cell: Cell;
+  reader: TileReader;
+  k: number;
+}
+
 function meanStats(all: ChannelStats[]): ChannelStats {
   const mean: [number, number, number] = [0, 0, 0];
   const std: [number, number, number] = [0, 0, 0];
@@ -96,6 +104,9 @@ export async function buildSpecimen(
   reader: TileReader,
   options: {
     percentile?: number;
+    /** Instances on other dies of the library, resampled to this die's
+     *  pixels and stacked with this die's own (which go first). */
+    foreign?: ReadonlyArray<ForeignInstance>;
   } = {},
   hooks: { onProgress?: (fraction: number) => void; shouldCancel?: () => boolean; yieldToLoop?: () => Promise<void> } = {}
 ): Promise<SpecimenResult | null> {
@@ -110,14 +121,21 @@ export async function buildSpecimen(
   const padded: Float32Array[] = [];
   /** Cell behind each entry of `padded` (instances leaving the die are skipped). */
   const used: Cell[] = [];
-  const picked = pickInstances(members, MAX_INSTANCES);
+  // This die's instances first; the rest of the budget goes to other dies',
+  // sharper photos (smaller k) ahead of coarser ones.
+  const own = pickInstances(members, MAX_INSTANCES).map((cell) => ({ cell, reader, k: 1 }));
+  const others = [...(options.foreign ?? [])].sort((a, b) => a.k - b.k);
+  const picked = [...own, ...pickInstances(others, MAX_INSTANCES - own.length)];
+  const ownIds = new Set(members.map((c) => c.id));
   for (let i = 0; i < picked.length; i++) {
     if (hooks.shouldCancel?.()) return null;
-    const cell = picked[i];
-    const box = paddedDieBox(cell, W, H, MARGIN);
-    const region = await reader.region(box.x0, box.y0, box.w, box.h);
+    const { cell, reader: from, k } = picked[i];
+    const box = paddedDieBox(cell, W / k, H / k, MARGIN / k);
+    // One more pixel around a resampled one, for the bilinear taps.
+    const pad = k === 1 ? 0 : 1;
+    const region = await from.region(box.x0 - pad, box.y0 - pad, box.w + 2 * pad, box.h + 2 * pad);
     if (region) {
-      padded.push(toCanonicalImage(region, cell, W, H, MARGIN));
+      padded.push(toCanonicalImageScaled(region, cell, W, H, MARGIN, k));
       used.push(cell);
     }
     hooks.onProgress?.((0.3 * (i + 1)) / picked.length);
@@ -220,10 +238,10 @@ export async function buildSpecimen(
     instancesUsed: n,
     display,
     displayInstances: bySharpness.length,
-    // The ids are for flagging the instances on this die.
-    orientationMismatches: used.filter((_, i) => regs[i] && (regs[i]!.flipH || regs[i]!.flipV)).length,
+    // This die's instances only: the ids are for flagging them here.
+    orientationMismatches: used.filter((c, i) => ownIds.has(c.id) && regs[i] && (regs[i]!.flipH || regs[i]!.flipV)).length,
     orientationMismatchIds: used
-      .filter((_, i) => regs[i] && (regs[i]!.flipH || regs[i]!.flipV))
+      .filter((c, i) => ownIds.has(c.id) && regs[i] && (regs[i]!.flipH || regs[i]!.flipV))
       .map((c) => c.id)
   };
 }

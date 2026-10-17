@@ -3,6 +3,7 @@ import path from "node:path";
 import { Router, type Request, type Response } from "express";
 import { getOverlayCropSource } from "./overlayImages.js";
 import { ensurePreviewImage } from "../imagePreview.js";
+import { resolveCellType } from "../cellLibrary.js";
 import { readAnnotations, readDieRecord } from "../store.js";
 import { resolveProjectDir } from "../projectLayout.js";
 import {
@@ -159,7 +160,10 @@ export function createTilesRouter(config: {
 
       const cell = annotations.cells.find((c) => c.id === cellId);
       if (!cell) { console.warn(`[crop] cell ${cellId} not found in annotations`); response.status(404).json({ error: "Cell not found" }); return; }
-      const cellType = annotations.cellTypes.find((ct) => ct.id === cell.cellTypeId);
+      // Own type, or a library type owned by another die (in this die's px).
+      const cellType = (
+        await resolveCellType(config.dataRoot, record, annotations, cell.cellTypeId, cell.cellTypeDieId)
+      )?.type;
       if (!cellType) { response.status(404).json({ error: "Cell type not found" }); return; }
 
       await serveCrop({

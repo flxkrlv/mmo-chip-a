@@ -30,6 +30,7 @@ type ServerMessage =
   | { type: "mlJob"; dieId: string; job: MLInferenceJob }
   | { type: "cellJob"; dieId: string; job: CellDetectionJob }
   | { type: "imagingJob"; dieId: string; job: CellImagingJob }
+  | { type: "die"; dieId: string }
   | { type: "user/list"; users: Array<{ userId: string; username: string; dieId: string | null; tool: string | null }> }
   | { type: "user/online"; userId: string; username: string; dieId: string | null; tool: string | null }
   | { type: "user/offline"; userId: string }
@@ -60,6 +61,10 @@ export interface AnnotationBroadcaster {
   emitCellJob(job: CellDetectionJob): void;
   /** Push a cell-imaging (specimens / wire map) job-state change. */
   emitImagingJob(job: CellImagingJob): void;
+  /** A die's properties changed (cell library / scale). Sent to every
+   *  client, not just the die's subscribers: dies sharing a library draw
+   *  each other's cell types, so they all care. */
+  emitDieChange(dieId: string): void;
   /** Get current list of online users with their status. */
   getOnlineUsers(): Array<{ userId: string; username: string; dieId: string | null; tool: string | null }>;
   /** Close the server. */
@@ -217,6 +222,9 @@ export function attachWebSocketBroadcaster(
         if (!sub.dies.has(job.dieId)) continue;
         send(sub.socket, { type: "imagingJob", dieId: job.dieId, job });
       }
+    },
+    emitDieChange(dieId) {
+      for (const sub of subscriptions.values()) send(sub.socket, { type: "die", dieId });
     },
     getOnlineUsers() {
       return getOnlineUsersList();

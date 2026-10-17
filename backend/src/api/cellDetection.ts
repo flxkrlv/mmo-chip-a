@@ -72,7 +72,8 @@ export function createCellDetectionRouter(config: {
           await jobs.startJob(request.params.dieId, body.cellTypeId, {
             allowFlipX: flag(body.allowFlipX),
             allowFlipY: flag(body.allowFlipY),
-            avoidExistingCells: flag(body.avoidExistingCells)
+            avoidExistingCells: flag(body.avoidExistingCells),
+            allDies: flag(body.allDies)
           })
         );
       } catch (error) {

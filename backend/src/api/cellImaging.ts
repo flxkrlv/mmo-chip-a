@@ -135,7 +135,7 @@ export function createCellImagingRouter(config: {
         response.status(400).json({ error: 'kind must be "specimens" or "wireMap"' });
         return;
       }
-      response.json(await jobs.start(request.params.dieId, body.kind));
+      response.json(await jobs.start(request.params.dieId, body.kind, { allDies: body.allDies === true }));
     } catch (error) {
       if (error instanceof ImagingJobBusy) {
         response.status(409).json({ error: error.message });

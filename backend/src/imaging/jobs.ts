@@ -10,9 +10,10 @@ import type {
 } from "shared";
 import { footprint, orientOf } from "../ml/cellDetect.js";
 import { memberSignature } from "../ml/cellJobs.js";
+import { effectiveCellTypes, foreignCellTypes, instancesOn, libraryDies } from "../cellLibrary.js";
 import { readAnnotations, readDieRecord } from "../store.js";
 import type { createTileScheduler } from "../tileScheduler.js";
-import { buildSpecimen, DISPLAY_SCALE, MAX_INSTANCES, toBytes } from "./specimen.js";
+import { buildSpecimen, DISPLAY_SCALE, MAX_INSTANCES, toBytes, type ForeignInstance } from "./specimen.js";
 import {
   clearWireMap,
   readSpecimenIndex,
@@ -43,7 +44,7 @@ export class ImagingJobBadRequest extends Error {}
 
 export interface CellImagingJobManager {
   getJob(dieId: string): CellImagingJob | null;
-  start(dieId: string, kind: CellImagingJobKind): Promise<CellImagingJob>;
+  start(dieId: string, kind: CellImagingJobKind, options?: { allDies?: boolean }): Promise<CellImagingJob>;
   stop(dieId: string): CellImagingJob | null;
 }
 
@@ -70,7 +71,12 @@ export function createCellImagingJobManager(config: {
   const active = new Map<string, { cancel: boolean }>();
   const jobs = new Map<string, CellImagingJob>();
 
-  async function runSpecimens(job: CellImagingJob, progress: (phase: string, f: number) => void, cancelled: () => boolean) {
+  async function runSpecimens(
+    job: CellImagingJob,
+    progress: (phase: string, f: number) => void,
+    cancelled: () => boolean,
+    allDies: boolean
+  ) {
     const record = await readDieRecord(dataRoot, job.dieId);
     const annotations = await readAnnotations(dataRoot, job.dieId);
     const reader = createTileReader(record, tileScheduler);
@@ -80,12 +86,32 @@ export function createCellImagingJobManager(config: {
       if (list) list.push(c);
       else byType.set(c.cellTypeId, [c]);
     }
-    const work = annotations.cellTypes
-      .map((t) => ({ t, members: byType.get(t.id) ?? [] }))
+    // Library types placed here (owned by another die) get a specimen of
+    // their own from this die's instances, at this die's scale — pooled with
+    // their instances on the library's other dies when asked.
+    const foreign = allDies ? await foreignCellTypes(dataRoot, record, annotations) : null;
+    const peers = foreign
+      ? await libraryDies(dataRoot, record, [...foreign.values()].map((f) => f.owner.id))
+      : [];
+    const readers = new Map<string, ReturnType<typeof createTileReader>>();
+    const readerOf = (r: (typeof peers)[number]["record"]) => {
+      let rd = readers.get(r.id);
+      if (!rd) readers.set(r.id, (rd = createTileReader(r, tileScheduler)));
+      return rd;
+    };
+    const work = (await effectiveCellTypes(dataRoot, record, annotations))
+      .map((t) => {
+        const members = byType.get(t.id) ?? [];
+        const remote = foreign ? instancesOn(peers, t.id, foreign.get(t.id)?.owner.id ?? record.id) : [];
+        const extra: ForeignInstance[] = remote.flatMap((r) =>
+          r.cells.map((cell) => ({ cell, reader: readerOf(r.record), k: r.ratio }))
+        );
+        return { t, members, extra, dies: 1 + remote.length };
+      })
       .filter((w) => w.members.length > 0);
     if (work.length === 0) throw new ImagingJobBadRequest("no placed cells on this die");
-    const cost = (w: { t: CellType; members: Cell[] }) =>
-      Math.min(w.members.length, MAX_INSTANCES) * w.t.cropRect.width * w.t.cropRect.height;
+    const cost = (w: { t: CellType; members: Cell[]; extra: ForeignInstance[] }) =>
+      Math.min(w.members.length + w.extra.length, MAX_INSTANCES) * w.t.cropRect.width * w.t.cropRect.height;
     const total = work.reduce((s, w) => s + cost(w), 0);
 
     await fs.mkdir(specimensDir(dataRoot, job.dieId), { recursive: true });
@@ -93,7 +119,7 @@ export function createCellImagingJobManager(config: {
     let done = 0;
     for (const w of work) {
       if (cancelled()) return;
-      const res = await buildSpecimen(w.t, w.members, reader, { percentile: 50 }, {
+      const res = await buildSpecimen(w.t, w.members, reader, { percentile: 50, foreign: w.extra }, {
         onProgress: (f) => progress(`specimen · ${w.t.name}`, (done + f * cost(w)) / total),
         shouldCancel: cancelled,
         yieldToLoop
@@ -122,6 +148,7 @@ export function createCellImagingJobManager(config: {
         orientationMismatches: res.orientationMismatches,
         orientationMismatchIds: res.orientationMismatchIds,
         memberSignature: memberSignature(w.members),
+        ...(w.extra.length > 0 ? { dies: w.dies } : {}),
         createdAt: new Date().toISOString()
       });
     }
@@ -163,7 +190,9 @@ export function createCellImagingJobManager(config: {
       throw new ImagingJobBadRequest("generate the cell specimens first");
     }
     const reader = createTileReader(record, tileScheduler);
-    const typeById = new Map(annotations.cellTypes.map((t) => [t.id, t]));
+    const typeById = new Map(
+      (await effectiveCellTypes(dataRoot, record, annotations)).map((t) => [t.id, t])
+    );
     const infoById = new Map(index.specimens.map((s) => [s.cellTypeId, s]));
     const loaded = new Map<string, LoadedSpecimen>();
 
@@ -232,7 +261,7 @@ export function createCellImagingJobManager(config: {
     });
   }
 
-  async function run(job: CellImagingJob, flag: { cancel: boolean }): Promise<void> {
+  async function run(job: CellImagingJob, flag: { cancel: boolean }, allDies: boolean): Promise<void> {
     let last = 0;
     const emit = (force: boolean) => {
       const now = Date.now();
@@ -248,7 +277,7 @@ export function createCellImagingJobManager(config: {
       emit(false);
     };
     try {
-      if (job.kind === "specimens") await runSpecimens(job, progress, () => flag.cancel);
+      if (job.kind === "specimens") await runSpecimens(job, progress, () => flag.cancel, allDies);
       else await runWireMap(job, progress, () => flag.cancel);
       job.status = flag.cancel ? "stopped" : "completed";
       if (!flag.cancel) {
@@ -265,7 +294,11 @@ export function createCellImagingJobManager(config: {
     }
   }
 
-  async function start(dieId: string, kind: CellImagingJobKind): Promise<CellImagingJob> {
+  async function start(
+    dieId: string,
+    kind: CellImagingJobKind,
+    options: { allDies?: boolean } = {}
+  ): Promise<CellImagingJob> {
     if (active.has(dieId)) throw new ImagingJobBusy("an imaging job is already running for this die");
     await readDieRecord(dataRoot, dieId); // 404s through the error handler when missing
     if (kind === "wireMap" && !(await readSpecimenIndex(dataRoot, dieId))) {
@@ -287,7 +320,7 @@ export function createCellImagingJobManager(config: {
     active.set(dieId, flag);
     jobs.set(dieId, { ...job });
     onJobChange?.({ ...job });
-    void run(job, flag);
+    void run(job, flag, options.allDies === true);
     return { ...job };
   }
 

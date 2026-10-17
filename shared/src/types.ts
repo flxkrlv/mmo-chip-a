@@ -74,12 +74,26 @@ export interface DieSummary {
   updatedAt: string;
   tileProgress?: DieTileProgress;
   overlayTileProgress?: OverlayTileProgress;
+  /** Cell library the die belongs to: dies sharing one see — and place —
+   *  each other's cell types. Absent ⇒ none. */
+  cellLibrary?: string;
+  /** This die's pixels per library unit. A type owned by another die of the
+   *  library is drawn here at `cellScale / its die's cellScale` times its
+   *  own size. Absent ⇒ 1. */
+  cellScale?: number;
   /** Where the project's source data lives. Absent ⇒ "managed" (legacy records). */
   location?: ProjectLocationKind;
   /** False when a folder project's directory is missing or unreadable on this machine. */
   available?: boolean;
   /** Absolute directory for folder projects; undefined for managed projects. */
   folderPath?: string;
+}
+
+/** `PATCH /api/dies/:dieId` — die properties. A field left out stays as it
+ *  is; `null` clears it. */
+export interface DieUpdateRequest {
+  cellLibrary?: string | null;
+  cellScale?: number | null;
 }
 
 export interface DieMetadata extends DieSummary {
@@ -394,6 +408,10 @@ export interface CellType {
 export interface Cell {
   id: string;
   cellTypeId: string;
+  /** The die that owns `cellTypeId`, when it isn't this die: a type shared
+   *  through the cell library, drawn here at the dies' scale ratio. Absent ⇒
+   *  one of this die's own types. */
+  cellTypeDieId?: string;
   x: number;
   y: number;
   /** Vertical mirror (existing). */
@@ -1891,6 +1909,9 @@ export interface CellDetectionResult {
   version: 1;
   dieId: string;
   cellTypeId: string;
+  /** The die that owns the type, when it's another die's library type
+   *  (approved proposals become cells pointing there). Absent ⇒ this die. */
+  cellTypeDieId?: string;
   /** Name at run time — shown when the type has since been renamed/removed. */
   cellTypeName: string;
   /** Via checkpoint the die vias came from. */
@@ -1905,6 +1926,12 @@ export interface CellDetectionResult {
   memberSignature?: string;
   /** Vias in the consensus template. */
   templateVias: number;
+  /** Where the via template came from when it wasn't this die's own members:
+   *  the owner die's members, scaled by `ratio` (this die's px per theirs). */
+  templateSource?: { dieId: string; dieName: string; memberCount: number; ratio: number };
+  /** Set when the template pooled the type's instances from every die of the
+   *  cell library (`CellDetectionOptions.allDies`): which, and how many. */
+  pooledFrom?: Array<{ dieId: string; dieName: string; memberCount: number; ratio: number }>;
   /** The type's placed members scored against the template, keyed by cell
    *  id. Absent on results from before this existed. */
   memberScores?: Record<string, CellPlacementScore>;
@@ -1954,6 +1981,9 @@ export interface CellDetectionOptions {
    *  members are dropped, so proposals may sit on cells of other types.
    *  Default on. */
   avoidExistingCells: boolean;
+  /** Build the template from the type's instances on every die of the cell
+   *  library (scaled to this die), not just this die's. Default off. */
+  allDies?: boolean;
 }
 
 export interface CellDetectionStartRequest {
@@ -1961,6 +1991,7 @@ export interface CellDetectionStartRequest {
   allowFlipX?: boolean;
   allowFlipY?: boolean;
   avoidExistingCells?: boolean;
+  allDies?: boolean;
 }
 
 export interface CellDetectionDismissRequest {
@@ -1994,6 +2025,9 @@ export interface CellSpecimenInfo {
   /** Fingerprint of the type's members when it was built (see
    *  `CellDetectionResult.memberSignature`). */
   memberSignature: string;
+  /** Dies the stacked instances came from when pooled across the cell
+   *  library (`CellImagingStartRequest.allDies`). Absent ⇒ this die only. */
+  dies?: number;
   createdAt: string;
 }
 
@@ -2038,5 +2072,8 @@ export interface CellImagingJob {
 
 export interface CellImagingStartRequest {
   kind: CellImagingJobKind;
+  /** Specimens: stack the type's instances from every die of the cell
+   *  library too (resampled to this die). Default off. */
+  allDies?: boolean;
 }
 

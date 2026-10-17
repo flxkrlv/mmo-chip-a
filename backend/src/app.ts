@@ -82,7 +82,8 @@ export function createApp(config: {
     createDiesRouter({
       dataRoot: config.dataRoot,
       tileScheduler,
-      importJobManager
+      importJobManager,
+      broadcaster: config.broadcaster
     })
   );
   app.use(createTilesRouter({ dataRoot: config.dataRoot, tileScheduler }));
