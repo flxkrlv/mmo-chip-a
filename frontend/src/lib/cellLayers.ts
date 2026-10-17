@@ -325,6 +325,124 @@ export function scaleAbout(anchor: Point, sx: number, sy: number): (p: Point) =>
   });
 }
 
+// ── Group transforms (a multi-selection edited as one) ────────────────
+
+/** Joint bounds of the shapes' vertices (their `shapeHandles`) — the box a
+ *  group rotates and scales by. Null when there are no shapes. */
+export function shapesBounds(shapes: Iterable<LayerShape>): Rect | null {
+  const pts: Point[] = [];
+  for (const s of shapes) pts.push(...shapeHandles(s));
+  return polygonBounds(pts);
+}
+
+/**
+ * Scale factors that carry a box's `corner` to `target` while the opposite
+ * `anchor` corner stays put. A zero-extent axis stays at 1, and each axis
+ * keeps at least one unit of extent (no collapsing or flipping through the
+ * anchor). `uniform` keeps the aspect ratio, following the axis that changed
+ * most.
+ */
+export function cornerScale(
+  anchor: Point,
+  corner: Point,
+  target: Point,
+  uniform: boolean
+): { sx: number; sy: number } {
+  const extX = corner.x - anchor.x;
+  const extY = corner.y - anchor.y;
+  const minX = extX === 0 ? 0 : 1 / Math.abs(extX);
+  const minY = extY === 0 ? 0 : 1 / Math.abs(extY);
+  let sx = extX === 0 ? 1 : Math.max((target.x - anchor.x) / extX, minX);
+  let sy = extY === 0 ? 1 : Math.max((target.y - anchor.y) / extY, minY);
+  if (uniform) {
+    const s =
+      extX === 0 ? sy : extY === 0 ? sx : Math.abs(sx - 1) >= Math.abs(sy - 1) ? sx : sy;
+    sx = sy = Math.max(s, minX, minY);
+  }
+  return { sx, sy };
+}
+
+/** Replace several existing shapes (matched by layer + id) in one cell-type
+ *  upsert — a single undo step for a group edit. Null when none of them
+ *  exist. */
+export function buildReplaceShapesAction(
+  cellType: CellType,
+  replacements: ReadonlyArray<{ layer: LayerType; shape: LayerShape }>
+): AnnotationAction | null {
+  const byLayer = new Map<LayerType, Map<string, LayerShape>>();
+  for (const r of replacements) {
+    let m = byLayer.get(r.layer);
+    if (!m) {
+      m = new Map();
+      byLayer.set(r.layer, m);
+    }
+    m.set(r.shape.id, r.shape);
+  }
+  let layers = cellType.layers;
+  let touched = false;
+  for (const [layer, next] of byLayer) {
+    layers = withLayer(layers, layer, (cur) =>
+      cur.map((s) => {
+        const r = next.get(s.id);
+        if (!r) return s;
+        touched = true;
+        return r;
+      })
+    );
+  }
+  if (!touched) return null;
+  return { kind: "upsertCellType", cellType: { ...cellType, layers }, prevCellType: cellType };
+}
+
+/** Quarter-turn a group of shapes about the centre of their joint bounds, in
+ *  one undo step. Null when that changes nothing (no shapes, a lone point, a
+ *  lone square). */
+export function buildRotateShapesAction(
+  cellType: CellType,
+  items: ReadonlyArray<{ layer: LayerType; shape: LayerShape }>,
+  deg: 90 | -90
+): AnnotationAction | null {
+  return buildGroupMapAction(cellType, items, (c) => quarterTurnAbout(c, deg));
+}
+
+/** Mirror a group of shapes across the centre line of their joint bounds
+ *  (`"h"` left↔right, `"v"` top↔bottom), in one undo step. Null when that
+ *  changes nothing (no shapes, a lone rect or point). */
+export function buildFlipShapesAction(
+  cellType: CellType,
+  items: ReadonlyArray<{ layer: LayerType; shape: LayerShape }>,
+  axis: "h" | "v"
+): AnnotationAction | null {
+  return buildGroupMapAction(cellType, items, (c) => mirrorAbout(c, axis));
+}
+
+/** Map a group's vertices through `mapFor(centre of their joint bounds)` as
+ *  one replace; null when every vertex stays where it was. */
+function buildGroupMapAction(
+  cellType: CellType,
+  items: ReadonlyArray<{ layer: LayerType; shape: LayerShape }>,
+  mapFor: (centre: Point) => (p: Point) => Point
+): AnnotationAction | null {
+  const b = shapesBounds(items.map((i) => i.shape));
+  if (!b) return null;
+  const f = mapFor({ x: b.x + b.width / 2, y: b.y + b.height / 2 });
+  let moved = false;
+  const replacements = items.map((i) => {
+    const shape = mapShapePoints(i.shape, f);
+    const before = shapeHandles(i.shape);
+    const after = shapeHandles(shape);
+    if (
+      after.some(
+        (p, k) => Math.abs(p.x - before[k].x) > 1e-9 || Math.abs(p.y - before[k].y) > 1e-9
+      )
+    ) {
+      moved = true;
+    }
+    return { layer: i.layer, shape };
+  });
+  return moved ? buildReplaceShapesAction(cellType, replacements) : null;
+}
+
 // ── Per-vertex handles ────────────────────────────────────────────────
 
 /** Vertices to render as drag handles for `shape` — corners for rect-likes,

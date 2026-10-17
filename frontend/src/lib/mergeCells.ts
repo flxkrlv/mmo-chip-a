@@ -1,5 +1,11 @@
-import type { Cell, CellType, DieAnnotations } from "shared";
+import type { Cell, CellPlacementScore, CellType, DieAnnotations } from "shared";
 import type { AnnotationAction } from "../api/actions";
+import {
+  compareByMemberScore,
+  detectionToCell,
+  type Proposal,
+  type ProposalOverride
+} from "./cellDetection";
 import { mapLayerPoints, mirrorAbout, rotateLayers } from "./cellLayers";
 import { uuid } from "./uuid";
 import { withBounds } from "./cellFootprint";
@@ -270,6 +276,67 @@ export interface Candidate {
   /** Already merged into the active specimen (shows the green check, pinned
    *  to the front of the list). */
   done: boolean;
+  /** Present when this candidate is an ML cell proposal rather than a placed
+   *  cell — `cell` is then virtual (`ml-cell:` id) and approval creates it. */
+  proposal?: Proposal;
+  /** For members of the specimen type: how well this placed cell matches the
+   *  type's via template (from the latest detection run). Low = suspect. */
+  memberScore?: CellPlacementScore;
+  /** Present when this candidate is a whole cell type to merge with the
+   *  specimen's — `cell` is then virtual (`type:` id, see
+   *  `typeCandidateId`) and `cellType` is that type. */
+  mergeType?: { source: TypeCandidateSource | null };
+}
+
+/** Where a whole-type candidate's pixels come from: one of its instances,
+ *  on this die or (not placed here) on the die that owns it — `cellType` is
+ *  the type in that die's pixels. */
+export interface TypeCandidateSource {
+  dieId: string;
+  cell: Cell;
+  cellType: CellType;
+}
+
+// Whole cell types offered as merge candidates carry a virtual cell with
+// this id prefix (it names the type).
+const TYPE_CANDIDATE_PREFIX = "type:";
+
+export function typeCandidateId(cellTypeId: string): string {
+  return `${TYPE_CANDIDATE_PREFIX}${cellTypeId}`;
+}
+
+/** The type a whole-type candidate id names (null for any other id). */
+export function parseTypeCandidateId(id: string | null | undefined): string | null {
+  return id?.startsWith(TYPE_CANDIDATE_PREFIX) ? id.slice(TYPE_CANDIDATE_PREFIX.length) : null;
+}
+
+/**
+ * Every other matched cell type (this die's and, merged in, other dies' of
+ * its library) as a candidate for merging into the specimen type as a whole,
+ * most similar size first — sizes are in this die's pixels, so the dies'
+ * scales are accounted for. `sourceFor` picks the pixels to show for each.
+ */
+export function typeCandidatesFor(
+  annotations: DieAnnotations,
+  specimenType: CellType | null,
+  sourceFor: (ct: CellType) => TypeCandidateSource | null
+): Candidate[] {
+  if (!specimenType) return [];
+  return annotations.cellTypes
+    .filter((ct) => ct.matched === true && ct.id !== specimenType.id)
+    .map((ct) => ({ ct, d: sizeDistance(ct, specimenType) }))
+    .sort((a, b) => a.d - b.d || byName(a.ct, b.ct))
+    .map(({ ct }) => ({
+      cell: { id: typeCandidateId(ct.id), cellTypeId: ct.id, x: 0, y: 0 },
+      cellType: ct,
+      done: false,
+      mergeType: { source: sourceFor(ct) }
+    }));
+}
+
+/** Is this candidate / cell id an ML proposal (virtual cell)? */
+export function isProposalCell(cell: Pick<Cell, "id">): boolean {
+  return cell.id.startsWith("ml-cell:");
 }
 
 /**
@@ -280,7 +347,10 @@ export interface Candidate {
  */
 export function candidatesFor(
   annotations: DieAnnotations,
-  specimenType: CellType | null
+  specimenType: CellType | null,
+  proposals: ReadonlyArray<Proposal> = [],
+  overrides: Readonly<Record<string, ProposalOverride>> = {},
+  memberScores: ReadonlyMap<string, CellPlacementScore> = new Map()
 ): Candidate[] {
   const typeOf = new Map(annotations.cellTypes.map((ct) => [ct.id, ct]));
   const out: Candidate[] = [];
@@ -293,15 +363,36 @@ export function candidatesFor(
     const isUnmatched = ct.matched !== true;
     // Members of *other* matched (real) types aren't candidates.
     if (!inSpecimen && !isUnmatched) continue;
-    out.push({ cell, cellType: ct, done: inSpecimen });
+    out.push({
+      cell,
+      cellType: ct,
+      done: inSpecimen,
+      memberScore: inSpecimen ? memberScores.get(cell.id) : undefined
+    });
   }
+  const byScore = compareByMemberScore(memberScores);
   out.sort((a, b) => {
     if (a.done !== b.done) return a.done ? -1 : 1;
+    // Members: worst template match first so misclassified ones surface.
+    if (a.done && b.done) return byScore(a.cell, b.cell);
     if (!specimenType) return byName(a.cellType, b.cellType);
     const d = sizeDistance(a.cellType, specimenType) - sizeDistance(b.cellType, specimenType);
     if (d !== 0) return d;
     return byName(a.cellType, b.cellType);
   });
+  // ML proposals for the specimen type go after the hand-placed candidates,
+  // best score first (`proposals` is already sorted that way).
+  if (specimenType) {
+    for (const p of proposals) {
+      if (p.cellType.id !== specimenType.id) continue;
+      out.push({
+        cell: detectionToCell(p.detection, overrides[p.detection.id]),
+        cellType: p.cellType,
+        done: false,
+        proposal: p
+      });
+    }
+  }
   return out;
 }
 
@@ -520,4 +611,62 @@ export function buildOrientAction(
   if (next.rotation === 0) delete next.rotation;
   if (next.warp === undefined) delete next.warp;
   return { kind: "upsertCell", cell: next, prevCell: cell };
+}
+
+/** Promote an unmatched placeholder to a matched (real) type — the flag a
+ *  merge sets on its target. Null when it's matched already. */
+export function buildMarkMatchedAction(cellType: CellType): AnnotationAction | null {
+  if (cellType.matched === true) return null;
+  return {
+    kind: "upsertCellType",
+    cellType: { ...cellType, matched: true },
+    prevCellType: cellType
+  };
+}
+
+/**
+ * Turn a whole cell type a quarter turn (`deg` 90 = clockwise as seen in the
+ * RE canvas, −90 = counter-clockwise): its canonical box swaps W×H, its layer
+ * shapes turn with it, and every member keeps covering exactly the same die
+ * pixels (`rotatedMember`). One batched, single-undo action; null when the
+ * type has no members to turn.
+ */
+export function buildRotateCellTypeAction(
+  annotations: DieAnnotations,
+  cellType: CellType,
+  deg: 90 | -90
+): AnnotationAction | null {
+  const members = membersOf(annotations, cellType.id);
+  if (members.length === 0) return null;
+  const { width: w, height: h } = cellType.cropRect;
+  const actions: AnnotationAction[] = [
+    { kind: "upsertCellType", cellType: rotatedCellType(cellType, deg), prevCellType: cellType }
+  ];
+  for (const cell of members) {
+    actions.push({ kind: "upsertCell", cell: rotatedMember(cell, deg, w, h), prevCell: cell });
+  }
+  return { kind: "batch", actions };
+}
+
+/**
+ * Mirror a whole cell type (`axis` "h" = left↔right as seen in the RE canvas,
+ * "v" = top↔bottom): its layer shapes mirror across the box's centre line and
+ * every member toggles the matching flip, so each keeps covering exactly the
+ * same die pixels — a mirror keeps the W×H box and its centre. One batched,
+ * single-undo action; null when the type has no members.
+ */
+export function buildFlipCellTypeAction(
+  annotations: DieAnnotations,
+  cellType: CellType,
+  axis: "h" | "v"
+): AnnotationAction | null {
+  const members = membersOf(annotations, cellType.id);
+  if (members.length === 0) return null;
+  const actions: AnnotationAction[] = [
+    { kind: "upsertCellType", cellType: flippedCellType(cellType, axis), prevCellType: cellType }
+  ];
+  for (const cell of members) {
+    actions.push({ kind: "upsertCell", cell: flippedMember(cell, axis), prevCell: cell });
+  }
+  return { kind: "batch", actions };
 }
