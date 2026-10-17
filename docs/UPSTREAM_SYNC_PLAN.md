@@ -351,9 +351,25 @@ analog-тесты из `frontend` (README: 22 extraction-теста).
 
 ## Ф8 — Валидация
 
-`npm test` по воркспейсам; сборка/typecheck фронта; ручной смоук
-(specimens/wire-map, via-детекция approve/dismiss, template CV → proposals,
-чейнинг wire, cell details); запись в `memory/YYYY-MM-DD.md`.
+**Статус: ✅ авто-проверки пройдены** (ручной смоук — за пользователем).
+
+- Frontend: `tsc --noEmit` чисто; `vitest` **43 файла / 329 тестов** зелёные;
+  `npm run build -w frontend` (`tsc && vite build`) — успешно (только warning
+  о размере чанка).
+- Backend: `tsc -p backend/tsconfig.json --noEmit` чисто; `node --test` по 17
+  файлам с `--test-concurrency=1` — **88 тестов, 82 pass, 5 fail**, и все 5
+  падений **воспроизводятся на базе `pre-upstream-sync`** (проверено через
+  отдельный `git worktree`): analog `current_mirror`, три overlay-теста
+  (`overlay upload/download` на Windows - `sources` TypeError и `EBUSY unlink
+  original.tif`), `rejects files that are not PNG, JPEG or TIFF` (EBUSY).
+  При параллельном прогоне (без `--test-concurrency=1`) добавляются 2
+  флейковых: `imports an image and exposes list/detail/tile endpoints` и
+  `a moved folder project stays listed as unavailable and recovers via relocate`
+  (гонки temp/import-job), на базе ведут себя так же → **регрессий нет**.
+- ML sidecar: `python -m py_compile ml/sidecar.py` — ок.
+- Ручной смоук (за пользователем): specimens/wire-map, via approve/dismiss,
+  template CV → proposals, чейнинг wire, cell details, cell RE (групповой
+  поворот/отражение, общий буфер фигур между вкладками, кросс-die типы).
 
 ## Явно исключено
 
