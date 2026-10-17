@@ -250,8 +250,47 @@ analog-тесты из `frontend` (README: 22 extraction-теста).
 
 ## Ф6 — Merge (выборочно, по конфликтам)
 
-Whole-type orient/merge, member-score sort, `TypeThumb`. Сохранить наш
-warp/multi-overlay/auto-align. `CellThumb.tsx` — add/add, объединить вручную.
+**Статус: ✅ сделано** — `a108b3e` (frontend `tsc` чисто, `vitest` 42 файла / 325
+тестов зелёные). Взят весь merge-фронт из `d81be68`:
+
+- Whole-type кандидаты (`typeCandidatesFor`, `type:…` id) + слияние двух типов
+  (`buildTypeMergeAction`) с выравниванием (поворот/отражение/сдвиг) в
+  `MergeCanvas` (`drawAligned` по `dieRegion`+`cellFootprint`), подтверждение
+  при потере аннотаций.
+- ML-предложения как кандидаты (`proposalsFor` + `ProposalOverride` в стор):
+  approve (`buildApproveAction`) / dismiss (`dismissCellDetections`),
+  `candidateIsProposal`, клавиша `n`, pink-рамка в полосе.
+- Ранжирование членов по template-match (`memberScoreMap`,
+  `compareByMemberScore`) — худшие сверху, бейдж score.
+- Типы из кросс-die библиотеки (бейдж `OtherDieBadge`, `routeLibraryAction`),
+  clean specimens (`specimenImageUrl`/`useCellSpecimens`,
+  `useForeignTypeImageUrl`), контрол масштаба die (`cellScaleOf`/`updateDie`,
+  `ScaleControl`, клавиши `[`/`]`).
+- Групповые трансформы фигур в `lib/cellLayers.ts` (`shapesBounds`,
+  `cornerScale`, `buildRotate/Flip/ReplaceShapesAction`), `toCanonical` в
+  `lib/geometry.ts`, новый `TypeThumb.tsx`; портированы тесты
+  `lib/mergeCells.test.ts` и `lib/cellLayers.test.ts` (node:test → vitest).
+
+Отклонения от апстрима (зафиксировано при реализации):
+- `CellThumb.tsx` (add/add) объединён: форковый кроп-URL режим (прогрессивная
+  загрузка + overlay-preview) **сохранён**, добавлен canvas-режим из тайлов
+  (`die`/`cell`/`cellType`) для предложений/типов; `TypeThumb` использует его.
+- Форковые фичи merge **сохранены**: warp/`onWarp`/stretch-line, multi-overlay
+  (`MultiOverlayPanel`, Alt+6), ML-vias auto-align, overlay-preview в
+  миниатюрах, хоткеи режимов через `Alt+1..6` (не `1..6` как в апстриме),
+  `?`/Ctrl+/ help, `s` stretch. Добавлены `n`, `[`, `]`.
+- Ориентация кандидата-ячейки идёт через форковый type-frame
+  (`orientInTypeFrame`/`orientView`), а не дие-frame апстрима. Апстровный
+  поворот одиночного placeholder-типа (`buildRotateCellTypeAction`) включён
+  только для unmatched single-member типа.
+- `MergeLeftPanel`: форковый `dieId`/`overlaySourceId`/`onSetCellTypeColor`
+  сохранены; папка «ML» (ml-детектированные размещённые ячейки) заменена на
+  апстримную «ML proposals» (лучшая фича их вытесняет; такие ячейки всё равно
+  видны в Cell Types и Candidates).
+- `MergeContextMenu`: форковый `mlDetected`/«Delete ML Cell»/`onDelete`
+  сохранён **и** добавлен апстримный `proposal`/`onDismiss`.
+- `MergeBottomBar`: форковые warp-кнопки сохранены + апстримные
+  proposal/type-merge/scale.
 
 ## Ф7 — `/batch` (условно) и хвосты
 
