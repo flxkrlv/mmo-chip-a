@@ -30,8 +30,15 @@
   «CV (via-based) — оригинал»), наш template CV адаптируем к общему интерфейсу
   proposals (панель/approve-dismiss — общие, движки сменные).
 - **Clean specimens + wire-map — тянем в этой итерации.**
-- Cross-die cell library — **отклонена** (код не переносим; в детекции вырезаем
-  `cellLibrary`/`allDies`/pooled/foreign/`cellTypeDieId`).
+- **Cross-die cell library с масштабированием — ТЯНЕМ** (решение пересмотрено
+  2026-10-17). Мотивация: типовые/generic аналоговые ячейки, подгонка по
+  размеру, накопление общей базы элементов для родственных кристаллов одной
+  технологии. Портируется целиком: backend `cellLibrary.ts` + shared +
+  imaging-пулинг + детекция с `allDies` + frontend library UI (placement,
+  die properties, badge). Временно вырезанные в Ф1/Ф2 куски возвращаются в ФЛ.
+  Уточнение области: апстрим шарит **геометрию/битмап-кропы** между die одного
+  «cell library»; параметрический override для аналоговых девайсов — это уже
+  наше расширение, в апстрим-механизм не входит (см. ФЛ, п. 4).
 - Hardening `691db2e4` — **пропущен**.
 - `dieRegion` — отложен.
 - Серверный `POST /api/dies/:id/batch` — если дёшево по конфликтам.
@@ -52,7 +59,7 @@
 - `backend/src/ml/cellDetectionStore.ts`
 - `backend/src/api/cellDetection.ts` (+ test)
 
-Адаптация без library:
+Адаптация (временно без library — **возврат в ФЛ**):
 - `backend/src/ml/cellJobs.ts` — вырезать `../cellLibrary.js`
   (`effectiveCellTypes`, `libraryInstances`, `resolveCellType`), `allDies`,
   `buildPooledTemplate`, foreign/owner-template ветки; оставить `buildTemplate`
@@ -60,6 +67,9 @@
 - `cellDetection.test.ts` — убрать library-кейсы.
 - Типы детекции в `shared/src/types.ts` / `backend/src/types.ts` — **без**
   `cellLibrary` / `cellScale` / `cellTypeDieId`.
+
+Все вырезания в Ф1 помечены как временные: в ФЛ они восстанавливаются (через
+`git revert`-стиль правок или повторный `git checkout d81be68 -- …`).
 
 Интеграция (конфликты):
 - `backend/src/app.ts` — смонтировать `createCellDetectionRouter` с общим
@@ -70,7 +80,7 @@
   модели, 409 при активном sweep, sidecar resident checkpoint. Минимально:
   эти файлы косвенно влияют на аналог (ML-vias для авто-align).
 
-Не берём: `api/dies.ts` PATCH, `api/tiles.ts` library-resolve/rect-crop,
+Отложено в ФЛ: `api/dies.ts` PATCH, `api/tiles.ts` library-resolve/rect-crop,
 `backend/src/cellLibrary.ts`, `shared/src/cellLibrary.ts`.
 
 Проверка: `npm test -w backend` (портированные тесты) + существующие
@@ -80,7 +90,8 @@ analog-тесты из `frontend` (README: 22 extraction-теста).
 
 Перенос: `backend/src/imaging/{jobs,pixels,specimen,store,tileReader,wireMap}.ts`
 (+ `pixels.test.ts`), `backend/src/api/cellImaging.ts` (+ test).
-Адаптация: убрать library-pooling / `ForeignInstance`.
+Адаптация (временно): убрать library-pooling / `ForeignInstance` /
+`toCanonicalImageScaled` / `allDies` — **возврат в ФЛ**.
 
 Фронт: `frontend/src/api/cellImaging.ts`, секция CellImaging в Cells-панели,
 `renderer/layers/DieImageLayer.ts` (`DieImageSource`), `state/preferences.ts`
@@ -93,12 +104,61 @@ analog-тесты из `frontend` (README: 22 extraction-теста).
 Перенос: `frontend/src/lib/cellDetection.ts`,
 `frontend/src/renderer/annotations/cellDetections.ts`,
 `frontend/src/api/cellDetection.ts`,
-`frontend/src/components/dieViewer/CellDetectionPanel.tsx` (селектор метода, без
-library), `state/dieViewer.ts`, `state/preferences.ts`, `InspectorPanel.tsx`
+`frontend/src/components/dieViewer/CellDetectionPanel.tsx` (селектор метода),
+`state/dieViewer.ts`, `state/preferences.ts`, `InspectorPanel.tsx`
 (вкладка Cells), `OutlineTree.tsx` (ML-результаты).
 
 Адаптер: `cvMatch`/template → `Proposal[]` в тот же store; `CVPanel` не ломаем.
 Метка via-движка: «CV (via-based) — оригинал».
+Апстрим-панель содержит library-блоки (`cellDetectAllDies`, `specimensAllDies`,
+привязка к типу владельца) — их включаем/включаем как есть, снося гейты
+(сначала вырезаны для Ф3-без-library; с ФЛ они оживают).
+
+## ФЛ — Cross-die cell library (с масштабированием)  ⟵ решение пересмотрено
+
+Цель: die одной «cell library» видят и размещают типы друг друга; чужой тип
+рисуется/детектируется в масштабе `cellScale / их cellScale`. Generic-ячейки
+подгоняются по размеру между кристаллами одной технологии; копится общая база.
+
+1. **Backend/shared**
+   - `backend/src/cellLibrary.ts`, `shared/src/cellLibrary.ts` + export
+     `"./cellLibrary"` в `shared/package.json`.
+   - вернуть в `shared/src/types.ts`: `DieSummary.cellLibrary/cellScale`,
+     `DieUpdateRequest`, `Cell.cellTypeDieId`,
+     `CellDetectionResult.templateSource/pooledFrom`,
+     `CellDetectionOptions/StartRequest.allDies`, `CellSpecimenInfo.dies`.
+   - вернуть в `ml/cellJobs.ts` library-ветки (`effectiveCellTypes`,
+     pooled/foreign, `buildPooledTemplate`); в `api/cellDetection.ts` — `allDies`.
+   - вернуть в `imaging/{jobs,specimen,pixels}.ts` пулинг (`ForeignInstance`,
+     `toCanonicalImageScaled`, `allDies`); в `api/cellImaging.ts` — `allDies`.
+   - `api/dies.ts`: `PATCH /api/dies/:dieId` (+ `parseDieUpdate`,
+     `normalizeCellLibrary`), границы `cellScale` 1e-3..1e3; монтирование с
+     `broadcaster`.
+   - `ws.ts`: сообщение `die` + `emitDieChange` (в Ф1 пропущено).
+   - `api/tiles.ts`: library-resolve/rect-crop части (сверить конфликты).
+
+2. **Frontend**
+   - перенести `api/cellLibrary.ts`, `lib/cellLibrary.ts` (568 строк),
+     `lib/libraryPlacement.ts`, `lib/cellLibrary.test.ts`,
+     `components/cellLibrary/OtherDieBadge.tsx`.
+   - `DieProperties.tsx` (пустой выбор в inspector: имя library + scale),
+     `LibraryCellOverlay.tsx`, `useLibraryCellTool.ts` (272 строки) +
+     `ToolKind "libraryCell"`, кнопка в `DieToolbar.tsx`.
+   - `DieSocketMessage` += `die`; инвалидация списка dies/типов по WS.
+   - `preferences.ts` += `cellDetectAllDies`, `specimensAllDies`.
+   - `state/dieViewer.ts` += ToolKind/состояние library-размещения.
+
+3. **Actions across dies**: апстрим оборачивает правки чужого die в `onDie`
+   (история per-die). У форка уже есть `historyDieId`/`ensureHistoryFor` —
+   состыковать; не сломать аналоговые actions и `netChangesToAction`.
+
+4. **(Fork-extension, вне апстрима)** параметрический override / «условная»
+   разметка элементов generic-ячейки — после ФЛ. Апстрим шарит только
+   геометрию/битмап-кропы и масштаб.
+
+Проверка: `npm test` (backend pooling + `lib/cellLibrary.test.ts`), typecheck;
+ручной смоук: свести 2 die в library с разными scale → разместить чужой тип →
+проверить размер/детекцию с `allDies`.
 
 ## Ф4 — Мелочи своими руками + wire-tool + ориентация
 
@@ -127,11 +187,10 @@ exclude.
 
 ## Явно исключено
 
-`backend/src/cellLibrary.ts`, `shared/src/cellLibrary.ts`,
-`frontend/src/{api/cellLibrary.ts, lib/cellLibrary.ts, lib/libraryPlacement.ts,
-components/cellLibrary/*, components/dieViewer/{DieProperties,LibraryCellOverlay,
-useLibraryCellTool}.tsx}`, `api/dies.ts` PATCH, `Cell.cellTypeDieId`,
-`DieSummary.cellLibrary|cellScale`, hardening `691db2e4`, `dieRegion`.
+- Hardening `691db2e4` (bounded image/ML processing, README-limits).
+- `dieRegion` (отложен — не входит в этот апдейт).
+
+Cross-die cell library **больше не исключён** — переносится в ФЛ.
 
 ## Риски
 
@@ -140,5 +199,19 @@ useLibraryCellTool}.tsx}`, `api/dies.ts` PATCH, `Cell.cellTypeDieId`,
 - `shared/src/types.ts` / `backend/src/types.ts` — поля добавлять аккуратно, не
   трогая аналоговые типы.
 - `useMultiWireTool.ts` — реальный конфликт (у форка 4 коммита в файле).
-- `backend/src/imaging/*` имеет library-coupling — вырезать.
 - Адаптер CV не должен ломать существующий `CVPanel`.
+- **ФЛ:** `lib/cellLibrary.ts` (568) / `useLibraryCellTool.ts` (272) /
+  `DieProperties.tsx` (364) — крупные новые файлы; зависят от `mergeCells`/
+  `cellFootprint`/ориентации, у форка они расходятся (адаптировать).
+- **ФЛ:** `api/dies.ts` PATCH в форке отсутствует (additive) — но апстрим
+  зовёт `emitDieChange`, которого нет: добавить WS-сообщение `die`.
+- **ФЛ:** fork-овый action-dispatcher расширен аналогом; чужие die-правки
+  (`onDie`) надо состыковать с форковым `historyDieId`/`ensureHistoryFor`.
+- **ФЛ:** dangling-ссылки — `Cell.cellTypeDieId` на тип удалённого/потерявшего
+  library die. Проверить поведение `foreignCellTypes` при недоступном владельце
+  и решить (skip/предупреждение).
+- **ФЛ:** `DieProperties.tsx` может дублировать форковый `SettingsPanel` —
+  сверить размещение в `InspectorPanel` (вкладка без выделения).
+- **ФЛ:** масштаб `cellScale` — семантика (пикселей на library-unit) должна
+  совпасть у масштабирования битмапов, детекции (`ratio`) и рендера; покрыть
+  тестом на паре die с известным отношением.
