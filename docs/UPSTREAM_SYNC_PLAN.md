@@ -46,8 +46,9 @@ library** → Ф5 мелочи/wire-tool/ориентация → Ф6 merge → 
   «cell library»; параметрический override для аналоговых девайсов — это уже
   наше расширение, в апстрим-механизм не входит (см. Ф4, п. 4).
 - Hardening `691db2e4` — **пропущен**.
-- `dieRegion` — отложен.
-- Серверный `POST /api/dies/:id/batch` — если дёшево по конфликтам.
+- `dieRegion` — был отложен, но **втянут в Ф4** (нужен `LibraryCellOverlay`).
+- Серверный `POST /api/dies/:id/batch` — **не делаем**: у форка `batch` уже
+  пишет атомарно одним `PUT /annotations`.
 - Wire-tool чейнинг — тянем при отсутствии конфликта, иначе делаем сами.
 - Мелочи die-viewer — делаем сами.
 - **Фаза 1 не должна задеть аналог.**
@@ -88,11 +89,10 @@ library** → Ф5 мелочи/wire-tool/ориентация → Ф6 merge → 
 | frontend · routes (clean) | `CodePage.tsx` | **Т** | Ф7 |
 | frontend · прочее | `icons.tsx` (**А**), `package.json` (**А**), `tsconfig.json` (**Т**) | А/Т | Ф3/Ф7 |
 | docs | `README.md` | **А** | Ф7 |
-| **отказ** | `renderer/dieRegion.ts` + `dieRegion.test.ts` (фича `dieRegion`) | **О** (отложено) | — |
+| frontend · renderer (new) | `renderer/dieRegion.ts` + `dieRegion.test.ts` | **Т** (втянут в Ф4) | Ф4 |
 | **отказ** | hardening `691db2e4` + README «Local access and processing limits» | **О** (не берём) | — |
 
-Итого: **Т** ~26 файлов, **А** ~30, **О** 3 (dieRegion + тест, README-раздел из
-hardening).
+Итого: **Т** ~27 файлов, **А** ~30, **О** 1 (README-раздел из hardening).
 
 ## Ф0 — Подготовка
 
@@ -164,6 +164,20 @@ analog-тесты из `frontend` (README: 22 extraction-теста).
 
 ## Ф4 — Cross-die cell library (с масштабированием)  ⟵ решение пересмотрено
 
+**Статус: ✅ сделано** — backend/shared `dac3939`, frontend `eb39cba`
+(frontend `tsc` чисто, `vitest` 304 теста зелёные; backend — 24 теста).
+
+Отклонения от исходного плана Ф4 (зафиксировано при реализации):
+- `dieRegion.ts` + тест **втянуты** (были в О) — нужны `LibraryCellOverlay`.
+- Серверный `/batch` **не делаем** — форковый `batch` уже атомарный (`PUT`).
+- Orientation-рефактор (`DieOrientOp`, generic `orientOnDie`, алгебра
+  `composeOrient`/`invertOrient`/`orientVector`) **втянут в Ф4** (из Ф5), т.к.
+  pipeline `onDie`/`routeLibraryAction` на него опирается.
+- «Выбор типа = все инстансы» (`OutlineTree`+`InspectorPanel`) сделано в Ф4.
+- Тесты апстрима переведены на vitest (`node:test` → vitest + shim `assert`).
+- Осталось на Ф5/Ф7: multi-wire `continued`, Alt-drag-копия/групповой драг
+  ячеек, контекстное меню flip/rotate ячеек (`orientCells`).
+
 Цель: die одной «cell library» видят и размещают типы друг друга; чужой тип
 рисуется/детектируется в масштабе `cellScale / их cellScale`. Generic-ячейки
 подгоняются по размеру между кристаллами одной технологии; копится общая база.
@@ -210,11 +224,14 @@ analog-тесты из `frontend` (README: 22 extraction-теста).
 
 ## Ф5 — Мелочи своими руками + wire-tool + ориентация
 
-- Wire-tool чейнинг (`frontend/src/components/dieViewer/useMultiWireTool.ts`).
+- Wire-tool чейнинг (`frontend/src/components/dieViewer/useMultiWireTool.ts`),
+  включая `continued` (мультивире continuation) в `DieViewerPage.tsx`.
 - Снять гейт `CELL_DETAIL_ZOOM` (`renderer/annotations/style.ts` + `dieAnnotations.ts`).
-- Выбор типа = все инстансы (`OutlineTree.tsx` + `InspectorPanel.tsx`).
-- Мини-инфо die в inspector (пустой выбор).
-- Унификация ориентации (`lib/geometry.toCanonical`, `rotateView`, `orientOnDie`).
+- Alt-drag-копия / групповой драг ячеек; контекстное меню flip/rotate ячеек
+  (`orientCells` в `DieViewerPage.tsx` + `DieContextMenu`).
+- ~~Выбор типа = все инстансы~~ (сделано в Ф4).
+- ~~Мини-инфо die в inspector (пустой выбор)~~ (`DieProperties` — Ф4).
+- ~~Унификация ориентации (`rotateView`, `orientOnDie`)~~ (сделано в Ф4).
 
 ## Ф6 — Merge (выборочно, по конфликтам)
 
@@ -236,7 +253,7 @@ exclude.
 ## Явно исключено
 
 - Hardening `691db2e4` (bounded image/ML processing, README-limits).
-- `dieRegion` (отложен — не входит в этот апдейт).
+- ~~`dieRegion`~~ — втянут в Ф4 (см. выше).
 
 Cross-die cell library **больше не исключён** — переносится в Ф4.
 
