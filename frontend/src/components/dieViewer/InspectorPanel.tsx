@@ -606,7 +606,8 @@ function InspectorBody({
   cellTypeCounts?: Map<string, number>;
 }) {
   // Nothing selected: the die itself.
-  if (ids.size === 0) return <DieProperties die={die} library={library} />;
+  if (ids.size === 0)
+    return <DieProperties die={die} library={library} umPerPx={annotations?.umPerPx} />;
   if (!annotations) return <Empty>loading…</Empty>;
 
   // A cell type selected from the outline tree comes with all of its placed

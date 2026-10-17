@@ -540,7 +540,11 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
       {/* Floorplans -------------------------------------------------------- */}
       <TreeRow
         expand={isOpen("floorplan") ? "open" : "closed"}
-        label="Floorplans"
+        label={
+          <span title="Used to generate the hierarchical analog netlist">
+            Floorplan regions
+          </span>
+        }
         meta={floorplanRegions.length}
         visibility={{
           ...visibilityFor("floorplan"),
@@ -599,9 +603,13 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
 
       {/* Comments (pins only; no per-comment rows) ------------------------ */}
       <TreeRow
-        icon={Ic.comment}
         label="Comments"
         meta={annotations.comments?.length ?? 0}
+        controls={
+          <span style={{ display: "inline-flex", color: "var(--ink3)" }}>
+            {Ic.comment}
+          </span>
+        }
         visibility={visibilityFor("comment")}
       />
 
@@ -906,6 +914,7 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
               icon={Ic.ruler}
               label={ruler.name || `ruler ${idx + 1}`}
               meta={`${Math.round(ruler.lengthPx).toLocaleString()} px`}
+              onDoubleClick={() => focus([`ruler:${ruler.id}`])}
               visibility={{
                 visible,
                 onToggle: () => setRulerVisible(ruler.id, !visible)

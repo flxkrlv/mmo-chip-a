@@ -6,16 +6,20 @@ import type { CellLibraryView } from "../../lib/cellLibrary";
 import { useDieViewerStore } from "../../state/dieViewer";
 
 /**
- * Inspector body with nothing selected: the die's own properties — its size,
- * the cell library it belongs to (pick one another die uses, or type a new
- * name) and its scale in that library.
+ * Inspector body with nothing selected: the die's own properties — its size
+ * (in pixels and, when the µm/px scale is known, in micrometres), the cell
+ * library it belongs to (pick one another die uses, or type a new name) and
+ * its scale in that library.
  */
 export function DieProperties({
   die,
-  library
+  library,
+  umPerPx
 }: {
   die: DieMetadata | undefined;
   library: CellLibraryView;
+  /** Die-wide µm/px calibration (from the annotations). Undefined = not set. */
+  umPerPx?: number;
 }) {
   const dies = useDies().data;
   const update = useUpdateDie();
@@ -57,6 +61,20 @@ export function DieProperties({
       <Row label="size">
         {die.width.toLocaleString()}×{die.height.toLocaleString()} px
       </Row>
+      <Row label="die size">
+        {umPerPx ? (
+          `${umStr(die.width, umPerPx)}×${umStr(die.height, umPerPx)} µm`
+        ) : (
+          <span style={{ color: "var(--ink3)" }}>need to set scale</span>
+        )}
+      </Row>
+      <Row label="um/px">
+        {umPerPx ? (
+          `${Number(umPerPx.toFixed(4))} µm/px`
+        ) : (
+          <span style={{ color: "var(--ink3)" }}>not set</span>
+        )}
+      </Row>
       <Row label="library">
         <LibraryCombobox
           value={die.cellLibrary ?? null}
@@ -65,7 +83,7 @@ export function DieProperties({
           onCommit={(name) => save({ cellLibrary: name })}
         />
       </Row>
-      <Row label="scale">
+      <Row label="lib scale">
         <ScaleField value={scale} disabled={update.isPending} onCommit={(v) => save({ cellScale: v })} />
       </Row>
       {update.error && (
@@ -362,3 +380,7 @@ function ScaleField({
 }
 
 const formatScale = (v: number) => String(Number(v.toFixed(5)));
+
+/** Pixel length → micrometres, trimmed to at most one decimal. */
+const umStr = (px: number, umPerPx: number) =>
+  (px * umPerPx).toLocaleString(undefined, { maximumFractionDigits: 1 });

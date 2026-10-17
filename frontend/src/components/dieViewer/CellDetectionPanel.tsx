@@ -171,6 +171,22 @@ export function CellDetectionPanel({
   return (
     <div>
       <SectionHeader>Cell detection</SectionHeader>
+      <div
+        className="m"
+        style={{
+          margin: "8px 12px 0",
+          padding: "6px 8px",
+          fontSize: 10,
+          lineHeight: 1.45,
+          color: "var(--ink3)",
+          background: "var(--l1)",
+          border: "1px solid var(--l2)",
+          borderRadius: 4
+        }}
+      >
+        Upstream functionality — matches cells by via constellation; not used
+        for analog devices. Use CV to find analog cells.
+      </div>
       <div style={{ padding: 12 }}>
         <div className="row" style={{ gap: 8, alignItems: "center", marginBottom: 6 }}>
           <span className="u" style={{ fontSize: 10, minWidth: 38 }}>

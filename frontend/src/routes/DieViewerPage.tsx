@@ -4036,7 +4036,30 @@ function DieViewer({ dieId }: { dieId: string }) {
   const focusOnIds = useCallback(
     (ids: string[], opts?: { tight?: boolean }) => {
       if (!annotationLayer || !containerRef.current) return;
-      const box = annotationLayer.unionBBox(ids);
+      const list = [...ids];
+      let box = annotationLayer.unionBBox(list);
+      // Rulers aren't indexed in the annotation layer (they render via their
+      // own overlay), so frame them from their endpoints here.
+      const rulerIds = list.filter((id) => id.startsWith("ruler:"));
+      if (rulerIds.length) {
+        const rulers = annotationsRef.current?.rulers ?? [];
+        for (const rid of rulerIds) {
+          const r = rulers.find((x) => x.id === rid.slice("ruler:".length));
+          if (!r) continue;
+          const rx = Math.min(r.x1, r.x2);
+          const ry = Math.min(r.y1, r.y2);
+          const rw = Math.abs(r.x2 - r.x1);
+          const rh = Math.abs(r.y2 - r.y1);
+          box = box
+            ? {
+                x: Math.min(box.x, rx),
+                y: Math.min(box.y, ry),
+                width: Math.max(box.x + box.width, rx + rw) - Math.min(box.x, rx),
+                height: Math.max(box.y + box.height, ry + rh) - Math.min(box.y, ry)
+              }
+            : { x: rx, y: ry, width: rw, height: rh };
+        }
+      }
       if (!box) return;
       const rect = containerRef.current.getBoundingClientRect();
       // `tight`: bbox fills the viewport edge-to-edge (uniform zoom, so the

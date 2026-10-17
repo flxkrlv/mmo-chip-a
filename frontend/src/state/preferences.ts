@@ -191,6 +191,9 @@ interface PreferencesState {
    *  re-opens where the user left it. The ML tab also drives a canvas
    *  render mode (traces/vias sized from mlConfig). */
   inspectorTab: InspectorTab;
+  /** Die-viewer: the bottom-right "Analog instances" panel collapsed to just
+   *  its header. Persisted so it stays folded across reloads. */
+  analogInstancesCollapsed: boolean;
   /** Hidden cell-layer keys on the Cells-RE page (absent ⇒ visible). The two
    *  non-editable "groups" (inferred, die-viewer overlay) use the special
    *  keys `_inferred` / `_dieViewer`. */
@@ -441,6 +444,7 @@ interface PreferencesActions {
   setWireMapOpacity: (opacity: number) => void;
   setUseCleanSpecimens: (use: boolean) => void;
   setInspectorTab: (tab: InspectorTab) => void;
+  setAnalogInstancesCollapsed: (collapsed: boolean) => void;
   toggleKindVisibility: (kind: AnnotationKind) => void;
   toggleSectionExpanded: (kind: AnnotationKind) => void;
   saveViewport: (dieId: string, viewport: Viewport) => void;
@@ -531,6 +535,7 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
         wireMapOpacity: 0.8,
         useCleanSpecimens: true,
         inspectorTab: "inspector",
+        analogInstancesCollapsed: false,
         sheetR: {},
         analogOverrides: {},
         wireLayerColors: {
@@ -840,6 +845,8 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
         setWireMapOpacity: (opacity) => set({ wireMapOpacity: Math.min(1, Math.max(0, opacity)) }),
         setUseCleanSpecimens: (use) => set({ useCleanSpecimens: use }),
         setInspectorTab: (tab) => set({ inspectorTab: tab }),
+        setAnalogInstancesCollapsed: (collapsed) =>
+          set({ analogInstancesCollapsed: collapsed }),
         toggleKindVisibility: (kind) =>
           set((state) => ({
             hiddenKinds: state.hiddenKinds.includes(kind)
@@ -950,6 +957,7 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
           wireMapOpacity: state.wireMapOpacity,
           useCleanSpecimens: state.useCleanSpecimens,
           inspectorTab: state.inspectorTab,
+          analogInstancesCollapsed: state.analogInstancesCollapsed,
           sheetR: state.sheetR,
           analogOverrides: state.analogOverrides,
           wireLayerColors: state.wireLayerColors,

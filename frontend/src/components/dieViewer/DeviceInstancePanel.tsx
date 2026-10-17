@@ -11,6 +11,8 @@
 import { useCallback, useMemo, useState } from "react";
 import type { AnalogDevice, DeviceGeometry, DeviceKind } from "shared";
 import { TreeRow, TreeSep } from "../tree/TreeRow";
+import { Ic } from "../../icons";
+import { usePreferences } from "../../state/preferences";
 
 // ── Color swatches per device kind ─────────────────────────────
 
@@ -98,6 +100,8 @@ export function DeviceInstancePanel({
     for (const kind of Object.keys(KIND_TITLES)) all.add(kind);
     return all;
   });
+  const panelCollapsed = usePreferences((s) => s.analogInstancesCollapsed);
+  const setPanelCollapsed = usePreferences((s) => s.setAnalogInstancesCollapsed);
   const toggle = useCallback((kind: string) => {
     setCollapsed((prev) => {
       const next = new Set(prev);
@@ -130,7 +134,17 @@ export function DeviceInstancePanel({
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
-      <div className="ph" style={{ padding: "2px 10px", flexShrink: 0 }}>
+      <div
+        className="ph"
+        style={{ padding: "2px 10px", flexShrink: 0, cursor: "pointer", gap: 5 }}
+        title={panelCollapsed ? "Expand analog instances" : "Collapse analog instances"}
+        onClick={() => setPanelCollapsed(!panelCollapsed)}
+      >
+        <span
+          style={{ display: "inline-flex", color: "var(--ink3)", width: 10 }}
+        >
+          {panelCollapsed ? Ic.caretR : Ic.caretD}
+        </span>
         <span
           className="m"
           style={{
@@ -138,9 +152,10 @@ export function DeviceInstancePanel({
             color: "var(--ink2)", letterSpacing: 0.6,
           }}
         >
-          INSTANCES · {totalDevices}
+          ANALOG INSTANCES · {totalDevices}
         </span>
       </div>
+      {!panelCollapsed && (
       <div style={{ flex: 1, overflow: "auto" }}>
         {groups.length === 0 ? (
           <div style={{ padding: "12px", fontSize: 11, color: "var(--ink3)", textAlign: "center" }}>
@@ -184,6 +199,7 @@ export function DeviceInstancePanel({
           })
         )}
       </div>
+      )}
     </div>
   );
 }
