@@ -224,6 +224,21 @@ analog-тесты из `frontend` (README: 22 extraction-теста).
 
 ## Ф5 — Мелочи своими руками + wire-tool + ориентация
 
+**Статус: ✅ сделано** (frontend `tsc` чисто, `vitest` 305 тестов зелёные).
+
+Отклонения от исходного плана Ф5 (зафиксировано при реализации):
+- Форковый multi-wire движок (`paths`/`locked`/`pending`/`placeCorner`) сильно
+  отличается от апстрима (`ends`/`finalize`), поэтому чейнинг перенесён
+  тематически: `busCommit` возвращает `{ actions, starts }`, `finalize`
+  переоткрывает phase-2 с концов коммита (`continued: true`), `undo` в
+  цепочке без несохранённого откатывает коммит, Enter/Esc останавливает цепь.
+- Контекстное меню flip/rotate ячеек **уже было** у форка (`onOrientCell` +
+  multi-select); добавили только пункт `rotateCcw` и перевели тип на
+  `DieOrientOp` (4 операции).
+- Групповой драг ячеек **уже был**; добавлена Alt-drag-копия, а округление
+  смещения (`offset`) заменило округление позиции (сохраняет footprint на
+  целых пикселях у повёрнутых типов).
+
 - Wire-tool чейнинг (`frontend/src/components/dieViewer/useMultiWireTool.ts`),
   включая `continued` (мультивире continuation) в `DieViewerPage.tsx`.
 - Снять гейт `CELL_DETAIL_ZOOM` (`renderer/annotations/style.ts` + `dieAnnotations.ts`).

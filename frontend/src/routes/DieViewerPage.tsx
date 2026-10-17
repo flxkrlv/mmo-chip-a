@@ -1848,8 +1848,11 @@ function DieViewer({ dieId }: { dieId: string }) {
     const round = placed > 0
       ? `corner ${placed + 1} of ${running}`
       : `click near each wire to place its corner (${running})`;
-    return `${round} · Enter / double-click to finish${ended ? ` · ${ended} ended on vias` : ""} · Esc to cancel`;
-  }, [multiWire.phase, multiWire.points, multiWire.draft]);
+    const lead = multiWire.continued
+      ? `continuing from ${multiWire.points.length} ends · `
+      : "";
+    return `${lead}${round} · Enter / double-click to finish${ended ? ` · ${ended} ended on vias` : ""} · Esc to cancel`;
+  }, [multiWire.phase, multiWire.points, multiWire.draft, multiWire.continued]);
 
   /**
    * Multi-wire phase-2 helper: find the via the cursor is pointing at and
@@ -3087,8 +3090,11 @@ function DieViewer({ dieId }: { dieId: string }) {
           return handler;
         }
 
-        // Dragging a placed cell repositions it — same live-update / commit-on-
-        // up scheme as the net-vertex drag above.
+        // Dragging a placed cell repositions it; Alt-dragging drops a copy
+        // there instead and leaves the original in place (Alt is read live,
+        // as in the guide drag). Grabbing a cell that's part of a multi-cell
+        // selection carries every selected cell. Same live-update / commit-
+        // on-up scheme as the net-vertex drag above; one undo step.
         const cellHit = cell.cellFromHit(hit);
         if (cellHit) {
           if (usePreferences.getState().cellsLocked) {
@@ -3114,10 +3120,15 @@ function DieViewer({ dieId }: { dieId: string }) {
                   entry.cellType != null
                 )
             : [{ cell: original, cellType }];
+          // Copies get their ids up front so the live preview and the commit
+          // agree (the layer is rebuilt from the annotations after either).
+          const copyIds = movingCells.map(() => uuid());
           // Shift locks the move to the dominant axis (re-evaluated live, so
-          // tapping Shift mid-drag snaps it straight without restarting).
-          const moveCell = (
-            source: typeof original,
+          // tapping Shift mid-drag snaps it straight without restarting). The
+          // committed offset is rounded — not the position — so an origin on a
+          // half pixel (a type turned a quarter turn) keeps its footprint on
+          // whole pixels.
+          const offset = (
             worldPoint: { x: number; y: number },
             startWorld: { x: number; y: number },
             shift: boolean,
@@ -3129,16 +3140,24 @@ function DieViewer({ dieId }: { dieId: string }) {
               if (Math.abs(dx) >= Math.abs(dy)) dy = 0;
               else dx = 0;
             }
-            const x = round ? Math.round(source.x + dx) : source.x + dx;
-            const y = round ? Math.round(source.y + dy) : source.y + dy;
-            return { ...source, x, y };
+            return round ? { dx: Math.round(dx), dy: Math.round(dy) } : { dx, dy };
           };
-          // A lone moving cell carries its resize handles along: push its live
-          // footprint to the handles overlay (multi-cell moves show none).
-          const previewHandles = (moved: typeof original) => {
+          const draw = (c: typeof original, ct: typeof cellType) =>
+            buildCellAnnotation(c, ct, getCellC, getCellShapes);
+          // A lone moving cell carries its resize handles along (multi-cell
+          // moves show none); they follow the copy when Alt is held.
+          const previewHandles = (c: typeof original) => {
             if (movingCells.length !== 1) return;
             const { width, height } = movingCells[0].cellType.cropRect;
-            editPreviewLive.set({ kind: "cellRect", rect: cellWorldRect(moved, width, height) });
+            editPreviewLive.set({ kind: "cellRect", rect: cellWorldRect(c, width, height) });
+          };
+          /** Put the layer back: originals where they were, no copies. */
+          const restore = () => {
+            movingCells.forEach(({ cell: c, cellType: ct }, i) => {
+              annotationLayer.update(draw(c, ct));
+              annotationLayer.remove(`cell:${copyIds[i]}`);
+            });
+            editPreviewLive.set(null);
           };
           const handler: DragHandler = {
             onDragStart: () => {
@@ -3147,40 +3166,66 @@ function DieViewer({ dieId }: { dieId: string }) {
               }
             },
             onDragMove: ({ worldPoint, startWorld, modifiers }) => {
-              for (const entry of movingCells) {
-                const moved = moveCell(entry.cell, worldPoint, startWorld, modifiers.shift, false);
-                annotationLayer.update(
-                  buildCellAnnotation(moved, entry.cellType, getCellC, getCellShapes)
-                );
-                previewHandles(moved);
-              }
+              const { dx, dy } = offset(worldPoint, startWorld, modifiers.shift, false);
+              movingCells.forEach(({ cell: c, cellType: ct }, i) => {
+                const moved = { ...c, x: c.x + dx, y: c.y + dy };
+                if (modifiers.alt) {
+                  annotationLayer.update(draw(c, ct));
+                  annotationLayer.add(draw({ ...moved, id: copyIds[i] }, ct));
+                  previewHandles({ ...moved, id: copyIds[i] });
+                } else {
+                  annotationLayer.remove(`cell:${copyIds[i]}`);
+                  annotationLayer.update(draw(moved, ct));
+                  previewHandles(moved);
+                }
+              });
             },
             onPointerUp: ({ dragged, worldPoint, startWorld, modifiers }) => {
               if (!dragged) {
                 selectFromHit(hit, modifiers.shift);
                 return;
               }
-              const moved = movingCells.map((entry) => ({
-                kind: "upsertCell" as const,
-                cell: moveCell(entry.cell, worldPoint, startWorld, modifiers.shift, true),
-                prevCell: entry.cell
-              }));
+              const { dx, dy } = offset(worldPoint, startWorld, modifiers.shift, true);
+              if (dx === 0 && dy === 0) {
+                // Nothing moved (or a copy would sit exactly on its original).
+                restore();
+                return;
+              }
+              const actions: AnnotationAction[] = movingCells.map(({ cell: c }, i) =>
+                modifiers.alt
+                  ? {
+                      kind: "upsertCell",
+                      cell: { ...c, id: copyIds[i], x: c.x + dx, y: c.y + dy },
+                      prevCell: null
+                    }
+                  : {
+                      kind: "upsertCell",
+                      cell: { ...c, x: c.x + dx, y: c.y + dy },
+                      prevCell: c
+                    }
+              );
+              if (modifiers.alt) {
+                useDieViewerStore
+                  .getState()
+                  .select(
+                    copyIds.map((id) => `cell:${id}`),
+                    "replace"
+                  );
+              }
               // Keep the handles on the final spot until the optimistic
               // update lands (dispatch applies it a tick later), else they'd
               // flash back to the old position.
-              previewHandles(moved[0].cell);
+              const last = movingCells[movingCells.length - 1].cell;
+              previewHandles(
+                modifiers.alt
+                  ? { ...last, id: copyIds[copyIds.length - 1], x: last.x + dx, y: last.y + dy }
+                  : { ...last, x: last.x + dx, y: last.y + dy }
+              );
               void dispatcher
-                .dispatch({ kind: "batch", actions: moved })
+                .dispatch(actions.length === 1 ? actions[0] : { kind: "batch", actions })
                 .finally(() => editPreviewLive.set(null));
             },
-            onCancel: () => {
-              for (const entry of movingCells) {
-                annotationLayer.update(
-                  buildCellAnnotation(entry.cell, entry.cellType, getCellC, getCellShapes)
-                );
-              }
-              editPreviewLive.set(null);
-            }
+            onCancel: restore
           };
           return handler;
         }

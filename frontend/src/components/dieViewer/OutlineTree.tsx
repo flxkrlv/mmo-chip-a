@@ -1610,7 +1610,7 @@ function CellSettingsButton() {
           checked={cellShowShapes}
           onChange={(e) => setCellShowShapes(e.target.checked)}
         />
-        Show cell details when zoomed in
+        Show cell details
       </label>
     </SettingsPopover>
   );

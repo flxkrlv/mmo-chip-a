@@ -50,8 +50,8 @@ interface PreferencesState {
   netColor: string;
   /** Cell outline + block-fill color (one of CELL_COLOR_OPTIONS). */
   cellColor: string;
-  /** When false, cells always render as a solid block even when zoomed in
-   *  (the detailed inner layer shapes are never drawn). */
+  /** When true, cells draw their inner layer shapes at every zoom level;
+   *  when false, they always render as a solid block. */
   cellShowShapes: boolean;
   /** When true, the cell-rectangle tool snaps the drawn rect's edges to
    *  nearby grid guides (guide behaviour itself lands in a later phase). */

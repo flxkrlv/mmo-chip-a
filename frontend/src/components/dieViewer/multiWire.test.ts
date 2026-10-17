@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { AnnotationNet } from "shared";
-import { busActions, closeBus, endBusWires, placeCorner, type Draft } from "./useMultiWireTool";
+import { busActions, busCommit, closeBus, endBusWires, placeCorner, type Draft } from "./useMultiWireTool";
 
 /** Two-wire bus heading right, starts 10 px apart vertically, in phase 2. */
 const bus = (): Draft => ({
@@ -14,7 +14,8 @@ const bus = (): Draft => ({
   locked: [false, false],
   pending: [null, null],
   dir: null,
-  lastClick: null
+  lastClick: null,
+  continued: false
 });
 
 let n = 0;
@@ -100,5 +101,19 @@ describe("committing", () => {
     expect(ext.prevNet).toBe(net);
     expect(ext.net.edges[0].from).toBe("v1");
     expect(ext.net.nodes).toHaveLength(2);
+  });
+
+  it("reports each committed wire's end so the bus can chain from it", () => {
+    const net: AnnotationNet = { id: "n1", name: "A", nodes: [{ id: "v1", x: 0, y: 0 }], edges: [] };
+    let d: Draft = { ...bus(), anchors: [{ netId: "n1", nodeId: "v1" }, null] };
+    d = placeCorner(d, { x: 40, y: 1 }, false, 1, null)!;
+    d = placeCorner(d, { x: 40, y: 9 }, false, 1, null)!;
+    const { actions, starts } = busCommit(d, [net], uid);
+    expect(starts.map((s) => [s.point.x, s.point.y])).toEqual([[40, 0], [40, 10]]);
+    const anchored = actions[0] as { net: AnnotationNet };
+    expect(starts[0].anchor.netId).toBe("n1");
+    expect(starts[0].anchor.nodeId).toBe(anchored.net.nodes[anchored.net.nodes.length - 1].id);
+    const fresh = actions[1] as { net: AnnotationNet };
+    expect(starts[1].anchor.netId).toBe(fresh.net.id);
   });
 });

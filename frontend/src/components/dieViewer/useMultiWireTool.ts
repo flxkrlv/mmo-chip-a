@@ -79,6 +79,11 @@ export interface Draft {
   dir: Point | null;
   /** Last accepted phase-2 click (to ignore a double-click's second click). */
   lastClick: Point | null;
+  /** True when this phase-2 draft was opened automatically from the ends of
+   *  the bus segment just committed (chained routing). Nothing in it is
+   *  unsaved yet, so Esc/Enter simply stop the chain and ⌘Z falls through to
+   *  undo the committed segment. */
+  continued: boolean;
 }
 const EMPTY: Draft = {
   phase: 1,
@@ -88,7 +93,8 @@ const EMPTY: Draft = {
   locked: [],
   pending: [],
   dir: null,
-  lastClick: null
+  lastClick: null,
+  continued: false
 };
 
 /** Fresh phase-2 draft for these starts. */
@@ -101,7 +107,8 @@ function phase2(points: Point[], anchors: (DrawAnchor | null)[]): Draft {
     locked: points.map(() => false),
     pending: points.map(() => null),
     dir: null,
-    lastClick: null
+    lastClick: null,
+    continued: false
   };
 }
 
@@ -243,15 +250,26 @@ export function closeBus(d: Draft): Draft {
   return completeRound(d);
 }
 
-/** The annotation actions committing a bus: anchored starts extend their net
- *  (several wires into one net fold into one change), free starts become new
- *  nets named after `nets.length`. Wires that never left their start are
- *  dropped. Pending corners are ignored — `closeBus` first. */
-export function busActions(
+/** The result of committing a bus: the annotation actions plus, per committed
+ *  wire, where a chained continuation should restart from. */
+export interface BusCommit {
+  actions: AnnotationAction[];
+  /** One entry per committed wire (same order as `points`, skipping wires that
+   *  never left their start): its end tip and the net vertex it landed on —
+   *  the starts/anchors of the chained phase 2 that keeps the bus going. */
+  starts: Array<{ point: Point; anchor: DrawAnchor }>;
+}
+
+/** Commit the bus: anchored starts extend their net (several wires into one net
+ *  fold into one change), free starts become new nets named after
+ *  `nets.length`. Wires that never left their start are dropped. Pending
+ *  corners are ignored — `closeBus` first. Also reports each committed wire's
+ *  end so the caller can chain another segment from it. */
+export function busCommit(
   d: Draft,
   nets: AnnotationNet[],
   uid: () => string
-): AnnotationAction[] {
+): BusCommit {
   const mkEdge = (from: string, to: string, layer: WireLayer | null) => ({
     id: uid(),
     from,
@@ -261,6 +279,7 @@ export function busActions(
   const origByNet = new Map<string, AnnotationNet>();
   const curByNet = new Map<string, AnnotationNet>();
   const newNets: AnnotationNet[] = [];
+  const starts: Array<{ point: Point; anchor: DrawAnchor }> = [];
   d.points.forEach((p, i) => {
     const path = d.paths[i] ?? [];
     if (path.length === 0) return; // never left its start
@@ -271,6 +290,8 @@ export function busActions(
     const edges = nodes.map((n, k) =>
       mkEdge(k === 0 ? startId : nodes[k - 1].id, n.id, path[k].layer)
     );
+    const endTip = path[path.length - 1];
+    const endNodeId = nodes[nodes.length - 1].id;
     if (anchor && orig) {
       if (!origByNet.has(orig.id)) origByNet.set(orig.id, orig);
       const cur = curByNet.get(orig.id) ?? orig;
@@ -279,16 +300,19 @@ export function busActions(
         nodes: [...cur.nodes, ...nodes],
         edges: [...cur.edges, ...edges]
       });
+      starts.push({ point: endTip, anchor: { netId: orig.id, nodeId: endNodeId } });
     } else {
-      newNets.push({
+      const net: AnnotationNet = {
         id: uid(),
         name: `Net ${nets.length + newNets.length + 1}`,
         nodes: [{ id: startId, x: p.x, y: p.y }, ...nodes],
         edges
-      });
+      };
+      newNets.push(net);
+      starts.push({ point: endTip, anchor: { netId: net.id, nodeId: endNodeId } });
     }
   });
-  return [
+  const actions: AnnotationAction[] = [
     ...[...curByNet.entries()].map(([id, net]) => ({
       kind: "upsertNet" as const,
       net,
@@ -296,11 +320,23 @@ export function busActions(
     })),
     ...newNets.map((net) => ({ kind: "upsertNet" as const, net, prevNet: null }))
   ];
+  return { actions, starts };
+}
+
+/** The annotation actions committing a bus (see `busCommit`). */
+export function busActions(
+  d: Draft,
+  nets: AnnotationNet[],
+  uid: () => string
+): AnnotationAction[] {
+  return busCommit(d, nets, uid).actions;
 }
 
 export interface MultiWireTool {
   phase: 1 | 2;
   points: Point[];
+  /** Phase-2 opened from the previous segment's endpoints (chained routing). */
+  continued: boolean;
   /** The whole draft (paths, pending corners, round direction…) — for the
    *  overlay and the via-snap helpers, via `previewEnds` / `tipOf`. */
   draft: Draft;
@@ -336,7 +372,9 @@ export interface MultiWireTool {
  * keeps routing from those corners; a via snap ends just that wire. Enter / double-click finishes the whole bus as one batched undo
  * (anchored starts extend their net, free starts become new nets).
  * Contextual ⌘Z/⌘⇧Z steps through points, turns and the phase change; Esc
- * aborts.
+ * aborts. Once a segment is committed the bus re-opens immediately from the
+ * new endpoints, so a multi-bend bus is routed segment after segment without
+ * re-clicking every start; Esc or Enter stops the chain.
  */
 export function useMultiWireTool(opts: {
   dispatcher: ActionDispatcher;
@@ -365,12 +403,21 @@ export function useMultiWireTool(opts: {
     setDraft(next);
   }, []);
   const undo = useCallback(() => {
-    if (undoRef.current.length === 0) return;
+    if (undoRef.current.length === 0) {
+      // A chained phase 2 with nothing stepped yet holds no unsaved work:
+      // ⌘Z means "take back the segment I just committed". Drop the
+      // continuation (its anchors would dangle) and undo the batch.
+      if (draftRef.current.continued) {
+        reset();
+        void dispatcher.undo();
+      }
+      return;
+    }
     const prev = undoRef.current[undoRef.current.length - 1];
     undoRef.current = undoRef.current.slice(0, -1);
     redoRef.current = [draftRef.current, ...redoRef.current];
     setDraft(prev);
-  }, []);
+  }, [dispatcher, reset]);
   const redo = useCallback(() => {
     if (redoRef.current.length === 0) return;
     const [next, ...rest] = redoRef.current;
@@ -401,13 +448,28 @@ export function useMultiWireTool(opts: {
 
   const finalize = useCallback(
     (d: Draft) => {
-      const actions = busActions(d, netsRef.current, uuid);
+      const { actions, starts } = busCommit(d, netsRef.current, uuid);
       if (actions.length > 0) {
         void dispatcher.dispatch(
           actions.length === 1 ? actions[0] : { kind: "batch", actions }
         );
       }
-      reset();
+      if (starts.length > 0) {
+        // Chain: re-open phase 2 from the ends just committed, each wire
+        // anchored to its net's new end vertex so the next segment extends it.
+        // No local undo history — nothing here is unsaved (see `undo`).
+        undoRef.current = [];
+        redoRef.current = [];
+        setDraft({
+          ...phase2(
+            starts.map((s) => s.point),
+            starts.map((s) => s.anchor)
+          ),
+          continued: true
+        });
+      } else {
+        reset();
+      }
     },
     [dispatcher, reset]
   );
@@ -446,9 +508,15 @@ export function useMultiWireTool(opts: {
     const d = draftRef.current;
     if (d.phase !== 2) return;
     const closed = closeBus(d);
-    if (closed.paths.every((path) => path.length === 0)) return; // nothing drawn yet
+    if (closed.paths.every((path) => path.length === 0)) {
+      // Nothing drawn in this segment: in a chained phase 2 this means
+      // "done routing this bus" (the previous segments are already saved);
+      // in a fresh phase 2 it's a no-op.
+      if (closed.continued) reset();
+      return;
+    }
     finalize(closed);
-  }, [finalize]);
+  }, [finalize, reset]);
 
   const beginPhase2 = useCallback(
     (starts: Array<{ point: Point; anchor: DrawAnchor | null }>) => {
@@ -514,6 +582,7 @@ export function useMultiWireTool(opts: {
   return {
     phase: draft.phase,
     points: draft.points,
+    continued: draft.continued,
     draft,
     addPoint,
     placeCorner: placeCornerCb,
