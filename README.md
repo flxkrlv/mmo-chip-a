@@ -222,6 +222,14 @@ Computer vision tools for automated cell instance detection. Available in the ri
 
 ---
 
+## Cells — Clean Specimens, Wire Map & Shared Libraries
+
+With cells recognised, the *Cells* tab can build a **clean specimen** per cell type: every instance is cropped, un-flipped, registered and brightness-matched, and the per-pixel median is kept, so wires routed over the cell and debris drop out. The image shown in the UI is a sharper rendering of the same idea — only the best-focused third of the instances, each registered with a small affine, reconstructed at 2× and sharpened. Merge cells uses it as the reference, and Cell RE shows it when a cell type is selected (selecting one instance shows that instance). Running it in reverse gives the **wire map**: each placed cell minus its type's specimen, keeping long straight residue, is pasted back over the die as a translucent overlay of the wires crossing recognised cells. Both are derived data under `data/dies/<die>/cell-specimens/` and `data/dies/<die>/wire-map/`.
+
+A **cross-die cell library** shares cell types (and their specimens) between dies so the same cell can be reused across a whole project. Instances placed from the library are registered at the target die's scale, and editing a shared type propagates to every die that uses it; remote instances are badged in the Cells panel.
+
+---
+
 ## Schematic Viewer
 
 Transistor-level schematics from SPICE netlists with an **interactive canvas** (default engine).
