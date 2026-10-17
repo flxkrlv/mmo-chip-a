@@ -12,6 +12,7 @@ import type {
   Cell,
   CellType,
   DieAnnotations,
+  DieMetadata,
   LayerLine,
   LayerShape,
   LayerType,
@@ -21,15 +22,20 @@ import type {
 import type { AnnotationAction } from "../../api/actions";
 import {
   buildRemoveShapesAction,
+  buildReplaceShapesAction,
   buildUpsertShapeAction,
+  cornerScale,
   makePoint,
   makeRect,
+  mapShapePoints,
   moveShapeVertex,
+  scaleAbout,
   shapeHandleAt,
   shapeHandles,
   shapeHit,
   shapeIntersectsRect,
   shapeInRect,
+  shapesBounds,
   translateShape
 } from "../../lib/cellLayers";
 import {
@@ -39,6 +45,7 @@ import {
   pointInPolygon,
   pointInRect,
   polygonBounds,
+  rectCorners,
   rectsIntersect,
   segmentIntersectsRect
 } from "../../lib/geometry";
@@ -55,8 +62,10 @@ import {
   NET_COLOR,
   WIRE_LAYER_COLOR
 } from "../../renderer/annotations/style";
+import { enterCellDieFrame } from "../../renderer/annotations/cellFrame";
+import { dieRegion } from "../../renderer/dieRegion";
 import type { TileBounds } from "../../renderer/types";
-import { orientOf } from "../../lib/mergeCells";
+import { cellFootprint } from "../../lib/cellDetection";
 import {
   shapeKey,
   parseShapeKey,
@@ -68,7 +77,6 @@ import { useCellREStore } from "../../state/cellRE";
 import { useOverlayLayers } from "../../state/overlayLayers";
 import { usePreferences } from "../../state/preferences";
 import { createProgressiveImageCache } from "../../lib/progressiveImage";
-import { cellWorldRect, dieToTypeMatrix } from "../../lib/cellFootprint";
 import { drawCellCrop } from "../../lib/cellCrop";
 
 export interface CellRECanvasHandle {
@@ -84,7 +92,19 @@ interface Props {
   cellType: CellType;
   /** Instance loaded in the canvas (null ⇒ no member exists yet). */
   cell: Cell | null;
+  /** The die's tile pyramid, which the instance's pixels are drawn from. */
+  die: DieMetadata | null;
+  /** When `cell` is on another die of the cell library (`die` is then that
+   *  die): this die's pixels per that die's pixel. Default 1. */
+  cellScale?: number;
+  /** A canonical image instead of the instance's own pixels: the type's
+   *  clean specimen (`imageCanonical`), or its template crop when it has no
+   *  instance yet. */
   imageUrl: string | null;
+  /** `imageUrl` is a clean specimen already in canonical orientation — show
+   *  it instead of the instance's pixels (the die overlay still follows
+   *  `cell`). */
+  imageCanonical?: boolean;
   /** Full die annotations — used to draw the die-viewer overlay (wires +
    *  vias clipped to the cell's die rect). Absent ⇒ no overlay. */
   annotations?: DieAnnotations;
@@ -139,6 +159,9 @@ interface Props {
     clientX: number,
     clientY: number
   ) => void;
+  /** Right-click inside a multi-selection's bounding box but off any shape:
+   *  the page opens the menu for the selection as a whole. */
+  onSelectionContextMenu?: (clientX: number, clientY: number) => void;
   /** Cursor moved over (or off) a shape. Fires only when the resolved
    *  target changes — moving the cursor within the same shape doesn't
    *  trigger. Drives the status bar's hover-info + right-panel row
@@ -169,6 +192,9 @@ const WHEEL_ZOOM_FACTOR = 0.01;
 const PICK_TOL_PX = 6;
 const HANDLE_PX = 10;
 const HANDLE_HIT_TOL_PX = 8;
+/** CSS-px gap between a multi-selection's shapes and its group box, so the
+ *  box and its corner handles don't sit on top of the selection halos. */
+const GROUP_PAD_PX = 6;
 /** Selection accent — same amber the die viewer uses on selected shapes. */
 const SELECT_COLOR = "#f3b351";
 
@@ -188,8 +214,14 @@ type DragKind =
   | "marquee"
   | "move"
   | "vertex"
+  | "scale"
   | "rect-draw"
   | null;
+
+/** A box grown by `pad` on every side. */
+function inflate(r: Rect, pad: number): Rect {
+  return { x: r.x - pad, y: r.y - pad, width: r.width + pad * 2, height: r.height + pad * 2 };
+}
 
 /**
  * The reverse-engineering canvas. One single-image cell crop, oriented to the
@@ -202,7 +234,10 @@ export const CellRECanvas = forwardRef<CellRECanvasHandle, Props>(function CellR
   {
     cellType,
     cell,
+    die,
+    cellScale = 1,
     imageUrl,
+    imageCanonical = false,
     annotations,
     extraction,
     activeTool,
@@ -226,6 +261,7 @@ export const CellRECanvas = forwardRef<CellRECanvasHandle, Props>(function CellR
     umPerPx,
     onEscape,
     onShapeContextMenu,
+    onSelectionContextMenu,
     onCanvasHover
   },
   ref
@@ -250,6 +286,11 @@ export const CellRECanvas = forwardRef<CellRECanvasHandle, Props>(function CellR
     key: string;
     shape: LayerShape;
   } | null>(null);
+  // Live group scale (dragging a multi-selection's corner handle).
+  const liveScaleRef = useRef<{ anchor: Point; sx: number; sy: number } | null>(null);
+  /** Group-box corner under the cursor (index into `rectCorners`) — drives
+   *  the resize cursor. */
+  const hoverCornerRef = useRef<number | null>(null);
   // Drag bookkeeping.
   const dragRef = useRef<{
     kind: DragKind;
@@ -265,8 +306,11 @@ export const CellRECanvas = forwardRef<CellRECanvasHandle, Props>(function CellR
     vertex: { key: string; vIdx: number } | null;
     /** "move" drag: alt+drag duplicates → fresh ids created up-front. */
     duplicateIds: Map<string, string> | null;
-    /** "move" drag: original shapes snapshot keyed by shape-key. */
+    /** "move" / "scale" drag: original shapes snapshot keyed by shape-key. */
     movingSnapshot: Map<string, { layer: LayerType; shape: LayerShape }> | null;
+    /** "scale" drag: the grabbed corner of the group bounds and the fixed
+     *  opposite one. */
+    scale: { corner: Point; anchor: Point } | null;
     /** Pointer has actually moved (a tiny wiggle still reads as a click). */
     moved: boolean;
   } | null>(null);
@@ -298,6 +342,7 @@ export const CellRECanvas = forwardRef<CellRECanvasHandle, Props>(function CellR
     umPerPx: Props["umPerPx"];
     onEscape: Props["onEscape"];
     onShapeContextMenu: Props["onShapeContextMenu"];
+    onSelectionContextMenu: Props["onSelectionContextMenu"];
     onCanvasHover: Props["onCanvasHover"];
   };
   const propsRef = useRef<PropsRef>({
@@ -324,6 +369,7 @@ export const CellRECanvas = forwardRef<CellRECanvasHandle, Props>(function CellR
     umPerPx,
     onEscape,
     onShapeContextMenu: undefined as Props["onShapeContextMenu"],
+    onSelectionContextMenu: undefined as Props["onSelectionContextMenu"],
     onCanvasHover: undefined as Props["onCanvasHover"]
   });
   propsRef.current = {
@@ -350,6 +396,7 @@ export const CellRECanvas = forwardRef<CellRECanvasHandle, Props>(function CellR
     umPerPx,
     onEscape,
     onShapeContextMenu,
+    onSelectionContextMenu,
     onCanvasHover
   };
 
@@ -412,9 +459,10 @@ export const CellRECanvas = forwardRef<CellRECanvasHandle, Props>(function CellR
     [fit, redraw]
   );
 
-  // Re-fit when the cell type identity changes (different cell → different
-  // canonical box). Don't re-fit on a same-type edit (would yank zoom).
-  const fitKey = cellType.id;
+  // Re-fit when the canonical box changes (a different cell type, or the
+  // type turned a quarter turn). Don't re-fit on other same-type edits
+  // (would yank zoom).
+  const fitKey = `${cellType.id}|${cellType.cropRect.width}x${cellType.cropRect.height}`;
   const fitKeyRef = useRef("");
   useEffect(() => {
     if (fitKey !== fitKeyRef.current) {
@@ -519,6 +567,36 @@ export const CellRECanvas = forwardRef<CellRECanvasHandle, Props>(function CellR
     [resolveKey]
   );
 
+  /** Bounds of a multi-selection's vertices — the group box a corner drag
+   *  scales. Null unless 2+ selected shapes still exist. */
+  const selectionBox = useCallback((): Rect | null => {
+    const sel = propsRef.current.selectedShapeIds;
+    if (sel.size < 2) return null;
+    const shapes: LayerShape[] = [];
+    for (const key of sel) {
+      const r = resolveKey(key);
+      if (r) shapes.push(r.shape);
+    }
+    return shapes.length < 2 ? null : shapesBounds(shapes);
+  }, [resolveKey]);
+
+  /** Group-box corner handle under `pt` (index into `rectCorners` of the
+   *  padded box: TL, TR, BR, BL), or null. */
+  const hitGroupCorner = useCallback(
+    (pt: Point): number | null => {
+      const box = selectionBox();
+      if (!box) return null;
+      const zoom = viewRef.current.zoom;
+      const tol = HANDLE_HIT_TOL_PX / zoom;
+      const corners = rectCorners(inflate(box, GROUP_PAD_PX / zoom));
+      const i = corners.findIndex(
+        (c) => Math.abs(pt.x - c.x) <= tol && Math.abs(pt.y - c.y) <= tol
+      );
+      return i < 0 ? null : i;
+    },
+    [selectionBox]
+  );
+
   // ── Pointer handling ───────────────────────────────────────────────
   const onPointerDown = (e: React.PointerEvent) => {
     const canvas = canvasRef.current;
@@ -545,13 +623,41 @@ export const CellRECanvas = forwardRef<CellRECanvasHandle, Props>(function CellR
         vertex: null,
         duplicateIds: null,
         movingSnapshot: null,
+        scale: null,
         moved: false
       };
       return;
     }
 
     if (tool === "select") {
-      // Handle pick (single-shape vertex edit) > body pick (move) > marquee.
+      // Group corner (multi-select scale) > handle pick (single-shape vertex
+      // edit) > body pick (move) > marquee.
+      const corner = hitGroupCorner(world);
+      const box = corner == null ? null : selectionBox();
+      if (corner != null && box) {
+        const snap = new Map<string, { layer: LayerType; shape: LayerShape }>();
+        for (const k of propsRef.current.selectedShapeIds) {
+          const r = resolveKey(k);
+          if (r) snap.set(k, r);
+        }
+        const cs = rectCorners(box);
+        const anchor = cs[(corner + 2) % 4];
+        dragRef.current = {
+          kind: "scale",
+          sx: e.clientX,
+          sy: e.clientY,
+          wx: world.x,
+          wy: world.y,
+          startView: v,
+          vertex: null,
+          duplicateIds: null,
+          movingSnapshot: snap,
+          scale: { corner: cs[corner], anchor },
+          moved: false
+        };
+        liveScaleRef.current = { anchor, sx: 1, sy: 1 };
+        return;
+      }
       const handle = hitHandle(world);
       if (handle) {
         const cur = resolveKey(handle.key);
@@ -568,6 +674,7 @@ export const CellRECanvas = forwardRef<CellRECanvasHandle, Props>(function CellR
           vertex: handle,
           duplicateIds: null,
           movingSnapshot: null,
+          scale: null,
           moved: false
         };
         return;
@@ -632,6 +739,7 @@ export const CellRECanvas = forwardRef<CellRECanvasHandle, Props>(function CellR
             vertex: null,
             duplicateIds,
             movingSnapshot: snap,
+            scale: null,
             moved: false
           };
           liveMoveRef.current = { dx: 0, dy: 0 };
@@ -650,6 +758,7 @@ export const CellRECanvas = forwardRef<CellRECanvasHandle, Props>(function CellR
         vertex: null,
         duplicateIds: null,
         movingSnapshot: null,
+        scale: null,
         moved: false
       };
       liveMarqueeRef.current = { x: world.x, y: world.y, width: 0, height: 0 };
@@ -668,6 +777,7 @@ export const CellRECanvas = forwardRef<CellRECanvasHandle, Props>(function CellR
         vertex: null,
         duplicateIds: null,
         movingSnapshot: null,
+        scale: null,
         moved: false
       };
       liveRectRef.current = { x: world.x, y: world.y, width: 0, height: 0 };
@@ -688,6 +798,7 @@ export const CellRECanvas = forwardRef<CellRECanvasHandle, Props>(function CellR
         vertex: null,
         duplicateIds: null,
         movingSnapshot: null,
+        scale: null,
         moved: false
       };
       return;
@@ -704,6 +815,7 @@ export const CellRECanvas = forwardRef<CellRECanvasHandle, Props>(function CellR
         vertex: null,
         duplicateIds: null,
         movingSnapshot: null,
+        scale: null,
         moved: false
       };
       return;
@@ -726,6 +838,10 @@ export const CellRECanvas = forwardRef<CellRECanvasHandle, Props>(function CellR
       // changes. We avoid the dispatch on every mouse-move so the page can
       // do real work (status bar / row highlight) without throttling.
       const worldHover = cursorRef.current ?? toWorld(cssX, cssY);
+      hoverCornerRef.current =
+        propsRef.current.activeTool === "select" && !spaceRef.current
+          ? hitGroupCorner(worldHover)
+          : null;
       const hit = hitShape(worldHover);
       let subId: string | undefined;
       const ext = propsRef.current.extraction;
@@ -806,6 +922,16 @@ export const CellRECanvas = forwardRef<CellRECanvasHandle, Props>(function CellR
         liveVertexRef.current = { key: d.vertex.key, shape: next };
         redraw();
       }
+      return;
+    }
+
+    if (d.kind === "scale" && d.scale) {
+      // The grabbed corner follows the pointer; the opposite corner holds.
+      // Shift keeps the group's aspect ratio.
+      const { corner, anchor } = d.scale;
+      const target = { x: corner.x + world.x - d.wx, y: corner.y + world.y - d.wy };
+      liveScaleRef.current = { anchor, ...cornerScale(anchor, corner, target, e.shiftKey) };
+      redraw();
       return;
     }
   };
@@ -947,6 +1073,25 @@ export const CellRECanvas = forwardRef<CellRECanvasHandle, Props>(function CellR
       if (parsed) {
         dispatch(buildUpsertShapeAction(cellType, parsed.layer, live.shape));
       }
+      redraw();
+      return;
+    }
+
+    if (d.kind === "scale") {
+      const live = liveScaleRef.current;
+      liveScaleRef.current = null;
+      const snap = d.movingSnapshot;
+      if (!snap || !live || !d.moved || (live.sx === 1 && live.sy === 1)) {
+        redraw();
+        return;
+      }
+      // One upsert for the whole group; the selection keeps its ids.
+      const f = scaleAbout(live.anchor, live.sx, live.sy);
+      const action = buildReplaceShapesAction(
+        cellType,
+        [...snap.values()].map(({ layer, shape }) => ({ layer, shape: mapShapePoints(shape, f) }))
+      );
+      if (action) dispatch(action);
       redraw();
       return;
     }
@@ -1128,37 +1273,59 @@ export const CellRECanvas = forwardRef<CellRECanvasHandle, Props>(function CellR
     const hovering = !inflightForDim && dimNonHovered && hoveredKeys.size > 0;
     const DIM_ALPHA = 0.35;
 
-    // ── Image (canonical orientation — no per-instance rotation) ──────
-    // Instance rotation/flip is handled at the die level (merged cells,
-    // die viewer). The Cell RE editor always shows the cell type in its
-    // original unrotated frame so drawing layers and the background
-    // image stay aligned regardless of how instances are placed on die.
+    // ── Image (die pixels shown in the canonical frame) ───────────────
+    // An instance comes straight from the die's tile pyramid, at the level
+    // the zoom needs, seen through its orientation and clipped to the box.
+    // A URL image is canonical already: the clean specimen, or the type's
+    // template crop when there's no instance to orient through — and the
+    // fork's oriented crop as the fallback. The base-image toggle (Space+B)
+    // still hides it, leaving only the overlays below.
     const img = getImage(imageUrl);
     const baseVisible = useOverlayLayers.getState().baseImageVisible;
+    // An instance on another die is read in that die's pixels (its box is
+    // 1/cellScale of this one's) and drawn scaled up to this die's.
+    const k = cellScale;
+    const instanceBox = { cropRect: { x: 0, y: 0, width: box.w / k, height: box.h / k } };
+    const region =
+      baseVisible && cell && die && !imageCanonical
+        ? dieRegion(die, cellFootprint(cell, instanceBox), v.zoom * dpr * k, redraw)
+        : null;
+    ctx.save();
     if (hovering) ctx.globalAlpha = DIM_ALPHA;
-    if (baseVisible && img) {
-      ctx.imageSmoothingEnabled = v.zoom < 3;
-      drawCellCrop(ctx, img, cell, box);
+    ctx.imageSmoothingEnabled = v.zoom < 3;
+    if (region && cell) {
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(0, 0, box.w, box.h);
+      ctx.clip();
+      if (k !== 1) ctx.scale(k, k);
+      enterCellDieFrame(ctx, cell, box.w / k, box.h / k);
+      const r = region.rect;
+      ctx.drawImage(region.canvas, r.x, r.y, r.width, r.height);
+      ctx.restore();
     } else if (img) {
-      // Base image hidden via Space+B — show only overlays below.
+      if (baseVisible) {
+        if (cell) drawCellCrop(ctx, img, cell, box);
+        else ctx.drawImage(img, 0, 0, box.w, box.h);
+      }
+      // else: base image hidden via Space+B — show only overlays below.
     } else {
       ctx.fillStyle = "rgba(255,255,255,0.04)";
       ctx.fillRect(0, 0, box.w, box.h);
     }
-    // Die-viewer overlay (wires, vias) — lives in die-world coordinates,
-    // so un-orient it into the type frame, like the crop.
+    // Die-viewer overlay (wires, vias) is drawn in die coordinates through
+    // the same frame as the image, so items stay pinned to the image features.
     if (cell && annotations) {
-      const cellDieRect: Rect = cellWorldRect(cell, box.w, box.h);
       ctx.save();
-      ctx.transform(...dieToTypeMatrix(cell, box.w, box.h));
-      ctx.translate(-cell.x, -cell.y);
-      drawDieOverlay(ctx, annotations, cellDieRect, v.zoom, {
+      if (k !== 1) ctx.scale(k, k);
+      enterCellDieFrame(ctx, cell, box.w / k, box.h / k);
+      drawDieOverlay(ctx, annotations, cellFootprint(cell, instanceBox), v.zoom * k, {
         hideWires: layerHidden["_dvWires"] === true,
         hideVias: layerHidden["_dvVias"] === true
       });
       ctx.restore();
     }
-
+    ctx.restore();
     // ── Overlay images (clipped to cell area) ────────────────────────
     // Draw each non-hidden overlay composited at its world offset,
     // clipped to the cell's die rect so it aligns with the crop image.
@@ -1196,9 +1363,22 @@ export const CellRECanvas = forwardRef<CellRECanvasHandle, Props>(function CellR
     };
     const liveMove = liveMoveRef.current;
     const liveVertex = liveVertexRef.current;
+    const liveScale = liveScaleRef.current;
     const drag = dragRef.current;
     const moving = drag?.kind === "move" ? drag.movingSnapshot : null;
     const duplicating = drag?.kind === "move" ? drag.duplicateIds : null;
+    const scaling = drag?.kind === "scale" ? drag.movingSnapshot : null;
+    const scaleMap = liveScale ? scaleAbout(liveScale.anchor, liveScale.sx, liveScale.sy) : null;
+    /** A shape as the in-flight drag shows it: mid vertex-edit, moved, or
+     *  scaled with its group. */
+    const preview = (key: string, s: LayerShape): LayerShape => {
+      if (liveVertex && liveVertex.key === key) return liveVertex.shape;
+      if (moving && moving.has(key) && !duplicating && liveMove) {
+        return translateShape(s, liveMove.dx, liveMove.dy);
+      }
+      if (scaling && scaling.has(key) && scaleMap) return mapShapePoints(s, scaleMap);
+      return s;
+    };
 
     // ── Extraction-driven coloring hints ──────────────────────────────
     //
@@ -1301,11 +1481,7 @@ export const CellRECanvas = forwardRef<CellRECanvasHandle, Props>(function CellR
       replaceShape: (_layer, s) => {
         if (_layer === "diffusion" && hideOriginalDiff.has(s.id)) return null;
         if (hovering && hoveredKeys.has(shapeKey(_layer, s.id))) return null;
-        const key = shapeKey(_layer, s.id);
-        let shape: LayerShape = s;
-        if (liveVertex && liveVertex.key === key) shape = liveVertex.shape;
-        else if (moving && moving.has(key) && !duplicating && liveMove)
-          shape = translateShape(s, liveMove.dx, liveMove.dy);
+        let shape = preview(shapeKey(_layer, s.id), s);
         if (!shape.label) {
           const l = inferredLabel.get(s.id);
           if (l) shape = { ...shape, label: l } as LayerShape;
@@ -1345,10 +1521,7 @@ export const CellRECanvas = forwardRef<CellRECanvasHandle, Props>(function CellR
         // Originals hidden in favour of sub-regions — those are repainted
         // in the sub-region block below.
         if (r.layer === "diffusion" && hideOriginalDiff.has(r.shape.id)) continue;
-        let shape: LayerShape = r.shape;
-        if (liveVertex && liveVertex.key === key) shape = liveVertex.shape;
-        else if (moving && moving.has(key) && !duplicating && liveMove)
-          shape = translateShape(r.shape, liveMove.dx, liveMove.dy);
+        let shape = preview(key, r.shape);
         if (!shape.label) {
           const l = inferredLabel.get(r.shape.id);
           if (l) shape = { ...shape, label: l } as LayerShape;
@@ -1413,11 +1586,7 @@ export const CellRECanvas = forwardRef<CellRECanvasHandle, Props>(function CellR
     for (const key of selectedShapeIds) {
       const r = resolveKey(key);
       if (!r) continue;
-      let shape = r.shape;
-      if (liveVertex && liveVertex.key === key) shape = liveVertex.shape;
-      else if (moving && moving.has(key) && !duplicating && liveMove)
-        shape = translateShape(shape, liveMove.dx, liveMove.dy);
-      strokeShape(ctx, shape, v.zoom);
+      strokeShape(ctx, preview(key, r.shape), v.zoom);
     }
     // For alt-drag duplicates: outline the *duplicates* in the active accent
     // (they're the things that will be selected after release).
@@ -1428,16 +1597,40 @@ export const CellRECanvas = forwardRef<CellRECanvasHandle, Props>(function CellR
       }
     }
 
+    // ── Group box + corner (scale) handles for a multi-selection ──────
+    // Hidden during an alt-drag duplicate: what moves then is the copies.
+    if (selectedShapeIds.size >= 2 && !duplicating) {
+      const shapes: LayerShape[] = [];
+      for (const key of selectedShapeIds) {
+        const r = resolveKey(key);
+        if (r) shapes.push(preview(key, r.shape));
+      }
+      const groupBox = shapes.length >= 2 ? shapesBounds(shapes) : null;
+      if (groupBox) {
+        const outer = inflate(groupBox, GROUP_PAD_PX / v.zoom);
+        ctx.strokeStyle = SELECT_COLOR;
+        ctx.lineWidth = 1 / v.zoom;
+        ctx.setLineDash([4 / v.zoom, 3 / v.zoom]);
+        ctx.strokeRect(outer.x, outer.y, outer.width, outer.height);
+        ctx.setLineDash([]);
+        const r = HANDLE_PX / v.zoom / 2;
+        ctx.fillStyle = "#fff";
+        ctx.lineWidth = 1.5 / v.zoom;
+        for (const c of rectCorners(outer)) {
+          ctx.beginPath();
+          ctx.rect(c.x - r, c.y - r, r * 2, r * 2);
+          ctx.fill();
+          ctx.stroke();
+        }
+      }
+    }
+
     // ── Drag handles for single-shape selection ───────────────────────
     if (selectedShapeIds.size === 1) {
       const only = selectedShapeIds.values().next().value as string;
       const cur = resolveKey(only);
       if (cur) {
-        let displayShape = cur.shape;
-        if (liveVertex && liveVertex.key === only) displayShape = liveVertex.shape;
-        else if (moving && moving.has(only) && !duplicating && liveMove)
-          displayShape = translateShape(cur.shape, liveMove.dx, liveMove.dy);
-        const handles = shapeHandles(displayShape);
+        const handles = shapeHandles(preview(only, cur.shape));
         const r = HANDLE_PX / v.zoom / 2;
         ctx.fillStyle = "#fff";
         ctx.strokeStyle = SELECT_COLOR;
@@ -1713,6 +1906,12 @@ export const CellRECanvas = forwardRef<CellRECanvasHandle, Props>(function CellR
   const cursor = (() => {
     if (spaceRef.current) return "grab" as const;
     if (activeTool === "pan") return "grab" as const;
+    // Over (or dragging) a group-box corner: TL / BR vs TR / BL diagonal.
+    const corner =
+      dragRef.current?.kind === "scale" || !dragRef.current ? hoverCornerRef.current : null;
+    if (activeTool === "select" && selectedShapeIds.size >= 2 && corner != null) {
+      return corner % 2 === 0 ? ("nwse-resize" as const) : ("nesw-resize" as const);
+    }
     if (activeTool === "rect" || activeTool === "polygon" || activeTool === "point" || activeTool === "polyline") {
       return "crosshair" as const;
     }
@@ -1746,6 +1945,7 @@ export const CellRECanvas = forwardRef<CellRECanvasHandle, Props>(function CellR
         onPointerUp={endDrag}
         onPointerCancel={endDrag}
         onPointerLeave={() => {
+          if (!dragRef.current) hoverCornerRef.current = null;
           // Cursor left the canvas — clear status/highlight. Only fire if we
           // had a hover (avoids redundant null callbacks while dragging in
           // and out of empty regions).
@@ -1776,6 +1976,18 @@ export const CellRECanvas = forwardRef<CellRECanvasHandle, Props>(function CellR
           const world = toWorld(e.clientX - r.left, e.clientY - r.top);
           const hit = hitShape(world);
           if (!hit) {
+            // Off any shape but inside a multi-selection's group box: a menu
+            // for the selection as a whole.
+            const box = selectionBox();
+            const onSelection = propsRef.current.onSelectionContextMenu;
+            if (
+              box &&
+              onSelection &&
+              pointInRect(world, inflate(box, GROUP_PAD_PX / viewRef.current.zoom))
+            ) {
+              onSelection(e.clientX, e.clientY);
+              return;
+            }
             cb(null, e.clientX, e.clientY);
             return;
           }
@@ -1896,9 +2108,8 @@ const DV_POINT_VIA_PX = 3;
 /**
  * Paint die-viewer wires + vias clipped to `cellDieRect` (so we only draw
  * the items actually intersecting this cell). Caller has already placed the
- * transform into die-coord space (i.e. `ctx.translate(-cell.x, -cell.y)`
- * inside the cell's image-orientation frame), so this function just iterates
- * `annotations` and draws raw die coordinates.
+ * transform into die-coord space (`enterCellDieFrame`), so this function
+ * just iterates `annotations` and draws raw die coordinates.
  *
  * Visibility is per-feature (wires / vias) rather than a single die-viewer
  * toggle so the user can keep the wire skeleton on while turning off via
