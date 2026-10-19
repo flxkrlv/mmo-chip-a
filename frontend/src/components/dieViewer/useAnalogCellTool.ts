@@ -52,6 +52,8 @@ export interface AnalogCellTool {
   beginEdit: (cell: Cell, cellType: CellType) => void;
   /** Leave the edit and go back to placing new devices. */
   stopEditing: () => void;
+  /** Arm the placement tool (and drop the template where the view is). */
+  startPlacing: () => void;
   /** The generated device, as the template shows it. */
   layout: AnalogPcellLayout;
   /** Why the device can't be laid out — null when it can. */
@@ -252,6 +254,16 @@ export function useAnalogCellTool({
     setDraft(null);
   }, [setDraft]);
 
+  /** Arm the placement tool; the template appears in the middle of the
+   *  view, ready to be dragged onto the device in the image. */
+  const startPlacing = useCallback(() => {
+    setActiveTool("analogCell");
+    if (!draftLive.get()) {
+      const c = viewportCentre();
+      setDraft({ cx: c.x, cy: c.y, k: 1, rotation: 0, flippedH: false, flippedV: false });
+    }
+  }, [draftLive, setActiveTool, setDraft, viewportCentre]);
+
   const cancel = useCallback(() => setDraft(null), [setDraft]);
 
   const moveTo = useCallback(
@@ -424,6 +436,7 @@ export function useAnalogCellTool({
     setScale,
     beginEdit,
     stopEditing,
+    startPlacing,
     layout,
     problem,
     draftLive,

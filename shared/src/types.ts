@@ -412,8 +412,9 @@ export interface CellType {
 
 // ── Analog library (parametric devices) ────────────────────────────
 
-/** The devices the analog library can lay out. */
-export type AnalogLibTemplate = "pmos" | "nmos" | "npn" | "pnp" | "lpnp";
+/** The devices the analog library can lay out. A vertical PNP is not here
+ *  yet: the extractor has no vpnp support, so its cell is deferred. */
+export type AnalogLibTemplate = "pmos" | "nmos" | "npn" | "lpnp";
 
 /** How a generated MOS ties its bulk (well) to the outside world. */
 export type AnalogLibBulk =
@@ -440,14 +441,21 @@ export interface AnalogLibMosParams {
 /** Parameters of a generated bipolar transistor. */
 export interface AnalogLibBjtParams {
   kind: "bjt";
-  /** npn / pnp (vertical) or lpnp (lateral). */
-  bjtType: "npn" | "pnp" | "lpnp";
+  /** npn (vertical) or lpnp (lateral). */
+  bjtType: "npn" | "lpnp";
   /** Number of emitter stripes. */
   fingers: number;
   /** Emitter width of ONE stripe [µm]. */
   W_um: number;
   /** Emitter length of ONE stripe [µm]. */
   L_um: number;
+  /** Lateral PNP only: the base material between the emitter and the
+   *  collector ring [µm]. Defaults to the rule of the same meaning. */
+  emitterCollectorGap_um?: number;
+  /** Lateral PNP only: the base material between the collector ring and
+   *  the edge of the base region — where the base contact sits [µm].
+   *  Defaults to the rule of the same meaning. */
+  baseCollectorGap_um?: number;
 }
 
 export type AnalogLibParams = AnalogLibMosParams | AnalogLibBjtParams;
@@ -474,10 +482,17 @@ export interface AnalogLibRules {
   metal1Pad: number;
   /** Well margin around the device [µm]. */
   wellMargin: number;
-  /** Base margin around the emitters [µm]. */
+  /** Base margin around the emitters (vertical BJT) [µm]. */
   baseMargin: number;
-  /** Width of the collector region next to the base [µm]. */
+  /** Width of the collector region next to the base (vertical BJT) [µm]. */
   collectorWidth: number;
+  /** Lateral PNP: base material between the emitter and the collector ring [µm]. */
+  lpnpEmitterCollectorGap: number;
+  /** Lateral PNP: base material between the collector ring and the edge of
+   *  the base region (the base contact sits there) [µm]. */
+  lpnpBaseCollectorGap: number;
+  /** Lateral PNP: width of the collector ring itself [µm]. */
+  lpnpCollectorWidth: number;
 }
 
 /**

@@ -34,7 +34,8 @@ import type {
   CellLayers,
   ForcedDiffusionType,
   LayerRect,
-  LayerShape
+  LayerShape,
+  LayerType
 } from "./types.js";
 
 export type {
@@ -59,7 +60,10 @@ export const DEFAULT_ANALOG_LIB_RULES: AnalogLibRules = {
   metal1Pad: 0.3,
   wellMargin: 1.0,
   baseMargin: 0.5,
-  collectorWidth: 1.0
+  collectorWidth: 1.0,
+  lpnpEmitterCollectorGap: 0.8,
+  lpnpBaseCollectorGap: 0.8,
+  lpnpCollectorWidth: 1.0
 };
 
 /** A laid-out device: the layers and the box they live in (die pixels). */
@@ -124,27 +128,17 @@ export const ANALOG_LIB_TEMPLATES: AnalogLibTemplateInfo[] = [
     }
   },
   {
-    id: "pnp",
-    label: "PNP",
-    hint: "vertical PNP bipolar transistor",
-    defaults: {
-      kind: "bjt",
-      bjtType: "pnp",
-      fingers: 1,
-      W_um: 2,
-      L_um: 2
-    }
-  },
-  {
     id: "lpnp",
     label: "LPNP",
-    hint: "lateral PNP bipolar transistor",
+    hint: "lateral PNP: p+ emitter in an n-base, p+ collector ring around it",
     defaults: {
       kind: "bjt",
       bjtType: "lpnp",
       fingers: 1,
       W_um: 2,
-      L_um: 2
+      L_um: 2,
+      emitterCollectorGap_um: 0.8,
+      baseCollectorGap_um: 0.8
     }
   }
 ];
@@ -229,6 +223,88 @@ function rect(
   };
 }
 
+/** The bounding box of a shape, in its own units. */
+function shapeBounds(s: LayerShape): { x: number; y: number; w: number; h: number } | null {
+  switch (s.kind) {
+    case "rect":
+      return { x: s.x, y: s.y, w: s.width, h: s.height };
+    case "point":
+      return { x: s.x - s.size / 2, y: s.y - s.size / 2, w: s.size, h: s.size };
+    case "circle":
+      return { x: s.x - s.radius, y: s.y - s.radius, w: s.radius * 2, h: s.radius * 2 };
+    case "line":
+      return {
+        x: Math.min(s.x1, s.x2),
+        y: Math.min(s.y1, s.y2),
+        w: Math.abs(s.x2 - s.x1),
+        h: Math.abs(s.y2 - s.y1)
+      };
+    case "polygon": {
+      if (s.points.length === 0) return null;
+      let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+      for (const pt of s.points) {
+        minX = Math.min(minX, pt.x);
+        minY = Math.min(minY, pt.y);
+        maxX = Math.max(maxX, pt.x);
+        maxY = Math.max(maxY, pt.y);
+      }
+      return { x: minX, y: minY, w: maxX - minX, h: maxY - minY };
+    }
+  }
+}
+
+/** A shape moved by (dx, dy). */
+function translateShape(s: LayerShape, dx: number, dy: number): LayerShape {
+  switch (s.kind) {
+    case "rect":
+      return { ...s, x: q(s.x + dx), y: q(s.y + dy) };
+    case "point":
+      return { ...s, x: q(s.x + dx), y: q(s.y + dy) };
+    case "circle":
+      return { ...s, x: q(s.x + dx), y: q(s.y + dy) };
+    case "line":
+      return { ...s, x1: q(s.x1 + dx), y1: q(s.y1 + dy), x2: q(s.x2 + dx), y2: q(s.y2 + dy) };
+    case "polygon":
+      return { ...s, points: s.points.map((p) => ({ x: q(p.x + dx), y: q(p.y + dy) })) };
+  }
+}
+
+/**
+ * Fit the device into its cell: the layers are moved so that the content
+ * starts at the cell's origin, and the cell's box is the content's own
+ * bounds. A device therefore sits exactly inside its cell — nothing sticks
+ * out over the cell edge.
+ */
+function fitToCell(layers: CellLayers): { layers: CellLayers; cropRect: AnnotationRect } {
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (const shapes of Object.values(layers)) {
+    for (const s of shapes ?? []) {
+      const b = shapeBounds(s);
+      if (!b) continue;
+      minX = Math.min(minX, b.x);
+      minY = Math.min(minY, b.y);
+      maxX = Math.max(maxX, b.x + b.w);
+      maxY = Math.max(maxY, b.y + b.h);
+    }
+  }
+  if (!Number.isFinite(minX)) {
+    return { layers, cropRect: { x: 0, y: 0, width: 0, height: 0 } };
+  }
+  const dx = -minX;
+  const dy = -minY;
+  const out: CellLayers = {};
+  for (const [layer, shapes] of Object.entries(layers) as Array<[LayerType, LayerShape[] | undefined]>) {
+    if (shapes) out[layer] = shapes.map((s) => translateShape(s, dx, dy));
+  }
+  return {
+    layers: out,
+    cropRect: { x: 0, y: 0, width: q(maxX - minX), height: q(maxY - minY) }
+  };
+}
+
 /**
  * Lay a device out. `idPrefix` names the shapes (the caller passes the
  * cell type's id, so every shape id is unique inside the type).
@@ -236,9 +312,8 @@ function rect(
 export function buildAnalogPcell(spec: AnalogPcellSpec, idPrefix: string): AnalogPcellLayout {
   const error = validateAnalogSpec(spec);
   if (error) throw new Error(error);
-  return spec.params.kind === "mos"
-    ? buildMos(spec, idPrefix)
-    : buildBjt(spec, idPrefix);
+  if (spec.params.kind === "mos") return buildMos(spec, idPrefix);
+  return spec.params.bjtType === "lpnp" ? buildLpnp(spec, idPrefix) : buildNpn(spec, idPrefix);
 }
 
 /** The MOS template: a diffusion strip cut by the gate bars. */
@@ -360,18 +435,12 @@ function buildMos(spec: AnalogPcellSpec, idPrefix: string): AnalogPcellLayout {
     )
   ];
 
-  const cropRect: AnnotationRect = {
-    x: 0,
-    y: 0,
-    width: (strip + 2 * r.wellMargin) * k,
-    height: (bottom + r.wellMargin - (top - r.wellMargin)) * k
-  };
-
-  return { layers, cropRect, summary: analogPcellSummary(spec) };
+  const fitted = fitToCell(layers);
+  return { layers: fitted.layers, cropRect: fitted.cropRect, summary: analogPcellSummary(spec) };
 }
 
-/** The BJT template: an emitter block inside a base, next to a collector. */
-function buildBjt(spec: AnalogPcellSpec, idPrefix: string): AnalogPcellLayout {
+/** The vertical BJT: an emitter block inside a base, next to a collector. */
+function buildNpn(spec: AnalogPcellSpec, idPrefix: string): AnalogPcellLayout {
   const p = spec.params as AnalogLibBjtParams;
   const r = spec.rules;
   const k = spec.scale;
@@ -380,7 +449,6 @@ function buildBjt(spec: AnalogPcellSpec, idPrefix: string): AnalogPcellLayout {
   const L = p.L_um;
   const N = Math.max(1, Math.round(p.fingers));
   const gap = r.spacing;
-  const isLpnp = p.bjtType === "lpnp";
 
   // The emitter block: N stripes separated by `gap`.
   const emitterWidth = N * W + (N - 1) * gap;
@@ -393,23 +461,20 @@ function buildBjt(spec: AnalogPcellSpec, idPrefix: string): AnalogPcellLayout {
   }
   layers.emitter = emitters;
 
-  // The base surrounds the emitters — an LPnp has none (its emitter area
-  // is the raw emitter rectangle).
+  // The base surrounds the emitters.
   const baseX0 = -r.baseMargin;
   const baseX1 = emitterWidth + r.baseMargin;
-  if (!isLpnp) {
-    layers.base = [
-      rect(
-        `${idPrefix}:base`,
-        baseX0 * k,
-        -r.baseMargin * k,
-        (baseX1 - baseX0) * k,
-        (L + 2 * r.baseMargin) * k
-      )
-    ];
-  }
+  layers.base = [
+    rect(
+      `${idPrefix}:base`,
+      baseX0 * k,
+      -r.baseMargin * k,
+      (baseX1 - baseX0) * k,
+      (L + 2 * r.baseMargin) * k
+    )
+  ];
 
-  // The collector sits next to the base (lateral for an LPnp).
+  // The collector sits next to the base.
   const collectorX0 = baseX1;
   const collectorX1 = collectorX0 + r.collectorWidth;
   layers.collector = [
@@ -422,49 +487,41 @@ function buildBjt(spec: AnalogPcellSpec, idPrefix: string): AnalogPcellLayout {
     )
   ];
 
-  // Contacts: one per emitter stripe, one on the collector, one on the
-  // base (only where there is a base).
+  // Contacts: one per emitter stripe, one on the collector, one on the base.
   const cs = Math.min(r.contactSize, Math.min(W, L) * 0.8);
   const pad = r.metal1Pad;
   const contacts: LayerShape[] = [];
   const metal1: LayerShape[] = [];
 
+  const contactAt = (id: string, cx: number, cy: number, size: number) => {
+    contacts.push(rect(`${idPrefix}:ct:${id}`, cx - (size * k) / 2, cy - (size * k) / 2, size * k, size * k));
+    metal1.push(
+      rect(
+        `${idPrefix}:m1:${id}`,
+        cx - (size + 2 * pad) * k * 0.5,
+        cy - (size + 2 * pad) * k * 0.5,
+        (size + 2 * pad) * k,
+        (size + 2 * pad) * k
+      )
+    );
+  };
+
   for (let i = 0; i < N; i++) {
-    const cx = (i * (W + gap) + W / 2) * k;
-    const cy = (L / 2) * k;
-    contacts.push(rect(`${idPrefix}:ct:e${i}`, cx - (cs * k) / 2, cy - (cs * k) / 2, cs * k, cs * k));
-    metal1.push(
-      rect(`${idPrefix}:m1:e${i}`, cx - (cs + 2 * pad) * k * 0.5, cy - (cs + 2 * pad) * k * 0.5, (cs + 2 * pad) * k, (cs + 2 * pad) * k)
-    );
+    contactAt(`e${i}`, (i * (W + gap) + W / 2) * k, (L / 2) * k, cs);
   }
-
-  const ccx = ((collectorX0 + collectorX1) / 2) * k;
-  const ccy = (L / 2) * k;
-  contacts.push(rect(`${idPrefix}:ct:c`, ccx - (cs * k) / 2, ccy - (cs * k) / 2, cs * k, cs * k));
-  metal1.push(
-    rect(`${idPrefix}:m1:c`, ccx - (cs + 2 * pad) * k * 0.5, ccy - (cs + 2 * pad) * k * 0.5, (cs + 2 * pad) * k, (cs + 2 * pad) * k)
-  );
-
-  if (!isLpnp) {
-    // The base contact sits in the base margin, clear of the emitters.
-    const bcx = (baseX0 + r.baseMargin / 2) * k;
-    const bcy = (L / 2) * k;
-    contacts.push(rect(`${idPrefix}:ct:b`, bcx - (cs * k) / 2, bcy - (cs * k) / 2, cs * k, cs * k));
-    metal1.push(
-      rect(`${idPrefix}:m1:b`, bcx - (cs + 2 * pad) * k * 0.5, bcy - (cs + 2 * pad) * k * 0.5, (cs + 2 * pad) * k, (cs + 2 * pad) * k)
-    );
-  }
+  contactAt("c", ((collectorX0 + collectorX1) / 2) * k, (L / 2) * k, cs);
+  // The base contact sits in the base margin, clear of the emitters.
+  contactAt("b", (baseX0 + r.baseMargin / 2) * k, (L / 2) * k, cs);
 
   layers.contact = contacts;
   layers.metal1 = metal1;
 
   // The marker layer names the device; the extractor reads the collector,
   // base and emitter shapes inside it.
-  const markerLayer = p.bjtType === "npn" ? "npn_id" : p.bjtType === "pnp" ? "pnp_id" : "lpnp_id";
   const markerPad = Math.max(r.baseMargin, 0.2);
-  layers[markerLayer] = [
+  layers.npn_id = [
     rect(
-      `${idPrefix}:${markerLayer}`,
+      `${idPrefix}:npn_id`,
       (baseX0 - markerPad) * k,
       (-r.baseMargin - markerPad) * k,
       (collectorX1 - baseX0 + 2 * markerPad) * k,
@@ -472,12 +529,118 @@ function buildBjt(spec: AnalogPcellSpec, idPrefix: string): AnalogPcellLayout {
     )
   ];
 
-  const width = (collectorX1 - baseX0 + 2 * markerPad) * k;
-  const height = (L + 2 * r.baseMargin + 2 * markerPad) * k;
+  const fitted = fitToCell(layers);
+  return { layers: fitted.layers, cropRect: fitted.cropRect, summary: analogPcellSummary(spec) };
+}
 
-  return {
-    layers,
-    cropRect: { x: 0, y: 0, width, height },
-    summary: analogPcellSummary(spec)
+/**
+ * The lateral PNP: a p+ emitter in an n-base, a p+ collector ring around
+ * it, and a base contact in the base material beside the ring.
+ *
+ * The base of a lateral PNP is the n region the emitter and the collector
+ * sit in, so it is laid out as the `bulk` layer — that is the terminal the
+ * extractor resolves the base contact against.
+ */
+function buildLpnp(spec: AnalogPcellSpec, idPrefix: string): AnalogPcellLayout {
+  const p = spec.params as AnalogLibBjtParams;
+  const r = spec.rules;
+  const k = spec.scale;
+
+  const W = p.W_um;
+  const L = p.L_um;
+  const N = Math.max(1, Math.round(p.fingers));
+  const gap = r.spacing;
+  const ecGap = p.emitterCollectorGap_um ?? r.lpnpEmitterCollectorGap;
+  const bcGap = p.baseCollectorGap_um ?? r.lpnpBaseCollectorGap;
+  const cw = r.lpnpCollectorWidth;
+
+  // The emitter block: N stripes side by side.
+  const emitterWidth = N * W + (N - 1) * gap;
+  const layers: CellLayers = {};
+
+  const emitters: LayerShape[] = [];
+  for (let i = 0; i < N; i++) {
+    const x = i * (W + gap);
+    emitters.push(rect(`${idPrefix}:emitter:${i}`, x * k, 0, W * k, L * k));
+  }
+  layers.emitter = emitters;
+
+  // The collector: a ring around the emitter, `ecGap` away from it.
+  const ringX0 = -ecGap;
+  const ringX1 = emitterWidth + ecGap;
+  const ringY0 = -ecGap;
+  const ringY1 = L + ecGap;
+  const outX0 = ringX0 - cw;
+  const outX1 = ringX1 + cw;
+  const outY0 = ringY0 - cw;
+  const outY1 = ringY1 + cw;
+  layers.collector = [
+    // top and bottom bars of the ring
+    rect(`${idPrefix}:collector:t`, outX0 * k, outY0 * k, (outX1 - outX0) * k, cw * k),
+    rect(`${idPrefix}:collector:b`, outX0 * k, (outY1 - cw) * k, (outX1 - outX0) * k, cw * k),
+    // left and right bars of the ring
+    rect(`${idPrefix}:collector:l`, outX0 * k, ringY0 * k, cw * k, (ringY1 - ringY0) * k),
+    rect(`${idPrefix}:collector:r`, (outX1 - cw) * k, ringY0 * k, cw * k, (ringY1 - ringY0) * k)
+  ];
+
+  // The base: the n region around the collector ring. The base contact
+  // sits in it, beside the ring.
+  const baseX0 = outX0 - bcGap;
+  const baseX1 = outX1 + bcGap;
+  const baseY0 = outY0 - bcGap;
+  const baseY1 = outY1 + bcGap;
+  layers.bulk = [
+    rect(
+      `${idPrefix}:bulk`,
+      baseX0 * k,
+      baseY0 * k,
+      (baseX1 - baseX0) * k,
+      (baseY1 - baseY0) * k
+    )
+  ];
+
+  // Contacts: one per emitter stripe, one on the collector ring, one on
+  // the base.
+  const cs = Math.min(r.contactSize, Math.min(W, L) * 0.8);
+  const pad = r.metal1Pad;
+  const contacts: LayerShape[] = [];
+  const metal1: LayerShape[] = [];
+  const contactAt = (id: string, cx: number, cy: number, size: number) => {
+    contacts.push(rect(`${idPrefix}:ct:${id}`, cx - (size * k) / 2, cy - (size * k) / 2, size * k, size * k));
+    metal1.push(
+      rect(
+        `${idPrefix}:m1:${id}`,
+        cx - (size + 2 * pad) * k * 0.5,
+        cy - (size + 2 * pad) * k * 0.5,
+        (size + 2 * pad) * k,
+        (size + 2 * pad) * k
+      )
+    );
   };
+
+  for (let i = 0; i < N; i++) {
+    contactAt(`e${i}`, (i * (W + gap) + W / 2) * k, (L / 2) * k, cs);
+  }
+  // The collector contact sits on the ring's bottom bar.
+  contactAt("c", ((ringX0 + ringX1) / 2) * k, (outY1 - cw / 2) * k, Math.min(cs, cw * 0.8));
+  // The base contact sits in the base material, beside the ring.
+  contactAt("b", (baseX0 + bcGap / 2) * k, (L / 2) * k, Math.min(cs, bcGap * 0.8));
+
+  layers.contact = contacts;
+  layers.metal1 = metal1;
+
+  // The marker names the device; it encloses every shape of it.
+  const markerPad = Math.max(bcGap, 0.2);
+  layers.lpnp_id = [
+    rect(
+      `${idPrefix}:lpnp_id`,
+      (baseX0 - markerPad) * k,
+      (baseY0 - markerPad) * k,
+      (baseX1 - baseX0 + 2 * markerPad) * k,
+      (baseY1 - baseY0 + 2 * markerPad) * k
+    )
+  ];
+
+  const fitted = fitToCell(layers);
+  return { layers: fitted.layers, cropRect: fitted.cropRect, summary: analogPcellSummary(spec) };
 }

@@ -353,6 +353,12 @@ function DieViewer({ dieId }: { dieId: string }) {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [leftCollapsed, toggleLeft] = usePanelCollapsed("die.left");
   const [rightCollapsed, toggleRight] = usePanelCollapsed("die.right");
+  // The "I" hotkey opens the right panel for the analog library — the
+  // keydown handler is registered once, so it reads the state from a ref.
+  const rightCollapsedRef = useRef(rightCollapsed);
+  rightCollapsedRef.current = rightCollapsed;
+  const toggleRightRef = useRef(toggleRight);
+  toggleRightRef.current = toggleRight;
   useEffect(() => {
     const handler = () => setShortcutsOpen((v) => !v);
     window.addEventListener("toggle-shortcuts", handler);
@@ -715,6 +721,15 @@ function DieViewer({ dieId }: { dieId: string }) {
           useDieViewerStore.getState().setActiveViaId(metalStack.vias[viaIdx].id);
           return;
         }
+      }
+
+      // "I" — the analog library in the right panel.
+      if (!e.shiftKey && !e.altKey && e.key.toLowerCase() === "i") {
+        e.preventDefault();
+        const prefs = usePreferences.getState();
+        prefs.setInspectorTab(prefs.inspectorTab === "lib" ? "inspector" : "lib");
+        if (rightCollapsedRef.current) toggleRightRef.current();
+        return;
       }
 
       // Tool switch hotkeys.
@@ -4363,7 +4378,6 @@ function DieViewer({ dieId }: { dieId: string }) {
           setActiveTool={setActiveTool}
           multiWireHint={multiWireHint}
           libraryCell={libraryCell}
-          analogCell={analogCell}
         />
       </SubBar>
       <main
@@ -4634,6 +4648,7 @@ function DieViewer({ dieId }: { dieId: string }) {
             onActivateAssistantFinding={activateAssistantFinding}
             onOpenAssistantNetlist={openAssistantNetlist}
             onEditAnalogCell={analogCell.beginEdit}
+            analogCell={analogCell}
           />
           </div>
           <div style={{ flexShrink: 0, display: "flex", flexDirection: "column", borderTop: "1px solid var(--l2)" }}>

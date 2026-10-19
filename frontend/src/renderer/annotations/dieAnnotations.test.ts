@@ -38,7 +38,8 @@ describe("buildCellAnnotation", () => {
         scale: 20,
         rules: {
           spacing: 1, polyOverhang: 0.5, polyStrap: 0.4, contactSize: 0.4,
-          metal1Pad: 0.3, wellMargin: 1, baseMargin: 0.5, collectorWidth: 1
+          metal1Pad: 0.3, wellMargin: 1, baseMargin: 0.5, collectorWidth: 1,
+          lpnpEmitterCollectorGap: 0.8, lpnpBaseCollectorGap: 0.8, lpnpCollectorWidth: 1
         }
       }
     };

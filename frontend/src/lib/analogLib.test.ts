@@ -2,7 +2,7 @@
 import { describe, it, expect, beforeAll } from "vitest";
 import { readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
-import type { AnalogDevice, CellType, DeviceGeometryBJT, DeviceGeometryMOS, LayerShape } from "shared";
+import type { AnalogDevice, CellLayers, CellType, DeviceGeometryBJT, DeviceGeometryMOS, LayerShape } from "shared";
 import {
   buildAnalogPcell,
   defaultAnalogParams,
@@ -225,23 +225,110 @@ describe("buildAnalogPcell — BJT", () => {
     expect(geometry.AE_um2).toBeCloseTo(4, 3);
   });
 
-  it("is extracted as a pnp", () => {
-    const ct = asCellType(spec({ ...defaultAnalogParams("pnp"), W_um: 2, L_um: 2 }));
-    expect(ct.layers?.pnp_id).toHaveLength(1);
-    const devices = extractMarkedDevices(ct.layers, ct.id, UM_PER_PX);
-    expect(devices).toHaveLength(1);
-    expect(devices[0].kind).toBe("bjt_pnp");
+  it("lays an lpnp out as an emitter in a collector ring inside a base", () => {
+    const ct = asCellType(spec({ ...defaultAnalogParams("lpnp"), W_um: 2, L_um: 2 }));
+    // The emitter is p+, the collector ring is p+ too, the base is the n
+    // region around them.
+    expect(ct.layers?.lpnp_id).toHaveLength(1);
+    expect(ct.layers?.emitter).toHaveLength(1);
+    expect(ct.layers?.collector?.length).toBeGreaterThanOrEqual(4);
+    expect(ct.layers?.bulk).toHaveLength(1);
+
+    // The ring surrounds the emitter: the bars' outer bounds contain it,
+    // and the hole in the middle of the ring does not.
+    const emitter = ct.layers?.emitter?.[0];
+    const bars = (ct.layers?.collector ?? []).filter((s) => s.kind === "rect");
+    expect(emitter?.kind).toBe("rect");
+    if (emitter?.kind !== "rect" || bars.length === 0) return;
+    const minX = Math.min(...bars.map((s) => s.x));
+    const minY = Math.min(...bars.map((s) => s.y));
+    const maxX = Math.max(...bars.map((s) => s.x + s.width));
+    const maxY = Math.max(...bars.map((s) => s.y + s.height));
+    expect(emitter.x).toBeGreaterThan(minX);
+    expect(emitter.y).toBeGreaterThan(minY);
+    expect(emitter.x + emitter.width).toBeLessThan(maxX);
+    expect(emitter.y + emitter.height).toBeLessThan(maxY);
+    // The bars leave a hole around the emitter (they do not fill it).
+    const covers = bars.some(
+      (s) =>
+        s.x <= emitter.x &&
+        s.y <= emitter.y &&
+        s.x + s.width >= emitter.x + emitter.width &&
+        s.y + s.height >= emitter.y + emitter.height
+    );
+    expect(covers).toBe(false);
   });
 
-  it("lays an lpnp out without a base", () => {
-    const ct = asCellType(spec({ ...defaultAnalogParams("lpnp"), W_um: 2, L_um: 2 }));
-    expect(ct.layers?.lpnp_id).toHaveLength(1);
-    expect(ct.layers?.base).toBeUndefined();
+  it("keeps the lpnp emitter inside the collector ring and the base", () => {
+    const ct = asCellType(
+      spec({
+        ...defaultAnalogParams("lpnp"),
+        W_um: 2,
+        L_um: 2,
+        emitterCollectorGap_um: 1.5,
+        baseCollectorGap_um: 2
+      })
+    );
+    const emitter = ct.layers?.emitter?.[0];
+    const bulk = ct.layers?.bulk?.[0];
+    expect(emitter?.kind).toBe("rect");
+    expect(bulk?.kind).toBe("rect");
+    if (emitter?.kind === "rect" && bulk?.kind === "rect") {
+      // The emitter sits well inside the base region.
+      expect(emitter.x).toBeGreaterThan(bulk.x);
+      expect(emitter.y).toBeGreaterThan(bulk.y);
+      expect(emitter.x + emitter.width).toBeLessThan(bulk.x + bulk.width);
+      expect(emitter.y + emitter.height).toBeLessThan(bulk.y + bulk.height);
+    }
+  });
+
+  it("is extracted as a lateral pnp with the emitter area and the base contact", () => {
+    const ct = asCellType(spec({ ...defaultAnalogParams("lpnp"), W_um: 2, L_um: 3 }));
     const devices = extractMarkedDevices(ct.layers, ct.id, UM_PER_PX);
     expect(devices).toHaveLength(1);
     expect(devices[0].kind).toBe("bjt_pnp");
     const geometry = devices[0].geometry as DeviceGeometryBJT;
-    expect(geometry.AE_um2).toBeCloseTo(4, 3);
+    expect(geometry.bjtType).toBe("pnp");
+    // The emitter is p+ inside the n-base: the base covers it, so the
+    // emitter area is the emitter's own area.
+    expect(geometry.AE_um2).toBeCloseTo(2 * 3, 3);
+    expect(devices[0].terminals.map((t) => t.name).sort()).toEqual(["B", "C", "E"]);
+  });
+});
+
+describe("buildAnalogPcell — the device fits its cell", () => {
+  const boundsOf = (layers: CellLayers): { minX: number; minY: number; maxX: number; maxY: number } => {
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (const shapes of Object.values(layers)) {
+      for (const s of shapes ?? []) {
+        if (s.kind !== "rect") continue;
+        minX = Math.min(minX, s.x);
+        minY = Math.min(minY, s.y);
+        maxX = Math.max(maxX, s.x + s.width);
+        maxY = Math.max(maxY, s.y + s.height);
+      }
+    }
+    return { minX, minY, maxX, maxY };
+  };
+
+  it("keeps every shape inside the cell box", () => {
+    for (const template of ["pmos", "nmos", "npn", "lpnp"] as const) {
+      for (const fingers of [1, 2]) {
+        for (const bulk of ["none", "tap"] as const) {
+          const p = { ...defaultAnalogParams(template), fingers };
+          if (p.kind === "mos") p.bulk = bulk;
+          const layout = buildAnalogPcell(spec(p), "ct");
+          const b = boundsOf(layout.layers);
+          expect(b.minX).toBeGreaterThanOrEqual(0);
+          expect(b.minY).toBeGreaterThanOrEqual(0);
+          expect(b.maxX).toBeLessThanOrEqual(layout.cropRect.width + 1e-6);
+          expect(b.maxY).toBeLessThanOrEqual(layout.cropRect.height + 1e-6);
+          // The cell box is the content's own bounds.
+          expect(layout.cropRect.width).toBeCloseTo(b.maxX - b.minX, 3);
+          expect(layout.cropRect.height).toBeCloseTo(b.maxY - b.minY, 3);
+        }
+      }
+    }
   });
 });
 

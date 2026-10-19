@@ -37,6 +37,8 @@ import { CVPanel } from "./CVPanel";
 import { AssistantPanel } from "./AssistantPanel";
 import { CellDetectionPanel, ProposalInspector } from "./CellDetectionPanel";
 import { DieProperties } from "./DieProperties";
+import { AnalogLibPanel } from "./AnalogLibPanel";
+import type { AnalogCellTool } from "./useAnalogCellTool";
 import { isMlCellId, type Proposal } from "../../lib/cellDetection";
 
 /** A single labelled property row (`.prop` matches the hifi spec). */
@@ -525,6 +527,7 @@ export function InspectorPanel({
   onActivateAssistantFinding,
   onOpenAssistantNetlist,
   onEditAnalogCell,
+  analogCell,
 }: {
   annotations: DieAnnotations | undefined;
   dispatcher: ActionDispatcher;
@@ -550,6 +553,8 @@ export function InspectorPanel({
   /** Load a placed analog-library device back into the placement tool, so
    *  it can be laid out again with other parameters. */
   onEditAnalogCell?: (cell: Cell, cellType: CellType) => void;
+  /** The analog-library tool — its state and controls live in the "Lib" tab. */
+  analogCell?: AnalogCellTool;
 }) {
   const tab = usePreferences((s) => s.inspectorTab);
   const setTab = usePreferences((s) => s.setInspectorTab);
@@ -561,13 +566,14 @@ export function InspectorPanel({
         className="ph"
         style={{ padding: 0, gap: 0, height: 30 }}
       >
-        {(["inspector", "ml", "cells", "cv", "ai"] as const).map((k) => (
+        {(["inspector", "ml", "cells", "cv", "ai", "lib"] as const).map((k) => (
           <button
             key={k}
             type="button"
             className={"tab" + (tab === k ? " on" : "")}
             style={{ background: "transparent", cursor: "pointer" }}
             onClick={() => setTab(k)}
+            title={k === "lib" ? "Analog library — lay a device out and place it (I)" : undefined}
           >
             {k === "inspector"
               ? "Inspector"
@@ -577,7 +583,9 @@ export function InspectorPanel({
                   ? "Cells"
                   : k === "cv"
                     ? "CV"
-                    : "AI"}
+                    : k === "lib"
+                      ? "Lib"
+                      : "AI"}
           </button>
         ))}
       </div>
@@ -598,6 +606,8 @@ export function InspectorPanel({
           <MLPanel dieId={dieId} annotations={annotations} dispatcher={dispatcher} mlViasLayer={mlViasLayer} />
         ) : tab === "cells" ? (
           <CellDetectionPanel dieId={dieId} annotations={annotations} library={library} />
+        ) : tab === "lib" && analogCell ? (
+          <AnalogLibPanel tool={analogCell} />
         ) : tab === "cv" ? (
           <CVPanel dieId={dieId} annotations={annotations} dispatcher={dispatcher} />
         ) : (
