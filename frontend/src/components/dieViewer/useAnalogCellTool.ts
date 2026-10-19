@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import type { Cell, CellType } from "shared";
 import type { AnalogLibParams, AnalogLibTemplate, AnalogPcellSpec } from "shared";
 import {
@@ -16,15 +16,18 @@ import { pointInRect, type Point } from "../../lib/geometry";
 import { isTypingTarget } from "../../lib/keyboard";
 import { createLiveValue, type LiveValue } from "../../lib/liveValue";
 import { cellInstanceScale } from "../../lib/cellFootprint";
-import { orientOnDie, type DieOrientOp } from "../../lib/mergeCells";
+import { orientOnDie, type DieOrientOp, type Orient } from "../../lib/mergeCells";
 import { uuid } from "../../lib/uuid";
 import type { Interaction, PointerEventData } from "../../renderer/interaction";
 import type { Viewport } from "../../renderer/types";
 import { useDieViewerStore, type ToolKind } from "../../state/dieViewer";
 import { usePreferences } from "../../state/preferences";
 import {
+  analogDrop,
+  analogFollow,
   analogFootprint,
   analogResizeFromCorner,
+  newAnalogDraft,
   type AnalogDraft
 } from "../../lib/analogPlacement";
 import { rectCornerPoints } from "../../lib/libraryPlacement";
@@ -54,7 +57,7 @@ export interface AnalogCellTool {
   beginEdit: (cell: Cell, cellType: CellType) => void;
   /** Leave the edit and go back to placing new devices. */
   stopEditing: () => void;
-  /** Arm the placement tool (and drop the template where the view is). */
+  /** Arm the placement tool — the template sticks to the pointer. */
   startPlacing: () => void;
   /** The generated device, as the template shows it. */
   layout: AnalogPcellLayout;
@@ -63,12 +66,20 @@ export interface AnalogCellTool {
   /** The template being fitted (the overlay subscribes to it). */
   draftLive: LiveValue<AnalogDraft | null>;
   hasDraft: boolean;
+  /** The template sticks to the pointer (it has not been dropped yet). */
+  following: boolean;
+  /** The tool is armed: the pointer places the device. */
+  armed: boolean;
+  /** The orientation new devices are laid out with. */
+  orientation: Orient;
   orient: (op: DieOrientOp) => void;
   /** Place the device and remember its parameters. */
   accept: () => Promise<void>;
   cancel: () => void;
-  /** Canvas click: the template jumps there. */
+  /** Canvas click: the template is dropped there. */
   moveTo: (p: Point) => void;
+  /** The pointer moved: the template follows it while it is stuck to it. */
+  follow: (p: Point) => void;
   pointerDown: (e: PointerEventData) => Interaction;
   busy: boolean;
   error: string | null;
@@ -92,6 +103,10 @@ export interface AnalogEditTarget {
  * it is generated at, then stretch the template over the transistor in the
  * die image and accept: a cell carrying the device's layers lands there.
  *
+ * The template sticks to the pointer: "Place" arms the tool, the device
+ * follows the mouse over the die, a click drops it, the corners set its
+ * size and Enter places it. Nothing is dropped in the middle of the view.
+ *
  * The cell is an ordinary one: its layers can be edited by hand afterwards,
  * and it is unique — the library's device is never touched.
  */
@@ -99,7 +114,6 @@ export function useAnalogCellTool({
   dieId,
   dispatcher,
   viewportLive,
-  containerRef,
   activeTool,
   setActiveTool,
   dieScale,
@@ -108,7 +122,6 @@ export function useAnalogCellTool({
   dieId: string;
   dispatcher: ActionDispatcher;
   viewportLive: LiveValue<Viewport | null>;
-  containerRef: RefObject<HTMLElement | null>;
   activeTool: ToolKind;
   setActiveTool: (tool: ToolKind) => void;
   /** The die's library scale (pixels per library unit) — the default. */
@@ -118,10 +131,22 @@ export function useAnalogCellTool({
 }): AnalogCellTool {
   const draftLive = useMemo(() => createLiveValue<AnalogDraft | null>(null), []);
   const [hasDraft, setHasDraft] = useState(false);
+  const [following, setFollowing] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [editing, setEditing] = useState<AnalogEditTarget | null>(null);
+  // The user armed the placement: the pointer carries the device. It is
+  // cleared by accepting, cancelling or leaving the tool — otherwise the
+  // device would come back on the next mouse move.
+  const [placing, setPlacing] = useState(false);
+  // The orientation new devices are laid out with. It lives here, not in
+  // the draft, so it can be turned before the template even appears.
+  const [orientation, setOrientation] = useState<Orient>({
+    rotation: 0,
+    flippedH: false,
+    flippedV: false
+  });
 
   // The last device the user placed — the tool starts from it. A stored
   // template can be gone (the vertical pnp was removed) and a stored
@@ -139,6 +164,7 @@ export function useAnalogCellTool({
     (d: AnalogDraft | null) => {
       draftLive.set(d);
       setHasDraft(d !== null);
+      setFollowing(d?.follow === true);
     },
     [draftLive]
   );
@@ -150,7 +176,10 @@ export function useAnalogCellTool({
 
   // Leaving the tool drops the template.
   useEffect(() => {
-    if (activeTool !== "analogCell") setDraft(null);
+    if (activeTool !== "analogCell") {
+      setDraft(null);
+      setPlacing(false);
+    }
   }, [activeTool, setDraft]);
 
   const spec = useMemo<AnalogPcellSpec>(
@@ -181,26 +210,15 @@ export function useAnalogCellTool({
     }
   }, [spec, problem]);
 
-  const viewportCentre = useCallback((): Point => {
-    const vp = viewportLive.get();
-    const el = containerRef.current;
-    if (!vp || !el) return { x: 0, y: 0 };
-    const r = el.getBoundingClientRect();
-    return { x: vp.originX + r.width / 2 / vp.zoom, y: vp.originY + r.height / 2 / vp.zoom };
-  }, [viewportLive, containerRef]);
-
   const chooseTemplate = useCallback(
     (id: AnalogLibTemplate) => {
       setTemplate(id);
       setParamsState(defaultAnalogParams(id));
       setError(null);
-      // The template keeps its place, so the new device shows up there.
-      const d = draftLive.get();
-      if (!d) {
-        setDraft({ cx: viewportCentre().x, cy: viewportCentre().y, k: 1, rotation: 0, flippedH: false, flippedV: false });
-      }
+      // The template keeps its place — the new device shows up there, in
+      // the size its new parameters give it.
     },
-    [draftLive, setDraft, viewportCentre]
+    []
   );
 
   const setParams = useCallback((next: AnalogLibParams) => {
@@ -215,10 +233,14 @@ export function useAnalogCellTool({
 
   const orient = useCallback(
     (op: DieOrientOp) => {
+      // The orientation is the tool's, not the draft's: the device can be
+      // turned before its template ever appears.
+      const next = orientOnDie(orientation, op);
+      setOrientation(next);
       const d = draftLive.get();
-      if (d) setDraft(orientOnDie(d, op));
+      if (d) setDraft({ ...d, ...next });
     },
-    [draftLive, setDraft]
+    [draftLive, orientation, setDraft]
   );
 
   /** Load a placed device's parameters back into the tool, so it can be
@@ -240,17 +262,24 @@ export function useAnalogCellTool({
       setParamsState(normalizeAnalogParams(pcell.template, pcell.params));
       setScaleState(pcell.scale);
       setError(null);
-      // The template starts where the device sits.
+      // The template starts where the device sits — it is not stuck to the
+      // pointer here, the user is editing the device in place.
       const k = cellInstanceScale(cell, cellType, dieScale);
+      const orient: Orient = {
+        rotation: (cell.rotation ?? 0) as Orient["rotation"],
+        flippedH: cell.flippedH === true,
+        flippedV: cell.flippedV === true
+      };
+      setOrientation(orient);
       setDraft({
         cx: cell.x + (cellType.cropRect.width * k) / 2,
         cy: cell.y + (cellType.cropRect.height * k) / 2,
         k: 1,
-        rotation: (cell.rotation ?? 0) as AnalogDraft["rotation"],
-        flippedH: cell.flippedH === true,
-        flippedV: cell.flippedV === true
+        ...orient,
+        follow: false
       });
       setActiveTool("analogCell");
+      setPlacing(true);
     },
     [dieScale, setActiveTool, setDraft]
   );
@@ -258,27 +287,51 @@ export function useAnalogCellTool({
   const stopEditing = useCallback(() => {
     setEditing(null);
     setDraft(null);
+    setPlacing(false);
   }, [setDraft]);
 
-  /** Arm the placement tool; the template appears in the middle of the
-   *  view, ready to be dragged onto the device in the image. */
+  /** Arm the placement tool. The template sticks to the pointer: it
+   *  follows it over the die, a click drops it, and Enter places it. */
   const startPlacing = useCallback(() => {
     setActiveTool("analogCell");
-    if (!draftLive.get()) {
-      const c = viewportCentre();
-      setDraft({ cx: c.x, cy: c.y, k: 1, rotation: 0, flippedH: false, flippedV: false });
-    }
-  }, [draftLive, setActiveTool, setDraft, viewportCentre]);
+    setPlacing(true);
+    setNotice(null);
+    const d = draftLive.get();
+    // The template sticks to the pointer again. If there is none yet, it
+    // appears as soon as the pointer reaches the canvas.
+    if (d) setDraft({ ...d, follow: true });
+  }, [draftLive, setActiveTool, setDraft]);
 
-  const cancel = useCallback(() => setDraft(null), [setDraft]);
+  const cancel = useCallback(() => {
+    setDraft(null);
+    setPlacing(false);
+  }, [setDraft]);
 
+  /** The click: the template is dropped where the pointer is. */
   const moveTo = useCallback(
     (p: Point) => {
       const d = draftLive.get();
-      if (d) setDraft({ ...d, cx: p.x, cy: p.y });
-      else setDraft({ cx: p.x, cy: p.y, k: 1, rotation: 0, flippedH: false, flippedV: false });
+      if (d) setDraft(analogDrop(d, p));
+      else setDraft(newAnalogDraft(p, { ...orientation, follow: false }));
     },
-    [draftLive, setDraft]
+    [draftLive, orientation, setDraft]
+  );
+
+  /** The pointer moved: the template follows it while it is stuck to it. */
+  const follow = useCallback(
+    (p: Point) => {
+      if (activeTool !== "analogCell" || !placing) return;
+      const d = draftLive.get();
+      if (!d) {
+        // The tool is armed and the pointer reached the canvas: the
+        // template appears, stuck to the pointer.
+        setDraft(newAnalogDraft(p, orientation));
+        return;
+      }
+      const next = analogFollow(d, p);
+      if (next !== d) setDraft(next);
+    },
+    [activeTool, draftLive, orientation, placing, setDraft]
   );
 
   const accept = useCallback(async () => {
@@ -357,6 +410,7 @@ export function useAnalogCellTool({
       usePreferences.getState().setAnalogCellLast({ template, params, scale });
       setDraft(null);
       setEditing(null);
+      setPlacing(false);
       useDieViewerStore.getState().select([`cell:${cell.id}`], "replace");
       setNotice(
         `${built.summary} · ${Math.round(w)}×${Math.round(h)} px · ${finalScale.toFixed(3)} px/µm`
@@ -376,20 +430,34 @@ export function useAnalogCellTool({
       if (e.key === "Enter" && draftLive.get()) {
         e.preventDefault();
         void accept();
-      } else if (e.key === "Escape" && draftLive.get()) {
+      } else if (e.key === "Escape" && placing) {
         e.preventDefault();
+        // Cancel: the template goes away and the pointer stops carrying
+        // it — otherwise the next mouse move would bring it back.
         setDraft(null);
+        setPlacing(false);
+        setActiveTool("select");
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [activeTool, accept, draftLive, setDraft]);
+  }, [activeTool, accept, draftLive, placing, setActiveTool, setDraft]);
 
   const pointerDown = useCallback(
     (e: PointerEventData): Interaction => {
       const d = draftLive.get();
       const vp = viewportLive.get();
       if (!d || !vp || problem) return "pan";
+      if (d.follow) {
+        // The template sticks to the pointer: the click drops it here.
+        // (The pointer move already carried it along.)
+        return {
+          onPointerUp: ({ worldPoint }) => {
+            const cur = draftLive.get();
+            if (cur) setDraft(analogDrop(cur, worldPoint));
+          }
+        };
+      }
       const fp = analogFootprint(d, layout.cropRect.width, layout.cropRect.height);
       const tol = HANDLE_TOL_PX / vp.zoom;
       const corner = rectCornerPoints(fp).findIndex(
@@ -426,7 +494,7 @@ export function useAnalogCellTool({
       // Elsewhere: pan (a plain click moves the template there).
       return "pan";
     },
-    [draftLive, layout.cropRect.height, layout.cropRect.width, problem, viewportLive]
+    [draftLive, layout.cropRect.height, layout.cropRect.width, problem, setDraft, viewportLive]
   );
 
   return {
@@ -447,10 +515,14 @@ export function useAnalogCellTool({
     problem,
     draftLive,
     hasDraft,
+    following,
+    armed: placing,
+    orientation,
     orient,
     accept,
     cancel,
     moveTo,
+    follow,
     pointerDown,
     busy,
     error,

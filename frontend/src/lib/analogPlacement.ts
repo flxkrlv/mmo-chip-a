@@ -21,6 +21,41 @@ export interface AnalogDraft {
   rotation: Rotation;
   flippedH: boolean;
   flippedV: boolean;
+  /** The template sticks to the pointer: it follows it until the user
+   *  drops it with a click. */
+  follow: boolean;
+}
+
+/** A fresh template at `at`, sticking to the pointer. */
+export function newAnalogDraft(
+  at: { x: number; y: number },
+  over: Partial<AnalogDraft> = {}
+): AnalogDraft {
+  return {
+    cx: at.x,
+    cy: at.y,
+    k: 1,
+    rotation: 0,
+    flippedH: false,
+    flippedV: false,
+    follow: true,
+    ...over
+  };
+}
+
+/**
+ * The pointer moved: the template follows it — but only while it is stuck
+ * to it. A dropped template stays where the user put it.
+ */
+export function analogFollow(d: AnalogDraft, p: { x: number; y: number }): AnalogDraft {
+  if (!d.follow) return d;
+  if (d.cx === p.x && d.cy === p.y) return d;
+  return { ...d, cx: p.x, cy: p.y };
+}
+
+/** The click: the template is dropped where the pointer is. */
+export function analogDrop(d: AnalogDraft, p: { x: number; y: number }): AnalogDraft {
+  return { ...d, cx: p.x, cy: p.y, follow: false };
 }
 
 /** The draft's footprint: the generated box, stretched and turned. */

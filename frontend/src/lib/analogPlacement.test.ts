@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { analogFootprint, analogResizeFromCorner, type AnalogDraft } from "./analogPlacement";
+import {
+  analogDrop,
+  analogFollow,
+  analogFootprint,
+  analogResizeFromCorner,
+  newAnalogDraft,
+  type AnalogDraft
+} from "./analogPlacement";
 
 const draft = (over: Partial<AnalogDraft> = {}): AnalogDraft => ({
   cx: 100,
@@ -8,6 +15,7 @@ const draft = (over: Partial<AnalogDraft> = {}): AnalogDraft => ({
   rotation: 0,
   flippedH: false,
   flippedV: false,
+  follow: false,
   ...over
 });
 
@@ -51,5 +59,52 @@ describe("analogResizeFromCorner", () => {
   it("never shrinks below the minimum", () => {
     const next = analogResizeFromCorner(draft(), 40, 20, 2, { x: 0, y: 0 }, 8);
     expect(analogFootprint(next, 40, 20).width).toBeGreaterThanOrEqual(8);
+  });
+
+  it("keeps the template stuck to the pointer", () => {
+    // A corner drag must not unstick it.
+    const next = analogResizeFromCorner(draft({ follow: true }), 40, 20, 2, { x: 160, y: 130 });
+    expect(next.follow).toBe(true);
+  });
+});
+
+describe("the template follows the pointer", () => {
+  it("a fresh template sticks to the pointer", () => {
+    const d = newAnalogDraft({ x: 10, y: 20 });
+    expect(d.follow).toBe(true);
+    expect(d.cx).toBe(10);
+    expect(d.cy).toBe(20);
+    expect(d.k).toBe(1);
+    expect(d.rotation).toBe(0);
+  });
+
+  it("moves with the pointer while it is stuck to it", () => {
+    const d = newAnalogDraft({ x: 0, y: 0 });
+    const next = analogFollow(d, { x: 50, y: 60 });
+    expect(next.cx).toBe(50);
+    expect(next.cy).toBe(60);
+    expect(next.follow).toBe(true);
+  });
+
+  it("a dropped template stays where it was put", () => {
+    const dropped = analogDrop(newAnalogDraft({ x: 0, y: 0 }), { x: 50, y: 60 });
+    expect(dropped.follow).toBe(false);
+    expect(dropped.cx).toBe(50);
+    expect(dropped.cy).toBe(60);
+    // The pointer moves on — the template stays.
+    expect(analogFollow(dropped, { x: 900, y: 900 })).toBe(dropped);
+  });
+
+  it("the click drops the template where the pointer is", () => {
+    const d = newAnalogDraft({ x: 0, y: 0 });
+    const dropped = analogDrop(d, { x: 12, y: 34 });
+    expect(dropped.cx).toBe(12);
+    expect(dropped.cy).toBe(34);
+    expect(dropped.follow).toBe(false);
+  });
+
+  it("does not move when the pointer did not", () => {
+    const d = newAnalogDraft({ x: 7, y: 7 });
+    expect(analogFollow(d, { x: 7, y: 7 })).toBe(d);
   });
 });

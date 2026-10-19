@@ -1832,7 +1832,6 @@ function DieViewer({ dieId }: { dieId: string }) {
     dieId,
     dispatcher,
     viewportLive,
-    containerRef,
     activeTool,
     setActiveTool,
     dieScale: library.scale,
@@ -2352,6 +2351,8 @@ function DieViewer({ dieId }: { dieId: string }) {
       wireSnapLive.set(
         tool === "wire" && !wire.draft ? wire.resolveWireSnap(world) : null
       );
+      // The analog device template sticks to the pointer until it is dropped.
+      if (tool === "analogCell") analogCell.follow(world);
     },
     [
       cursorLive,
@@ -2368,7 +2369,8 @@ function DieViewer({ dieId }: { dieId: string }) {
       findNearestVia,
       findMultiWireEndpointViaSnap,
       findMultiWireAutoEndSnaps,
-      selectedCellSideAt
+      selectedCellSideAt,
+      analogCell
     ]
   );
 
@@ -4747,9 +4749,11 @@ function DieViewer({ dieId }: { dieId: string }) {
               : (libraryCell.notice ?? "place library cell — pick a cell in the toolbar")
             : null,
           activeTool === "analogCell"
-            ? analogCell.hasDraft
-              ? "place analog device — drag to move · corners stretch it over the device · Enter to accept · Esc to cancel"
-              : (analogCell.notice ?? "place analog device — pick a device in the toolbar")
+            ? analogCell.following
+              ? "place analog device — it follows the mouse · click to drop it · corners set the size · Enter to accept · Esc to cancel"
+              : analogCell.hasDraft
+                ? "place analog device — drag to move · corners stretch it over the device · Enter to accept · Esc to cancel"
+                : "place analog device — move the mouse over the die · it sticks to the cursor · click to drop it"
             : null,
           extractionRunning
             ? `extracting ${extractionProgress?.done ?? 0}/${extractionProgress?.total ?? 1}…`

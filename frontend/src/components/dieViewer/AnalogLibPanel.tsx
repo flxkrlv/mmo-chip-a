@@ -116,8 +116,9 @@ function DevicePreview({ layout }: { layout: AnalogPcellLayout }) {
  *
  * Pick a device, set its parameters and the scale it is generated at,
  * look at the preview, and press "Place" — that arms the placement tool on
- * the die viewer, where the device is stretched over the transistor in the
- * image and placed with Enter.
+ * the die viewer, where the device sticks to the pointer: a click drops it
+ * over the transistor in the image, the corners set its size and Enter
+ * places it.
  */
 export function AnalogLibPanel({ tool }: { tool: AnalogCellTool }) {
   const draft = useLiveValue(tool.draftLive);
@@ -303,7 +304,6 @@ export function AnalogLibPanel({ tool }: { tool: AnalogCellTool }) {
         <button
           type="button"
           className="btn ghost"
-          disabled={!draft}
           title="Rotate 90° counter-clockwise"
           onClick={() => tool.orient("rotateCcw")}
         >
@@ -312,7 +312,6 @@ export function AnalogLibPanel({ tool }: { tool: AnalogCellTool }) {
         <button
           type="button"
           className="btn ghost"
-          disabled={!draft}
           title="Rotate 90° clockwise"
           onClick={() => tool.orient("rotateCw")}
         >
@@ -321,7 +320,6 @@ export function AnalogLibPanel({ tool }: { tool: AnalogCellTool }) {
         <button
           type="button"
           className="btn ghost"
-          disabled={!draft}
           title="Flip horizontally"
           onClick={() => tool.orient("flipH")}
         >
@@ -330,25 +328,23 @@ export function AnalogLibPanel({ tool }: { tool: AnalogCellTool }) {
         <button
           type="button"
           className="btn ghost"
-          disabled={!draft}
           title="Flip vertically"
           onClick={() => tool.orient("flipV")}
         >
           {Ic.flipV}
         </button>
-        {draft && (
-          <span className="m" style={{ fontSize: 10.5, color: "var(--ink2)" }}>
-            {draft.rotation}°{draft.flippedH ? " ⇄" : ""}
-            {draft.flippedV ? " ⇵" : ""} · ×{draft.k.toFixed(3)}
-          </span>
-        )}
+        <span className="m" style={{ fontSize: 10.5, color: "var(--ink2)" }}>
+          {tool.orientation.rotation}°{tool.orientation.flippedH ? " ⇄" : ""}
+          {tool.orientation.flippedV ? " ⇵" : ""}
+          {draft ? ` · ×${draft.k.toFixed(3)}` : ""}
+        </span>
       </div>
 
       <button
         type="button"
         className="btn accent"
         disabled={!!tool.problem}
-        title="Arm the placement tool — click the die, stretch the device over it, Enter places it"
+        title="Arm the placement tool — the device sticks to the mouse; click to drop it, drag the corners to set the size, Enter places it"
         onClick={() => tool.startPlacing()}
       >
         {tool.editing ? "Place (replace the device)" : "Place"}
@@ -377,8 +373,8 @@ export function AnalogLibPanel({ tool }: { tool: AnalogCellTool }) {
       )}
       {!draft && (
         <div className="m" style={{ fontSize: 10.5, color: "var(--ink3)", fontStyle: "italic" }}>
-          Press “Place”, then click the die and stretch the device over the transistor in the
-          image; Enter places it.
+          Press “Place” — the device sticks to the mouse over the die; click to drop it, drag
+          the corners to set the size, Enter places it.
         </div>
       )}
     </div>
