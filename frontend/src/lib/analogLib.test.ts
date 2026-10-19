@@ -2,10 +2,12 @@
 import { describe, it, expect, beforeAll } from "vitest";
 import { readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
-import type { AnalogDevice, CellLayers, CellType, DeviceGeometryBJT, DeviceGeometryMOS, LayerShape } from "shared";
+import type { AnalogDevice, AnalogLibTemplate, CellLayers, CellType, DeviceGeometryBJT, DeviceGeometryMOS, LayerShape } from "shared";
 import {
   buildAnalogPcell,
   defaultAnalogParams,
+  normalizeAnalogParams,
+  resolveAnalogTemplate,
   validateAnalogParams,
   DEFAULT_ANALOG_LIB_RULES,
   type AnalogPcellSpec
@@ -454,5 +456,54 @@ describe("analog parameters", () => {
     expect(() =>
       buildAnalogPcell(spec(defaultAnalogParams("pmos"), 0), "ct")
     ).toThrow(/scale/);
+  });
+
+  it("fills in the fields a stored parameter set is missing", () => {
+    // Parameters are remembered between sessions, so a set saved by an
+    // older version can lack fields that were added later.
+    const stored = {
+      kind: "mos" as const,
+      mosType: "pmos" as const,
+      fingers: 4,
+      W_um: 3,
+      L_um: 0.5,
+      bulk: "none" as const
+    };
+    const params = normalizeAnalogParams("pmos", stored);
+    expect(params.kind).toBe("mos");
+    if (params.kind !== "mos") return;
+    // The stored values are kept…
+    expect(params.fingers).toBe(4);
+    expect(params.W_um).toBe(3);
+    // …and the missing ones come from the template.
+    expect(params.multiplier).toBe(1);
+    expect(params.multiplierGap_um).toBeGreaterThan(0);
+    expect(validateAnalogParams(params)).toBeNull();
+  });
+
+  it("keeps the gaps of a stored lateral pnp", () => {
+    const stored = {
+      kind: "bjt" as const,
+      bjtType: "lpnp" as const,
+      fingers: 1,
+      W_um: 2,
+      L_um: 2
+    };
+    const params = normalizeAnalogParams("lpnp", stored);
+    expect(params.kind).toBe("bjt");
+    if (params.kind !== "bjt") return;
+    expect(params.emitterCollectorGap_um).toBeGreaterThan(0);
+    expect(params.collectorBaseGap_um).toBeGreaterThan(0);
+    expect(params.baseContactSide).toBeTruthy();
+  });
+
+  it("falls back when the stored template is gone", () => {
+    // The vertical pnp was removed from the library, but an old session can
+    // still have it stored.
+    const gone = "pnp" as unknown as Parameters<typeof resolveAnalogTemplate>[0];
+    expect(resolveAnalogTemplate(gone)).toBe("pmos");
+    const params = normalizeAnalogParams(gone as AnalogLibTemplate, null);
+    expect(params.kind).toBe("mos");
+    expect(validateAnalogParams(params)).toBeNull();
   });
 });

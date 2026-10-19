@@ -169,6 +169,45 @@ export function defaultAnalogParams<T extends AnalogLibTemplate>(
   return { ...info.defaults } as AnalogParamsFor<T>;
 }
 
+/** The defined values of a parameter set — the missing ones stay missing. */
+function definedOnly<T extends object>(params: T): Partial<T> {
+  const out: Partial<T> = {};
+  for (const [key, value] of Object.entries(params)) {
+    if (value !== undefined && value !== null) (out as Record<string, unknown>)[key] = value;
+  }
+  return out;
+}
+
+/**
+ * The template if it still exists, else the default one. A remembered
+ * template can be gone — the vertical PNP was removed from the library.
+ */
+export function resolveAnalogTemplate(
+  template: AnalogLibTemplate | null | undefined
+): AnalogLibTemplate {
+  return template && analogLibTemplate(template) ? template : "pmos";
+}
+
+/**
+ * Fill in what a stored parameter set is missing. Parameters are remembered
+ * between sessions, so a set saved by an older version can lack fields that
+ * were added later — those fall back to the template's defaults.
+ */
+export function normalizeAnalogParams(
+  template: AnalogLibTemplate,
+  params: Partial<AnalogLibParams> | null | undefined
+): AnalogLibParams {
+  const base = defaultAnalogParams(resolveAnalogTemplate(template));
+  if (!params) return base;
+  if (params.kind === "mos" && base.kind === "mos") {
+    return { ...base, ...definedOnly(params as Partial<AnalogLibMosParams>) };
+  }
+  if (params.kind === "bjt" && base.kind === "bjt") {
+    return { ...base, ...definedOnly(params as Partial<AnalogLibBjtParams>) };
+  }
+  return base;
+}
+
 /** The template a parameter set belongs to. */
 export function analogTemplateOf(params: AnalogLibParams): AnalogLibTemplate {
   return params.kind === "mos" ? params.mosType : params.bjtType;

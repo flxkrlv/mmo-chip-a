@@ -6,6 +6,8 @@ import {
   DEFAULT_ANALOG_LIB_RULES,
   buildAnalogPcell,
   defaultAnalogParams,
+  normalizeAnalogParams,
+  resolveAnalogTemplate,
   validateAnalogParams,
   type AnalogPcellLayout
 } from "shared/analogLib";
@@ -121,11 +123,15 @@ export function useAnalogCellTool({
   const [notice, setNotice] = useState<string | null>(null);
   const [editing, setEditing] = useState<AnalogEditTarget | null>(null);
 
-  // The last device the user placed — the tool starts from it.
+  // The last device the user placed — the tool starts from it. A stored
+  // template can be gone (the vertical pnp was removed) and a stored
+  // parameter set can miss fields added later, so both are normalized.
   const last = usePreferences((s) => s.analogCellLast);
-  const [template, setTemplate] = useState<AnalogLibTemplate>(last?.template ?? "pmos");
+  const [template, setTemplate] = useState<AnalogLibTemplate>(
+    resolveAnalogTemplate(last?.template)
+  );
   const [params, setParamsState] = useState<AnalogLibParams>(
-    last?.params ?? defaultAnalogParams("pmos")
+    normalizeAnalogParams(resolveAnalogTemplate(last?.template), last?.params)
   );
   const [scale, setScaleState] = useState<number>(last?.scale ?? dieScale);
 
@@ -231,7 +237,7 @@ export function useAnalogCellTool({
         prevCellType: cellType
       });
       setTemplate(pcell.template);
-      setParamsState(pcell.params);
+      setParamsState(normalizeAnalogParams(pcell.template, pcell.params));
       setScaleState(pcell.scale);
       setError(null);
       // The template starts where the device sits.

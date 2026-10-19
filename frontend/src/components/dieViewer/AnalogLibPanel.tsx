@@ -16,12 +16,14 @@ export function AnalogNumField({
   width = 64
 }: {
   label: string;
-  value: number;
+  value: number | undefined;
   title?: string;
   onCommit: (v: number) => void;
   width?: number;
 }) {
-  const shown = String(Number(value.toFixed(4)));
+  // A missing value must not take the panel down with it.
+  const num = typeof value === "number" && Number.isFinite(value) ? value : 0;
+  const shown = String(Number(num.toFixed(4)));
   const commit = (el: HTMLInputElement) => {
     const v = Number(el.value.trim());
     if (!Number.isFinite(v) || v <= 0 || String(Number(v.toFixed(4))) === shown) {
