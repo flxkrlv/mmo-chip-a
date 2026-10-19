@@ -1610,32 +1610,22 @@ export function resolveDeviceContacts(
   const cTis = new Map<string, Set<number>>();
   const cPos = new Map<string, {x:number;y:number;tol:number}>();
 
-  // Shape-id lookup so the bulk (B) terminal can exclude contacts that belong
-  // to THIS device's own D/S diffusion segments or gate poly — without
-  // rejecting genuine well/bulk tap contacts that merely sit on diffusion
-  // elsewhere in the well. (Rejecting *all* diffusion contacts made bulk taps
-  // invisible, so B was always forced to a supply rail.)
-  const shapeById = new Map<string, LayerShape>();
-  for (const arr of Object.values(ctLayers)) {
-    for (const sh of (arr as LayerShape[] | undefined) ?? []) shapeById.set(sh.id, sh);
-  }
-  const bExcludeShapeIds: string[] = [];
-  if (dev.kind === "mos") {
-    for (const t of dev.terminals) {
-      if (t.name === "D" || t.name === "S" || t.name === "G") {
-        for (const sid of t.shapeIds ?? []) bExcludeShapeIds.push(sid);
-      }
+  // The bulk (B) terminal of a MOS is the well. A contact is a bulk
+  // contact only when it sits in the well and NOT on the transistor's
+  // silicon — a contact on a diffusion is a source / drain, a contact on
+  // a poly is a gate. The check is per layer (not per device): a MOS is
+  // split into one sub-device per finger, and the fingers share one
+  // diffusion body, so per-device checks would let the far finger's
+  // source/drain and gate contacts fall into the bulk terminal.
+  //
+  // A well tap is a contact on the well that touches no diffusion and no
+  // poly — that is the only shape a bulk contact can have.
+  const mosOtherLayers: string[] = [];
+  for (const [key, d] of defMap) {
+    if (key === "B") continue;
+    for (const l of d.layers) {
+      if (!mosOtherLayers.includes(l)) mosOtherLayers.push(l);
     }
-    // A multi-finger MOS is ONE transistor, split into per-finger
-    // sub-devices: every finger shares the diffusion body, and the
-    // diffusion is cut into N+1 segments (S | D=S | D | …). The segments
-    // of the OTHER fingers belong to this very device, so their contacts
-    // are source / drain — never the bulk. Without this, the far finger's
-    // drain contact was also picked up as the bulk terminal (it sits in
-    // the well), so a 2-finger MOS showed a B label on a source/drain.
-    // A real well tap is outside every segment, so it still reaches B.
-    const segments = (dev as any)._segmentShapes as LayerShape[] | undefined;
-    for (const seg of segments ?? []) bExcludeShapeIds.push(seg.id);
   }
 
   for (const cs of allContactShapes) {
@@ -1661,11 +1651,13 @@ export function resolveDeviceContacts(
           const isInside = _pointInShape(cc.x, cc.y, shape);
           if (isInside) {
             if (dev.kind === "mos" && termDef.name === "B") {
-              const onOwnSDorGate = bExcludeShapeIds.some((sid) => {
-                const s = shapeById.get(sid);
-                return s ? _pointInShape(cc.x, cc.y, s) : false;
+              // A contact on the transistor's own silicon (diffusion =
+              // source/drain, poly = gate) is never a bulk contact.
+              const alsoOnOther = mosOtherLayers.some((otherLayer) => {
+                const otherShapes = ctLayers[otherLayer] as LayerShape[] | undefined;
+                return otherShapes?.some((s) => _pointInShape(cc.x, cc.y, s)) ?? false;
               });
-              if (onOwnSDorGate) continue;
+              if (alsoOnOther) continue;
             }
             candidates.push({ ti, pri: termDef.priority ?? 999 });
             matched = true;

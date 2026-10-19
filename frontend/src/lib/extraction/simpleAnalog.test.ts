@@ -31,8 +31,15 @@ function rr(id: string, x: number, y: number, w: number, h: number): LayerRect {
  * A hand-drawn nmos in a p-well: one diffusion strip, `fingers` gate bars
  * crossing it, a contact in every source/drain region and — optionally —
  * a well tap in the well, off the diffusion.
+ *
+ * `gateContacts` puts a contact on every gate bar (the gate lead), as a
+ * drawing would.
  */
-function handDrawnMos(fingers: number, withTap: boolean): CellLayers {
+function handDrawnMos(
+  fingers: number,
+  withTap: boolean,
+  gateContacts = false
+): CellLayers {
   const L = 4;
   const W = 20;
   const gap = 16;
@@ -48,6 +55,7 @@ function handDrawnMos(fingers: number, withTap: boolean): CellLayers {
     metal1: []
   };
   for (let i = 0; i < fingers; i++) {
+    // The gate bar reaches above the diffusion, where a gate contact sits.
     layers.polysilicon!.push(rr(`poly${i}`, gateX(i), -5, L, W + 5));
   }
   // A contact in every source/drain region.
@@ -55,6 +63,11 @@ function handDrawnMos(fingers: number, withTap: boolean): CellLayers {
     const x0 = j === 0 ? 0 : gateX(j - 1) + L;
     const x1 = j === fingers ? strip : gateX(j);
     layers.contact!.push(rr(`ct${j}`, (x0 + x1) / 2 - 2, W / 2 - 2, 4, 4));
+  }
+  if (gateContacts) {
+    for (let i = 0; i < fingers; i++) {
+      layers.contact!.push(rr(`ctG${i}`, gateX(i) + 1, -4, 2, 2));
+    }
   }
   if (withTap) {
     // A well tap: in the well, clear of the diffusion.
@@ -117,6 +130,69 @@ describe("MOS bulk terminal", () => {
       expect(finger.B).toBe(1);
       expect(finger.D).toBe(1);
       expect(finger.S).toBe(1);
+    }
+  });
+
+  it("does not take another gate's contact for a bulk contact", () => {
+    // Every gate bar has its own contact. The contact of the far gate
+    // belongs to that gate — it is never the bulk of this finger.
+    const fingers = terminals(handDrawnMos(2, false, true));
+    expect(fingers).toHaveLength(2);
+    for (const finger of fingers) {
+      expect(finger.B).toBe(0);
+      expect(finger.G).toBe(1);
+      expect(finger.D).toBe(1);
+      expect(finger.S).toBe(1);
+    }
+  });
+
+  it("keeps the well tap when the gates have contacts too", () => {
+    const fingers = terminals(handDrawnMos(2, true, true));
+    expect(fingers).toHaveLength(2);
+    for (const finger of fingers) {
+      expect(finger.B).toBe(1);
+      expect(finger.G).toBe(1);
+    }
+  });
+
+  it("takes a contact on the diffusion for a source/drain, never for the bulk", () => {
+    // A "tap" drawn on the transistor's own diffusion is a source/drain
+    // contact — the bulk is the well, and only a contact that touches no
+    // diffusion and no poly can be a bulk contact.
+    const layers = handDrawnMos(1, false);
+    // A contact right on the transistor's diffusion (inside the strip).
+    layers.contact!.push(rr("ctOnDiff", 15, 18, 4, 4));
+    const [finger] = terminals(layers);
+    expect(finger.B).toBe(0);
+  });
+
+  it("does not take another device's gate contact for a bulk contact", () => {
+    // Two transistors in one well, each with its own gate contact. The
+    // gate contact of the other one sits in the well, but it is a gate.
+    const layers: CellLayers = {
+      pwell: [rr("pwell", 0, 0, 120, 60)],
+      diffusion: [
+        rr("diffA", 10, 10, 30, 20),
+        rr("diffB", 60, 10, 30, 20)
+      ],
+      polysilicon: [
+        rr("polyA", 20, 5, 4, 30),
+        rr("polyB", 70, 5, 4, 30)
+      ],
+      contact: [
+        rr("ctA1", 14, 18, 4, 4),
+        rr("ctA2", 34, 18, 4, 4),
+        rr("ctAG", 20, 6, 4, 4),
+        rr("ctB1", 64, 18, 4, 4),
+        rr("ctB2", 84, 18, 4, 4),
+        rr("ctBG", 70, 6, 4, 4)
+      ]
+    };
+    const devices = terminals(layers);
+    expect(devices).toHaveLength(2);
+    for (const device of devices) {
+      expect(device.B).toBe(0);
+      expect(device.G).toBe(1);
     }
   });
 });
