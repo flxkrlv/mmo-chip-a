@@ -78,6 +78,7 @@ import { useOverlayLayers } from "../../state/overlayLayers";
 import { usePreferences } from "../../state/preferences";
 import { createProgressiveImageCache } from "../../lib/progressiveImage";
 import { drawCellCrop } from "../../lib/cellCrop";
+import { clampLabelScale } from "../../lib/labelScale";
 
 export interface CellRECanvasHandle {
   /** Re-fit the cell into the viewport. */
@@ -1756,12 +1757,11 @@ export const CellRECanvas = forwardRef<CellRECanvasHandle, Props>(function CellR
         mos: "#4488ff", bjt_npn: "#22cc66", bjt_pnp: "#ff8844",
         resistor: "#ffaa44", capacitor: "#44ddff", diode: "#ff4444",
       };
-      // 0=S (0.2x), 1=M (0.5x), 2=L (1.0x). All three are intentionally
-      // smaller than the previous defaults so the overlay stays readable
-      // in dense layouts without dominating the cell image.
-      const SCALE = prefs.reAnalogLabelScale === 0 ? 0.2
-                  : prefs.reAnalogLabelScale === 2 ? 1.0
-                  : 0.5;
+      // The label size is a multiplier of the base font sizes — 0.2 was the
+      // old "S", 0.5 "M", 1.0 "L"; anything above 1 makes the labels
+      // bigger. The overlay stays readable in dense layouts without
+      // dominating the cell image.
+      const SCALE = clampLabelScale(prefs.reAnalogLabelScale);
       const TERM_FONT_SIZE = TERM_FONT_SIZE_BASE * SCALE;
       const INST_FONT_SIZE = 8 * SCALE;
       const TYPE_FONT_SIZE = 6 * SCALE;

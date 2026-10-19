@@ -26,6 +26,11 @@ import type { InspectorTab } from "./dieViewer";
 import type { ScreenshotScale } from "../lib/screenshot";
 import type { AngleMode, AngleTool } from "../lib/angleConstraint";
 import {
+  LABEL_SCALE_DEFAULT,
+  clampLabelScale,
+  migrateLabelScale
+} from "../lib/labelScale";
+import {
   ANNOTATION_KIND_VALUES,
   type AnnotationKind
 } from "./annotationKinds";
@@ -286,9 +291,10 @@ interface PreferencesState {
    *  Independent from `reDeviceLabelsVisible` so dense layouts can hide
    *  one but keep the other readable. Default true. */
   reTerminalLabelsVisible: boolean;
-  /** RE Cell: label size preset for analog overlay text (instance name,
-   *  terminal letters). 0=small, 1=medium, 2=large. Default 1. */
-  reAnalogLabelScale: 0 | 1 | 2;
+  /** RE Cell: the size of the analog overlay text (instance name, terminal
+   *  letters) — a multiplier of the base font sizes. 0.2 = the old "S",
+   *  0.5 = "M", 1 = "L"; values above 1 make the labels bigger. */
+  reAnalogLabelScale: number;
   /** Per-die overlay layer display settings (visibility, opacity, offset).
    *  Keyed by dieId → serverFilename. */
   overlayLayerSettings: Record<string, Record<string, OverlayLayerPersistedSettings>>;
@@ -473,7 +479,7 @@ interface PreferencesActions {
   setResistorOpacity: (opacity: number) => void;
   setReDeviceLabelsVisible: (visible: boolean) => void;
   setReTerminalLabelsVisible: (visible: boolean) => void;
-  setReAnalogLabelScale: (scale: 0 | 1 | 2) => void;
+  setReAnalogLabelScale: (scale: number) => void;
   saveOverlayLayerSettings: (dieId: string, settings: Record<string, OverlayLayerPersistedSettings>) => void;
   setLlmProvider: (config: AssistantLlmConfig) => void;
   setAssistantDataFlags: (flags: AssistantDataFlags) => void;
@@ -581,7 +587,7 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
         resistorOpacity: 1,
         reDeviceLabelsVisible: true,
         reTerminalLabelsVisible: true,
-        reAnalogLabelScale: 1,
+        reAnalogLabelScale: LABEL_SCALE_DEFAULT,
         overlayLayerSettings: {},
         llmProvider: {},
         assistantDataFlags: { projectJson: true, textNetlist: false },
@@ -896,7 +902,8 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
           set({ resistorOpacity: Math.min(1, Math.max(0, opacity)) }),
         setReDeviceLabelsVisible: (visible) => set({ reDeviceLabelsVisible: visible }),
         setReTerminalLabelsVisible: (visible) => set({ reTerminalLabelsVisible: visible }),
-        setReAnalogLabelScale: (scale) => set({ reAnalogLabelScale: scale }),
+        setReAnalogLabelScale: (scale) =>
+          set({ reAnalogLabelScale: clampLabelScale(scale) }),
         saveOverlayLayerSettings: (dieId, settings) =>
           set((state) => ({
             overlayLayerSettings: { ...state.overlayLayerSettings, [dieId]: settings }
@@ -923,7 +930,17 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
       }),
       {
         name: "mmo-chip-preferences",
-        version: 1,
+        version: 2,
+        // v1 stored the label size as a preset index (0=S, 1=M, 2=L); it is
+        // a factor now.
+        migrate: (persisted: unknown, version: number) => {
+          if (version < 2 && persisted && typeof persisted === "object") {
+            const p = persisted as Record<string, unknown>;
+            const scale = migrateLabelScale(p.reAnalogLabelScale);
+            if (scale != null) p.reAnalogLabelScale = scale;
+          }
+          return persisted;
+        },
         // Strip out any unknown kinds that may have been persisted before a
         // schema change, so the UI never references a removed kind.
         partialize: (state) => ({
