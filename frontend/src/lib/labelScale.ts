@@ -38,3 +38,25 @@ export function migrateLabelScale(stored: unknown): number | undefined {
   }
   return undefined;
 }
+
+/**
+ * The black plate behind a label.
+ *
+ * It must shrink with the text: at a small label size a plate of a fixed
+ * size covers the layout instead of hugging the letters.
+ */
+export function labelPlate(scale: number) {
+  return {
+    /** The padding left and right of an instance label. */
+    instancePadX: 3 * scale,
+    /** The gap between the instance name and its type. */
+    instanceGap: 1 * scale,
+    /** The room under the last line of an instance label. */
+    instanceExtra: 3 * scale,
+    /** The padding around a terminal letter. */
+    terminalPad: 4 * scale,
+    /** The gap between the anchor and the plate, in screen pixels. */
+    instanceOffsetX: 3 * scale,
+    instanceOffsetY: 6 * scale
+  };
+}

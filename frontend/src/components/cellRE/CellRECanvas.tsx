@@ -78,7 +78,7 @@ import { useOverlayLayers } from "../../state/overlayLayers";
 import { usePreferences } from "../../state/preferences";
 import { createProgressiveImageCache } from "../../lib/progressiveImage";
 import { drawCellCrop } from "../../lib/cellCrop";
-import { clampLabelScale } from "../../lib/labelScale";
+import { clampLabelScale, labelPlate } from "../../lib/labelScale";
 
 export interface CellRECanvasHandle {
   /** Re-fit the cell into the viewport. */
@@ -1765,6 +1765,9 @@ export const CellRECanvas = forwardRef<CellRECanvasHandle, Props>(function CellR
       const TERM_FONT_SIZE = TERM_FONT_SIZE_BASE * SCALE;
       const INST_FONT_SIZE = 8 * SCALE;
       const TYPE_FONT_SIZE = 6 * SCALE;
+      // The black plate behind a label shrinks with the text, so a small
+      // label does not cover the layout around it.
+      const plate = labelPlate(SCALE);
       // Physical-type label shared between instance-label pass and the row
       // renderer (kept here so the canvas reads identical strings to the
       // panel — reduces drift between the two surfaces).
@@ -1839,14 +1842,19 @@ export const CellRECanvas = forwardRef<CellRECanvasHandle, Props>(function CellR
           }
           ctx.textBaseline = "alphabetic";
           for (const a of anchors) {
-            const labelTop = a.y - 6 / v.zoom;
+            // Measure with the very font the text is drawn in — a stale
+            // font sizes the plate for the previous label and the plate
+            // then sticks out of the text.
+            ctx.font = `700 ${INST_FONT_SIZE}px monospace`;
             const nameMetrics = ctx.measureText(name);
+            ctx.font = `400 ${TYPE_FONT_SIZE}px monospace`;
             const typeMetrics = ctx.measureText(typeStr);
-            const padX = 3, gap = 1;
+            const padX = plate.instancePadX;
+            const gap = plate.instanceGap;
             const w = Math.max(nameMetrics.width, typeMetrics.width) + padX * 2;
-            const h = INST_FONT_SIZE + TYPE_FONT_SIZE + gap + 3;
-            const bx = a.x + 3 / v.zoom;
-            const by = labelTop - h;
+            const h = INST_FONT_SIZE + TYPE_FONT_SIZE + gap + plate.instanceExtra;
+            const bx = a.x + plate.instanceOffsetX / v.zoom;
+            const by = a.y - plate.instanceOffsetY / v.zoom - h;
             ctx.fillStyle = "rgba(0,0,0,0.75)";
             ctx.fillRect(bx, by, w, h);
             ctx.fillStyle = color;
@@ -1870,8 +1878,8 @@ export const CellRECanvas = forwardRef<CellRECanvasHandle, Props>(function CellR
             ? (dsResolved ? pt.name : "S/D")
             : pt.name;
           const tm = ctx.measureText(displayName);
-          const tw = tm.width + 4;
-          const th = TERM_FONT_SIZE + 4;
+          const tw = tm.width + plate.terminalPad;
+          const th = TERM_FONT_SIZE + plate.terminalPad;
           // Dot
           ctx.beginPath();
           ctx.arc(sx, sy, TERM_RADIUS / v.zoom, 0, Math.PI * 2);
@@ -1882,10 +1890,10 @@ export const CellRECanvas = forwardRef<CellRECanvasHandle, Props>(function CellR
           ctx.stroke();
           // Background rect
           ctx.fillStyle = "rgba(0,0,0,0.7)";
-          ctx.fillRect(sx + 3, sy - th / 2, tw, th);
+          ctx.fillRect(sx + plate.terminalPad * 0.75, sy - th / 2, tw, th);
           // Label text
           ctx.fillStyle = color;
-          ctx.fillText(displayName, sx + 5, sy);
+          ctx.fillText(displayName, sx + plate.terminalPad * 1.25, sy);
         }
       }
     }

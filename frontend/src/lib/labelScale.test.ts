@@ -5,6 +5,7 @@ import {
   LABEL_SCALE_MIN,
   LABEL_SCALE_PRESETS,
   clampLabelScale,
+  labelPlate,
   migrateLabelScale
 } from "./labelScale";
 
@@ -40,5 +41,29 @@ describe("the label size", () => {
     expect(migrateLabelScale(null)).toBeUndefined();
     expect(migrateLabelScale("big")).toBeUndefined();
     expect(migrateLabelScale(0)).not.toBeUndefined();
+  });
+});
+
+describe("the plate behind a label", () => {
+  it("shrinks with the text", () => {
+    const big = labelPlate(1);
+    const small = labelPlate(0.2);
+    for (const key of Object.keys(big) as Array<keyof typeof big>) {
+      expect(small[key]).toBeCloseTo(big[key] * 0.2, 10);
+    }
+  });
+
+  it("keeps the layout of the old presets at scale 1", () => {
+    const plate = labelPlate(1);
+    expect(plate.instancePadX).toBe(3);
+    expect(plate.instanceGap).toBe(1);
+    expect(plate.instanceExtra).toBe(3);
+    expect(plate.terminalPad).toBe(4);
+  });
+
+  it("is bigger than nothing at the smallest size", () => {
+    const plate = labelPlate(LABEL_SCALE_MIN);
+    expect(plate.instancePadX).toBeGreaterThan(0);
+    expect(plate.terminalPad).toBeGreaterThan(0);
   });
 });
