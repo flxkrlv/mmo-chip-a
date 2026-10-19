@@ -1626,6 +1626,16 @@ export function resolveDeviceContacts(
         for (const sid of t.shapeIds ?? []) bExcludeShapeIds.push(sid);
       }
     }
+    // A multi-finger MOS is ONE transistor, split into per-finger
+    // sub-devices: every finger shares the diffusion body, and the
+    // diffusion is cut into N+1 segments (S | D=S | D | …). The segments
+    // of the OTHER fingers belong to this very device, so their contacts
+    // are source / drain — never the bulk. Without this, the far finger's
+    // drain contact was also picked up as the bulk terminal (it sits in
+    // the well), so a 2-finger MOS showed a B label on a source/drain.
+    // A real well tap is outside every segment, so it still reaches B.
+    const segments = (dev as any)._segmentShapes as LayerShape[] | undefined;
+    for (const seg of segments ?? []) bExcludeShapeIds.push(seg.id);
   }
 
   for (const cs of allContactShapes) {

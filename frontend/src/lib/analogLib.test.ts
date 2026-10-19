@@ -2,7 +2,7 @@
 import { describe, it, expect, beforeAll } from "vitest";
 import { readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
-import type { AnalogDevice, CellType, DeviceGeometryBJT, DeviceGeometryMOS } from "shared";
+import type { AnalogDevice, CellType, DeviceGeometryBJT, DeviceGeometryMOS, LayerShape } from "shared";
 import {
   buildAnalogPcell,
   defaultAnalogParams,
@@ -11,7 +11,11 @@ import {
   type AnalogPcellSpec
 } from "shared/analogLib";
 import { loadClipperWithBinary } from "./extraction/clipper";
-import { detectMOSFromLayers, extractMarkedDevices } from "./extraction/simpleAnalog";
+import {
+  detectMOSFromLayers,
+  extractMarkedDevices,
+  resolveDeviceContacts
+} from "./extraction/simpleAnalog";
 
 const require = createRequire(import.meta.url);
 
@@ -151,6 +155,29 @@ describe("buildAnalogPcell — MOS", () => {
       expect(inside(well, tap)).toBe(true);
       expect(inside(diff, tap)).toBe(false);
     }
+  });
+
+  it("gives a multi-finger device no bulk contact unless a tap was asked for", () => {
+    // The far finger's source/drain contact sits in the well too — it must
+    // not be taken for a bulk contact (see the extractor regression test).
+    const bulkContacts = (bulk: "none" | "tap", fingers: number) => {
+      const ct = asCellType(spec({ ...defaultAnalogParams("pmos"), bulk, fingers }));
+      const devices = detectMOSFromLayers(ct.layers, ct.id, UM_PER_PX);
+      const segments: LayerShape[] = [];
+      for (const d of devices) for (const s of (d as any)._segmentShapes ?? []) segments.push(s);
+      const layers = {
+        ...(ct.layers as Record<string, LayerShape[] | undefined>),
+        diffusion: [...((ct.layers?.diffusion ?? []) as LayerShape[]), ...segments]
+      };
+      return devices.map((d) => {
+        const { termContacts } = resolveDeviceContacts(d, layers, 0, 0);
+        const bulkIndex = d.terminals.findIndex((t) => t.name === "B");
+        return termContacts[bulkIndex]?.length ?? 0;
+      });
+    };
+    expect(bulkContacts("none", 2)).toEqual([0, 0]);
+    expect(bulkContacts("none", 3)).toEqual([0, 0, 0]);
+    expect(bulkContacts("tap", 2)).toEqual([1, 1]);
   });
 
   it("scales every layer with the scale", () => {
