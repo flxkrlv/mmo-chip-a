@@ -266,7 +266,7 @@ describe("buildAnalogPcell — BJT", () => {
         W_um: 2,
         L_um: 2,
         emitterCollectorGap_um: 1.5,
-        baseCollectorGap_um: 2
+        collectorBaseGap_um: 2
       })
     );
     const emitter = ct.layers?.emitter?.[0];
@@ -293,6 +293,116 @@ describe("buildAnalogPcell — BJT", () => {
     // emitter area is the emitter's own area.
     expect(geometry.AE_um2).toBeCloseTo(2 * 3, 3);
     expect(devices[0].terminals.map((t) => t.name).sort()).toEqual(["B", "C", "E"]);
+  });
+});
+
+describe("buildAnalogPcell — the multiplier", () => {
+  it("lays the copies of a multiplier side by side", () => {
+    const params = { ...defaultAnalogParams("nmos"), multiplier: 3, multiplierGap_um: 2 };
+    const layout = buildAnalogPcell(spec(params), "ct");
+    // One diffusion, one gate and one strap per copy.
+    expect(layout.layers.diffusion).toHaveLength(3);
+    expect(layout.layers.polysilicon).toHaveLength(6);
+    // The copies are one structure wide plus the gap apart.
+    const diffs = (layout.layers.diffusion ?? []).filter((s) => s.kind === "rect");
+    const first = diffs[0];
+    const second = diffs[1];
+    expect(first?.kind).toBe("rect");
+    expect(second?.kind).toBe("rect");
+    if (first?.kind === "rect" && second?.kind === "rect") {
+      const structureWidth = first.width;
+      const gap = second.x - (first.x + first.width);
+      expect(gap).toBeCloseTo(2 * SCALE, 3);
+      expect(structureWidth).toBeGreaterThan(0);
+    }
+  });
+
+  it("keeps a multiplier of one the same as a single structure", () => {
+    const single = buildAnalogPcell(
+      spec({ ...defaultAnalogParams("nmos"), multiplier: 1 }),
+      "ct"
+    );
+    const one = buildAnalogPcell(
+      spec({ ...defaultAnalogParams("nmos"), multiplier: 1, multiplierGap_um: 5 }),
+      "ct"
+    );
+    expect(single.cropRect.width).toBeCloseTo(one.cropRect.width, 6);
+    expect(single.layers.diffusion).toHaveLength(1);
+  });
+
+  it("is extracted as one device per structure", () => {
+    const ct = asCellType(
+      spec({ ...defaultAnalogParams("nmos"), multiplier: 2, multiplierGap_um: 2 })
+    );
+    const devices = detectMOSFromLayers(ct.layers, ct.id, UM_PER_PX);
+    expect(devices).toHaveLength(2);
+    for (const d of devices) {
+      const geometry = d.geometry as DeviceGeometryMOS;
+      expect(geometry.W_um).toBeCloseTo(10, 3);
+      expect(geometry.L_um).toBeCloseTo(1, 3);
+    }
+  });
+});
+
+describe("buildAnalogPcell — the bipolar gaps and the base contact", () => {
+  it("moves the collector away from the emitter", () => {
+    const near = asCellType(
+      spec({ ...defaultAnalogParams("npn"), emitterCollectorGap_um: 1 })
+    );
+    const far = asCellType(
+      spec({ ...defaultAnalogParams("npn"), emitterCollectorGap_um: 5 })
+    );
+    const emitter = near.layers?.emitter?.[0];
+    const collector = near.layers?.collector?.[0];
+    expect(emitter?.kind).toBe("rect");
+    expect(collector?.kind).toBe("rect");
+    if (emitter?.kind === "rect" && collector?.kind === "rect") {
+      const distance = (ct: typeof near) => {
+        const e = ct.layers?.emitter?.[0];
+        const c = ct.layers?.collector?.[0];
+        if (e?.kind !== "rect" || c?.kind !== "rect") return 0;
+        return c.x - (e.x + e.width);
+      };
+      expect(distance(near)).toBeCloseTo(1 * SCALE, 3);
+      expect(distance(far)).toBeCloseTo(5 * SCALE, 3);
+    }
+  });
+
+  it("keeps the base's margin around the emitter", () => {
+    const ct = asCellType(
+      spec({ ...defaultAnalogParams("npn"), emitterBaseGap_um: 3 })
+    );
+    const emitter = ct.layers?.emitter?.[0];
+    const base = ct.layers?.base?.[0];
+    expect(emitter?.kind).toBe("rect");
+    expect(base?.kind).toBe("rect");
+    if (emitter?.kind === "rect" && base?.kind === "rect") {
+      expect(base.x).toBeCloseTo(emitter.x - 3 * SCALE, 3);
+      expect(base.y).toBeCloseTo(emitter.y - 3 * SCALE, 3);
+    }
+  });
+
+  it("puts the base contact on the chosen side", () => {
+    const contactAt = (side: "left" | "right" | "top" | "bottom") => {
+      const ct = asCellType(
+        spec({ ...defaultAnalogParams("npn"), baseContactSide: side })
+      );
+      const contact = ct.layers?.contact?.find((s) => s.id.endsWith(":ct:b"));
+      const emitter = ct.layers?.emitter?.[0];
+      if (contact?.kind !== "rect" || emitter?.kind !== "rect") return null;
+      return { cx: contact.x + contact.width / 2, cy: contact.y + contact.height / 2, e: emitter };
+    };
+    const left = contactAt("left");
+    const right = contactAt("right");
+    const top = contactAt("top");
+    const bottom = contactAt("bottom");
+    expect(left && right && top && bottom).toBeTruthy();
+    if (!left || !right || !top || !bottom) return;
+    // Left and right are horizontally apart, top and bottom vertically.
+    expect(left.cx).toBeLessThan(left.e.x);
+    expect(right.cx).toBeGreaterThan(right.e.x + right.e.width);
+    expect(top.cy).toBeLessThan(top.e.y);
+    expect(bottom.cy).toBeGreaterThan(bottom.e.y + bottom.e.height);
   });
 });
 

@@ -1,5 +1,5 @@
 import { useEffect, useRef } from "react";
-import type { AnalogLibBulk, AnalogLibParams, AnalogLibTemplate } from "shared";
+import type { AnalogLibBaseContactSide, AnalogLibBulk, AnalogLibParams, AnalogLibTemplate } from "shared";
 import type { AnalogPcellLayout } from "shared/analogLib";
 import { useLiveValue } from "../../lib/liveValue";
 import { drawCellLayers } from "../../renderer/annotations/shapes";
@@ -121,7 +121,8 @@ export function AnalogLibPanel({ tool }: { tool: AnalogCellTool }) {
   const draft = useLiveValue(tool.draftLive);
   const p = tool.params;
   const isMos = p.kind === "mos";
-  const isLpnp = p.kind === "bjt" && p.bjtType === "lpnp";
+  const isBjt = p.kind === "bjt";
+  const isLpnp = isBjt && p.bjtType === "lpnp";
 
   const setParams = (next: AnalogLibParams) => tool.setParams(next);
   /** Patch the size parameters (both device kinds share them). */
@@ -204,22 +205,70 @@ export function AnalogLibPanel({ tool }: { tool: AnalogCellTool }) {
           </div>
         )}
 
-        {isLpnp && (
+        {isMos && (
           <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
             <AnalogNumField
-              label="эмиттер–коллектор"
+              label="multiplier"
+              value={p.multiplier}
+              title="How many copies of the structure stand side by side"
+              onCommit={(v) => patch({ multiplier: Math.max(1, Math.round(v)) })}
+            />
+            <AnalogNumField
+              label="mult. gap"
+              value={p.multiplierGap_um}
+              title="The clear space between two copies of the structure, in micrometres"
+              onCommit={(v) => patch({ multiplierGap_um: v })}
+              width={58}
+            />
+          </div>
+        )}
+
+        {isBjt && (
+          <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
+            <AnalogNumField
+              label="emitter–collector"
               value={p.emitterCollectorGap_um ?? 0.8}
-              title="Base material between the emitter and the collector ring, in micrometres"
+              title="The distance from the emitter to the collector, in micrometres"
               onCommit={(v) => patch({ emitterCollectorGap_um: v })}
               width={58}
             />
-            <AnalogNumField
-              label="коллектор–база"
-              value={p.baseCollectorGap_um ?? 0.8}
-              title="Base material between the collector ring and the edge of the base region (the base contact sits there), in micrometres"
-              onCommit={(v) => patch({ baseCollectorGap_um: v })}
-              width={58}
-            />
+            {isLpnp ? (
+              <AnalogNumField
+                label="collector–base"
+                value={p.collectorBaseGap_um ?? 0.8}
+                title="The base material between the collector ring and the edge of the base region (the base contact sits there), in micrometres"
+                onCommit={(v) => patch({ collectorBaseGap_um: v })}
+                width={58}
+              />
+            ) : (
+              <AnalogNumField
+                label="emitter–base"
+                value={p.emitterBaseGap_um ?? 1}
+                title="The base material between the emitter and the edge of the base region, in micrometres"
+                onCommit={(v) => patch({ emitterBaseGap_um: v })}
+                width={58}
+              />
+            )}
+          </div>
+        )}
+
+        {isBjt && (
+          <div className="row" style={{ gap: 6, alignItems: "center" }}>
+            <span className="m" style={{ fontSize: 10.5, color: "var(--ink3)" }}>
+              base contact
+            </span>
+            {(["left", "right", "top", "bottom"] as AnalogLibBaseContactSide[]).map((s) => (
+              <button
+                key={s}
+                type="button"
+                className={"chip" + (p.baseContactSide === s ? " on" : "")}
+                style={{ cursor: "pointer" }}
+                title={`Put the base contact on the ${s} side`}
+                onClick={() => patch({ baseContactSide: s })}
+              >
+                {s}
+              </button>
+            ))}
           </div>
         )}
 

@@ -62,8 +62,11 @@ export const DEFAULT_ANALOG_LIB_RULES: AnalogLibRules = {
   baseMargin: 0.5,
   collectorWidth: 1.0,
   lpnpEmitterCollectorGap: 0.8,
-  lpnpBaseCollectorGap: 0.8,
-  lpnpCollectorWidth: 1.0
+  lpnpCollectorBaseGap: 0.8,
+  lpnpCollectorWidth: 1.0,
+  npnEmitterBaseGap: 1.0,
+  npnEmitterCollectorGap: 2.0,
+  npnCollectorWidth: 1.5
 };
 
 /** A laid-out device: the layers and the box they live in (die pixels). */
@@ -97,6 +100,8 @@ export const ANALOG_LIB_TEMPLATES: AnalogLibTemplateInfo[] = [
       kind: "mos",
       mosType: "pmos",
       fingers: 1,
+      multiplier: 1,
+      multiplierGap_um: 1.0,
       W_um: 10,
       L_um: 1,
       bulk: "none"
@@ -110,6 +115,8 @@ export const ANALOG_LIB_TEMPLATES: AnalogLibTemplateInfo[] = [
       kind: "mos",
       mosType: "nmos",
       fingers: 1,
+      multiplier: 1,
+      multiplierGap_um: 1.0,
       W_um: 10,
       L_um: 1,
       bulk: "none"
@@ -124,7 +131,10 @@ export const ANALOG_LIB_TEMPLATES: AnalogLibTemplateInfo[] = [
       bjtType: "npn",
       fingers: 1,
       W_um: 2,
-      L_um: 2
+      L_um: 2,
+      emitterBaseGap_um: 1.0,
+      emitterCollectorGap_um: 2.0,
+      baseContactSide: "left"
     }
   },
   {
@@ -138,7 +148,8 @@ export const ANALOG_LIB_TEMPLATES: AnalogLibTemplateInfo[] = [
       W_um: 2,
       L_um: 2,
       emitterCollectorGap_um: 0.8,
-      baseCollectorGap_um: 0.8
+      collectorBaseGap_um: 0.8,
+      baseContactSide: "left"
     }
   }
 ];
@@ -168,6 +179,12 @@ export function validateAnalogParams(params: AnalogLibParams): string | null {
   if (!Number.isFinite(params.W_um) || params.W_um <= 0) return "W must be greater than 0";
   if (!Number.isFinite(params.L_um) || params.L_um <= 0) return "L must be greater than 0";
   if (!Number.isInteger(params.fingers) || params.fingers < 1) return "fingers must be at least 1";
+  if (params.kind === "mos") {
+    if (!Number.isInteger(params.multiplier) || params.multiplier < 1)
+      return "multiplier must be at least 1";
+    if (!Number.isFinite(params.multiplierGap_um) || params.multiplierGap_um < 0)
+      return "the multiplier gap must not be negative";
+  }
   return null;
 }
 
@@ -182,13 +199,18 @@ export function validateAnalogSpec(spec: AnalogPcellSpec): string | null {
   return null;
 }
 
-/** A one-line summary of a device, e.g. "PMOS W=10 L=1 N=2". */
+/** A one-line summary of a device, e.g. "PMOS W=10 L=1 N=2 x3". */
 export function analogPcellSummary(spec: AnalogPcellSpec): string {
   const p = spec.params;
   const n = Math.max(1, Math.round(p.fingers));
   if (p.kind === "mos") {
     const bulk = p.bulk === "tap" ? " bulk tap" : "";
-    return `${p.mosType.toUpperCase()} W=${round(p.W_um)} L=${round(p.L_um)} N=${n}${bulk}`;
+    const mult = Math.max(1, Math.round(p.multiplier));
+    return (
+      `${p.mosType.toUpperCase()} W=${round(p.W_um)} L=${round(p.L_um)} N=${n}` +
+      (mult > 1 ? ` x${mult}` : "") +
+      bulk
+    );
   }
   return `${p.bjtType.toUpperCase()} W=${round(p.W_um)} L=${round(p.L_um)} N=${n}`;
 }
@@ -316,12 +338,16 @@ export function buildAnalogPcell(spec: AnalogPcellSpec, idPrefix: string): Analo
   return spec.params.bjtType === "lpnp" ? buildLpnp(spec, idPrefix) : buildNpn(spec, idPrefix);
 }
 
-/** The MOS template: a diffusion strip cut by the gate bars. */
-function buildMos(spec: AnalogPcellSpec, idPrefix: string): AnalogPcellLayout {
-  const p = spec.params as AnalogLibMosParams;
-  const r = spec.rules;
-  const k = spec.scale;
-
+/**
+ * One MOS structure: a diffusion strip cut by the gate bars, with its
+ * contacts. The multiplier lays several of these side by side.
+ */
+function mosStructure(
+  p: AnalogLibMosParams,
+  r: AnalogLibRules,
+  k: number,
+  idPrefix: string
+): { layers: CellLayers; width: number } {
   const L = p.L_um;
   const W = p.W_um;
   const N = Math.max(1, Math.round(p.fingers));
@@ -337,9 +363,6 @@ function buildMos(spec: AnalogPcellSpec, idPrefix: string): AnalogPcellLayout {
   const contactPad = cs + 2 * pad;
 
   const layers: CellLayers = {};
-
-  // ── The well (nwell for pmos, pwell for nmos) ─────────────────────
-  const wellLayer = p.mosType === "pmos" ? "nwell" : "pwell";
   const top = -(r.polyOverhang + r.polyStrap);
 
   // ── The gate bars and their poly strap ────────────────────────────
@@ -353,7 +376,7 @@ function buildMos(spec: AnalogPcellSpec, idPrefix: string): AnalogPcellLayout {
     rect(
       `${idPrefix}:poly:strap`,
       gateX(0) * k,
-      (top) * k,
+      top * k,
       (gateX(N - 1) + L - gateX(0)) * k,
       (r.polyStrap + strapOverlap) * k
     )
@@ -400,6 +423,44 @@ function buildMos(spec: AnalogPcellSpec, idPrefix: string): AnalogPcellLayout {
     )
   );
 
+  layers.contact = contacts;
+  layers.metal1 = metal1;
+
+  return { layers, width: strip };
+}
+
+/** The MOS template: one or more structures side by side in a well. */
+function buildMos(spec: AnalogPcellSpec, idPrefix: string): AnalogPcellLayout {
+  const p = spec.params as AnalogLibMosParams;
+  const r = spec.rules;
+  const k = spec.scale;
+
+  const W = p.W_um;
+  const M = Math.max(1, Math.round(p.multiplier));
+  const gap = p.multiplierGap_um;
+
+  // ── The structures of the multiplier, side by side ─────────────────
+  const layers: CellLayers = {};
+  let x = 0;
+  let strip = 0;
+  for (let m = 0; m < M; m++) {
+    const one = mosStructure(p, r, k, `${idPrefix}:m${m}`);
+    for (const [layer, shapes] of Object.entries(one.layers) as Array<
+      [LayerType, LayerShape[] | undefined]
+    >) {
+      if (!shapes) continue;
+      const moved = x === 0 ? shapes : shapes.map((s) => translateShape(s, x * k, 0));
+      layers[layer] = [...(layers[layer] ?? []), ...moved];
+    }
+    x += one.width + gap;
+    strip = x - gap;
+  }
+
+  const top = -(r.polyOverhang + r.polyStrap);
+  const cs = Math.min(r.contactSize, r.spacing * 0.8);
+  const pad = r.metal1Pad;
+  const contactPad = cs + 2 * pad;
+
   // ── The well tap (bulk) ───────────────────────────────────────────
   let bottom = W + r.wellMargin;
   if (p.bulk === "tap") {
@@ -408,8 +469,12 @@ function buildMos(spec: AnalogPcellSpec, idPrefix: string): AnalogPcellLayout {
     const clearance = Math.max(0.2, (contactPad - tcs) / 2 - W / 2 + 0.1);
     const tcy = (W + clearance + tcs / 2) * k;
     const tcx = (strip / 2) * k;
-    contacts.push(rect(`${idPrefix}:ct:bulk`, tcx - (tcs * k) / 2, tcy - (tcs * k) / 2, tcs * k, tcs * k));
-    metal1.push(
+    layers.contact = [
+      ...(layers.contact ?? []),
+      rect(`${idPrefix}:ct:bulk`, tcx - (tcs * k) / 2, tcy - (tcs * k) / 2, tcs * k, tcs * k)
+    ];
+    layers.metal1 = [
+      ...(layers.metal1 ?? []),
       rect(
         `${idPrefix}:m1:bulk`,
         tcx - (tcs + 2 * pad) * k * 0.5,
@@ -417,14 +482,12 @@ function buildMos(spec: AnalogPcellSpec, idPrefix: string): AnalogPcellLayout {
         (tcs + 2 * pad) * k,
         (tcs + 2 * pad) * k
       )
-    );
+    ];
     bottom = W + clearance + tcs + r.wellMargin;
   }
 
-  layers.contact = contacts;
-  layers.metal1 = metal1;
-
   // The well encloses everything: the strap on top, the tap below.
+  const wellLayer = p.mosType === "pmos" ? "nwell" : "pwell";
   layers[wellLayer] = [
     rect(
       `${idPrefix}:${wellLayer}`,
@@ -450,6 +513,13 @@ function buildNpn(spec: AnalogPcellSpec, idPrefix: string): AnalogPcellLayout {
   const N = Math.max(1, Math.round(p.fingers));
   const gap = r.spacing;
 
+  // The distances around the emitter: the base's margin, and how far the
+  // collector is moved away from the emitter.
+  const baseGap = p.emitterBaseGap_um ?? r.npnEmitterBaseGap;
+  const collectorGap = p.emitterCollectorGap_um ?? r.npnEmitterCollectorGap;
+  const collectorW = r.npnCollectorWidth;
+  const side = p.baseContactSide ?? "left";
+
   // The emitter block: N stripes separated by `gap`.
   const emitterWidth = N * W + (N - 1) * gap;
   const layers: CellLayers = {};
@@ -461,33 +531,34 @@ function buildNpn(spec: AnalogPcellSpec, idPrefix: string): AnalogPcellLayout {
   }
   layers.emitter = emitters;
 
-  // The base surrounds the emitters.
-  const baseX0 = -r.baseMargin;
-  const baseX1 = emitterWidth + r.baseMargin;
+  // The base surrounds the emitters with its margin.
+  const baseX0 = -baseGap;
+  const baseX1 = emitterWidth + baseGap;
   layers.base = [
     rect(
       `${idPrefix}:base`,
       baseX0 * k,
-      -r.baseMargin * k,
+      -baseGap * k,
       (baseX1 - baseX0) * k,
-      (L + 2 * r.baseMargin) * k
+      (L + 2 * baseGap) * k
     )
   ];
 
-  // The collector sits next to the base.
-  const collectorX0 = baseX1;
-  const collectorX1 = collectorX0 + r.collectorWidth;
+  // The collector sits off to the side, `collectorGap` from the emitter.
+  const collectorX0 = emitterWidth + collectorGap;
+  const collectorX1 = collectorX0 + collectorW;
   layers.collector = [
     rect(
       `${idPrefix}:collector`,
       collectorX0 * k,
-      -r.baseMargin * k,
+      -baseGap * k,
       (collectorX1 - collectorX0) * k,
-      (L + 2 * r.baseMargin) * k
+      (L + 2 * baseGap) * k
     )
   ];
 
-  // Contacts: one per emitter stripe, one on the collector, one on the base.
+  // Contacts: one per emitter stripe, one on the collector, one on the
+  // base — the base contact on the side the user picked.
   const cs = Math.min(r.contactSize, Math.min(W, L) * 0.8);
   const pad = r.metal1Pad;
   const contacts: LayerShape[] = [];
@@ -510,22 +581,36 @@ function buildNpn(spec: AnalogPcellSpec, idPrefix: string): AnalogPcellLayout {
     contactAt(`e${i}`, (i * (W + gap) + W / 2) * k, (L / 2) * k, cs);
   }
   contactAt("c", ((collectorX0 + collectorX1) / 2) * k, (L / 2) * k, cs);
-  // The base contact sits in the base margin, clear of the emitters.
-  contactAt("b", (baseX0 + r.baseMargin / 2) * k, (L / 2) * k, cs);
+
+  // The base contact sits in the base's margin, on the chosen side.
+  const bcs = Math.min(cs, baseGap * 0.8);
+  const bx =
+    side === "left"
+      ? baseX0 + baseGap / 2
+      : side === "right"
+        ? baseX1 - baseGap / 2
+        : emitterWidth / 2;
+  const by =
+    side === "top"
+      ? -baseGap + baseGap / 2
+      : side === "bottom"
+        ? L + baseGap - baseGap / 2
+        : L / 2;
+  contactAt("b", bx * k, by * k, bcs);
 
   layers.contact = contacts;
   layers.metal1 = metal1;
 
   // The marker layer names the device; the extractor reads the collector,
   // base and emitter shapes inside it.
-  const markerPad = Math.max(r.baseMargin, 0.2);
+  const markerPad = Math.max(baseGap, 0.2);
   layers.npn_id = [
     rect(
       `${idPrefix}:npn_id`,
       (baseX0 - markerPad) * k,
-      (-r.baseMargin - markerPad) * k,
+      (-baseGap - markerPad) * k,
       (collectorX1 - baseX0 + 2 * markerPad) * k,
-      (L + 2 * r.baseMargin + 2 * markerPad) * k
+      (L + 2 * baseGap + 2 * markerPad) * k
     )
   ];
 
@@ -551,8 +636,9 @@ function buildLpnp(spec: AnalogPcellSpec, idPrefix: string): AnalogPcellLayout {
   const N = Math.max(1, Math.round(p.fingers));
   const gap = r.spacing;
   const ecGap = p.emitterCollectorGap_um ?? r.lpnpEmitterCollectorGap;
-  const bcGap = p.baseCollectorGap_um ?? r.lpnpBaseCollectorGap;
+  const cbGap = p.collectorBaseGap_um ?? r.lpnpCollectorBaseGap;
   const cw = r.lpnpCollectorWidth;
+  const side = p.baseContactSide ?? "left";
 
   // The emitter block: N stripes side by side.
   const emitterWidth = N * W + (N - 1) * gap;
@@ -583,12 +669,11 @@ function buildLpnp(spec: AnalogPcellSpec, idPrefix: string): AnalogPcellLayout {
     rect(`${idPrefix}:collector:r`, (outX1 - cw) * k, ringY0 * k, cw * k, (ringY1 - ringY0) * k)
   ];
 
-  // The base: the n region around the collector ring. The base contact
-  // sits in it, beside the ring.
-  const baseX0 = outX0 - bcGap;
-  const baseX1 = outX1 + bcGap;
-  const baseY0 = outY0 - bcGap;
-  const baseY1 = outY1 + bcGap;
+  // The base: the n region around the collector ring, `cbGap` clear of it.
+  const baseX0 = outX0 - cbGap;
+  const baseX1 = outX1 + cbGap;
+  const baseY0 = outY0 - cbGap;
+  const baseY1 = outY1 + cbGap;
   layers.bulk = [
     rect(
       `${idPrefix}:bulk`,
@@ -600,7 +685,7 @@ function buildLpnp(spec: AnalogPcellSpec, idPrefix: string): AnalogPcellLayout {
   ];
 
   // Contacts: one per emitter stripe, one on the collector ring, one on
-  // the base.
+  // the base — the base contact on the side the user picked.
   const cs = Math.min(r.contactSize, Math.min(W, L) * 0.8);
   const pad = r.metal1Pad;
   const contacts: LayerShape[] = [];
@@ -623,14 +708,27 @@ function buildLpnp(spec: AnalogPcellSpec, idPrefix: string): AnalogPcellLayout {
   }
   // The collector contact sits on the ring's bottom bar.
   contactAt("c", ((ringX0 + ringX1) / 2) * k, (outY1 - cw / 2) * k, Math.min(cs, cw * 0.8));
-  // The base contact sits in the base material, beside the ring.
-  contactAt("b", (baseX0 + bcGap / 2) * k, (L / 2) * k, Math.min(cs, bcGap * 0.8));
+  // The base contact sits in the base material, on the chosen side.
+  const bcs = Math.min(cs, cbGap * 0.8);
+  const bx =
+    side === "left"
+      ? baseX0 + cbGap / 2
+      : side === "right"
+        ? baseX1 - cbGap / 2
+        : emitterWidth / 2;
+  const by =
+    side === "top"
+      ? baseY0 + cbGap / 2
+      : side === "bottom"
+        ? baseY1 - cbGap / 2
+        : L / 2;
+  contactAt("b", bx * k, by * k, bcs);
 
   layers.contact = contacts;
   layers.metal1 = metal1;
 
   // The marker names the device; it encloses every shape of it.
-  const markerPad = Math.max(bcGap, 0.2);
+  const markerPad = Math.max(cbGap, 0.2);
   layers.lpnp_id = [
     rect(
       `${idPrefix}:lpnp_id`,

@@ -428,8 +428,12 @@ export interface AnalogLibMosParams {
   kind: "mos";
   /** nmos or pmos — decides the well (pwell / nwell) and the diffusion. */
   mosType: "nmos" | "pmos";
-  /** Number of gate fingers (parallel transistors). */
+  /** Number of gate fingers (parallel transistors) of ONE structure. */
   fingers: number;
+  /** Number of the structures side by side (a multiplier). */
+  multiplier: number;
+  /** The clear space between two structures of the multiplier [µm]. */
+  multiplierGap_um: number;
   /** Channel width of ONE finger [µm]. */
   W_um: number;
   /** Channel length [µm]. */
@@ -437,6 +441,9 @@ export interface AnalogLibMosParams {
   /** Bulk connection. */
   bulk: AnalogLibBulk;
 }
+
+/** Which side of a bipolar transistor the base contact sits on. */
+export type AnalogLibBaseContactSide = "left" | "right" | "top" | "bottom";
 
 /** Parameters of a generated bipolar transistor. */
 export interface AnalogLibBjtParams {
@@ -449,13 +456,17 @@ export interface AnalogLibBjtParams {
   W_um: number;
   /** Emitter length of ONE stripe [µm]. */
   L_um: number;
-  /** Lateral PNP only: the base material between the emitter and the
-   *  collector ring [µm]. Defaults to the rule of the same meaning. */
+  /** The base material between the emitter and the edge of the base region
+   *  [µm] — the vertical transistor's base margin around the emitter. */
+  emitterBaseGap_um?: number;
+  /** The distance from the emitter to the collector [µm] — how far the
+   *  collector is moved away from the emitter. */
   emitterCollectorGap_um?: number;
-  /** Lateral PNP only: the base material between the collector ring and
-   *  the edge of the base region — where the base contact sits [µm].
-   *  Defaults to the rule of the same meaning. */
-  baseCollectorGap_um?: number;
+  /** The base material between the collector ring and the edge of the base
+   *  region [µm] (lateral PNP) — where the base contact sits. */
+  collectorBaseGap_um?: number;
+  /** Which side the base contact sits on. */
+  baseContactSide?: AnalogLibBaseContactSide;
 }
 
 export type AnalogLibParams = AnalogLibMosParams | AnalogLibBjtParams;
@@ -490,9 +501,16 @@ export interface AnalogLibRules {
   lpnpEmitterCollectorGap: number;
   /** Lateral PNP: base material between the collector ring and the edge of
    *  the base region (the base contact sits there) [µm]. */
-  lpnpBaseCollectorGap: number;
+  lpnpCollectorBaseGap: number;
   /** Lateral PNP: width of the collector ring itself [µm]. */
   lpnpCollectorWidth: number;
+  /** Vertical BJT: base material between the emitter and the edge of the
+   *  base region [µm]. */
+  npnEmitterBaseGap: number;
+  /** Vertical BJT: distance from the emitter to the collector [µm]. */
+  npnEmitterCollectorGap: number;
+  /** Vertical BJT: width of the collector region [µm]. */
+  npnCollectorWidth: number;
 }
 
 /**

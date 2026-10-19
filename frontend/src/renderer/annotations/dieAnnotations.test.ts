@@ -34,12 +34,13 @@ describe("buildCellAnnotation", () => {
       ...type,
       pcell: {
         template: "pmos",
-        params: { kind: "mos", mosType: "pmos", fingers: 1, W_um: 10, L_um: 1, bulk: "none" },
+        params: { kind: "mos", mosType: "pmos", fingers: 1, multiplier: 1, multiplierGap_um: 1, W_um: 10, L_um: 1, bulk: "none" },
         scale: 20,
         rules: {
           spacing: 1, polyOverhang: 0.5, polyStrap: 0.4, contactSize: 0.4,
           metal1Pad: 0.3, wellMargin: 1, baseMargin: 0.5, collectorWidth: 1,
-          lpnpEmitterCollectorGap: 0.8, lpnpBaseCollectorGap: 0.8, lpnpCollectorWidth: 1
+          lpnpEmitterCollectorGap: 0.8, lpnpCollectorBaseGap: 0.8, lpnpCollectorWidth: 1,
+          npnEmitterBaseGap: 1, npnEmitterCollectorGap: 2, npnCollectorWidth: 1.5
         }
       }
     };
