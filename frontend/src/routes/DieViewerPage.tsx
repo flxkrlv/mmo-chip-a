@@ -107,6 +107,8 @@ import { buildInstanceTerminalMap } from "../lib/extraction/terminalDetect";
 import { useCellTool } from "../components/dieViewer/useCellTool";
 import { useLibraryCellTool } from "../components/dieViewer/useLibraryCellTool";
 import { LibraryCellOverlay } from "../components/dieViewer/LibraryCellOverlay";
+import { useAnalogCellTool } from "../components/dieViewer/useAnalogCellTool";
+import { AnalogCellOverlay } from "../components/dieViewer/AnalogCellOverlay";
 import { useViaPolyTool } from "../components/dieViewer/useViaPolyTool";
 import {
   previewEnds,
@@ -980,6 +982,9 @@ function DieViewer({ dieId }: { dieId: string }) {
       },
       cellColor: () => usePreferences.getState().cellColor,
       cellShowShapes: () => usePreferences.getState().cellShowShapes,
+      // The die's library scale — the default a cell is drawn at. A cell
+      // with its own `scale` deviates from it.
+      dieScale: library.scale,
       pointViaWorldRadius: () => {
         // ML tab forces the export footprint (mockup ml-config). Otherwise
         // use the global `viaSize` pref so manual vias render the same
@@ -1806,6 +1811,19 @@ function DieViewer({ dieId }: { dieId: string }) {
     activeTool
   });
 
+  // The analog library: parametric devices (pmos / nmos / npn / pnp / lpnp)
+  // laid out from their parameters and placed over the die image.
+  const analogCell = useAnalogCellTool({
+    dieId,
+    dispatcher,
+    viewportLive,
+    containerRef,
+    activeTool,
+    setActiveTool,
+    dieScale: library.scale,
+    umPerPx: ownAnnotations?.umPerPx ?? null
+  });
+
   const viaPoly = useViaPolyTool({ dispatcher, activeTool, setActiveTool });
   const viaPolyPointsRef = useRef(viaPoly.points);
   viaPolyPointsRef.current = viaPoly.points;
@@ -2421,6 +2439,10 @@ function DieViewer({ dieId }: { dieId: string }) {
       // scale it; anywhere else pans (and a click moves the template there).
       if (tool === "libraryCell") return libraryCell.pointerDown(e);
 
+      // Place analog device: same gesture — drag the body to move the
+      // template, a corner to stretch it over the device in the image.
+      if (tool === "analogCell") return analogCell.pointerDown(e);
+
       if (tool === "measure" || tool === "select") {
         const vp = viewportLive.get();
         const tolerance = vp ? 10 / vp.zoom : 10;
@@ -2718,7 +2740,7 @@ function DieViewer({ dieId }: { dieId: string }) {
         const instances = ann0.cells.filter((c) => c.cellTypeId === rType.id);
         const restore = () => {
           for (const c of instances) {
-            annotationLayer.update(buildCellAnnotation(c, rType, getCellC, getCellShapes));
+            annotationLayer.update(buildCellAnnotation(c, rType, getCellC, getCellShapes, undefined, library.scale));
           }
           editPreviewLive.set(null);
         };
@@ -2730,7 +2752,7 @@ function DieViewer({ dieId }: { dieId: string }) {
               return;
             }
             for (const { cell: c } of res.cells) {
-              annotationLayer.update(buildCellAnnotation(c, res.cellType, getCellC, getCellShapes));
+              annotationLayer.update(buildCellAnnotation(c, res.cellType, getCellC, getCellShapes, undefined, library.scale));
             }
             const dragged = res.cells.find((x) => x.cell.id === rCell.id)!.cell;
             const { width, height } = res.cellType.cropRect;
@@ -2855,7 +2877,7 @@ function DieViewer({ dieId }: { dieId: string }) {
                 annotationLayer.update(buildNetAnnotation(net, getNetW, getNetC()));
               }
               for (const entry of moved.cells) {
-                annotationLayer.update(buildCellAnnotation(entry.cell, entry.cellType, getCellC, getCellShapes));
+                annotationLayer.update(buildCellAnnotation(entry.cell, entry.cellType, getCellC, getCellShapes, undefined, library.scale));
               }
             },
             onPointerUp: ({ dragged, worldPoint, startWorld, modifiers }) => {
@@ -2882,7 +2904,7 @@ function DieViewer({ dieId }: { dieId: string }) {
                 annotationLayer.update(buildNetAnnotation(net, getNetW, getNetC()));
               }
               for (const entry of mixedCells) {
-                annotationLayer.update(buildCellAnnotation(entry.cell, entry.cellType, getCellC, getCellShapes));
+                annotationLayer.update(buildCellAnnotation(entry.cell, entry.cellType, getCellC, getCellShapes, undefined, library.scale));
               }
             }
           };
@@ -3143,7 +3165,7 @@ function DieViewer({ dieId }: { dieId: string }) {
             return round ? { dx: Math.round(dx), dy: Math.round(dy) } : { dx, dy };
           };
           const draw = (c: typeof original, ct: typeof cellType) =>
-            buildCellAnnotation(c, ct, getCellC, getCellShapes);
+            buildCellAnnotation(c, ct, getCellC, getCellShapes, undefined, library.scale);
           // A lone moving cell carries its resize handles along (multi-cell
           // moves show none); they follow the copy when Alt is held.
           const previewHandles = (c: typeof original) => {
@@ -3566,7 +3588,8 @@ function DieViewer({ dieId }: { dieId: string }) {
       getCellC,
       getCellShapes,
       getPinNamesVisible,
-      libraryCell.pointerDown
+      libraryCell.pointerDown,
+      analogCell.pointerDown
     ]
   );
 
@@ -3576,6 +3599,10 @@ function DieViewer({ dieId }: { dieId: string }) {
       const tool = useDieViewerStore.getState().activeTool;
       if (tool === "libraryCell") {
         libraryCell.moveTo({ x, y });
+        return;
+      }
+      if (tool === "analogCell") {
+        analogCell.moveTo({ x, y });
         return;
       }
       if (tool === "wire") {
@@ -4336,6 +4363,7 @@ function DieViewer({ dieId }: { dieId: string }) {
           setActiveTool={setActiveTool}
           multiWireHint={multiWireHint}
           libraryCell={libraryCell}
+          analogCell={analogCell}
         />
       </SubBar>
       <main
@@ -4583,6 +4611,9 @@ function DieViewer({ dieId }: { dieId: string }) {
           {activeTool === "libraryCell" && (
             <LibraryCellOverlay tool={libraryCell} library={library} viewportStore={viewportLive} />
           )}
+          {activeTool === "analogCell" && (
+            <AnalogCellOverlay tool={analogCell} viewportStore={viewportLive} />
+          )}
         </section>
         {!rightCollapsed && (
         <aside style={{ ...panelStyle, gridColumn: 3 }}>
@@ -4602,6 +4633,7 @@ function DieViewer({ dieId }: { dieId: string }) {
             floorplanRegions={floorplanRegions}
             onActivateAssistantFinding={activateAssistantFinding}
             onOpenAssistantNetlist={openAssistantNetlist}
+            onEditAnalogCell={analogCell.beginEdit}
           />
           </div>
           <div style={{ flexShrink: 0, display: "flex", flexDirection: "column", borderTop: "1px solid var(--l2)" }}>
@@ -4698,6 +4730,11 @@ function DieViewer({ dieId }: { dieId: string }) {
             ? libraryCell.hasDraft
               ? "place library cell — drag to move · corners scale · click to move here · Enter to accept · Esc to cancel"
               : (libraryCell.notice ?? "place library cell — pick a cell in the toolbar")
+            : null,
+          activeTool === "analogCell"
+            ? analogCell.hasDraft
+              ? "place analog device — drag to move · corners stretch it over the device · Enter to accept · Esc to cancel"
+              : (analogCell.notice ?? "place analog device — pick a device in the toolbar")
             : null,
           extractionRunning
             ? `extracting ${extractionProgress?.done ?? 0}/${extractionProgress?.total ?? 1}…`

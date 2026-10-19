@@ -1,6 +1,14 @@
 import { create } from "zustand";
 import { persist, subscribeWithSelector } from "zustand/middleware";
-import type { AnnotationClass, AssistantClarificationMode, AssistantDataFlags, AssistantLlmConfig, LayerType } from "shared";
+import type {
+  AnalogLibParams,
+  AnalogLibTemplate,
+  AnnotationClass,
+  AssistantClarificationMode,
+  AssistantDataFlags,
+  AssistantLlmConfig,
+  LayerType
+} from "shared";
 import {
   CELL_COLOR,
   NET_COLOR,
@@ -191,6 +199,14 @@ interface PreferencesState {
    *  re-opens where the user left it. The ML tab also drives a canvas
    *  render mode (traces/vias sized from mlConfig). */
   inspectorTab: InspectorTab;
+  /** The analog-library device the user placed last — its template, its
+   *  parameters and its scale. Remembered, so the next device starts from
+   *  the same settings. `scale` null ⇒ the die's own library scale. */
+  analogCellLast: {
+    template: AnalogLibTemplate;
+    params: AnalogLibParams;
+    scale: number | null;
+  } | null;
   /** Die-viewer: the bottom-right "Analog instances" panel collapsed to just
    *  its header. Persisted so it stays folded across reloads. */
   analogInstancesCollapsed: boolean;
@@ -377,6 +393,11 @@ interface PreferencesActions {
   setShowFloorplanIO: (visible: boolean) => void;
   /** Toggle cell relations overlay on the die viewer canvas. */
   setShowCellRelations: (visible: boolean) => void;
+  /** Remember the analog-library device the user placed last (its template,
+   *  its parameters and its scale), so the next one starts the same way. */
+  setAnalogCellLast: (
+    last: { template: AnalogLibTemplate; params: AnalogLibParams; scale: number | null } | null
+  ) => void;
   /** Override colour for a specific via layer (VIA12, VIA23, …). */
   setViaLayerColor: (viaId: string, color: string) => void;
   /** Set wire node radius multiplier (0 = hide nodes). */
@@ -535,6 +556,7 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
         wireMapOpacity: 0.8,
         useCleanSpecimens: true,
         inspectorTab: "inspector",
+        analogCellLast: null,
         analogInstancesCollapsed: false,
         sheetR: {},
         analogOverrides: {},
@@ -605,6 +627,7 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
         setFloorplanOverlayOn: (visible) => set({ floorplanOverlayOn: visible }),
         setShowFloorplanIO: (visible) => set({ showFloorplanIO: visible }),
         setShowCellRelations: (visible) => set({ showCellRelations: visible }),
+        setAnalogCellLast: (last) => set({ analogCellLast: last }),
         setViaLayerColor: (viaId, color) =>
           set((state) => ({
             viaLayerColors: { ...state.viaLayerColors, [viaId]: color }
@@ -957,6 +980,7 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
           wireMapOpacity: state.wireMapOpacity,
           useCleanSpecimens: state.useCleanSpecimens,
           inspectorTab: state.inspectorTab,
+          analogCellLast: state.analogCellLast,
           analogInstancesCollapsed: state.analogInstancesCollapsed,
           sheetR: state.sheetR,
           analogOverrides: state.analogOverrides,

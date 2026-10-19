@@ -1,8 +1,10 @@
 import { Fragment, type ReactNode } from "react";
+import type { AnalogLibBulk, AnalogLibParams, AnalogLibTemplate } from "shared";
 import { Ic } from "../../icons";
 import { useLiveValue } from "../../lib/liveValue";
 import { DIE_VIEWER_HOTKEYS, hotkeyFor, withShortcut } from "../../lib/hotkeys";
 import type { LibraryCellTool } from "./useLibraryCellTool";
+import type { AnalogCellTool } from "./useAnalogCellTool";
 import { useDieViewerStore, type ToolKind } from "../../state/dieViewer";
 import { useFloorplanStore } from "../../state/floorplan";
 import { usePreferences } from "../../state/preferences";
@@ -54,6 +56,11 @@ const TOOL_GROUPS: ToolGroup[] = [
         kind: "libraryCell",
         icon: Ic.libraryCell,
         label: "Place library cell — fit another die's cell over one here; sets the die's scale"
+      },
+      {
+        kind: "analogCell",
+        icon: Ic.analogDevice,
+        label: "Place analog device — lay a pmos / nmos / npn / pnp / lpnp out from its parameters"
       }
     ]
   },
@@ -91,7 +98,8 @@ export function DieToolbar({
   activeTool,
   setActiveTool,
   multiWireHint,
-  libraryCell
+  libraryCell,
+  analogCell
 }: {
   activeTool: ToolKind;
   setActiveTool: (tool: ToolKind) => void;
@@ -100,8 +108,10 @@ export function DieToolbar({
   multiWireHint?: string;
   /** The "Place library cell" tool's state and controls. */
   libraryCell?: LibraryCellTool;
+  /** The "Place analog device" tool's state and controls. */
+  analogCell?: AnalogCellTool;
 }) {
-  const options = toolOptions(activeTool, multiWireHint, libraryCell);
+  const options = toolOptions(activeTool, multiWireHint, libraryCell, analogCell);
   return (
     <>
       {TOOL_GROUPS.map((group, gi) => (
@@ -158,9 +168,11 @@ export function DieToolbar({
 function toolOptions(
   tool: ToolKind,
   multiWireHint?: string,
-  libraryCell?: LibraryCellTool
+  libraryCell?: LibraryCellTool,
+  analogCell?: AnalogCellTool
 ): ReactNode {
   if (tool === "libraryCell" && libraryCell) return <LibraryCellOptions tool={libraryCell} />;
+  if (tool === "analogCell" && analogCell) return <AnalogCellOptions tool={analogCell} />;
   if (tool === "wire") return <WireOptions />;
   if (tool === "multiWire") return <WireOptions hint={multiWireHint} />;
   if (tool === "addCell") return <CellOptions />;
@@ -338,6 +350,222 @@ function LibraryCellOptions({ tool }: { tool: LibraryCellTool }) {
       {tool.error
         ? <span className="m" style={{ fontSize: 10.5, color: "var(--err)" }}>{tool.error}</span>
         : !draft && tool.chosen && hint("click the die to put the template there")}
+    </>
+  );
+}
+
+/** Patch the size parameters both device kinds share. */
+function patchSize(p: AnalogLibParams, patch: { W_um?: number; L_um?: number; fingers?: number }) {
+  return p.kind === "mos" ? { ...p, ...patch } : { ...p, ...patch };
+}
+
+/** A small numeric field: commits on Enter / blur, reverts on Escape. */
+function AnalogNumField({
+  label,
+  value,
+  title,
+  onCommit,
+  width = 58
+}: {
+  label: string;
+  value: number;
+  title?: string;
+  onCommit: (v: number) => void;
+  width?: number;
+}) {
+  const shown = String(Number(value.toFixed(4)));
+  const commit = (el: HTMLInputElement) => {
+    const v = Number(el.value.trim());
+    if (!Number.isFinite(v) || v <= 0 || String(Number(v.toFixed(4))) === shown) {
+      el.value = shown;
+      return;
+    }
+    onCommit(v);
+  };
+  return (
+    <label className="row" style={{ gap: 4, alignItems: "center" }} title={title ?? label}>
+      <span className="m" style={{ fontSize: 10, color: "var(--ink3)" }}>
+        {label}
+      </span>
+      <span className="input" style={{ width }}>
+        <input
+          key={shown}
+          defaultValue={shown}
+          inputMode="decimal"
+          spellCheck={false}
+          onBlur={(e) => commit(e.currentTarget)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              e.currentTarget.blur();
+            } else if (e.key === "Escape") {
+              e.currentTarget.value = shown;
+              e.currentTarget.blur();
+            }
+          }}
+        />
+      </span>
+    </label>
+  );
+}
+
+/**
+ * The analog device tool's controls: pick a device, set its size, its
+ * finger count, its bulk connection and the scale it is generated at;
+ * turn / flip the template; accept.
+ */
+function AnalogCellOptions({ tool }: { tool: AnalogCellTool }) {
+  const draft = useLiveValue(tool.draftLive);
+  const p = tool.params;
+  const isMos = p.kind === "mos";
+  const hint = (text: string) => (
+    <span className="m" style={{ fontSize: 10.5, color: "var(--ink3)", fontStyle: "italic" }}>
+      {text}
+    </span>
+  );
+  // The die's calibration: the scale that makes one template pixel one
+  // die pixel, so the extracted W/L match the parameters.
+  const fromUm = tool.umPerPx && tool.umPerPx > 0 ? 1 / tool.umPerPx : null;
+  const offByCalibration =
+    fromUm != null && Math.abs(tool.scale - fromUm) / fromUm > 0.01;
+
+  return (
+    <>
+      <span className="u" style={{ fontSize: 10 }}>
+        Device
+      </span>
+      <select
+        value={tool.template}
+        onChange={(e) => tool.chooseTemplate(e.target.value as AnalogLibTemplate)}
+        style={OPTION_SELECT_STYLE}
+      >
+        {tool.templates.map((t) => (
+          <option key={t.id} value={t.id} title={t.hint}>
+            {t.label}
+          </option>
+        ))}
+      </select>
+      {tool.editing && (
+        <button
+          type="button"
+          className="chip on"
+          style={{ cursor: "pointer" }}
+          title="This device is being laid out again — accept replaces it, new device leaves it"
+          onClick={() => tool.stopEditing()}
+        >
+          editing · new device
+        </button>
+      )}
+      <AnalogNumField
+        label="W"
+        value={p.W_um}
+        title="Width of one finger, in micrometres"
+        onCommit={(v) => tool.setParams(patchSize(p, { W_um: v }))}
+      />
+      <AnalogNumField
+        label="L"
+        value={p.L_um}
+        title="Length of one finger, in micrometres"
+        onCommit={(v) => tool.setParams(patchSize(p, { L_um: v }))}
+      />
+      <AnalogNumField
+        label="fingers"
+        value={p.fingers}
+        title="Number of parallel fingers"
+        onCommit={(v) => tool.setParams(patchSize(p, { fingers: Math.max(1, Math.round(v)) }))}
+      />
+      {isMos && (
+        <select
+          value={p.bulk}
+          onChange={(e) => {
+            if (p.kind !== "mos") return;
+            tool.setParams({ ...p, bulk: e.target.value as AnalogLibBulk });
+          }}
+          style={OPTION_SELECT_STYLE}
+          title="How the bulk (well) is tied in"
+        >
+          <option value="none">bulk: none</option>
+          <option value="tap">bulk: tap</option>
+        </select>
+      )}
+      <AnalogNumField
+        label="px/µm"
+        value={tool.scale}
+        title="Pixels per micrometre — the scale the device is generated at"
+        onCommit={(v) => tool.setScale(v)}
+        width={62}
+      />
+      {fromUm != null && (
+        <button
+          type="button"
+          className={"chip" + (offByCalibration ? " warn" : "")}
+          style={{ cursor: "pointer" }}
+          title={`Set the scale to the die's calibration (${fromUm.toFixed(3)} px/µm)`}
+          onClick={() => tool.setScale(fromUm)}
+        >
+          {offByCalibration ? "scale ≠ µm/px" : "scale = µm/px"}
+        </button>
+      )}
+      <span className="row" style={{ gap: 2 }}>
+        <button
+          type="button"
+          className="btn ghost"
+          disabled={!draft}
+          title="Rotate 90° counter-clockwise"
+          onClick={() => tool.orient("rotateCcw")}
+        >
+          {Ic.rotateCcw}
+        </button>
+        <button
+          type="button"
+          className="btn ghost"
+          disabled={!draft}
+          title="Rotate 90° clockwise"
+          onClick={() => tool.orient("rotateCw")}
+        >
+          {Ic.rotateCw}
+        </button>
+        <button
+          type="button"
+          className="btn ghost"
+          disabled={!draft}
+          title="Flip horizontally"
+          onClick={() => tool.orient("flipH")}
+        >
+          {Ic.flipH}
+        </button>
+        <button
+          type="button"
+          className="btn ghost"
+          disabled={!draft}
+          title="Flip vertically"
+          onClick={() => tool.orient("flipV")}
+        >
+          {Ic.flipV}
+        </button>
+      </span>
+      <button
+        type="button"
+        className="btn accent"
+        disabled={!draft || tool.busy || !!tool.problem}
+        title="Place the device here (Enter)"
+        onClick={() => void tool.accept()}
+      >
+        {Ic.check} Accept
+      </button>
+      {tool.problem ? (
+        <span className="m" style={{ fontSize: 10.5, color: "var(--err)" }}>
+          {tool.problem}
+        </span>
+      ) : tool.error ? (
+        <span className="m" style={{ fontSize: 10.5, color: "var(--err)" }}>
+          {tool.error}
+        </span>
+      ) : !draft ? (
+        hint("click the die to put the template there")
+      ) : (
+        hint("drag a corner to stretch it over the device")
+      )}
     </>
   );
 }

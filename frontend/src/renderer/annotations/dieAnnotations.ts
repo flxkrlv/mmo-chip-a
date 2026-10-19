@@ -7,7 +7,8 @@ import type {
   IOPin,
   ROIRectangle
 } from "shared";
-import { cellWorldRect } from "../../lib/cellFootprint";
+import { scaleRect } from "shared/cellLibrary";
+import { cellInstanceScale, cellWorldRect } from "../../lib/cellFootprint";
 import { withAlpha } from "../../lib/color";
 import {
   pointInPolygon,
@@ -125,6 +126,9 @@ export interface PopulateOptions {
    *  Default true (names always shown). Independent of the pin kind's
    *  own all-or-nothing visibility (which hides the whole marker). */
   pinNamesVisible?: () => boolean;
+  /** The die's library scale (pixels per library unit) — the default a
+   *  cell is drawn at. A cell with its own `scale` deviates from it. */
+  dieScale?: number;
 }
 
 /**
@@ -161,7 +165,9 @@ export function populateAnnotationLayer(
   for (const cell of annotations.cells) {
     const ct = cellTypeMap.get(cell.cellTypeId);
     if (!ct) continue;
-    layer.add(buildCellAnnotation(cell, ct, getCellColor, getCellShowShapes, getIsTypeSelected));
+    layer.add(
+      buildCellAnnotation(cell, ct, getCellColor, getCellShowShapes, getIsTypeSelected, options.dieScale)
+    );
   }
 
   const getNetOverrideColor = options.netOverrideColor ?? ((_: string) => null);
@@ -220,13 +226,20 @@ export function buildCellAnnotation(
   cellType: CellType,
   getColor: () => string,
   getShowShapes: () => boolean,
-  isTypeSelected?: (cellId: string) => boolean
+  isTypeSelected?: (cellId: string) => boolean,
+  dieScale?: number
 ): Annotation {
-  const w = cellType.cropRect.width;
-  const h = cellType.cropRect.height;
+  // The instance may be drawn at its own scale (see `cellInstanceScale`):
+  // the box and the layers grow with it.
+  const k = cellInstanceScale(cell, cellType, dieScale);
+  const w = cellType.cropRect.width * k;
+  const h = cellType.cropRect.height * k;
   // Footprint: the type box (or per-instance `bounds`) oriented like the
   // content, so the outline wraps what's drawn (see cellFootprint.ts).
-  const bbox: Rect = cellWorldRect(cell, w, h);
+  const bounds = cell.bounds ? scaleRect(cell.bounds, k) : undefined;
+  const bbox: Rect = cellWorldRect({ ...cell, bounds }, w, h);
+  // The layers keep the type's own units; the canvas transform below
+  // scales them with the instance.
   const layers = cellType.layers ?? {};
   // A cell with no inner layer shapes has nothing to draw at high zoom — keep
   // the solid block fill at every zoom so it stays visible.
@@ -261,6 +274,8 @@ export function buildCellAnnotation(
         ctx.rotate(((cell.rotation ?? 0) * Math.PI) / 180);
         ctx.scale(cell.flippedH ? -1 : 1, cell.flippedV ? -1 : 1);
         ctx.translate(-w / 2, -h / 2);
+        // The instance's own scale (1 for a normally drawn cell).
+        if (k !== 1) ctx.scale(k, k);
         // No outlines on the die view — at die-wide zooms the per-shape
         // strokes add noise without disambiguating anything (the cell box
         // itself carries the outline).

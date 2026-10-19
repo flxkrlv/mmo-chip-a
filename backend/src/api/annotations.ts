@@ -26,6 +26,10 @@ import type {
   RulerMeasurement
 } from "shared";
 
+/**
+ * Layers a shape may be written to. The analog / BiCMOS layers are in
+ * the list too: the analog library generates cells that carry them.
+ */
 const VALID_LAYERS: LayerType[] = [
   "diffusion",
   "polysilicon",
@@ -37,7 +41,32 @@ const VALID_LAYERS: LayerType[] = [
   "metal6",
   "contact",
   "via1", "via2", "via3", "via4", "via5",
-  "wire_hitbox"
+  "wire_hitbox",
+  // ── Analog / BiCMOS extension ────────
+  "nwell",
+  "pwell",
+  "deep_nwell",
+  "buried_layer",
+  "base",
+  "emitter",
+  "collector_sinker",
+  "jfet_gate",
+  "jfet_channel",
+  "resistor_body",
+  "capacitor_bottom",
+  "capacitor_top",
+  "device_box",
+  "hsr",
+  "film",
+  "npn_id",
+  "pnp_id",
+  "lpnp_id",
+  "vpnp",
+  "res_id",
+  "cap_id",
+  "diode_id",
+  "collector",
+  "bulk"
 ];
 
 export interface AnnotationsRouterConfig {

@@ -403,6 +403,96 @@ export interface CellType {
   /** Per-type display color (#rrggbb) for the cell outline / block fill.
    *  Unique across the die's cell types. Absent ⇒ the global cell color. */
   color?: string;
+  /** The parametric spec of a device laid out by the analog library.
+   *  Absent ⇒ an ordinary, hand-drawn type. Present ⇒ the layers were
+   *  generated from `params`, and can be re-generated with other
+   *  parameters (the layers themselves stay editable either way). */
+  pcell?: AnalogPcellSpec;
+}
+
+// ── Analog library (parametric devices) ────────────────────────────
+
+/** The devices the analog library can lay out. */
+export type AnalogLibTemplate = "pmos" | "nmos" | "npn" | "pnp" | "lpnp";
+
+/** How a generated MOS ties its bulk (well) to the outside world. */
+export type AnalogLibBulk =
+  /** No well contact in the cell: the bulk is resolved from the well. */
+  | "none"
+  /** A well tap inside the well, outside the device's diffusion. */
+  | "tap";
+
+/** Parameters of a generated MOS. */
+export interface AnalogLibMosParams {
+  kind: "mos";
+  /** nmos or pmos — decides the well (pwell / nwell) and the diffusion. */
+  mosType: "nmos" | "pmos";
+  /** Number of gate fingers (parallel transistors). */
+  fingers: number;
+  /** Channel width of ONE finger [µm]. */
+  W_um: number;
+  /** Channel length [µm]. */
+  L_um: number;
+  /** Bulk connection. */
+  bulk: AnalogLibBulk;
+}
+
+/** Parameters of a generated bipolar transistor. */
+export interface AnalogLibBjtParams {
+  kind: "bjt";
+  /** npn / pnp (vertical) or lpnp (lateral). */
+  bjtType: "npn" | "pnp" | "lpnp";
+  /** Number of emitter stripes. */
+  fingers: number;
+  /** Emitter width of ONE stripe [µm]. */
+  W_um: number;
+  /** Emitter length of ONE stripe [µm]. */
+  L_um: number;
+}
+
+export type AnalogLibParams = AnalogLibMosParams | AnalogLibBjtParams;
+
+/** The parameters of one template — narrowed by the template's id. */
+export type AnalogParamsFor<T extends AnalogLibTemplate> = T extends "pmos" | "nmos"
+  ? AnalogLibMosParams
+  : AnalogLibBjtParams;
+
+/**
+ * The design rules a device is laid out with [µm]. They are part of the
+ * stored spec, so a device regenerated later comes out identical.
+ */
+export interface AnalogLibRules {
+  /** Width of a source/drain diffusion region (also the emitter gap) [µm]. */
+  spacing: number;
+  /** How far a gate poly reaches past the diffusion edge [µm]. */
+  polyOverhang: number;
+  /** Height of the poly strap joining the gate fingers [µm]. */
+  polyStrap: number;
+  /** Contact size (square) [µm]. */
+  contactSize: number;
+  /** Metal1 pad around a contact, per side [µm]. */
+  metal1Pad: number;
+  /** Well margin around the device [µm]. */
+  wellMargin: number;
+  /** Base margin around the emitters [µm]. */
+  baseMargin: number;
+  /** Width of the collector region next to the base [µm]. */
+  collectorWidth: number;
+}
+
+/**
+ * The parametric spec of a generated device. Stored on the cell type, so
+ * the device can be re-opened and re-generated with other parameters.
+ */
+export interface AnalogPcellSpec {
+  /** Which template the device was laid out from. */
+  template: AnalogLibTemplate;
+  /** The parameters it was laid out with. */
+  params: AnalogLibParams;
+  /** Pixels per library unit (per µm) the layers were generated at. */
+  scale: number;
+  /** The rules used. */
+  rules: AnalogLibRules;
 }
 
 export interface Cell {
@@ -433,6 +523,10 @@ export interface Cell {
    *  Orientation never affects the footprint — it only changes how the
    *  type's content is presented on the cell. */
   bounds?: AnnotationRect;
+  /** This instance's own scale: its pixels per library unit. Absent ⇒ the
+   *  die's `cellScale` — the library's default. A cell may deviate from
+   *  it, so one library can hold elements drawn at different sizes. */
+  scale?: number;
   /** Piecewise-linear stretch of this instance's image, in its type frame
    *  (after un-orienting), so it lines up exactly with the type in the
    *  merge-cells tool. Absent ⇒ none. */

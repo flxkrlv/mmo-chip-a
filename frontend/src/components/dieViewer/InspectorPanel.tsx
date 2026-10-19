@@ -1,9 +1,9 @@
 import { useState, useRef, useEffect, type ReactNode } from "react";
-import { cellWorldRect } from "../../lib/cellFootprint";
+import { cellInstanceScale, cellWorldRect } from "../../lib/cellFootprint";
 import { padCountByPin, renamePinActions } from "../../lib/pinClipboard";
 import { useDialog } from "../Dialog";
 import { useQueryClient } from "@tanstack/react-query";
-import type { AnalogDevice, AnnotationNet, AnnotationNetEdge, AssistantFinding, CellType, DieAnnotations, DieMetadata, FloorplanRegion, HumanAnnotation, MLInferenceJob, WireLayer } from "shared";
+import type { AnalogDevice, AnnotationNet, AnnotationNetEdge, AssistantFinding, Cell, CellType, DieAnnotations, DieMetadata, FloorplanRegion, HumanAnnotation, MLInferenceJob, WireLayer } from "shared";
 import type { ActionDispatcher } from "../../api/actions";
 import type { CellLibraryView } from "../../lib/cellLibrary";
 import { uuid } from "../../lib/uuid";
@@ -162,7 +162,8 @@ function resolve(
   dispatcher: ActionDispatcher,
   mlViasLayer: MLViasLayer | null,
   library: CellLibraryView,
-  cellTypeCounts?: Map<string, number>
+  cellTypeCounts?: Map<string, number>,
+  onEditAnalogCell?: (cell: Cell, cellType: CellType) => void
 ): Resolved | null {
   // A type shared from another die of the cell library says whose it is.
   const ownerRow = (typeId: string): [string, ReactNode][] => {
@@ -321,13 +322,15 @@ function resolve(
             rows: [["color", <CellColorValue key="color" cellType={ct} />], ...ownerRow(ct.id)]
           }
         : { typeLabel: "Cell", displayName: `Cell ${short(c.id)}`, uid: c.id };
-      const rows: [string, string][] = [
+      const rows: [string, ReactNode][] = [
         ["position", `(${Math.round(c.x)}, ${Math.round(c.y)})`]
       ];
       if (c.rotation) rows.push(["rotation", `${c.rotation}°`]);
       if (ct) {
+        // The instance may be drawn at its own scale (see `Cell.scale`).
+        const k = cellInstanceScale(c, ct, library.scale);
         // Die footprint (oriented); a resized cell differs from its type's box.
-        const box = cellWorldRect(c, ct.cropRect.width, ct.cropRect.height);
+        const box = cellWorldRect(c, ct.cropRect.width * k, ct.cropRect.height * k);
         rows.push([
           "size",
           c.bounds
@@ -336,6 +339,33 @@ function resolve(
         ]);
         const count = cellTypeCounts?.get(ct.id) ?? 1;
         rows.push(["relationship", count > 1 ? `Linked (×${count})` : "Unique"]);
+        // A device laid out by the analog library: its parameters travel with
+        // the cell type, so the user can see what it was generated from.
+        const pcell = ct.pcell;
+        if (pcell) {
+          const p = pcell.params;
+          rows.push(["device", p.kind === "mos" ? p.mosType.toUpperCase() : p.bjtType.toUpperCase()]);
+          rows.push(["W × L", `${p.W_um} × ${p.L_um} µm`]);
+          rows.push(["fingers", String(p.fingers)]);
+          if (p.kind === "mos") rows.push(["bulk", p.bulk === "tap" ? "well tap" : "none"]);
+          if (onEditAnalogCell) {
+            rows.push([
+              "edit",
+              <button
+                key="edit-device"
+                type="button"
+                className="btn ghost"
+                title="Lay this device out again — change its parameters; hand-made layer edits are lost"
+                onClick={() => onEditAnalogCell(c, ct)}
+              >
+                edit parameters
+              </button>
+            ]);
+          }
+        }
+      }
+      if (c.scale != null) {
+        rows.push(["own scale", `${Number(c.scale.toFixed(4))} px / library unit`]);
       }
       rows.push(["flipped", c.flippedV ? "vertical" : "no"]);
       if (c.mlDetected) {
@@ -494,6 +524,7 @@ export function InspectorPanel({
   floorplanRegions = [],
   onActivateAssistantFinding,
   onOpenAssistantNetlist,
+  onEditAnalogCell,
 }: {
   annotations: DieAnnotations | undefined;
   dispatcher: ActionDispatcher;
@@ -516,6 +547,9 @@ export function InspectorPanel({
   floorplanRegions?: FloorplanRegion[];
   onActivateAssistantFinding?: (finding: AssistantFinding | null) => void;
   onOpenAssistantNetlist?: (finding: AssistantFinding, view: "code" | "graph" | "schematic") => void;
+  /** Load a placed analog-library device back into the placement tool, so
+   *  it can be laid out again with other parameters. */
+  onEditAnalogCell?: (cell: Cell, cellType: CellType) => void;
 }) {
   const tab = usePreferences((s) => s.inspectorTab);
   const setTab = usePreferences((s) => s.setInspectorTab);
@@ -577,6 +611,7 @@ export function InspectorPanel({
             mlViasLayer={mlViasLayer}
             proposals={proposals}
             cellTypeCounts={cellTypeCounts}
+            onEditAnalogCell={onEditAnalogCell}
           />
         )}
       </div>
@@ -594,6 +629,7 @@ function InspectorBody({
   mlViasLayer,
   proposals,
   cellTypeCounts,
+  onEditAnalogCell,
 }: {
   annotations: DieAnnotations | undefined;
   dispatcher: ActionDispatcher;
@@ -604,6 +640,7 @@ function InspectorBody({
   mlViasLayer: MLViasLayer | null;
   proposals: Proposal[];
   cellTypeCounts?: Map<string, number>;
+  onEditAnalogCell?: (cell: Cell, cellType: CellType) => void;
 }) {
   // Nothing selected: the die itself.
   if (ids.size === 0)
@@ -660,7 +697,7 @@ function InspectorBody({
       />
     );
   }
-  const r = resolve(only, annotations, dispatcher, mlViasLayer, library, cellTypeCounts);
+  const r = resolve(only, annotations, dispatcher, mlViasLayer, library, cellTypeCounts, onEditAnalogCell);
   if (!r) return <Empty>Selection not found</Empty>;
 
   return (

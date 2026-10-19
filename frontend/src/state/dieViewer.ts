@@ -40,6 +40,7 @@ export type ToolKind =
   | "cellGuideSeg"
   | "ioPoint"
   | "libraryCell"
+  | "analogCell"
   | "roi"
   | "ignore"
   | "measure"

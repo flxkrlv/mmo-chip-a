@@ -86,6 +86,11 @@ export function DieProperties({
       <Row label="lib scale">
         <ScaleField value={scale} disabled={update.isPending} onCommit={(v) => save({ cellScale: v })} />
       </Row>
+      <Hint>
+        The library&apos;s default scale — pixels per library unit. The analog library lays its
+        devices out at it (one library unit = 1 µm there), and a placed device may carry its own
+        scale.
+      </Hint>
       {update.error && (
         <div className="m" style={{ padding: "4px 12px", fontSize: 10.5, color: "var(--err)" }}>
           {update.error.message}

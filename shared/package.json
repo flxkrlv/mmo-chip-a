@@ -5,6 +5,7 @@
   "type": "module",
   "exports": {
     ".": "./src/types.ts",
-    "./cellLibrary": "./src/cellLibrary.ts"
+    "./cellLibrary": "./src/cellLibrary.ts",
+    "./analogLib": "./src/analogLib.ts"
   }
 }
