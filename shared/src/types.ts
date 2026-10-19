@@ -499,13 +499,11 @@ export interface AnalogLibRules {
   collectorWidth: number;
   /** Lateral PNP: base material between the emitter and the collector ring [µm]. */
   lpnpEmitterCollectorGap: number;
-  /** Lateral PNP: base material between the collector ring and the edge of
-   *  the base region (the base contact sits there) [µm]. */
-  lpnpCollectorBaseGap: number;
   /** Lateral PNP: width of the collector ring itself [µm]. */
   lpnpCollectorWidth: number;
-  /** Vertical BJT: base material between the emitter and the edge of the
-   *  base region [µm]. */
+  /** Vertical BJT: how far the base reaches past the emitter, on the side
+   *  the base contact sits on [µm]. The other sides stay at the junction
+   *  clearance, so the pocket does not grow all around. */
   npnEmitterBaseGap: number;
   /** Vertical BJT: distance from the emitter to the collector [µm]. */
   npnEmitterCollectorGap: number;
@@ -514,6 +512,15 @@ export interface AnalogLibRules {
   /** Vertical BJT: how far the collector reaches past the emitter, above
    *  and below [µm] — it follows the emitter, not the base. */
   npnCollectorMargin: number;
+  /** Vertical BJT: the base hugs the emitter this close on the sides
+   *  without the base contact [µm]. */
+  npnBaseClearance: number;
+  /** Lateral PNP: how far the base reaches past the collector ring, on the
+   *  side the base contact sits on [µm]. */
+  lpnpBaseCollectorGap: number;
+  /** Lateral PNP: the base hugs the collector ring this close on the sides
+   *  without the base contact [µm]. */
+  lpnpBaseClearance: number;
 }
 
 /**

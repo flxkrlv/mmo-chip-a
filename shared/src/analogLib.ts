@@ -62,12 +62,14 @@ export const DEFAULT_ANALOG_LIB_RULES: AnalogLibRules = {
   baseMargin: 0.5,
   collectorWidth: 1.0,
   lpnpEmitterCollectorGap: 0.8,
-  lpnpCollectorBaseGap: 0.8,
+  lpnpBaseCollectorGap: 0.8,
   lpnpCollectorWidth: 1.0,
   npnEmitterBaseGap: 0.4,
   npnEmitterCollectorGap: 2.0,
   npnCollectorWidth: 1.5,
-  npnCollectorMargin: 0.5
+  npnCollectorMargin: 0.5,
+  npnBaseClearance: 0.2,
+  lpnpBaseClearance: 0.2
 };
 
 /** A laid-out device: the layers and the box they live in (die pixels). */
@@ -553,17 +555,17 @@ function buildNpn(spec: AnalogPcellSpec, idPrefix: string): AnalogPcellLayout {
   const N = Math.max(1, Math.round(p.fingers));
   const gap = r.spacing;
 
-  // The distances around the emitter: the base material between the
-  // emitter and the base's edge, and how far the collector sits from the
-  // emitter. They are independent: the base's margin grows the pocket
-  // around the emitter, the collector stays where it was put.
+  // The distances around the emitter: how far the base reaches past the
+  // emitter on the side of the base contact, and how far the collector
+  // sits from the emitter. They are independent.
   const baseGap = p.emitterBaseGap_um ?? r.npnEmitterBaseGap;
   const collectorGap = p.emitterCollectorGap_um ?? r.npnEmitterCollectorGap;
   const collectorW = r.npnCollectorWidth;
   const side = p.baseContactSide ?? "left";
-  // The pocket has to hold the base contact, so it is never thinner than
-  // the contact itself.
-  const baseMargin = Math.max(baseGap, r.contactSize + 0.2);
+  // The base hugs the emitter everywhere except on the contact's side.
+  const tight = r.npnBaseClearance;
+  // The reaching part has to hold the base contact.
+  const reach = Math.max(baseGap, r.contactSize + 0.2);
 
   // The emitter block: N stripes separated by `gap`.
   const emitterWidth = N * W + (N - 1) * gap;
@@ -576,22 +578,9 @@ function buildNpn(spec: AnalogPcellSpec, idPrefix: string): AnalogPcellLayout {
   }
   layers.emitter = emitters;
 
-  // The base surrounds the emitters with its margin.
-  const baseX0 = -baseMargin;
-  const baseX1 = emitterWidth + baseMargin;
-  layers.base = [
-    rect(
-      `${idPrefix}:base`,
-      baseX0 * k,
-      -baseMargin * k,
-      (baseX1 - baseX0) * k,
-      (L + 2 * baseMargin) * k
-    )
-  ];
-
   // The collector sits off to the side, `collectorGap` from the emitter.
-  // Its height follows the EMITTER, not the base: growing the base's
-  // pocket must not drag the collector along.
+  // Its height follows the EMITTER, not the base: growing the base must
+  // not drag the collector along.
   const collectorX0 = emitterWidth + collectorGap;
   const collectorX1 = collectorX0 + collectorW;
   const collectorMargin = r.npnCollectorMargin;
@@ -602,6 +591,26 @@ function buildNpn(spec: AnalogPcellSpec, idPrefix: string): AnalogPcellLayout {
       -collectorMargin * k,
       (collectorX1 - collectorX0) * k,
       (L + 2 * collectorMargin) * k
+    )
+  ];
+
+  // The base: the emitter plus a thin margin, and on the side of the base
+  // contact it reaches `reach` further — that is where the contact goes.
+  let baseX0 = -tight;
+  let baseX1 = emitterWidth + tight;
+  let baseY0 = -tight;
+  let baseY1 = L + tight;
+  if (side === "right") baseX1 = Math.min(emitterWidth + reach, collectorX0 - tight);
+  else if (side === "left") baseX0 = -reach;
+  else if (side === "top") baseY0 = -reach;
+  else baseY1 = L + reach;
+  layers.base = [
+    rect(
+      `${idPrefix}:base`,
+      baseX0 * k,
+      baseY0 * k,
+      (baseX1 - baseX0) * k,
+      (baseY1 - baseY0) * k
     )
   ];
 
@@ -630,19 +639,21 @@ function buildNpn(spec: AnalogPcellSpec, idPrefix: string): AnalogPcellLayout {
   }
   contactAt("c", ((collectorX0 + collectorX1) / 2) * k, (L / 2) * k, cs);
 
-  // The base contact sits in the base's margin, on the chosen side.
-  const bcs = Math.min(cs, baseMargin * 0.8);
+  // The base contact sits at the far end of the base's reaching part, on
+  // the side the user picked — so it moves away from the emitter as the
+  // gap grows, while the base does not grow all around.
+  const bcs = Math.min(cs, r.contactSize);
   const bx =
     side === "left"
-      ? baseX0 + baseMargin / 2
+      ? baseX0 + bcs / 2
       : side === "right"
-        ? baseX1 - baseMargin / 2
+        ? baseX1 - bcs / 2
         : emitterWidth / 2;
   const by =
     side === "top"
-      ? -baseMargin + baseMargin / 2
+      ? baseY0 + bcs / 2
       : side === "bottom"
-        ? L + baseMargin - baseMargin / 2
+        ? baseY1 - bcs / 2
         : L / 2;
   contactAt("b", bx * k, by * k, bcs);
 
@@ -651,14 +662,14 @@ function buildNpn(spec: AnalogPcellSpec, idPrefix: string): AnalogPcellLayout {
 
   // The marker layer names the device; the extractor reads the collector,
   // base and emitter shapes inside it.
-  const markerPad = Math.max(baseMargin, 0.2);
+  const markerPad = Math.max(reach, 0.2);
   layers.npn_id = [
     rect(
       `${idPrefix}:npn_id`,
       (baseX0 - markerPad) * k,
-      (-baseMargin - markerPad) * k,
+      (baseY0 - markerPad) * k,
       (collectorX1 - baseX0 + 2 * markerPad) * k,
-      (L + 2 * baseMargin + 2 * markerPad) * k
+      (baseY1 - baseY0 + 2 * markerPad) * k
     )
   ];
 
@@ -684,7 +695,7 @@ function buildLpnp(spec: AnalogPcellSpec, idPrefix: string): AnalogPcellLayout {
   const N = Math.max(1, Math.round(p.fingers));
   const gap = r.spacing;
   const ecGap = p.emitterCollectorGap_um ?? r.lpnpEmitterCollectorGap;
-  const cbGap = p.collectorBaseGap_um ?? r.lpnpCollectorBaseGap;
+  const cbGap = p.collectorBaseGap_um ?? r.lpnpBaseCollectorGap;
   const cw = r.lpnpCollectorWidth;
   const side = p.baseContactSide ?? "left";
 
@@ -717,11 +728,19 @@ function buildLpnp(spec: AnalogPcellSpec, idPrefix: string): AnalogPcellLayout {
     rect(`${idPrefix}:collector:r`, (outX1 - cw) * k, ringY0 * k, cw * k, (ringY1 - ringY0) * k)
   ];
 
-  // The base: the n region around the collector ring, `cbGap` clear of it.
-  const baseX0 = outX0 - cbGap;
-  const baseX1 = outX1 + cbGap;
-  const baseY0 = outY0 - cbGap;
-  const baseY1 = outY1 + cbGap;
+  // The base: the n region around the collector ring. It hugs the ring
+  // everywhere except on the side of the base contact, where it reaches
+  // `cbGap` further — that is where the contact goes.
+  const tight = r.lpnpBaseClearance;
+  const reach = Math.max(cbGap, r.contactSize + 0.2);
+  let baseX0 = outX0 - tight;
+  let baseX1 = outX1 + tight;
+  let baseY0 = outY0 - tight;
+  let baseY1 = outY1 + tight;
+  if (side === "right") baseX1 = outX1 + reach;
+  else if (side === "left") baseX0 = outX0 - reach;
+  else if (side === "top") baseY0 = outY0 - reach;
+  else baseY1 = outY1 + reach;
   layers.bulk = [
     rect(
       `${idPrefix}:bulk`,
@@ -756,19 +775,20 @@ function buildLpnp(spec: AnalogPcellSpec, idPrefix: string): AnalogPcellLayout {
   }
   // The collector contact sits on the ring's bottom bar.
   contactAt("c", ((ringX0 + ringX1) / 2) * k, (outY1 - cw / 2) * k, Math.min(cs, cw * 0.8));
-  // The base contact sits in the base material, on the chosen side.
-  const bcs = Math.min(cs, cbGap * 0.8);
+  // The base contact sits at the far end of the base's reaching part, on
+  // the side the user picked.
+  const bcs = Math.min(cs, r.contactSize);
   const bx =
     side === "left"
-      ? baseX0 + cbGap / 2
+      ? baseX0 + bcs / 2
       : side === "right"
-        ? baseX1 - cbGap / 2
+        ? baseX1 - bcs / 2
         : emitterWidth / 2;
   const by =
     side === "top"
-      ? baseY0 + cbGap / 2
+      ? baseY0 + bcs / 2
       : side === "bottom"
-        ? baseY1 - cbGap / 2
+        ? baseY1 - bcs / 2
         : L / 2;
   contactAt("b", bx * k, by * k, bcs);
 
@@ -776,7 +796,7 @@ function buildLpnp(spec: AnalogPcellSpec, idPrefix: string): AnalogPcellLayout {
   layers.metal1 = metal1;
 
   // The marker names the device; it encloses every shape of it.
-  const markerPad = Math.max(cbGap, 0.2);
+  const markerPad = Math.max(reach, 0.2);
   layers.lpnp_id = [
     rect(
       `${idPrefix}:lpnp_id`,

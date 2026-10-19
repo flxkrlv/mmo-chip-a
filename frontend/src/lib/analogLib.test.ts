@@ -370,7 +370,8 @@ describe("buildAnalogPcell — the bipolar gaps and the base contact", () => {
     }
   });
 
-  it("keeps the base's margin around the emitter", () => {
+  it("reaches past the emitter only on the side of the base contact", () => {
+    // The base contact is on the left (the template's default).
     const ct = asCellType(
       spec({ ...defaultAnalogParams("npn"), emitterBaseGap_um: 3 })
     );
@@ -378,10 +379,40 @@ describe("buildAnalogPcell — the bipolar gaps and the base contact", () => {
     const base = ct.layers?.base?.[0];
     expect(emitter?.kind).toBe("rect");
     expect(base?.kind).toBe("rect");
-    if (emitter?.kind === "rect" && base?.kind === "rect") {
-      expect(base.x).toBeCloseTo(emitter.x - 3 * SCALE, 3);
-      expect(base.y).toBeCloseTo(emitter.y - 3 * SCALE, 3);
-    }
+    if (emitter?.kind !== "rect" || base?.kind !== "rect") return;
+    // The base reaches 3 um past the emitter on the contact's side...
+    expect(emitter.x - base.x).toBeCloseTo(3 * SCALE, 3);
+    // ...and hugs it on the other sides.
+    expect(emitter.y - base.y).toBeCloseTo(0.2 * SCALE, 3);
+    expect(base.x + base.width - (emitter.x + emitter.width)).toBeCloseTo(0.2 * SCALE, 3);
+  });
+
+  it("grows the base towards the contact without making it wider", () => {
+    const near = asCellType(
+      spec({ ...defaultAnalogParams("npn"), baseContactSide: "right", emitterBaseGap_um: 0.4 })
+    );
+    const far = asCellType(
+      spec({ ...defaultAnalogParams("npn"), baseContactSide: "right", emitterBaseGap_um: 1.5 })
+    );
+    const of = (ct: typeof near) => {
+      const base = ct.layers?.base?.[0];
+      const emitter = ct.layers?.emitter?.[0];
+      const contact = ct.layers?.contact?.find((s) => s.id.endsWith(":ct:b"));
+      if (base?.kind !== "rect" || emitter?.kind !== "rect" || contact?.kind !== "rect")
+        return null;
+      return {
+        baseH: base.height,
+        contactFromEmitter: contact.x - (emitter.x + emitter.width)
+      };
+    };
+    const a = of(near);
+    const b = of(far);
+    expect(a && b).toBeTruthy();
+    if (!a || !b) return;
+    // The pocket does not grow in width (the height of the base)...
+    expect(b.baseH).toBeCloseTo(a.baseH, 6);
+    // ...the contact just moves away from the emitter.
+    expect(b.contactFromEmitter).toBeGreaterThan(a.contactFromEmitter);
   });
 
   it("puts the base contact on the chosen side", () => {

@@ -238,15 +238,15 @@ export function AnalogLibPanel({ tool }: { tool: AnalogCellTool }) {
               <AnalogNumField
                 label="collector–base"
                 value={p.collectorBaseGap_um ?? 0.8}
-                title="The base material between the collector ring and the edge of the base region (the base contact sits there), in micrometres"
+                title="How far the base reaches past the collector ring, on the side of the base contact, in micrometres"
                 onCommit={(v) => patch({ collectorBaseGap_um: v })}
                 width={58}
               />
             ) : (
               <AnalogNumField
                 label="emitter–base"
-                value={p.emitterBaseGap_um ?? 1}
-                title="The base material between the emitter and the edge of the base region, in micrometres"
+                value={p.emitterBaseGap_um ?? 0.4}
+                title="How far the base reaches past the emitter, on the side of the base contact, in micrometres"
                 onCommit={(v) => patch({ emitterBaseGap_um: v })}
                 width={58}
               />
