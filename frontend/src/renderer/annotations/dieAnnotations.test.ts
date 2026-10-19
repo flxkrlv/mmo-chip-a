@@ -40,7 +40,7 @@ describe("buildCellAnnotation", () => {
           spacing: 1, polyOverhang: 0.5, polyStrap: 0.4, contactSize: 0.4,
           metal1Pad: 0.3, wellMargin: 1, baseMargin: 0.5, collectorWidth: 1,
           lpnpEmitterCollectorGap: 0.8, lpnpCollectorBaseGap: 0.8, lpnpCollectorWidth: 1,
-          npnEmitterBaseGap: 1, npnEmitterCollectorGap: 2, npnCollectorWidth: 1.5
+          npnEmitterBaseGap: 0.4, npnEmitterCollectorGap: 2, npnCollectorWidth: 1.5, npnCollectorMargin: 0.5
         }
       }
     };

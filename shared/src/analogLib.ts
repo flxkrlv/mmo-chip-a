@@ -64,9 +64,10 @@ export const DEFAULT_ANALOG_LIB_RULES: AnalogLibRules = {
   lpnpEmitterCollectorGap: 0.8,
   lpnpCollectorBaseGap: 0.8,
   lpnpCollectorWidth: 1.0,
-  npnEmitterBaseGap: 1.0,
+  npnEmitterBaseGap: 0.4,
   npnEmitterCollectorGap: 2.0,
-  npnCollectorWidth: 1.5
+  npnCollectorWidth: 1.5,
+  npnCollectorMargin: 0.5
 };
 
 /** A laid-out device: the layers and the box they live in (die pixels). */
@@ -132,7 +133,7 @@ export const ANALOG_LIB_TEMPLATES: AnalogLibTemplateInfo[] = [
       fingers: 1,
       W_um: 2,
       L_um: 2,
-      emitterBaseGap_um: 1.0,
+      emitterBaseGap_um: 0.4,
       emitterCollectorGap_um: 2.0,
       baseContactSide: "left"
     }
@@ -552,12 +553,17 @@ function buildNpn(spec: AnalogPcellSpec, idPrefix: string): AnalogPcellLayout {
   const N = Math.max(1, Math.round(p.fingers));
   const gap = r.spacing;
 
-  // The distances around the emitter: the base's margin, and how far the
-  // collector is moved away from the emitter.
+  // The distances around the emitter: the base material between the
+  // emitter and the base's edge, and how far the collector sits from the
+  // emitter. They are independent: the base's margin grows the pocket
+  // around the emitter, the collector stays where it was put.
   const baseGap = p.emitterBaseGap_um ?? r.npnEmitterBaseGap;
   const collectorGap = p.emitterCollectorGap_um ?? r.npnEmitterCollectorGap;
   const collectorW = r.npnCollectorWidth;
   const side = p.baseContactSide ?? "left";
+  // The pocket has to hold the base contact, so it is never thinner than
+  // the contact itself.
+  const baseMargin = Math.max(baseGap, r.contactSize + 0.2);
 
   // The emitter block: N stripes separated by `gap`.
   const emitterWidth = N * W + (N - 1) * gap;
@@ -571,28 +577,31 @@ function buildNpn(spec: AnalogPcellSpec, idPrefix: string): AnalogPcellLayout {
   layers.emitter = emitters;
 
   // The base surrounds the emitters with its margin.
-  const baseX0 = -baseGap;
-  const baseX1 = emitterWidth + baseGap;
+  const baseX0 = -baseMargin;
+  const baseX1 = emitterWidth + baseMargin;
   layers.base = [
     rect(
       `${idPrefix}:base`,
       baseX0 * k,
-      -baseGap * k,
+      -baseMargin * k,
       (baseX1 - baseX0) * k,
-      (L + 2 * baseGap) * k
+      (L + 2 * baseMargin) * k
     )
   ];
 
   // The collector sits off to the side, `collectorGap` from the emitter.
+  // Its height follows the EMITTER, not the base: growing the base's
+  // pocket must not drag the collector along.
   const collectorX0 = emitterWidth + collectorGap;
   const collectorX1 = collectorX0 + collectorW;
+  const collectorMargin = r.npnCollectorMargin;
   layers.collector = [
     rect(
       `${idPrefix}:collector`,
       collectorX0 * k,
-      -baseGap * k,
+      -collectorMargin * k,
       (collectorX1 - collectorX0) * k,
-      (L + 2 * baseGap) * k
+      (L + 2 * collectorMargin) * k
     )
   ];
 
@@ -622,18 +631,18 @@ function buildNpn(spec: AnalogPcellSpec, idPrefix: string): AnalogPcellLayout {
   contactAt("c", ((collectorX0 + collectorX1) / 2) * k, (L / 2) * k, cs);
 
   // The base contact sits in the base's margin, on the chosen side.
-  const bcs = Math.min(cs, baseGap * 0.8);
+  const bcs = Math.min(cs, baseMargin * 0.8);
   const bx =
     side === "left"
-      ? baseX0 + baseGap / 2
+      ? baseX0 + baseMargin / 2
       : side === "right"
-        ? baseX1 - baseGap / 2
+        ? baseX1 - baseMargin / 2
         : emitterWidth / 2;
   const by =
     side === "top"
-      ? -baseGap + baseGap / 2
+      ? -baseMargin + baseMargin / 2
       : side === "bottom"
-        ? L + baseGap - baseGap / 2
+        ? L + baseMargin - baseMargin / 2
         : L / 2;
   contactAt("b", bx * k, by * k, bcs);
 
@@ -642,14 +651,14 @@ function buildNpn(spec: AnalogPcellSpec, idPrefix: string): AnalogPcellLayout {
 
   // The marker layer names the device; the extractor reads the collector,
   // base and emitter shapes inside it.
-  const markerPad = Math.max(baseGap, 0.2);
+  const markerPad = Math.max(baseMargin, 0.2);
   layers.npn_id = [
     rect(
       `${idPrefix}:npn_id`,
       (baseX0 - markerPad) * k,
-      (-baseGap - markerPad) * k,
+      (-baseMargin - markerPad) * k,
       (collectorX1 - baseX0 + 2 * markerPad) * k,
-      (L + 2 * baseGap + 2 * markerPad) * k
+      (L + 2 * baseMargin + 2 * markerPad) * k
     )
   ];
 

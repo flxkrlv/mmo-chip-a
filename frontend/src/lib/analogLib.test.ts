@@ -406,6 +406,38 @@ describe("buildAnalogPcell — the bipolar gaps and the base contact", () => {
     expect(top.cy).toBeLessThan(top.e.y);
     expect(bottom.cy).toBeGreaterThan(bottom.e.y + bottom.e.height);
   });
+
+  it("grows the base's pocket without dragging the collector along", () => {
+    const near = asCellType(
+      spec({ ...defaultAnalogParams("npn"), emitterBaseGap_um: 0.4 })
+    );
+    const far = asCellType(
+      spec({ ...defaultAnalogParams("npn"), emitterBaseGap_um: 3 })
+    );
+    const of = (ct: typeof near) => {
+      const base = ct.layers?.base?.[0];
+      const collector = ct.layers?.collector?.[0];
+      const emitter = ct.layers?.emitter?.[0];
+      if (base?.kind !== "rect" || collector?.kind !== "rect" || emitter?.kind !== "rect")
+        return null;
+      return {
+        pocket: emitter.x - base.x,
+        // The collector's distance from the emitter, not from the cell's
+        // origin (the whole cell is shifted to fit its content).
+        collectorGap: collector.x - (emitter.x + emitter.width),
+        collectorH: collector.height
+      };
+    };
+    const a = of(near);
+    const b = of(far);
+    expect(a && b).toBeTruthy();
+    if (!a || !b) return;
+    // The pocket around the emitter grew…
+    expect(b.pocket).toBeGreaterThan(a.pocket);
+    // …and the collector stayed exactly where it was.
+    expect(b.collectorGap).toBeCloseTo(a.collectorGap, 6);
+    expect(b.collectorH).toBeCloseTo(a.collectorH, 6);
+  });
 });
 
 describe("buildAnalogPcell — the device fits its cell", () => {

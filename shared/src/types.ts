@@ -511,6 +511,9 @@ export interface AnalogLibRules {
   npnEmitterCollectorGap: number;
   /** Vertical BJT: width of the collector region [µm]. */
   npnCollectorWidth: number;
+  /** Vertical BJT: how far the collector reaches past the emitter, above
+   *  and below [µm] — it follows the emitter, not the base. */
+  npnCollectorMargin: number;
 }
 
 /**
