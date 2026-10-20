@@ -6,6 +6,8 @@
   "exports": {
     ".": "./src/types.ts",
     "./cellLibrary": "./src/cellLibrary.ts",
-    "./analogLib": "./src/analogLib.ts"
+    "./analogLib": "./src/analogLib.ts",
+    "./spiceNetlist": "./src/spiceNetlist.ts",
+    "./spiceModels": "./src/spiceModels.ts"
   }
 }

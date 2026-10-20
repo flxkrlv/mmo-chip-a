@@ -6,6 +6,7 @@
 
 import * as Comlink from "comlink";
 import { authHeaders } from "../../api/client";
+import { findAnalysisDirectives } from "shared/spiceNetlist";
 import type {
   SimulationResult,
   SimulationStatus,
@@ -42,7 +43,7 @@ async function runSpiceSimulationWasm(netlist: string): Promise<SimulationResult
 async function runSpiceSimulationServer(
   netlist: string,
   binPath?: string,
-): Promise<SimulationResult> {
+): Promise<SimulationResult & { notes?: string[]; warnings?: string[]; measurements?: Record<string, number> }> {
   const resp = await fetch("/api/ngspice/run", {
     method: "POST",
     headers: { "Content-Type": "application/json", ...authHeaders() },
@@ -54,6 +55,13 @@ async function runSpiceSimulationServer(
   }
   const data = await resp.json();
   if (!data.success) throw new Error(data.error ?? "Server-side simulation failed");
+
+  // What the runner had to fix, and the measurements it produced.
+  const extra = {
+    notes: (data.notes ?? []) as string[],
+    warnings: (data.warnings ?? []) as string[],
+    measurements: (data.measurements ?? {}) as Record<string, number>,
+  };
 
   // Use pre-parsed dataColumns if available (from print command)
   if (data.dataColumns && Object.keys(data.dataColumns).length > 0) {
@@ -86,6 +94,7 @@ async function runSpiceSimulationServer(
         type: getVarType(varTypes[i] ?? "", name),
         values: data.dataColumns[name],
       })),
+      ...extra,
     } as SimulationResult;
   }
 
@@ -151,6 +160,7 @@ async function runSpiceSimulationServer(
           type: getVarType(allTypes[i]),
           values: allColumns[i],
         })),
+        ...extra,
       } as SimulationResult;
     }
   }
@@ -167,6 +177,7 @@ async function runSpiceSimulationServer(
       type: "voltage" as const,
       values: [] as number[],
     })),
+    ...extra,
   } as SimulationResult;
 }
 
@@ -383,6 +394,67 @@ export function parseWaveforms(result: SimulationResult): WaveformTrace[] {
 }
 
 /**
+ * Operating point of a single-point run (`.op`).
+ *
+ * There is no sweep axis to plot, so the numbers are the result: a table of
+ * node → value. Without this the viewer shows an empty chart and the user
+ * cannot tell that the simulation actually succeeded.
+ */
+export function parseDcOperatingPoint(result: SimulationResult): Record<string, number> | undefined {
+  if (result.numPoints !== 1 || result.data.length === 0) return undefined;
+  const out: Record<string, number> = {};
+  for (const v of result.data) {
+    const value = v.values[0] as number | { real: number; img?: number } | undefined;
+    if (value == null) continue;
+    out[v.name] = typeof value === "number" ? value : (value.real ?? 0);
+  }
+  return out;
+}
+
+/**
+ * Make a netlist safe to run headlessly.
+ *
+ * - `plot` / `gnuplot` / `hardcopy` inside a .control block open a graphical
+ *   window: in the WASM engine they block forever, so the simulation hangs.
+ * - Without an analysis directive ngspice returns its "constants" plot instead
+ *   of circuit results, so fall back to a DC operating point.
+ */
+export function sanitizeNetlistForRun(netlist: string): { netlist: string; notes: string[] } {
+  const notes: string[] = [];
+  const lines = netlist.split(/\r?\n/);
+  let inControl = false;
+  const out: string[] = [];
+
+  for (const raw of lines) {
+    const trimmed = raw.trim();
+    if (!inControl) {
+      if (/^\.control\b/i.test(trimmed)) { inControl = true; out.push(raw); continue; }
+      out.push(raw);
+      continue;
+    }
+    if (/^\.endc\b/i.test(trimmed)) { inControl = false; out.push(raw); continue; }
+    if (/^(plot|gnuplot|hardcopy|set\s+plot)\b/i.test(trimmed)) {
+      notes.push(`removed "${trimmed}" from the .control block (it opens a plot window and hangs the headless run)`);
+      continue;
+    }
+    out.push(raw);
+  }
+
+  let result = out.join("\r\n");
+  if (findAnalysisDirectives(result).length === 0) {
+    const insertAt = (() => {
+      const idx = result.split(/\r?\n/).findIndex((l) => /^\s*\.end\b/i.test(l.trim()));
+      return idx === -1 ? result.split(/\r?\n/).length : idx;
+    })();
+    const lines2 = result.split(/\r?\n/);
+    lines2.splice(insertAt, 0, ".op", "");
+    result = lines2.join("\r\n");
+    notes.push("no analysis directive found — added .op (DC operating point)");
+  }
+  return { netlist: result, notes };
+}
+
+/**
  * Run a full simulation and return parsed output.
  */
 export async function runFullSimulation(
@@ -391,10 +463,12 @@ export async function runFullSimulation(
   binPath?: string,
 ): Promise<SpiceSimulationOutput> {
   const t0 = performance.now();
-  const raw = await runSpiceSimulation(netlist, mode, binPath);
+  const prepared = sanitizeNetlistForRun(netlist);
+  const raw = await runSpiceSimulation(prepared.netlist, mode, binPath);
   const durationMs = performance.now() - t0;
   const waveforms = parseWaveforms(raw);
   const errors = mode === "wasm" ? await getSpiceErrors() : [];
+  const extra = raw as { notes?: string[]; warnings?: string[]; measurements?: Record<string, number> };
 
   console.log("[runFullSimulation] raw:", JSON.stringify({
     numVariables: raw.numVariables,
@@ -406,7 +480,16 @@ export async function runFullSimulation(
   }));
   console.log("[runFullSimulation] waveforms:", waveforms.length, "traces");
 
-  return { raw, waveforms, errors, durationMs };
+  return {
+    raw,
+    waveforms,
+    errors,
+    durationMs,
+    notes: [...prepared.notes, ...(extra.notes ?? [])],
+    warnings: extra.warnings,
+    measurements: extra.measurements,
+    dcOp: parseDcOperatingPoint(raw),
+  };
 }
 
 // ── .step param support ───────────────────────────────────────

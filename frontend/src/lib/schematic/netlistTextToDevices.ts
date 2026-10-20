@@ -73,6 +73,13 @@ function parseDeviceLine(line: string): RawDev | null {
         else if (prefix === "L") params.l = t;
       }
     }
+  } else if (prefix === "V" || prefix === "I") {
+    // Independent sources: two nodes, then the source specification.
+    terminals = tokens.slice(0, 2);
+    for (const t of tokens.slice(2)) {
+      const p = parseParam(t);
+      if (p) params[p[0]] = p[1];
+    }
   } else {
     terminals = tokens.slice(0, 2);
   }
@@ -206,6 +213,17 @@ function buildDevice(raw: RawDev, netIdFor: (net: string) => number): AnalogDevi
     return {
       ...mk({ area_um2: 1, perimeter_um: 1, multiplier: num("m") ?? 1 }),
       kind,
+      modelName: raw.model,
+    };
+  }
+  if (raw.prefix === "V" || raw.prefix === "I") {
+    // The source specification ("DC 5", "SINE(0 1 1k)") is kept as the value
+    // so the schematic can label it.
+    const value = raw.terminals.slice(2).join(" ");
+    const geometry = { sourceValue: value } as unknown as DeviceGeometry;
+    return {
+      ...mk(geometry),
+      kind: raw.prefix === "V" ? "voltage_source" : "current_source",
       modelName: raw.model,
     };
   }

@@ -17,6 +17,7 @@ import type {
   AssistantLvsCheckRequest,
   AssistantLvsCheckResponse,
   AssistantLvsLibrarySummary,
+  AssistantSpiceRun,
   AssistantToolFlags,
 } from "shared";
 import { apiGet, apiPost, authHeaders, ApiError } from "./client";
@@ -150,13 +151,15 @@ function buildDiscussRequest(
 // ── Streaming (SSE) client for analyse/discuss ──
 
 export interface AssistantStreamEvent {
-  type: "token" | "thinking" | "questions" | "tool_start" | "tool_result" | "done" | "error" | "heartbeat";
+  type: "token" | "thinking" | "questions" | "tool_start" | "tool_result" | "spice_result" | "done" | "error" | "heartbeat";
   content?: string;
   questions?: string[];
   tool?: string;
   args?: unknown;
   ok?: boolean;
   images?: number;
+  /** Payload of a "spice_result" event: one ngspice run of the assistant. */
+  run?: AssistantSpiceRun;
   reply?: string;
   cardUpdate?: AssistantFindingPatch | null;
   lvsResults?: Array<AssistantLvsCheckResponse["data"]>;

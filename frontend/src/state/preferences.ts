@@ -606,8 +606,11 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
         netlistShowLegacyStatic: false,
         netlistDragMode: "surgical",
         ngspiceMode: "wasm",
+        // ngspice_con.exe is the console build: ngspice.exe is a GUI-subsystem
+        // binary whose stdout never reaches the backend, so the agent would
+        // get no diagnostics on failure.
         ngspicePath: typeof navigator !== "undefined" && navigator.platform?.includes("Win")
-          ? "C:\\Program Files\\Spice64\\bin\\ngspice.exe"
+          ? "C:\\Program Files\\Spice64\\bin\\ngspice_con.exe"
           : "ngspice",
 
         setNetWidth: (dieId, width) =>

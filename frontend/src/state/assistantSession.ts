@@ -3,9 +3,10 @@ import { persist, type StorageValue } from "zustand/middleware";
 import type { AssistantAnalysisBrief, AssistantAnalysisMode, AssistantAnalysisResult, AssistantChatMessage } from "shared";
 
 /**
- * Strip large base64 images from toolUse messages to stay within localStorage
+ * Strip large payloads from toolUse messages to stay within localStorage
  * quota.  Images are ephemeral display data — the vision card shows them while
- * the thread is open but they don't need to survive a page reload.
+ * the thread is open but they don't need to survive a page reload. The same
+ * goes for a long simulated netlist: only the head of it is kept.
  */
 function stripToolImages(state: AssistantSessionState): AssistantSessionState {
   const stripped: AssistantSessionState = { ...state, byDieId: {} };
@@ -14,7 +15,19 @@ function stripToolImages(state: AssistantSessionState): AssistantSessionState {
     let changed = false;
     for (const [fid, msgs] of Object.entries(session.findingThreads)) {
       const clean = msgs.map((m) => {
-        if (!m.toolUse?.images?.length) return m;
+        if (m.toolUse?.type === "spice") {
+          const netlist = m.toolUse.run.netlist ?? "";
+          if (netlist.length <= 4000) return m;
+          changed = true;
+          return {
+            ...m,
+            toolUse: {
+              ...m.toolUse,
+              run: { ...m.toolUse.run, netlist: `${netlist.slice(0, 4000)}\n* … (netlist truncated)` },
+            },
+          };
+        }
+        if (m.toolUse?.type !== "vision" || !m.toolUse.images?.length) return m;
         changed = true;
         return { ...m, toolUse: { ...m.toolUse, images: [] } };
       });

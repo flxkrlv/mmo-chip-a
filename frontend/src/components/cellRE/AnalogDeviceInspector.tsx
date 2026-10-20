@@ -27,6 +27,8 @@ const KIND_NAME: Record<DeviceKind, string> = {
   zener: "Zener Diode",
   schottky: "Schottky Diode",
   inductor: "Inductor",
+  voltage_source: "V source",
+  current_source: "I source",
   unknown: "Unknown Device",
 };
 
@@ -42,6 +44,8 @@ const KIND_EMOJI: Record<DeviceKind, string> = {
   zener: "⏸",
   schottky: "⏩",
   inductor: "◠◡",
+  voltage_source: "V source",
+  current_source: "I source",
   unknown: "❓",
 };
 

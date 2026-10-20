@@ -1,14 +1,17 @@
 import { useEffect, useMemo, useRef, useState, useCallback, type CSSProperties } from "react";
 import { createPortal } from "react-dom";
-import type { AnalogDevice, AssistantAnalysisBrief, AssistantAnalysisMode, AssistantChatMessage, AssistantClarificationMode, AssistantConfidenceLevel, AssistantFinding, AssistantFindingKind, AssistantFindingPatch, AssistantFindingStatus, AssistantLlmConfig, AssistantLvsCheckResponse, AssistantLvsLibrarySummary, AssistantLvsMatch, AssistantToolUseEvent, DieAnnotations, FloorplanRegion } from "shared";
+import { useNavigate } from "react-router-dom";
+import type { AnalogDevice, AssistantAnalysisBrief, AssistantAnalysisMode, AssistantChatMessage, AssistantClarificationMode, AssistantConfidenceLevel, AssistantFinding, AssistantFindingKind, AssistantFindingPatch, AssistantFindingStatus, AssistantLlmConfig, AssistantLvsCheckResponse, AssistantLvsLibrarySummary, AssistantLvsMatch, AssistantSpiceRun, AssistantToolUseEvent, AssistantVisionToolUse, DieAnnotations, FloorplanRegion } from "shared";
 import { addLvsCell, analyseAssistantCircuitStream, checkAssistantLvsStream, discussFindingStream, listAssistantLvsLibraries } from "../../api/assistantAnalysis";
 import { ApiError } from "../../api/client";
 import { LvsMatchCard } from "./LvsMatchCard";
+import { SpiceRunCard } from "./SpiceRunCard";
 import { formatDevicesAsNetlist2Svg } from "../../lib/schematic/netlist2svgFormat";
 import { Netlist2SvgView } from "../netlist/Netlist2SvgView";
 import { InteractiveAnalogSchematic } from "../netlist/InteractiveAnalogSchematic";
 import { scopeKey as interactiveScopeKey } from "../../state/interactiveSchematic";
 import { useAssistantSession } from "../../state/assistantSession";
+import { useSpiceHandoff } from "../../state/spiceHandoff";
 import { usePreferences } from "../../state/preferences";
 import { renderDeviceCrop, getTopVisibleLayerName, resolveLayerNameToSourceId } from "../../lib/vision/renderDeviceCrop";
 import { topVisibleOverlaySourceId, useOverlayLayers } from "../../state/overlayLayers";
@@ -87,6 +90,8 @@ export function AssistantPanel({ dieId, annotations, devices, netNames, warnings
   const [lvsEnabled, setLvsEnabled] = useState(true);
   const [visionEnabled, setVisionEnabled] = useState(true);
   const [spiceEnabled, setSpiceEnabled] = useState(true);
+  const navigate = useNavigate();
+  const setSpiceHandoff = useSpiceHandoff((state) => state.setFromRun);
   const ngspicePath = usePreferences((state) => state.ngspicePath);
   const ngspiceMode = usePreferences((state) => state.ngspiceMode);
   const [lvsOpen, setLvsOpen] = useState(false);
@@ -848,7 +853,7 @@ function FindingCard({ finding, active, discussOpen, onToggleDiscuss, onActivate
   );
 }
 
-function ToolUseCard({ toolUse }: { toolUse: AssistantToolUseEvent }) {
+function ToolUseCard({ toolUse }: { toolUse: AssistantVisionToolUse }) {
   const [expanded, setExpanded] = useState(false);
   return (
     <div style={{
@@ -946,8 +951,16 @@ function DiscussPopup({
   const appendMessage = useAssistantSession((state) => state.appendFindingMessage);
   const resetThread = useAssistantSession((state) => state.resetFindingThread);
   const updateFinding = useAssistantSession((state) => state.updateFinding);
+  const navigate = useNavigate();
+  const setSpiceHandoff = useSpiceHandoff((state) => state.setFromRun);
   const [pendingCardUpdate, setPendingCardUpdate] = useState<AssistantFindingPatch | null>(null);
   const firstAssistantIndex = thread.findIndex((message) => message.role === "assistant");
+
+  /** Hand this run over to the SPICE simulator and open it. */
+  const openSpiceResults = useCallback((run: AssistantSpiceRun) => {
+    setSpiceHandoff(dieId, run);
+    navigate(`/spice-sim?die=${encodeURIComponent(dieId)}`);
+  }, [dieId, navigate, setSpiceHandoff]);
 
   // Apply a structured card correction proposed by the model once the user confirms it:
   // merge new elements (union) and overwrite the chosen fields.
@@ -1090,9 +1103,18 @@ function DiscussPopup({
             setStreamingReply("");
             if (ev.tool === "mmochip_vision") setStreamingTool("🔍 mmochip_vision — inspecting device crops…");
             else if (ev.tool === "mmochip_lvs_check") setStreamingTool("🔬 mmochip_lvs_check — verifying against reference library…");
+            else if (ev.tool === "mmochip_spice_sim") setStreamingTool("⚡ mmochip_spice_sim — running ngspice…");
             else if (ev.tool === "mmochip_card_update") setStreamingTool("📋 mmochip_card_update — preparing card update…");
           } else if (ev.type === "tool_result") {
             setStreamingTool(null);
+          } else if (ev.type === "spice_result" && ev.run) {
+            // Keep the whole run in the thread: netlist, numbers, notes.
+            setStreamingTool(null);
+            appendMessage(dieId, finding.id, {
+              role: "assistant",
+              content: "",
+              toolUse: { type: "spice", run: ev.run },
+            });
           }
         },
       });
@@ -1171,7 +1193,11 @@ function DiscussPopup({
               <div style={{ fontSize: 8, color: "var(--ink3)", marginBottom: 2 }}>Первичный ответ</div>
             )}
             {message.toolUse ? (
-              <ToolUseCard toolUse={message.toolUse} />
+              message.toolUse.type === "spice" ? (
+                <SpiceRunCard run={message.toolUse.run} onOpenResults={openSpiceResults} />
+              ) : (
+                <ToolUseCard toolUse={message.toolUse} />
+              )
             ) : message.lvsResults?.length ? (
               <div style={{ display: "grid", gap: 5, border: "1px solid var(--l2)", borderRadius: 5, padding: "6px 8px", background: "var(--l1)" }}>
                 <div style={{ fontSize: 9, color: "var(--ink2)", textTransform: "uppercase", letterSpacing: 0.4 }}>LVS reference check</div>

@@ -52,6 +52,8 @@ const INSTANCE_PREFIXES: Record<DeviceKind, string> = {
   zener: "D",
   schottky: "D",
   inductor: "L",
+  voltage_source: "V",
+  current_source: "I",
   unknown: "X",
 };
 
@@ -246,6 +248,8 @@ function guessModelName(d: AnalogDevice): string {
     zener: "zener",
     schottky: "diode",
     inductor: "inductor",
+    voltage_source: "source",
+    current_source: "source",
     unknown: "unknown",
   };
   return kindNames[d.kind] ?? "unknown";

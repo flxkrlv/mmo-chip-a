@@ -5,7 +5,7 @@
  * Right panel — DUT header + waveform/schematic/netlist tabs + collapsible output
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { AppShell } from "../components/shell/AppShell";
 import { SubBar } from "../components/shell/SubBar";
@@ -16,12 +16,17 @@ import { SubcircuitPicker, parseSubcircuits, filterTopLevel, type SubcircuitEntr
 import { DirectiveEditor, DEFAULT_DIRECTIVES } from "../components/simulation/DirectiveEditor";
 import { CollapsibleSection } from "../components/simulation/CollapsibleSection";
 import { SpiceChatPanel } from "../components/simulation/SpiceChatPanel";
+import { ModelEditorPopup } from "../components/simulation/ModelEditorPopup";
+import { TestbenchSchematic } from "../components/simulation/TestbenchSchematic";
+import { detectDutName } from "../lib/schematic/testbench";
 import { SettingsPanel } from "../components/dieViewer/SettingsPanel";
 import { initSpice, runWithStepSupport, terminateSpice } from "../lib/simulation/spiceService";
-import { spectreToNgspice, extractModelCards } from "../lib/simulation/spectreToNgspice";
+import { spectreToNgspice } from "../lib/simulation/spectreToNgspice";
 import { findingsToSubcircuits } from "../lib/simulation/findingsToSubcircuits";
-import { useModelFile, useDirectives } from "../lib/simulation/useSpicePersistence";
+import { useModelFile, useDirectives, useModelSelection } from "../lib/simulation/useSpicePersistence";
+import { composeSimulationNetlist, extractModelCards } from "shared/spiceModels";
 import { useAssistantSession } from "../state/assistantSession";
+import { useSpiceHandoff } from "../state/spiceHandoff";
 import { collectDieWideAnalogDevices } from "../api/dieWideAnalog";
 import type { SpiceSimulationOutput } from "../lib/simulation/types";
 import { useDie } from "../api/dies";
@@ -42,7 +47,6 @@ const TEXTAREA_STYLE: React.CSSProperties = {
   background: "var(--bg)", color: "var(--ink2)",
   border: "1px solid var(--l2)", borderRadius: 3, resize: "vertical", outline: "none",
 };
-
 // ── Page entry ────────────────────────────────────────────────────
 
 export function SpiceSimulationPage() {
@@ -92,7 +96,6 @@ function SpiceSimulator({ dieId }: { dieId: string }) {
   const netlistResult = useAnalogNetlist(annotations, moduleName, "spectre" as SpiceDialect, mergedConfig, true, analogOverrides);
   const fullNetlistSpectre = netlistResult.data?.source ?? "";
   const fullNetlist = useMemo(() => spectreToNgspice(fullNetlistSpectre), [fullNetlistSpectre]);
-  const autoModelCards = useMemo(() => extractModelCards(fullNetlist), [fullNetlist]);
 
   // ── LLM findings as subcircuits ──
   const assistantSession = useAssistantSession((s) => s.byDieId[dieId]);
@@ -126,7 +129,7 @@ function SpiceSimulator({ dieId }: { dieId: string }) {
   const [leftCollapsed, toggleLeft] = usePanelCollapsed("spice.left");
   const [output, setOutput] = useState<SpiceSimulationOutput | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [rightView, setRightView] = useState<"waveforms" | "schematic" | "netlist">("waveforms");
+  const [rightView, setRightView] = useState<"waveforms" | "testbench" | "schematic" | "netlist">("waveforms");
 
   // .step progress state
   const [stepProgress, setStepProgress] = useState<{ current: number; total: number; params: Record<string, string> } | null>(null);
@@ -135,8 +138,14 @@ function SpiceSimulator({ dieId }: { dieId: string }) {
   const waveformRef = useRef<WaveformViewerHandle | null>(null);
 
   // Persistent model file + directives
-  const [modelFile, setModelFile] = useModelFile(dieId, DEFAULT_MODEL_FILE);
+  const [customModels, setCustomModels] = useModelFile(dieId, DEFAULT_MODEL_FILE);
+  const { selection: modelSelection, select: selectModel } = useModelSelection(dieId);
   const [directives, setDirectives] = useDirectives(dieId, selectedSubcircuit, DEFAULT_DIRECTIVES);
+
+  // The user may edit the generated netlist by hand; the override wins.
+  const [netlistOverride, setNetlistOverride] = useState<string | null>(null);
+  const [modelPopupOpen, setModelPopupOpen] = useState(false);
+  const [agentOpen, setAgentOpen] = useState(false);
 
   const ngspiceMode = usePreferences((s) => s.ngspiceMode);
   const setNgspiceMode = usePreferences((s) => s.setNgspiceMode);
@@ -175,27 +184,71 @@ function SpiceSimulator({ dieId }: { dieId: string }) {
   const selectedDeviceNames = selectedSubckt?.deviceNames;
 
   const simulationNetlist = useMemo(() => {
-    const parts: string[] = [];
-    if (autoModelCards.length > 0) { parts.push(...autoModelCards); parts.push(""); }
-    const userModels = modelFile.split("\n").filter((l) => l.trim().startsWith(".model") || l.trim().startsWith(".MODEL"));
-    if (userModels.length > 0) { parts.push("* ── User Models ──"); parts.push(...userModels); parts.push(""); }
-    if (selectedSubckt) { parts.push(`* ── DUT: ${selectedSubckt.name} ──`); parts.push(selectedSubckt.netlist); }
-    else if (fullNetlist) { parts.push(`* ── Full Netlist ──`); parts.push(fullNetlist); }
-    parts.push(""); parts.push(`* ── Directives ──`); parts.push(directives);
-    return parts.join("\n");
-  }, [autoModelCards, modelFile, selectedSubckt, fullNetlist, directives]);
+    // AI findings are written in Spectre syntax; the netlist subcircuits are
+    // already in ngspice form.
+    const raw = selectedSubckt ? selectedSubckt.netlist : fullNetlist;
+    const dut = selectedSubckt?.source === "ai" ? spectreToNgspice(raw) : raw;
+    return composeSimulationNetlist({
+      dutNetlist: dut,
+      directives,
+      selection: modelSelection,
+      customModels,
+      dutLabel: selectedSubckt ? `DUT: ${selectedSubckt.name}` : "Full Netlist",
+      // A flat DUT is wrapped into a .subckt of this name, so the testbench
+      // always has a block to connect the sources to.
+      dutName: selectedSubckt?.name ?? "chip",
+    });
+  }, [selectedSubckt, fullNetlist, directives, modelSelection, customModels]);
+
+  /** How many model cards the composed netlist carries. */
+  const modelCardCount = useMemo(() => Object.keys(extractModelCards(simulationNetlist)).length, [simulationNetlist]);
+
+  /** What actually gets simulated: the hand-edited netlist when there is one. */
+  const effectiveNetlist = netlistOverride ?? simulationNetlist;
+
+  // A run handed over from the assistant thread: load its testbench and run it.
+  const handoff = useSpiceHandoff((state) => state.handoff);
+  const clearHandoff = useSpiceHandoff((state) => state.clear);
+  const appliedHandoffRef = useRef<string | null>(null);
+  const runRef = useRef<(() => void) | null>(null);
+  /** Netlist that still has to be run once it lands in `effectiveNetlist`. */
+  const [pendingHandoffRun, setPendingHandoffRun] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!handoff || handoff.dieId !== dieId) return;
+    if (appliedHandoffRef.current === String(handoff.at)) return;
+    appliedHandoffRef.current = String(handoff.at);
+    setNetlistOverride(handoff.netlist);
+    setAgentOpen(false);
+    setRightView("waveforms");
+    // Select the DUT the assistant simulated, so the picker, the schematic and
+    // the netlist agree instead of falling back to "the whole chip".
+    const dut = detectDutName(handoff.netlist);
+    if (dut && allSubcircuits.some((s) => s.name === dut)) setSelectedSubcircuit(dut);
+    setPendingHandoffRun(handoff.netlist);
+  }, [handoff, dieId, allSubcircuits]);
+
+  // Run the handed-over netlist once it has actually reached the simulator.
+  // Waiting for the value beats a setTimeout: React may flush the state update
+  // after the timer, and the old netlist would be the one that runs.
+  useEffect(() => {
+    if (pendingHandoffRun === null) return;
+    if (effectiveNetlist !== pendingHandoffRun) return;
+    setPendingHandoffRun(null);
+    void runRef.current?.();
+  }, [pendingHandoffRun, effectiveNetlist]);
 
   const runSimulation = useCallback(async () => {
     if (!engineReady || running) return;
     setRunning(true); setError(null); setOutput(null); setStepProgress(null);
     try {
-      const result = await runWithStepSupport(simulationNetlist, ngspiceMode, ngspicePath, (index, total, params) => {
+      const result = await runWithStepSupport(effectiveNetlist, ngspiceMode, ngspicePath, (index, total, params) => {
         setStepProgress({ current: index + 1, total, params });
       });
       setOutput(result);
     } catch (err) { setError(err instanceof Error ? err.message : String(err)); }
     finally { setRunning(false); setStepProgress(null); }
-  }, [engineReady, running, simulationNetlist, ngspiceMode, ngspicePath]);
+  }, [engineReady, running, effectiveNetlist, ngspiceMode, ngspicePath]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -210,6 +263,8 @@ function SpiceSimulator({ dieId }: { dieId: string }) {
       window.removeEventListener("toggle-settings", onToggleSettings);
     };
   }, [runSimulation]);
+
+  runRef.current = runSimulation;
 
   const dutInfo = useMemo(() => {
     if (!selectedSubckt) return { name: moduleName, devices: netlistResult.data?.totalDevices ?? 0, kind: "Full netlist" };
@@ -227,45 +282,72 @@ function SpiceSimulator({ dieId }: { dieId: string }) {
             : (engineReady ? "ngspice WASM ready" : "Loading ngspice...")}
         </span>
         <div style={{ flex: 1 }} />
-        {(["waveforms", "schematic", "netlist"] as const).map((v) => (
+        {(["waveforms", "testbench", "schematic", "netlist"] as const).map((v) => (
           <button key={v} className={`btn ghost${rightView === v ? " on" : ""}`} style={{ fontSize: 10 }}
             onClick={() => setRightView(v)}>
-            {v === "waveforms" ? "Waveforms" : v === "schematic" ? "Schematic" : "Netlist"}
+            {v === "waveforms" ? "Waveforms" : v === "testbench" ? "Testbench" : v === "schematic" ? "Schematic" : "Netlist"}
           </button>
         ))}
         <div style={{ width: 1, height: 16, background: "var(--l2)", margin: "0 4px" }} />
+        <button
+          className={`btn ghost${agentOpen ? " on" : ""}`}
+          style={{ fontSize: 11 }}
+          onClick={() => setAgentOpen((v) => !v)}
+          title="Ask the assistant to build a testbench"
+        >
+          {agentOpen ? "✕ Agent" : "⚡ Ask agent"}
+        </button>
+        <PanelToggle side="right" collapsed={!agentOpen} onClick={() => setAgentOpen((v) => !v)} />
         <button className="btn ghost" style={{ fontSize: 11 }} onClick={runSimulation} disabled={!engineReady || running} title="Ctrl+Enter">
           {running ? "Running..." : "Run"}
         </button>
       </SubBar>
 
+      {/* Handoff banner: the testbench came from the assistant thread */}
+      {handoff && handoff.dieId === dieId && (
+        <div
+          style={{
+            display: "flex", alignItems: "center", gap: 10, padding: "5px 12px",
+            borderBottom: "1px solid var(--l2)", background: "rgba(96,165,250,0.08)", fontSize: 10, color: "var(--ink2)",
+          }}
+        >
+          <span style={{ color: "var(--accent, #60a5fa)", fontWeight: 600 }}>⚡ from the assistant</span>
+          <span>{handoff.summary ?? "testbench"}</span>
+          {handoff.measurements && Object.keys(handoff.measurements).length > 0 && (
+            <span style={{ color: "var(--ink3)" }}>
+              {Object.entries(handoff.measurements).map(([k, v]) => `${k} = ${typeof v === "number" ? v.toPrecision(5) : v}`).join(", ")}
+            </span>
+          )}
+          <div style={{ flex: 1 }} />
+          <button className="btn ghost" style={{ fontSize: 9 }} onClick={() => clearHandoff()}>
+            dismiss
+          </button>
+        </div>
+      )}
+
       <div style={{ display: "flex", flex: 1, overflow: "hidden" }}>
-        {/* ── Left panel ── */}
-        {!leftCollapsed && (
+        {/* ── Left panel ── */}        {!leftCollapsed && (
         <div style={{ width: 300, minWidth: 240, borderRight: "1px solid var(--l2)", display: "flex", flexDirection: "column", overflow: "hidden" }}>
           {/* Subcircuit list */}
           <div style={{ flex: "0 0 auto", maxHeight: "30%", overflow: "auto", borderBottom: "1px solid var(--l2)" }}>
             <SubcircuitPicker subcircuits={allSubcircuits} selected={selectedSubcircuit} onSelect={setSelectedSubcircuit} />
           </div>
 
-          {/* Model file */}
+          {/* Model file — opens the editor popup with the standard library */}
           <div style={{ flex: "0 0 auto", padding: 8, borderBottom: "1px solid var(--l2)" }}>
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 4 }}>
-              <span style={{ fontSize: 10, fontWeight: 600, color: "var(--ink3)", textTransform: "uppercase", letterSpacing: 0.5 }}>Model File</span>
-              <button className="btn ghost" style={{ fontSize: 9 }} onClick={() => setModelFile(DEFAULT_MODEL_FILE)}>Reset</button>
+              <span style={{ fontSize: 10, fontWeight: 600, color: "var(--ink3)", textTransform: "uppercase", letterSpacing: 0.5 }}>Models</span>
+              <button className="btn ghost" style={{ fontSize: 9 }} onClick={() => setModelPopupOpen(true)}>edit…</button>
             </div>
-            <textarea value={modelFile} onChange={(e) => setModelFile(e.target.value)} spellCheck={false} style={TEXTAREA_STYLE} />
+            <div style={{ fontSize: 9, color: "var(--ink3)", lineHeight: 1.4 }}>
+              {modelCardCount} model card{modelCardCount === 1 ? "" : "s"} in the netlist
+              {" · "}<button className="btn ghost" style={{ fontSize: 9, padding: "0 4px" }} onClick={() => setModelPopupOpen(true)}>choose per device type</button>
+            </div>
           </div>
 
           {/* Directive editor */}
           <div style={{ flex: "1 1 0", overflow: "auto", padding: 8 }}>
             <DirectiveEditor value={directives} onChange={setDirectives} />
-          </div>
-
-          {/* LLM Chat */}
-          <div style={{ flex: "0 0 auto", padding: 8, borderTop: "1px solid var(--l2)" }}>
-            <div style={{ fontSize: 10, fontWeight: 600, color: "var(--ink3)", textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 6 }}>Ask Agent</div>
-            <SpiceChatPanel dieId={dieId} netlist={simulationNetlist} onApplyDirectives={setDirectives} />
           </div>
 
           {/* Status */}
@@ -292,7 +374,7 @@ function SpiceSimulator({ dieId }: { dieId: string }) {
               <div style={{ fontSize: 13, fontWeight: 600, color: "var(--ink)" }}>{dutInfo.name}</div>
               <div style={{ fontSize: 10, color: "var(--ink3)" }}>
                 {dutInfo.kind} / {dutInfo.devices} devices
-                {autoModelCards.length > 0 && ` / ${autoModelCards.length} models`}
+                {modelCardCount > 0 && ` / ${modelCardCount} models`}
               </div>
             </div>
             <div style={{ flex: 1 }} />
@@ -330,12 +412,24 @@ function SpiceSimulator({ dieId }: { dieId: string }) {
             <>
               <div style={{ flex: 1, padding: 12, overflow: "auto" }}>
                 {output ? (
-                  <WaveformViewer ref={waveformRef} traces={output.waveforms} height={360} />
+                  output.waveforms.length > 0 ? (
+                    <>
+                      {output.measurements && Object.keys(output.measurements).length > 0 && (
+                        <div style={{ marginBottom: 8 }}>
+                          <ValueTable title="Measurements" values={output.measurements} highlight />
+                        </div>
+                      )}
+                      <WaveformViewer ref={waveformRef} traces={output.waveforms} height={360} />
+                    </>
+                  ) : (
+                    /* No sweep to plot: an `.op` run's numbers are the result. */
+                    <RunResultTables output={output} />
+                  )
                 ) : (
                   <div style={{ height: 360, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 12, color: "var(--ink3)", fontSize: 12 }}>
                     <div style={{ fontSize: 28, opacity: 0.3 }}>&#9654;</div>
                     <div>Select a subcircuit and click Run (Ctrl+Enter)</div>
-                    <div style={{ fontSize: 10, opacity: 0.6 }}>{allSubcircuits.length} subcircuits ({aiSubcircuits.length} AI) / {autoModelCards.length} models</div>
+                    <div style={{ fontSize: 10, opacity: 0.6 }}>{allSubcircuits.length} subcircuits ({aiSubcircuits.length} AI) / {modelCardCount} models</div>
                   </div>
                 )}
               </div>
@@ -347,6 +441,17 @@ function SpiceSimulator({ dieId }: { dieId: string }) {
                 </CollapsibleSection>
               )}
             </>
+          ) : rightView === "testbench" ? (
+            /* Testbench: the DUT block + its sources and loads */
+            <div style={{ flex: 1, overflow: "hidden" }}>
+              <TestbenchSchematic
+                netlist={effectiveNetlist}
+                dieId={dieId}
+                moduleName={moduleName}
+                vdd={mergedConfig.vdd}
+                gnd={mergedConfig.gnd ?? "0"}
+              />
+            </div>
           ) : rightView === "schematic" ? (
             <div style={{ flex: 1, overflow: "hidden" }}>
               {annotations ? (
@@ -358,18 +463,70 @@ function SpiceSimulator({ dieId }: { dieId: string }) {
               )}
             </div>
           ) : (
-            /* Netlist view */
-            <div style={{ flex: 1, overflow: "auto", padding: 12 }}>
-              <div style={{ fontSize: 10, fontWeight: 600, color: "var(--ink3)", textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 8 }}>
-                Simulation Netlist (ngspice format)
+            /* Netlist view — editable, this is what gets simulated */
+            <div style={{ flex: 1, overflow: "auto", padding: 12, display: "flex", flexDirection: "column", gap: 8, minHeight: 0 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <span style={{ fontSize: 10, fontWeight: 600, color: "var(--ink3)", textTransform: "uppercase", letterSpacing: 0.5 }}>
+                  Simulation Netlist (ngspice format) — editable
+                </span>
+                <div style={{ flex: 1 }} />
+                {netlistOverride !== null && (
+                  <button className="btn ghost" style={{ fontSize: 9 }} onClick={() => setNetlistOverride(null)}>
+                    reset to generated
+                  </button>
+                )}
+                {netlistOverride !== null && (
+                  <span style={{ fontSize: 9, color: "var(--ink3)" }}>edited</span>
+                )}
               </div>
-              <pre style={{ fontSize: 11, fontFamily: "var(--font-mono, monospace)", color: "var(--ink2)", margin: 0, whiteSpace: "pre-wrap", lineHeight: 1.5 }}>
-                {simulationNetlist || "(no netlist)"}
-              </pre>
+              <textarea
+                value={effectiveNetlist}
+                onChange={(e) => setNetlistOverride(e.target.value)}
+                spellCheck={false}
+                style={{
+                  flex: 1, minHeight: 320, resize: "vertical", fontSize: 11, lineHeight: 1.5,
+                  fontFamily: "var(--font-mono, monospace)", color: "var(--ink2)", background: "var(--bg)",
+                  border: "1px solid var(--l2)", borderRadius: 4, padding: 8,
+                }}
+              />
             </div>
           )}
         </div>
+
+        {/* ── Agent panel (right, collapsible) ── */}
+        {agentOpen && (
+          <div
+            style={{
+              width: 430, minWidth: 320, maxWidth: "46%", borderLeft: "1px solid var(--l2)",
+              background: "var(--card)", display: "flex", flexDirection: "column", overflow: "hidden",
+            }}
+          >
+            <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "5px 10px", borderBottom: "1px solid var(--l2)" }}>
+              <span style={{ fontSize: 10, fontWeight: 600, color: "var(--ink3)", textTransform: "uppercase", letterSpacing: 0.5 }}>
+                Ask agent
+              </span>
+              <div style={{ flex: 1 }} />
+              <span style={{ fontSize: 9, color: "var(--ink3)" }}>
+                writes the testbench; the DUT netlist stays untouched
+              </span>
+              <button className="btn ghost" style={{ fontSize: 10 }} onClick={() => setAgentOpen(false)}>close</button>
+            </div>
+            <div style={{ flex: 1, minHeight: 0, overflow: "auto", padding: 8 }}>
+              <SpiceChatPanel dieId={dieId} netlist={effectiveNetlist} onApplyDirectives={setDirectives} />
+            </div>
+          </div>
+        )}
       </div>
+
+      {modelPopupOpen && (
+        <ModelEditorPopup
+          selection={modelSelection}
+          onSelect={selectModel}
+          customModels={customModels}
+          onCustomModelsChange={setCustomModels}
+          onClose={() => setModelPopupOpen(false)}
+        />
+      )}
 
       <SettingsPanel
         open={settingsOpen}
@@ -405,4 +562,77 @@ function SpiceSimulator({ dieId }: { dieId: string }) {
 
 function Centered({ children }: { children: React.ReactNode }) {
   return <div style={{ height: "100%", display: "flex", alignItems: "center", justifyContent: "center", color: "var(--ink3)", fontSize: 12 }}>{children}</div>;
+}
+
+/** Format a measured / operating-point number for the results table. */
+function formatValue(v: number | string): string {
+  if (typeof v === "string") return v;
+  if (!Number.isFinite(v)) return String(v);
+  if (v === 0) return "0";
+  const magnitude = Math.abs(v);
+  if (magnitude >= 1e-3 && magnitude < 1e5) return v.toPrecision(6).replace(/\.?0+$/, "");
+  return v.toExponential(4);
+}
+
+/** name → value table used for `.measure` results and the operating point. */
+function ValueTable({ title, values, highlight = false }: {
+  title: string;
+  values: Record<string, number | string>;
+  highlight?: boolean;
+}) {
+  const rows = Object.entries(values);
+  if (rows.length === 0) return null;
+  return (
+    <div>
+      <div style={{ fontSize: 10, fontWeight: 600, color: "var(--ink3)", textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 4 }}>
+        {title} ({rows.length})
+      </div>
+      <div
+        style={{
+          display: "grid", gridTemplateColumns: "minmax(120px, 1fr) minmax(80px, auto)",
+          gap: "1px 14px", fontSize: 11, fontFamily: "var(--font-mono, monospace)",
+          maxWidth: 640,
+        }}
+      >
+        {rows.slice(0, 400).map(([name, value]) => (
+          <Fragment key={name}>
+            <span style={{ color: "var(--ink2)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={name}>{name}</span>
+            <span style={{ color: highlight ? "var(--accent, #60a5fa)" : "var(--ink)", textAlign: "right" }}>{formatValue(value)}</span>
+          </Fragment>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * What a run with no sweep axis produced: the `.measure` results and the
+ * single-point operating point. Without this an `.op` run — the most common
+ * first testbench an assistant writes — looks like a simulation that did
+ * nothing.
+ */
+function RunResultTables({ output }: { output: SpiceSimulationOutput }) {
+  const op = output.dcOp ?? {};
+  const measurements = output.measurements ?? {};
+  const hasAnything = Object.keys(op).length > 0 || Object.keys(measurements).length > 0;
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+      <ValueTable title="Measurements" values={measurements} highlight />
+      <ValueTable title="Operating point" values={op} />
+      {!hasAnything && (
+        <div style={{ fontSize: 11, color: "var(--ink3)", lineHeight: 1.6 }}>
+          The simulation finished but produced nothing to show.
+          Add an analysis directive (<code>.op</code>, <code>.dc</code>, <code>.tran</code>, <code>.ac</code>)
+          and a <code>.print</code> / <code>.measure</code> line to the netlist.
+        </div>
+      )}
+      {hasAnything && (
+        <div style={{ fontSize: 10, color: "var(--ink3)", lineHeight: 1.6 }}>
+          This netlist sweeps nothing, so there is no curve to draw — the numbers are the result.
+          Add <code>.dc</code> / <code>.tran</code> / <code>.ac</code> for waveforms.
+        </div>
+      )}
+    </div>
+  );
 }

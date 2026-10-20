@@ -6,8 +6,10 @@
  */
 
 import { useCallback, useRef, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { useSpiceAgent } from "../../lib/simulation/useSpiceAgent";
 import { usePreferences } from "../../state/preferences";
+import { useSpiceHandoff } from "../../state/spiceHandoff";
 
 type Props = {
   dieId: string;
@@ -19,13 +21,36 @@ export function SpiceChatPanel({ dieId, netlist, onApplyDirectives }: Props) {
   const [input, setInput] = useState("");
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const llmProvider = usePreferences((s) => s.llmProvider);
+  const ngspiceMode = usePreferences((s) => s.ngspiceMode);
+  const ngspicePath = usePreferences((s) => s.ngspicePath);
+  const navigate = useNavigate();
+  const setHandoff = useSpiceHandoff((s) => s.setHandoff);
 
   const { turns, running, status, runAgentLoop } = useSpiceAgent({
     dieId,
     netlist,
     llmConfig: llmProvider,
     onDirectivesUpdate: onApplyDirectives,
+    mode: ngspiceMode,
+    binPath: ngspiceMode === "server" ? ngspicePath : undefined,
   });
+
+  /** Open this testbench in the simulator with its results. */
+  const openResults = useCallback((turnIndex: number) => {
+    const turn = turns[turnIndex];
+    if (!turn?.simResult?.netlist) return;
+    setHandoff({
+      dieId,
+      netlist: turn.simResult.netlist,
+      summary: turn.simResult.measurements
+        ? `${turn.simResult.numPoints ?? 0} points, ${Object.keys(turn.simResult.measurements).length} values`
+        : undefined,
+      measurements: turn.simResult.measurements,
+      origin: "assistant",
+      at: Date.now(),
+    });
+    navigate(`/spice-sim?die=${encodeURIComponent(dieId)}`);
+  }, [turns, dieId, navigate, setHandoff]);
 
   const send = useCallback(() => {
     const prompt = input.trim();
@@ -98,6 +123,27 @@ export function SpiceChatPanel({ dieId, netlist, onApplyDirectives }: Props) {
                 <pre style={{ fontSize: 9, color: "var(--bad)", margin: "4px 0 0", whiteSpace: "pre-wrap" }}>
                   {turn.simResult.errors.join("\n")}
                 </pre>
+              )}
+              {turn.simResult?.notes && turn.simResult.notes.length > 0 && (
+                <details style={{ marginTop: 4 }}>
+                  <summary style={{ fontSize: 9, color: "var(--ink3)", cursor: "pointer" }}>
+                    run notes ({turn.simResult.notes.length})
+                  </summary>
+                  <ul style={{ fontSize: 9, color: "var(--ink3)", margin: "4px 0 0", paddingLeft: 14, lineHeight: 1.4 }}>
+                    {turn.simResult.notes.map((note, i) => (
+                      <li key={i}>{note}</li>
+                    ))}
+                  </ul>
+                </details>
+              )}
+              {turn.simResult?.ok && turn.simResult.netlist && (
+                <button
+                  className="btn ghost"
+                  style={{ fontSize: 9, marginTop: 4 }}
+                  onClick={() => openResults(i)}
+                >
+                  Go to SPICE results →
+                </button>
               )}
             </div>
           ))}

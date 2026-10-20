@@ -14,6 +14,7 @@ import type {
   AssistantLlmState,
   AssistantToolFlags,
   AssistantLvsCheckResponse,
+  AssistantSpiceRun,
 } from "shared";
 import { emitSubcircuitSpice } from "./subcircuitExtract.js";
 import { loadLibrary, listLibraries, DEFAULT_LIBRARY_ID } from "./lvsLibrary.js";
@@ -22,6 +23,7 @@ import { dedupeCells } from "./lvsDedup.js";
 import { matchSubcircuit } from "./lvsMatch.js";
 import { executeVisionTool } from "./visionTool.js";
 import { SPICE_SIM_TOOL, executeSpiceSimTool, type SpiceSimToolArgs, type SpiceSimToolResult } from "./spiceSimTool.js";
+import { buildSimulationNetlist } from "./spiceDutNetlist.js";
 import { isClientAbortError, streamWithRetries } from "./llmStream.js";
 
 /**
@@ -34,6 +36,7 @@ export type AssistantStreamEvent =
   | { type: "questions"; questions: string[] }
   | { type: "tool_start"; tool: string; args?: unknown }
   | { type: "tool_result"; tool: string; ok: boolean; images?: number }
+  | { type: "spice_result"; run: AssistantSpiceRun }
   | { type: "done"; data: unknown }
   | { type: "error"; message: string };
 
@@ -867,11 +870,22 @@ export async function discussFindingWithLlm(
     useVision
       ? `You have access to the mmochip_vision tool. CALL it to visually inspect device crops from the die image when you need to confirm a transistor type, check terminal placement, or compare similar devices. Pass the device UUIDs (from the netlist's "uuid" fields) as deviceUuids. The tool returns a cell crop image with the device name and terminal labels (C/B/E or D/G/S) drawn on it, plus a per-cell netlist. Use this proactively when your hypothesis depends on visual verification — for example if you suspect a PNP should be NPN, call mmochip_vision on both devices to compare. Never state "I will look at the image" without actually issuing the tool call.${overlayLayerNameHint(snapshot.overlayLayers)} The layerName parameter selects which die image is shown. Layer naming convention: metal layers usually contain "me"/"metal" plus a metallization number (me1, metal1, metal 2…); semiconductor/diffusion layers are often named diffusion, si, polysi, poly; developed diffusion regions may be named hf, sirtl and similar. The die has a base image (the single raw photograph, id __base__) and overlay images for the remaining layers. You may ask the user which image a name corresponds to if a layer name is not self-explanatory. Request a metal layer to check whether device terminals really are connected, or a diffusion layer to compare whether two transistors look structurally similar by their diffusion regions.`
       : "Visual device inspection is currently disabled; reason about device types from the netlist geometry and model names only.",
-    `You have access to the mmochip_spice_sim tool for running ngspice simulations. CALL it to verify circuit behavior — e.g. compute gain, bandwidth, DC operating point, transient response, or any electrical characteristic. Supply either a full SPICE netlist (standard SPICE/CDL format, NOT Spectre syntax) or a subcircuit block plus analysis directives (.tran, .dc, .ac, .meas, sources, loads, etc.). The tool returns variable names and data point count. You can also use .meas commands to extract specific values (e.g. .meas dc Vout FIND v(out) AT 0.4). Use this proactively when your hypothesis can be verified electrically — for example if you suspect a bandgap reference, simulate it to confirm the output voltage is ~1.2V. If the user asks about electrical behavior, simulate it rather than guessing. The simulation runs server-side with ngspice. If the first simulation fails, analyze the error, fix the netlist or directives, and retry — you have up to 4 iterations.`,
+    `You have access to the mmochip_spice_sim tool for running ngspice simulations. CALL it to verify circuit behavior — e.g. compute gain, bandwidth, DC operating point, transient response, or any electrical characteristic. How to use it:
+- You write ONLY the testbench, in the "testbench" argument: the supply source(s), the load(s) and an analysis directive. The tool adds the extracted circuit itself (with its real values) and converts it to ngspice syntax — do NOT copy the netlist into the tool, do NOT repeat device lines.
+- The testbench MUST contain an analysis directive: .op (DC operating point), .dc (sweep), .tran (transient) or .ac (AC). Without one there is nothing to measure.
+- Always connect the supply to the power net of the circuit (e.g. "VDD VCC 0 DC 5") and put a load on the output node (e.g. "RLOAD ref 0 10k"). A floating supply produces zeros, which is not a result.
+- Use the net names from the extracted netlist above (they are the names of the nodes you can drive and sense).
+- The tool returns every node voltage and source current of the analysis, plus any .measure results. Use .measure for the headline number, e.g. ".measure dc vout find v(out) at=2.5" (note "at="; ngspice rejects "at 2.5"). .measure op is evaluated by the tool itself, because ngspice has no "op" measurement type.
+- The models are generic placeholders (BF=200, IS=1e-16, …): the numbers show the topology and the order of magnitude, they are not a sign-off of a real process. Say so when you report them.
+Use this proactively when your hypothesis can be verified electrically — for example if you suspect a bandgap reference, simulate it to confirm the output voltage. If the user asks about electrical behavior, simulate it rather than guessing. The simulation runs server-side with ngspice. If the first simulation fails, read the error, fix the testbench, and retry — you have up to 4 iterations.`,
   ].join("\n");
 
   const llmContext = buildLlmContext(resultShell, snapshot, assistantDataFlags);
   const contextMessage = `Full extracted netlist of the die (finding "${finding.label}" focuses on devices ${[...focusInstances].join(", ") || "(none)"} and nets ${[...focusNetNames].join(", ") || "(none)"}):\n${llmContext.content}`;
+
+  // The netlist the SPICE tool simulates: the extracted devices with their real
+  // values. The model writes the testbench around it.
+  const dutNetlist = buildSimulationNetlist(snapshot.devices, snapshot.namedNets);
 
   type ChatMessage = {
     role: "system" | "user" | "assistant" | "tool";
@@ -1249,9 +1263,16 @@ export async function discussFindingWithLlm(
       const args = JSON.parse(spiceSimCall.arguments || "{}") as SpiceSimToolArgs;
       // Use ngspice path from toolFlags if not provided by LLM
       if (!args.binPath && ngspicePath) args.binPath = ngspicePath;
+      // The DUT netlist comes from the extracted circuit, not from the model:
+      // a model that has to copy 120 lines of netlist mangles them and
+      // forgets the testbench. The model only writes the testbench.
+      if (!args.netlist && !args.dutNetlist) args.dutNetlist = dutNetlist;
       onEvent?.({ type: "tool_start", tool: "mmochip_spice_sim", args });
       try {
-        const { text: toolResult } = await executeSpiceSimTool(args);
+        const { text: toolResult, result } = await executeSpiceSimTool(args);
+        // The run payload (netlist, numbers, notes) goes to the UI so the
+        // thread can show the trace and offer "go to the SPICE results".
+        if (result.run) onEvent?.({ type: "spice_result", run: result.run });
         chatMessages.push({ role: "tool", tool_call_id: spiceSimCall.id, content: toolResult });
         onEvent?.({ type: "tool_result", tool: "mmochip_spice_sim", ok: true });
       } catch (err) {

@@ -317,11 +317,44 @@ Run extracted analog netlists with ngspice directly from the application.
 
 - WASM or server-side ngspice engine
 - Select the full netlist or an extracted subcircuit
-- Custom model cards and editable testbench directives
+- **One model per device type** — NMOS/PMOS Level 1, EKV or BSIM4; NPN/PNP
+  Gummel–Poon or Ebers–Moll; junction, zener or schottky diode. Picking one
+  never selects anything for the other types, and your own card always wins
+  over the library. Each `.MODEL` name is emitted exactly once, so the cards
+  no longer pile up in the netlist
+- **Hand-editable simulation netlist** — what you see is what ngspice runs
+- **Testbench view** — the DUT is always drawn as a block with its pins, with
+  the testbench sources and loads wired to them: a flat DUT (an AI finding, a
+  hand-written fragment) is wrapped into a `.subckt` with inferred pins, and a
+  subcircuit nobody instantiated gets its instance back
+- **"Ask agent" as a collapsible right panel**, with a trace of every run
+  (netlist, measurements, warnings) in the chat
+- **Results that do not need a curve** — an `.op` run shows its `.measure`
+  values and the operating point as tables, instead of an empty chart
 - `.param` and `.step` support with step progress
 - Waveform, schematic, and generated netlist views
 - Interactive waveform inspection and PNG export with a white background
-- Independent LLM chat for generating and refining testbench directives
+
+The testbench directives start empty on purpose: the sources and the analysis
+depend on the selected DUT's pins, so a hard-coded example is always wrong.
+Ask the agent to write the testbench, or type it yourself.
+
+The extracted netlist is Spectre-flavoured, so both engines run it through
+`shared/spiceNetlist` first: parenthesised node lists become positional,
+arithmetic values (`16.8*250`) become numbers, `r=1.9*Rp` becomes `{1.9*Rp}`,
+missing model cards are filled in with generic ones, and a title comment is
+added so that SPICE does not swallow a leading `.model` line as the title.
+A netlist without an analysis directive gets a `.op`, so the run never returns
+ngspice's built-in constants instead of circuit results.
+
+The assistant's SPICE tool follows the same rules and adds a little more: it
+completes a testbench that forgot the supply, renames the ground rail to node
+0, instantiates a subcircuit nobody instantiated, drops device lines the model
+repeated, and returns the `.measure` results. When a run fails, the tool
+reports the ngspice error instead of pretending it succeeded.
+
+`testdata/analog/lm2937_bandgap.cir` is a ready-made bandgap testbench
+(`ngspice -b lm2937_bandgap.cir` → `v(ref) ≈ 0.91 V` with generic models).
 
 | Key | Action |
 |-----|--------|
@@ -362,7 +395,7 @@ During finding discussions, the model can use controlled tool calls when enabled
 
 - **`mmochip_lvs_check`** — compare a candidate subcircuit with the `analog-circuits-sky130` reference LVS library using topology matching. The active library can be selected, and users can add custom reference cells from SPICE/Spectre subcircuits.
 - **`mmochip_vision`** — request rendered die crops and overlay layers for multimodal models to inspect device geometry and terminal connectivity.
-- **`mmochip_spice_sim`** — run a server-side ngspice check of a hypothesis and return simulation measurements. Experimental; requires further testing.
+- **`mmochip_spice_sim`** - run a server-side ngspice check of a hypothesis and return simulation measurements. The model writes only the testbench (the tool adds the extracted circuit itself), the tool normalises the netlist for ngspice, runs every requested analysis, and returns the node voltages plus the `.measure` results; a run that produced no data is reported as a failure instead of an empty success. The run is shown as a card in the discussion thread (netlist, measurements, warnings) with a button that opens it in the SPICE simulator.
 - **`mmochip_card_update`** — propose a structured update to an existing hypothesis card.
 
 Tool access is explicitly controlled by the user. The model proposes hypotheses and evidence; the user reviews and verifies the result.

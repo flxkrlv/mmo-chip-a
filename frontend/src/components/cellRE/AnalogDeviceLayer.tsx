@@ -30,6 +30,8 @@ const DEVICE_COLORS: Record<DeviceKind, string> = {
   zener: "#ff6666",
   schottky: "#dd6666",
   inductor: "#66aaff",
+  voltage_source: "V source",
+  current_source: "I source",
   unknown: "#888888",
 };
 

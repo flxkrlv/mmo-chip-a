@@ -204,6 +204,7 @@ export function createAssistantRouter(config: { dataRoot: string }) {
           else if (ev.type === "thinking") sendEvent("thinking", { content: ev.content });
           else if (ev.type === "tool_start") sendEvent("tool_start", { tool: ev.tool, args: ev.args });
           else if (ev.type === "tool_result") sendEvent("tool_result", { tool: ev.tool, ok: ev.ok, images: ev.images });
+          else if (ev.type === "spice_result") sendEvent("spice_result", { run: ev.run });
         },
       );
       clearInterval(heartbeat);
@@ -396,16 +397,19 @@ export function createAssistantRouter(config: { dataRoot: string }) {
       const systemPrompt = `You are an expert SPICE simulation engineer. You generate testbench directives for ngspice.
 
 CRITICAL RULES:
-- The DUT (device under test) is ALREADY connected in the netlist as X1. DO NOT include the .subckt definition, .model cards, or any DUT-internal components.
-- Your output should contain ONLY the testbench: voltage/current sources, loads, analysis commands, and output commands.
-- The subcircuit port order is: X1 GND_1 net230 ref VDD GND bandgap (match the .subckt definition)
+- The DUT (device under test) is ALREADY in the netlist. DO NOT repeat the .subckt definition, the .model cards, or any DUT-internal component.
+- Your output should contain ONLY the testbench: voltage/current sources, loads, analysis commands, and measurement commands.
+- Read the port order from the .subckt line of the netlist you are given and instantiate it in exactly that order (the X1 line must have as many nodes as the .subckt has ports). Never guess the port order.
+- The testbench MUST contain an analysis directive: .op (DC operating point), .dc (sweep), .tran (transient) or .ac (AC). Without one the simulation returns nothing.
+- Always drive the DUT: a source on its supply rail and a load on its output node. A DUT with floating supply pins returns zeros, which is not a result.
+- Do NOT write a .control block with "quit" — the runner drives ngspice itself. Plain .measure lines are fine (.measure dc vout find v(out) at=2.5 — ngspice rejects "at 2.5").
 
 YOUR OUTPUT MUST INCLUDE (in this order):
 1. Voltage/current sources (VDD, input sources, ground references)
-2. Subcircuit instantiation (X1 ports subcktname)
+2. Subcircuit instantiation (X1 ports subcktname) — only when the netlist has no instantiation yet
 3. Load components (resistors, capacitors)
-4. Analysis directives (.dc, .tran, .ac, .op)
-5. Output directives (.print, .control/.endc if needed)
+4. Analysis directive (.op, .dc, .tran, .ac)
+5. Measurement directives (.measure ...) — optional
 6. .end
 
 DO NOT output:
@@ -413,12 +417,12 @@ DO NOT output:
 - .subckt/.ends blocks (DUT is provided separately)
 - Any device inside the DUT
 
-Example of CORRECT output:
+Example of CORRECT output (ports taken from the .subckt definition):
 VDD VDD 0 DC 3.3
 X1 GND_1 net230 ref VDD GND bandgap
 Rload ref 0 10k
 .dc VDD 0 5 0.01
-.print dc V(ref) V(net230) I(VDD)
+.measure dc vout find v(ref) at=3.3
 .end
 
 Example of WRONG output (DO NOT DO THIS):

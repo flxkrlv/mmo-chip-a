@@ -27,6 +27,8 @@ const MODEL_TOKEN: Record<DeviceKind, string> = {
   zener: "zener",
   schottky: "schottky",
   inductor: "inductor",
+  voltage_source: "source",
+  current_source: "source",
   unknown: "unknown",
 };
 

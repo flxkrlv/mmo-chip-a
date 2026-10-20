@@ -70,6 +70,8 @@ export const DEVICE_PORT_MAP: Record<string, Record<string, string>> = {
   zener:   { PLUS: "+", MINUS: "-" },
   schottky: { PLUS: "+", MINUS: "-" },
   inductor: { PLUS: "A", MINUS: "B" },
+  voltage_source: { PLUS: "+", MINUS: "-" },
+  current_source: { PLUS: "+", MINUS: "-" },
 };
 
 // ── Cell type per device kind (maps to netlist2svg skin types) ──
@@ -90,6 +92,8 @@ export function cellTypeForDevice(d: AnalogDevice): string {
     case "zener":     return "d_v";   // no zener in skin — use diode for now
     case "schottky":  return "d_sk_v";
     case "inductor":  return "l_v";
+    case "voltage_source": return "voltage_source";
+    case "current_source": return "current_source";
     default:          return "generic";
   }
 }
@@ -197,6 +201,11 @@ export function deviceAttributes(d: AnalogDevice): { ref: string; value?: string
   if (mos?.value) value = mos.value;
   const bjt = bjtAttributes(d);
   if (bjt?.value) value = bjt.value;
+  // Independent sources carry their specification ("DC 5", "SINE(0 1 1k)").
+  if ((d.kind === "voltage_source" || d.kind === "current_source")) {
+    const spec = (d.geometry as { sourceValue?: string } | undefined)?.sourceValue?.trim();
+    if (spec) value = spec;
+  }
   return { ref: d.instanceName ?? d.id, value };
 }
 
@@ -272,6 +281,9 @@ function portDirections(d: AnalogDevice): Record<string, string> | undefined {
   }
   if (d.kind.startsWith("jfet_")) {
     return { D: "input", G: "input", S: "output" };
+  }
+  if (d.kind === "voltage_source" || d.kind === "current_source") {
+    return { "+": "output", "-": "input" };
   }
   return undefined;
 }

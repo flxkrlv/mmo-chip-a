@@ -13,21 +13,21 @@ type Props = {
   readOnly?: boolean;
 };
 
-const DEFAULT_DIRECTIVES = `* ── Sources ──
-VDD VDD GND 1.8
-VIN in GND AC 1 PULSE(0 1.8 1n 100p 100p 5n 10n)
-
-* ── Load ──
-CL out GND 1p
-
-* ── Analysis ──
-.tran 10p 20n
-
-* ── Output ──
-.control
-run
-plot v(out)
-.endc
+/**
+ * The testbench starts EMPTY on purpose: the sources, the load and the
+ * analysis depend on the selected DUT's pins, so a hard-coded example (the
+ * old inverter snippet) is always wrong — and ngspice runs it as-is, quietly
+ * producing nothing. Ask the agent (⚡ Ask agent) to write it, or type it.
+ */
+const DEFAULT_DIRECTIVES = `* ── Testbench ──
+* Supply, load and analysis for the selected DUT, e.g.
+*   VDD VCC 0 DC 5
+*   RLOAD OUT 0 10k
+*   .op
+*   .dc VDD 0 10 0.1
+*   .tran 10p 20n
+*
+* Or press ⚡ Ask agent to have the testbench written for this DUT.
 `;
 
 export function DirectiveEditor({ value, onChange, readOnly = false }: Props) {

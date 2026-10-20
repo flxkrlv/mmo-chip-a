@@ -1062,6 +1062,9 @@ export type DeviceKind =
   | "zener"
   | "schottky"
   | "inductor"
+  /** Independent sources, as written in a testbench netlist (V…/I…). */
+  | "voltage_source"
+  | "current_source"
   | "unknown";
 
 // ── Device geometry parameters ──────────────────────────────────
@@ -1786,7 +1789,10 @@ export interface AssistantChatMessage {
 }
 
 /** A tool-use event displayed as a card in the discussion thread. */
-export interface AssistantToolUseEvent {
+export type AssistantToolUseEvent = AssistantVisionToolUse | AssistantSpiceToolUse;
+
+/** Vision tool use: device crops rendered in the thread. */
+export interface AssistantVisionToolUse {
   type: "vision";
   deviceUuids: string[];
   deviceNames: string[];
@@ -1794,6 +1800,36 @@ export interface AssistantToolUseEvent {
   images: string[];
   /** Human-readable name of the visible layer shown in the crops (e.g. "Si", "polysilicon", "me1"). */
   layerName?: string;
+}
+
+/** SPICE tool use: one ngspice run performed by the model. */
+export interface AssistantSpiceToolUse {
+  type: "spice";
+  run: AssistantSpiceRun;
+}
+
+/** One ngspice run performed by the assistant's SPICE tool. */
+export interface AssistantSpiceRun {
+  /** Whether the run produced usable results. */
+  ok: boolean;
+  /** One-line human summary, e.g. "Operating Point — 86 variables, 1 point". */
+  summary: string;
+  /** The netlist that was actually simulated (Spectre syntax is converted first). */
+  netlist: string;
+  /** ngspice plot the numbers came from ("Operating Point", "DC transfer characteristic", …). */
+  plot?: string;
+  /** Results of the .measure directives. */
+  measurements?: Record<string, number>;
+  /** A capped subset of node voltages / source currents (first/last point). */
+  keyValues?: Record<string, number>;
+  /** What the tool auto-fixed and what it wants the model to know. */
+  notes?: string[];
+  /** Error text when the run failed. */
+  error?: string;
+  /** One entry per analysis the tool ran. */
+  analyses?: Array<{ analysis: string; plot?: string; numPoints: number; error?: string }>;
+  /** Timestamp (ms since epoch). */
+  at: number;
 }
 
 /** The finding context the backend needs to scope the discussion subgraph. */
