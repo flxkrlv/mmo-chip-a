@@ -7,6 +7,7 @@ import test, { afterEach } from "node:test";
 import sharp from "sharp";
 import request from "supertest";
 import { createApp } from "./app.js";
+import { resolveOverlayOriginalPath } from "./api/overlayImages.js";
 import { ensureDataStore } from "./store.js";
 
 const tempRoots: string[] = [];
@@ -280,6 +281,62 @@ test("overlay delete removes the source for everyone", async () => {
   assert.deepEqual(list.body.images, []);
   const again = await request(app).delete(`/api/dies/${dieId}/overlay-images/${id}`);
   assert.equal(again.status, 404);
+});
+
+test("overlay source resolution accepts legacy filenames and tiled ids", async () => {
+  const { dataRoot } = await createHarness();
+  const dieId = "die1";
+  const dieImage = await sharp({
+    create: { width: 64, height: 64, channels: 3, background: { r: 0, g: 0, b: 0 } }
+  })
+    .png()
+    .toBuffer();
+  const overlayDir = path.join(dataRoot, "overlay-images", dieId);
+  await fs.mkdir(overlayDir, { recursive: true });
+
+  // Legacy flat overlays keep their filename (with extension) as the source id.
+  const legacyPath = path.join(overlayDir, "me2.png");
+  await fs.writeFile(legacyPath, dieImage);
+  assert.equal(
+    await resolveOverlayOriginalPath({ dataRoot, dieId, sourceId: "me2.png" }),
+    legacyPath
+  );
+  assert.equal(
+    await resolveOverlayOriginalPath({ dataRoot, dieId, sourceId: "../me2.png" }),
+    null
+  );
+
+  // Tiled sources resolve through their manifest, even after a move leaves the
+  // recorded absolute originalPath stale (copied folder project).
+  const id = "tiled1";
+  const sourceDir = path.join(overlayDir, id);
+  const originalPath = path.join(sourceDir, "original.png");
+  await fs.mkdir(sourceDir, { recursive: true });
+  await fs.writeFile(originalPath, dieImage);
+  const manifestPath = path.join(sourceDir, "manifest.json");
+  const manifest = {
+    id,
+    name: id,
+    originalFilename: "original.png",
+    originalPath,
+    size: dieImage.length,
+    width: 64,
+    height: 64,
+    tileSize: 512,
+    tileFormat: "png",
+    hasAlpha: false,
+    maxZoomLevel: 0,
+    levels: [],
+    ready: true,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString()
+  };
+  await fs.writeFile(manifestPath, JSON.stringify(manifest, null, 2), "utf8");
+  assert.equal(await resolveOverlayOriginalPath({ dataRoot, dieId, sourceId: id }), originalPath);
+
+  manifest.originalPath = path.join("Z:", "moved-away", "original.png");
+  await fs.writeFile(manifestPath, JSON.stringify(manifest, null, 2), "utf8");
+  assert.equal(await resolveOverlayOriginalPath({ dataRoot, dieId, sourceId: id }), originalPath);
 });
 
 test("overlay upload rejects formats other than PNG, JPEG, WebP and TIFF", async () => {
