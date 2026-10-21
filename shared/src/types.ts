@@ -1780,6 +1780,14 @@ export interface AssistantAnalysisErrorResponse {
   detail?: string;
 }
 
+/** A discussion turn that failed — the model produced no answer. */
+export interface AssistantFailedTurn {
+  /** Short reason, e.g. "LLM returned empty content". */
+  reason: string;
+  /** What the model should do differently next time. */
+  hint: string;
+}
+
 /** One turn of a per-finding discussion thread. */
 export interface AssistantChatMessage {
   role: "user" | "assistant";
@@ -1788,6 +1796,14 @@ export interface AssistantChatMessage {
   toolUse?: AssistantToolUseEvent;
   /** Present when this message carries LVS reference-library check results produced during this turn. */
   lvsResults?: Array<AssistantLvsCheckResponse["data"]>;
+  /** Present when this turn FAILED (the model produced no answer). The
+   *  backend replays it to the model as "the previous attempt failed",
+   *  so the next turn changes its approach instead of repeating it. */
+  failed?: AssistantFailedTurn;
+  /** The text of this turn that the MODEL must see — a digest of a tool
+   *  result. Without it the next request would carry an empty assistant
+   *  message and the model would not know what its tool returned. */
+  digest?: string;
 }
 
 /** A tool-use event displayed as a card in the discussion thread. */
@@ -1899,6 +1915,9 @@ export interface AssistantDiscussResponse {
   cardUpdate?: AssistantFindingPatch | null;
   /** Raw LVS reference-library check results produced via mmochip_lvs_check during this turn. */
   lvsResults?: Array<AssistantLvsCheckResponse["data"]>;
+  /** Clarifying questions the model needs answered before it can go on.
+   *  The user answers them in the chat and the turn is repeated. */
+  questions?: string[];
 }
 
 export interface AssistantDiscussErrorResponse {

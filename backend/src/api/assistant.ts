@@ -137,7 +137,7 @@ export function createAssistantRouter(config: { dataRoot: string }) {
         });
         return;
       }
-      const { reply, durationMs, cardUpdate, lvsResults } = await discussFindingWithLlm(
+      const { reply, durationMs, cardUpdate, lvsResults, questions } = await discussFindingWithLlm(
         body.finding,
         Array.isArray(body.messages) ? body.messages : [],
         body.circuit,
@@ -149,7 +149,7 @@ export function createAssistantRouter(config: { dataRoot: string }) {
         dieId,
         body.assistantDataFlags,
       );
-      response.json({ ok: true, reply, durationMs, cardUpdate: cardUpdate ?? null, lvsResults: lvsResults ?? [] });
+      response.json({ ok: true, reply, durationMs, cardUpdate: cardUpdate ?? null, lvsResults: lvsResults ?? [], questions: questions ?? [] });
     } catch (error) {
       const reason = error instanceof Error ? error.message : "Unknown LLM error";
       console.error(`[assistant/discuss] failed for ${request.params.dieId}: ${reason}`);
@@ -188,7 +188,7 @@ export function createAssistantRouter(config: { dataRoot: string }) {
       // reasoning models can pause for tens of seconds between token bursts.
       const heartbeat = setInterval(() => sendEvent("heartbeat", {}), 10_000);
 
-      const { reply, durationMs, cardUpdate, lvsResults } = await discussFindingWithLlm(
+      const { reply, durationMs, cardUpdate, lvsResults, questions } = await discussFindingWithLlm(
         body.finding,
         Array.isArray(body.messages) ? body.messages : [],
         body.circuit,
@@ -208,7 +208,7 @@ export function createAssistantRouter(config: { dataRoot: string }) {
         },
       );
       clearInterval(heartbeat);
-      sendEvent("done", { ok: true, reply, durationMs, cardUpdate: cardUpdate ?? null, lvsResults: lvsResults ?? [] });
+      sendEvent("done", { ok: true, reply, durationMs, cardUpdate: cardUpdate ?? null, lvsResults: lvsResults ?? [], questions: questions ?? [] });
       response.end();
     } catch (error) {
       const reason = error instanceof Error ? error.message : "Unknown LLM error";

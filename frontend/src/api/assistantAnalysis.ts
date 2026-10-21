@@ -287,8 +287,8 @@ export async function discussFindingStream(
   dieId: string,
   input: Parameters<typeof discussFinding>[1],
   handlers: AssistantStreamHandlers,
-): Promise<{ reply: string; cardUpdate: AssistantFindingPatch | null; lvsResults: Array<AssistantLvsCheckResponse["data"]> }> {
-  let final: { reply: string; cardUpdate: AssistantFindingPatch | null; lvsResults: Array<AssistantLvsCheckResponse["data"]> } | null = null;
+): Promise<{ reply: string; cardUpdate: AssistantFindingPatch | null; lvsResults: Array<AssistantLvsCheckResponse["data"]>; questions: string[] }> {
+  let final: { reply: string; cardUpdate: AssistantFindingPatch | null; lvsResults: Array<AssistantLvsCheckResponse["data"]>; questions: string[] } | null = null;
   let streamError: string | null = null;
   await streamAssistantRequest(
     `/api/dies/${encodeURIComponent(dieId)}/assistant/discuss/stream`,
@@ -298,7 +298,7 @@ export async function discussFindingStream(
       onEvent: (ev) => {
         handlers.onEvent(ev);
         if (ev.type === "done" && typeof ev.reply === "string") {
-          final = { reply: ev.reply, cardUpdate: ev.cardUpdate ?? null, lvsResults: ev.lvsResults ?? [] };
+          final = { reply: ev.reply, cardUpdate: ev.cardUpdate ?? null, lvsResults: ev.lvsResults ?? [], questions: ev.questions ?? [] };
         }
         if (ev.type === "error" && typeof ev.error === "string") streamError = ev.error;
       },
