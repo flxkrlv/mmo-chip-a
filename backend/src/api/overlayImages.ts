@@ -440,22 +440,51 @@ export async function getOverlayCropSource(params: {
   };
 }
 
-/** Resolve a tiled overlay original in the shared namespace. */
+/**
+ * Resolve a tiled source's original, or a legacy flat file in the same overlay
+ * directory.  CV/ML pass the top visible layer's `serverFilename`, which is a
+ * manifest id for tiled sources but the bare filename (with extension) for
+ * legacy ones; both must resolve or the module reports a missing source.
+ */
 export async function resolveOverlayOriginalPath(params: {
   dataRoot: string;
   dieId: string;
   sourceId: string;
 }): Promise<string | null> {
-  if (!SAFE_ID.test(params.sourceId)) return null;
-  const manifest = await readManifest(
-    params.dataRoot,
-    params.dieId,
-    params.sourceId
-  );
-  if (!manifest) return null;
+  if (SAFE_ID.test(params.sourceId)) {
+    const manifest = await readManifest(
+      params.dataRoot,
+      params.dieId,
+      params.sourceId
+    );
+    if (manifest) {
+      try {
+        await fs.access(manifest.originalPath);
+        return manifest.originalPath;
+      } catch {
+        // Folder projects can be moved/copied between machines, leaving the
+        // absolute path stale; the original still sits beside the manifest.
+        try {
+          const besideManifest = path.join(
+            await sourceDir(params.dataRoot, params.dieId, params.sourceId),
+            path.basename(manifest.originalPath)
+          );
+          await fs.access(besideManifest);
+          return besideManifest;
+        } catch {
+          return null;
+        }
+      }
+    }
+  }
+  const safeName = path.basename(params.sourceId);
+  if (safeName !== params.sourceId || !/\.(png|jpe?g|webp|tiff?)$/i.test(safeName)) {
+    return null;
+  }
   try {
-    await fs.access(manifest.originalPath);
-    return manifest.originalPath;
+    const legacyPath = path.join(await dieOverlayDir(params.dataRoot, params.dieId), safeName);
+    await fs.access(legacyPath);
+    return legacyPath;
   } catch {
     return null;
   }
