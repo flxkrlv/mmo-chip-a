@@ -43,6 +43,7 @@ import {
   findMeasureDirectives,
   flattenControlBlocks,
   parseNgspiceMeasurements,
+  requestedSignals,
   stripOpMeasurementDirectives,
 } from "shared/spiceNetlist";
 import { applyModelCards, cardsForOptionIds } from "shared/spiceModels";
@@ -189,6 +190,12 @@ interface NetlistPlan {
   analyses: string[];
   /** Measurement directives with their analysis type. */
   measures: Array<{ line: string; type: string }>;
+  /**
+   * Signals `.print`/`.save`/`.measure` ask for. When the testbench names
+   * them, the raw file keeps only those vectors instead of every internal
+   * node of the chip.
+   */
+  signals: string[];
   notes: string[];
 }
 
@@ -236,6 +243,10 @@ function planNetlist(netlist: string, modelOptionIds: string[] = []): NetlistPla
   const converted = convertNetlistToNgspice(source);
   notes.push(...converted.notes);
 
+  // Read the signal list BEFORE the .control block is flattened away: a model
+  // that writes `save v(ref)` inside .control still means "plot only this".
+  const signals = requestedSignals(converted.netlist);
+
   const flattened = flattenControlBlocks(converted.netlist);
   if (flattened.hoisted.length > 0) {
     notes.push(`lifted ${flattened.hoisted.length} command(s) out of the .control block: ${flattened.hoisted.join(" | ")}`);
@@ -273,14 +284,21 @@ function planNetlist(netlist: string, modelOptionIds: string[] = []): NetlistPla
     notes.push(`the netlist requests ${analyses.length} analyses (${analyses.join(", ")}) — ngspice keeps one plot per run, so each analysis was run separately`);
   }
 
-  return { circuit, analyses, measures, notes };
+  return { circuit, analyses, measures, signals, notes };
 }
 
 /** Assemble the netlist for one analysis run. */
 function assembleNetlist(plan: NetlistPlan, analysis: string): string {
   const type = analysisType(analysis);
   const measures = plan.measures.filter((m) => m.type === type).map((m) => m.line);
-  const controlBlock = `.control\nrun\nset filetype=ascii\nwrite sim.raw\nquit\n.endc`;
+  // `save` runs before `run`, so ngspice writes only the vectors the testbench
+  // asked for (`.print`/`.save`/`.measure`). Without it the raw file carries
+  // every internal node and the viewer plots all of them. Names ngspice does
+  // not know are ignored, so a guess costs nothing.
+  const save = plan.signals.length > 0 ? `save ${plan.signals.join(" ")}` : "";
+  const controlBlock = [".control", save, "run", "set filetype=ascii", "write sim.raw", "quit", ".endc"]
+    .filter((line) => line !== "")
+    .join("\n");
   const body = [
     ...plan.circuit,
     analysis,

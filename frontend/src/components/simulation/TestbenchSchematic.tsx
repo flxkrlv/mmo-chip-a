@@ -16,7 +16,12 @@ import { scopeKey as interactiveScopeKey } from "../../state/interactiveSchemati
 import { parseTestbenchNetlist } from "../../lib/schematic/testbench";
 
 type Props = {
-  /** The netlist that gets simulated (DUT + testbench). */
+  /**
+   * The testbench view netlist — `buildTestbenchViewNetlist` output: the
+   * testbench elements plus one DUT block whose body is empty. It is never
+   * the whole netlist: handing that over here draws the entire chip, which
+   * says nothing about what drives what.
+   */
   netlist: string;
   dieId: string;
   moduleName: string;

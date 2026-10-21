@@ -6,7 +6,7 @@
 
 import * as Comlink from "comlink";
 import { authHeaders } from "../../api/client";
-import { findAnalysisDirectives } from "shared/spiceNetlist";
+import { findAnalysisDirectives, requestedSignalKeys, requestedSignals, vectorKeys } from "shared/spiceNetlist";
 import type {
   SimulationResult,
   SimulationStatus,
@@ -466,9 +466,22 @@ export async function runFullSimulation(
   const prepared = sanitizeNetlistForRun(netlist);
   const raw = await runSpiceSimulation(prepared.netlist, mode, binPath);
   const durationMs = performance.now() - t0;
-  const waveforms = parseWaveforms(raw);
+  const parsed = parseWaveforms(raw);
   const errors = mode === "wasm" ? await getSpiceErrors() : [];
   const extra = raw as { notes?: string[]; warnings?: string[]; measurements?: Record<string, number> };
+
+  // A testbench that names its signals (`.print`/`.save`/`.measure`) gets only
+  // those plotted. Otherwise every internal node of the chip becomes a graph
+  // and the one number the simulation is about is drowned in them.
+  const requested = requestedSignals(prepared.netlist);
+  const wanted = new Set(requested.flatMap((s) => requestedSignalKeys(s)));
+  const matched = wanted.size === 0
+    ? parsed
+    : parsed.filter((trace) => vectorKeys(trace.name).some((key) => wanted.has(key)));
+  // A `.print` that matches nothing is a naming mismatch, not a request for a
+  // blank graph — keep everything rather than show nothing.
+  const waveforms = matched.length > 0 || parsed.length === 0 ? matched : parsed;
+  const filtered = waveforms.length < parsed.length;
 
   console.log("[runFullSimulation] raw:", JSON.stringify({
     numVariables: raw.numVariables,
@@ -478,7 +491,10 @@ export async function runFullSimulation(
     dataTypes: raw.data.map((d) => d.type),
     dataValuesLengths: raw.data.map((d) => d.values.length),
   }));
-  console.log("[runFullSimulation] waveforms:", waveforms.length, "traces");
+  console.log("[runFullSimulation] waveforms:", waveforms.length, "traces", {
+    parsed: parsed.length,
+    requested,
+  });
 
   return {
     raw,
@@ -489,6 +505,8 @@ export async function runFullSimulation(
     warnings: extra.warnings,
     measurements: extra.measurements,
     dcOp: parseDcOperatingPoint(raw),
+    requestedSignals: filtered ? requested : undefined,
+    allWaveforms: filtered ? parsed : undefined,
   };
 }
 

@@ -2,8 +2,13 @@ import { expect, test } from "vitest";
 import {
   autoInstantiateDut,
   autoTestbench,
+  buildTestbenchViewNetlist,
   dedupeDeviceLines,
   renameGroundNets,
+  requestedSignalKeys,
+  requestedSignals,
+  splitSimulationSections,
+  vectorKeys,
   wrapFlatDut,
 } from "shared/spiceNetlist";
 import {
@@ -273,4 +278,186 @@ test("parseDcOperatingPoint reports the numbers of a single-point run", () => {
       { name: "v(out)", type: "voltage" as const, values: [0, 1, 2] },
     ],
   })).toBeUndefined();
+});
+
+// ── the testbench view never draws the DUT's body ────────────────
+
+test("splitSimulationSections cuts at the assistant tool's Testbench marker", () => {
+  const { dut, testbench } = splitSimulationSections(`.subckt bandgap OUT VCC ref
+R1 VCC ref 1k
+.ends bandgap
+* ── Testbench ──
+VDD VCC 0 DC 5
+X1 OUT VCC ref bandgap
+.op`);
+
+  expect(dut).toMatch(/^\.subckt bandgap OUT VCC ref$/m);
+  expect(dut).not.toMatch(/VDD VCC 0/);
+  expect(testbench).toMatch(/^VDD VCC 0 DC 5$/m);
+  expect(testbench).not.toMatch(/R1 VCC ref/);
+});
+
+test("splitSimulationSections also cuts at the ASCII marker of a testdata file", () => {
+  const { dut, testbench } = splitSimulationSections(`.subckt bandgap OUT VCC ref
+R1 VCC ref 1k
+.ends bandgap
+* -- Testbench --
+VDD VCC 0 DC 5
+X1 OUT VCC ref bandgap
+.op`);
+
+  expect(dut).toMatch(/^\.subckt bandgap OUT VCC ref$/m);
+  expect(testbench).toMatch(/^VDD VCC 0 DC 5$/m);
+});
+
+test("splitSimulationSections cuts at the composed netlist's Directives marker", () => {
+  const composed = composeSimulationNetlist({
+    dutNetlist: `Q1 out in 0 npn\nRB vcc in 10k`,
+    directives: "VDD vcc 0 DC 5\n.op",
+    dutName: "bandgap",
+  });
+
+  // The marker wins over the structural fallback: everything after it is the
+  // testbench, whatever shape the DUT happens to have.
+  const { dut, testbench } = splitSimulationSections(composed, { dut: "", testbench: "" });
+  expect(dut).toMatch(/^\.subckt bandgap /m);
+  expect(testbench).toMatch(/^VDD vcc 0 DC 5$/m);
+  expect(testbench).not.toMatch(/Q1 out in 0 npn/);
+});
+
+test("splitSimulationSections falls back to structure, then to what the caller knows", () => {
+  const structural = splitSimulationSections(
+    `.subckt bandgap OUT VCC ref\nR1 VCC ref 1k\n.ends bandgap\nVDD VCC 0 DC 5\n.op`,
+    { dut: "", testbench: "" },
+  );
+  expect(structural.dut).toMatch(/^\.subckt bandgap/m);
+  expect(structural.testbench).toMatch(/^VDD VCC 0 DC 5$/m);
+
+  const fallback = splitSimulationSections("VDD VCC 0 DC 5", {
+    dut: "Q1 out in 0 npn",
+    testbench: "RLOAD out 0 10k",
+  });
+  expect(fallback.dut).toBe("Q1 out in 0 npn");
+  expect(fallback.testbench).toBe("RLOAD out 0 10k");
+});
+
+test("buildTestbenchViewNetlist never lets the DUT's body into the view", () => {
+  const view = buildTestbenchViewNetlist({
+    dutNetlist: `.subckt bandgap OUT VCC GND ref\nR1 VCC ref 1k\nQ1 OUT ref GND npn\n.ends bandgap`,
+    directives: `VDD VCC 0 DC 5\nRLOAD OUT 0 10k\n.op\n.print op v(ref)`,
+    dutName: "bandgap",
+  });
+
+  expect(view.ok).toBe(true);
+  expect(view.dutName).toBe("bandgap");
+  expect(view.ports).toEqual(["OUT", "VCC", "GND", "ref"]);
+  expect(view.netlist).toMatch(/^\.subckt bandgap OUT VCC GND ref$/m);
+  // An EMPTY body: the pins survive, the devices do not.
+  expect(view.netlist).toMatch(/^\.subckt bandgap[^\n]*\n\.ends bandgap$/m);
+  expect(view.netlist).not.toMatch(/Q1 OUT ref GND npn/);
+
+  const tb = parseTestbenchNetlist(view.netlist);
+  expect(tb.ok).toBe(true);
+  expect(tb.blocks).toHaveLength(1);
+  expect(tb.devices.map((d) => d.instanceName).sort()).toEqual(["RLOAD", "VDD"]);
+});
+
+test("buildTestbenchViewNetlist wraps a flat DUT instead of drawing it", () => {
+  const view = buildTestbenchViewNetlist({
+    dutNetlist: `Q1 out in 0 npn\nRC vcc out 1k\nRB vcc in 10k`,
+    directives: `VDD vcc 0 DC 5\nRLOAD out 0 10k\n.op`,
+    dutName: "bandgap",
+  });
+
+  expect(view.ok).toBe(true);
+  expect(view.dutName).toBe("bandgap");
+  expect(view.netlist).toMatch(/^\.subckt bandgap vcc out$/m);
+  expect(view.netlist).not.toMatch(/Q1 out in 0 npn/);
+  expect(view.netlist).toMatch(/^X\w+ vcc out bandgap$/m);
+
+  // The view has the DUT as ONE block, and nothing else but the testbench.
+  const tb = parseTestbenchNetlist(view.netlist, { vdd: "vcc", gnd: "0" });
+  expect(tb.ok).toBe(true);
+  expect(tb.blocks).toHaveLength(1);
+  expect(tb.devices.map((d) => d.instanceName).sort()).toEqual(["RLOAD", "VDD"]);
+});
+
+test("buildTestbenchViewNetlist reuses the DUT's own instance and adds no second one", () => {
+  const view = buildTestbenchViewNetlist({
+    dutNetlist: `.subckt bandgap OUT VCC GND ref\nR1 VCC ref 1k\n.ends bandgap\nXbandgap OUT VCC GND ref bandgap`,
+    directives: `VDD VCC 0 DC 5\n.op`,
+    dutName: "bandgap",
+  });
+
+  expect(view.ok).toBe(true);
+  // The instance lives in the DUT section, so the view reuses it verbatim.
+  expect(view.netlist.match(/^X\w+ /gm)).toHaveLength(1);
+
+  const tb = parseTestbenchNetlist(view.netlist);
+  expect(tb.blocks).toHaveLength(1);
+});
+
+test("buildTestbenchViewNetlist says why it cannot draw a block", () => {
+  const view = buildTestbenchViewNetlist({
+    dutNetlist: "",
+    directives: `VDD vcc 0 DC 5\nRLOAD out 0 10k\n.op`,
+    dutName: "bandgap",
+  });
+
+  expect(view.ok).toBe(false);
+  expect(view.dutName).toBeNull();
+  expect(view.ports).toEqual([]);
+  // The testbench itself is still drawable — it just has no block.
+  expect(view.netlist).toMatch(/^VDD vcc 0 DC 5$/m);
+  const tb = parseTestbenchNetlist(view.netlist);
+  expect(tb.ok).toBe(true);
+  expect(tb.blocks).toHaveLength(0);
+});
+
+// ── only what the testbench asked to see ─────────────────────────
+
+test("requestedSignals reads .print, .save, .plot and .measure", () => {
+  expect(requestedSignals(`.op\n.print op v(ref) v(ref_1) v(out) v(vcc)`))
+    .toEqual(["v(ref)", "v(ref_1)", "v(out)", "v(vcc)"]);
+  expect(requestedSignals(".tran 1u 100u\n.save v(out)")).toEqual(["v(out)"]);
+  expect(requestedSignals(".dc VDD 0 5 1\n.plot dc v(ref)")).toEqual(["v(ref)"]);
+  // A `.measure` needs its vector saved, so it is a request too.
+  expect(requestedSignals(".dc VDD 0 5 1\n.measure dc vref find v(ref) at=5"))
+    .toEqual(["v(ref)"]);
+  expect(requestedSignals(".tran 1u 100u\n.measure tran tp trig v(in) val='1' rise=1 targ v(out) val='1' rise=1"))
+    .toEqual(["v(in)", "v(out)"]);
+});
+
+test("requestedSignals reads a .control block before it is flattened away", () => {
+  expect(requestedSignals(`.control
+save v(ref) v(out)
+run
+set filetype=ascii
+write sim.raw
+quit
+.endc`)).toEqual(["v(ref)", "v(out)"]);
+});
+
+test("requestedSignals treats keywords and an open-ended save as 'show everything'", () => {
+  expect(requestedSignals(".op\n.save all")).toEqual([]);
+  expect(requestedSignals(".op")).toEqual([]);
+  // An unknown vector is ignored by ngspice, so a stray word must not become a
+  // signal that filters every trace away.
+  expect(requestedSignals(".op\n.print op v(ref)")).toEqual(["v(ref)"]);
+});
+
+test("requestedSignalKeys matches a request however it is spelled", () => {
+  // `.print (vref)` — a model spelling the node loosely — still finds v(ref).
+  const loose = new Set(requestedSignals(".op\n.print op (vref)").flatMap(requestedSignalKeys));
+  expect(loose.size).toBeGreaterThan(0);
+  expect(vectorKeys("v(ref)").some((k) => loose.has(k))).toBe(true);
+
+  // `v(ref)` is exact: it does not pull in the supply current.
+  const exact = new Set(requestedSignalKeys("i(vdd)"));
+  expect(vectorKeys("v(vdd)").some((k) => exact.has(k))).toBe(false);
+  expect(vectorKeys("i(vdd)").some((k) => exact.has(k))).toBe(true);
+
+  // A bare name is loose: `.save ref` means v(ref) to a reader.
+  const bare = new Set(requestedSignalKeys("ref"));
+  expect(vectorKeys("v(ref)").some((k) => bare.has(k))).toBe(true);
 });

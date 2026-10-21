@@ -349,3 +349,29 @@ VDD VCC 0 DC 5
     `expected a model note, got ${JSON.stringify(parsed.notes)}`,
   );
 });
+
+test("tool saves only the vectors the testbench asked for", { skip: skipWithoutNgspice }, async () => {
+  const { text, result } = await executeSpiceSimTool({
+    dutNetlist: `.subckt dut VCC out mid
+R1 VCC mid 1k
+R2 mid out 1k
+R3 out 0 1k
+.ends dut`,
+    testbench: `X1 VCC out mid dut
+VDD VCC 0 DC 5
+.dc VDD 0 5 1
+.print dc v(out)
+.measure dc vout find v(out) at=5`,
+    binPath: NGSPICE ?? undefined,
+  });
+
+  assert.equal(result.success, true, result.error);
+  const parsed = JSON.parse(text);
+  assert.ok(parsed.variables.includes("v(out)"), "the printed vector must be kept");
+  // Without the `save`, the raw file would carry every internal node and the
+  // viewer would plot all of them.
+  assert.ok(
+    !parsed.variables.some((v: string) => /mid/i.test(v)),
+    `internal nodes must stay out of the raw file, got ${JSON.stringify(parsed.variables)}`,
+  );
+});

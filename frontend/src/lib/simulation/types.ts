@@ -76,6 +76,13 @@ export interface SpiceSimulationOutput {
   measurements?: Record<string, number>;
   /** Node → value of a single-point (`.op`) run — there is nothing to plot. */
   dcOp?: Record<string, number>;
+  /**
+   * Signals the netlist asked to print (`.print`/`.save`/`.measure`).
+   * When present, `waveforms` was filtered down to these.
+   */
+  requestedSignals?: string[];
+  /** Every trace the run produced, kept only while `waveforms` is a subset. */
+  allWaveforms?: WaveformTrace[];
 }
 
 // ── Spice Agent types ────────────────────────────────────────────

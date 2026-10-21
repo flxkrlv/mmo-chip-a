@@ -25,6 +25,7 @@ import { spectreToNgspice } from "../lib/simulation/spectreToNgspice";
 import { findingsToSubcircuits } from "../lib/simulation/findingsToSubcircuits";
 import { useModelFile, useDirectives, useModelSelection } from "../lib/simulation/useSpicePersistence";
 import { composeSimulationNetlist, extractModelCards } from "shared/spiceModels";
+import { buildTestbenchViewNetlist, splitSimulationSections } from "shared/spiceNetlist";
 import { useAssistantSession } from "../state/assistantSession";
 import { useSpiceHandoff } from "../state/spiceHandoff";
 import { collectDieWideAnalogDevices } from "../api/dieWideAnalog";
@@ -130,6 +131,8 @@ function SpiceSimulator({ dieId }: { dieId: string }) {
   const [output, setOutput] = useState<SpiceSimulationOutput | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [rightView, setRightView] = useState<"waveforms" | "testbench" | "schematic" | "netlist">("waveforms");
+  /** Show every vector of the run instead of only the ones `.print` asked for. */
+  const [showAllTraces, setShowAllTraces] = useState(false);
 
   // .step progress state
   const [stepProgress, setStepProgress] = useState<{ current: number; total: number; params: Record<string, string> } | null>(null);
@@ -183,13 +186,15 @@ function SpiceSimulator({ dieId }: { dieId: string }) {
   // to filter devices when the subcircuit name doesn't match a floorplan region.
   const selectedDeviceNames = selectedSubckt?.deviceNames;
 
-  const simulationNetlist = useMemo(() => {
-    // AI findings are written in Spectre syntax; the netlist subcircuits are
-    // already in ngspice form.
+  /** The DUT section: AI findings are written in Spectre, subcircuits in ngspice. */
+  const dutNetlist = useMemo(() => {
     const raw = selectedSubckt ? selectedSubckt.netlist : fullNetlist;
-    const dut = selectedSubckt?.source === "ai" ? spectreToNgspice(raw) : raw;
+    return selectedSubckt?.source === "ai" ? spectreToNgspice(raw) : raw;
+  }, [selectedSubckt, fullNetlist]);
+
+  const simulationNetlist = useMemo(() => {
     return composeSimulationNetlist({
-      dutNetlist: dut,
+      dutNetlist,
       directives,
       selection: modelSelection,
       customModels,
@@ -198,13 +203,28 @@ function SpiceSimulator({ dieId }: { dieId: string }) {
       // always has a block to connect the sources to.
       dutName: selectedSubckt?.name ?? "chip",
     });
-  }, [selectedSubckt, fullNetlist, directives, modelSelection, customModels]);
+  }, [dutNetlist, directives, modelSelection, customModels, selectedSubckt]);
 
   /** How many model cards the composed netlist carries. */
   const modelCardCount = useMemo(() => Object.keys(extractModelCards(simulationNetlist)).length, [simulationNetlist]);
 
   /** What actually gets simulated: the hand-edited netlist when there is one. */
   const effectiveNetlist = netlistOverride ?? simulationNetlist;
+
+  /**
+   * What the Testbench tab draws: the testbench elements plus ONE rectangle
+   * for the DUT. It is built from the two sections rather than from the raw
+   * netlist — a flat netlist handed in as a whole would otherwise be drawn as
+   * a picture of the entire chip, which says nothing about the testbench.
+   */
+  const testbenchView = useMemo(() => {
+    const sections = splitSimulationSections(effectiveNetlist, { dut: dutNetlist, testbench: directives });
+    return buildTestbenchViewNetlist({
+      dutNetlist: sections.dut,
+      directives: sections.testbench,
+      dutName: selectedSubckt?.name ?? "chip",
+    });
+  }, [effectiveNetlist, dutNetlist, directives, selectedSubckt]);
 
   // A run handed over from the assistant thread: load its testbench and run it.
   const handoff = useSpiceHandoff((state) => state.handoff);
@@ -266,6 +286,16 @@ function SpiceSimulator({ dieId }: { dieId: string }) {
 
   runRef.current = runSimulation;
 
+  // A new run starts back on the signals it asked for.
+  useEffect(() => { setShowAllTraces(false); }, [output]);
+
+  /** What the viewer plots: only what `.print`/`.save` asked for, unless expanded. */
+  const shownTraces = useMemo(() => {
+    if (!output) return [];
+    if (showAllTraces && output.allWaveforms) return output.allWaveforms;
+    return output.waveforms;
+  }, [output, showAllTraces]);
+
   const dutInfo = useMemo(() => {
     if (!selectedSubckt) return { name: moduleName, devices: netlistResult.data?.totalDevices ?? 0, kind: "Full netlist" };
     return { name: selectedSubckt.name, devices: selectedSubckt.deviceCount, kind: selectedSubckt.source === "ai" ? "AI Finding" : "Subcircuit" };
@@ -273,7 +303,9 @@ function SpiceSimulator({ dieId }: { dieId: string }) {
 
   return (
     <AppShell breadcrumb="SPICE Simulation" meta={die?.name}>
-      <SubBar>
+      <SubBar
+        right={<PanelToggle side="right" collapsed={!agentOpen} onClick={() => setAgentOpen((v) => !v)} />}
+      >
         <PanelToggle side="left" collapsed={leftCollapsed} onClick={toggleLeft} />
         <div style={{ width: 1, height: 16, background: "var(--l2)", margin: "0 4px" }} />
         <span style={{ fontSize: 11, color: "var(--ink3)" }}>
@@ -281,7 +313,7 @@ function SpiceSimulator({ dieId }: { dieId: string }) {
             ? (engineReady ? "ngspice server-side ready" : "Connecting to server...")
             : (engineReady ? "ngspice WASM ready" : "Loading ngspice...")}
         </span>
-        <div style={{ flex: 1 }} />
+        <div style={{ width: 1, height: 16, background: "var(--l2)", margin: "0 4px" }} />
         {(["waveforms", "testbench", "schematic", "netlist"] as const).map((v) => (
           <button key={v} className={`btn ghost${rightView === v ? " on" : ""}`} style={{ fontSize: 10 }}
             onClick={() => setRightView(v)}>
@@ -297,7 +329,6 @@ function SpiceSimulator({ dieId }: { dieId: string }) {
         >
           {agentOpen ? "✕ Agent" : "⚡ Ask agent"}
         </button>
-        <PanelToggle side="right" collapsed={!agentOpen} onClick={() => setAgentOpen((v) => !v)} />
         <button className="btn ghost" style={{ fontSize: 11 }} onClick={runSimulation} disabled={!engineReady || running} title="Ctrl+Enter">
           {running ? "Running..." : "Run"}
         </button>
@@ -412,14 +443,27 @@ function SpiceSimulator({ dieId }: { dieId: string }) {
             <>
               <div style={{ flex: 1, padding: 12, overflow: "auto" }}>
                 {output ? (
-                  output.waveforms.length > 0 ? (
+                  shownTraces.length > 0 ? (
                     <>
                       {output.measurements && Object.keys(output.measurements).length > 0 && (
                         <div style={{ marginBottom: 8 }}>
                           <ValueTable title="Measurements" values={output.measurements} highlight />
                         </div>
                       )}
-                      <WaveformViewer ref={waveformRef} traces={output.waveforms} height={360} />
+                      {output.allWaveforms && (
+                        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6, fontSize: 10, color: "var(--ink3)" }}>
+                          <span>
+                            showing {shownTraces.length} of {output.allWaveforms.length} traces
+                            {output.requestedSignals && output.requestedSignals.length > 0
+                              ? ` · .print asks for ${output.requestedSignals.slice(0, 4).join(", ")}${output.requestedSignals.length > 4 ? ", …" : ""}`
+                              : ""}
+                          </span>
+                          <button className="btn ghost" style={{ fontSize: 9 }} onClick={() => setShowAllTraces((v) => !v)}>
+                            {showAllTraces ? "only what .print asked for" : "show all"}
+                          </button>
+                        </div>
+                      )}
+                      <WaveformViewer ref={waveformRef} traces={shownTraces} height={360} />
                     </>
                   ) : (
                     /* No sweep to plot: an `.op` run's numbers are the result. */
@@ -442,10 +486,10 @@ function SpiceSimulator({ dieId }: { dieId: string }) {
               )}
             </>
           ) : rightView === "testbench" ? (
-            /* Testbench: the DUT block + its sources and loads */
+            /* Testbench: the DUT block + its sources and loads — never the DUT's contents */
             <div style={{ flex: 1, overflow: "hidden" }}>
               <TestbenchSchematic
-                netlist={effectiveNetlist}
+                netlist={testbenchView.netlist}
                 dieId={dieId}
                 moduleName={moduleName}
                 vdd={mergedConfig.vdd}

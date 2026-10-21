@@ -913,3 +913,304 @@ export function stripOpMeasurementDirectives(netlist: string): { netlist: string
   });
   return { netlist: kept.join("\n"), stripped };
 }
+
+// ── testbench view ───────────────────────────────────────────────
+
+/** The `* ── Testbench ──` / `* ── Directives ──` header of a composed netlist. */
+const SECTION_MARKER_RE = /^\*\s*(?:─+|-+)\s*(Testbench|Directives|User\s+Directives)\s*(?:─+|-+)\s*$/i;
+const SUBCKT_HEADER_RE = /^\.subckt\s+(\S+)\s*(.*)$/i;
+const SUBCKT_ENDS_RE = /^\.ends\b/i;
+const INSTANCE_LINE_RE = /^([Xx]\w*)\s+(.+)$/;
+
+/** Top-level lines of a netlist: everything that is not inside a `.subckt`. */
+function splitTopLevel(netlist: string): { top: string[]; subcktCount: number } {
+  const top: string[] = [];
+  let subcktCount = 0;
+  let inside = false;
+  for (const raw of netlist.split(/\r?\n/)) {
+    const trimmed = raw.trim();
+    if (!trimmed || trimmed.startsWith("*")) { if (!inside) top.push(raw); continue; }
+    if (SUBCKT_HEADER_RE.test(trimmed)) { inside = true; subcktCount++; continue; }
+    if (inside) { if (SUBCKT_ENDS_RE.test(trimmed)) inside = false; continue; }
+    top.push(raw);
+  }
+  return { top, subcktCount };
+}
+
+/** Drop every `.subckt … .ends` block — the DUT body never enters a view. */
+function stripSubcircuitBlocks(text: string): string {
+  const out: string[] = [];
+  let inside = false;
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (SUBCKT_HEADER_RE.test(line)) { inside = true; continue; }
+    if (inside) { if (SUBCKT_ENDS_RE.test(line)) inside = false; continue; }
+    out.push(raw);
+  }
+  return out.join("\n");
+}
+
+/** Every `.subckt NAME ports…` header, with its ports in order. */
+function subcktHeaders(netlist: string): Array<{ name: string; ports: string[] }> {
+  const found: Array<{ name: string; ports: string[] }> = [];
+  for (const raw of netlist.split(/\r?\n/)) {
+    const m = SUBCKT_HEADER_RE.exec(raw.trim());
+    if (!m) continue;
+    found.push({ name: m[1], ports: m[2].trim().split(/\s+/).filter(Boolean) });
+  }
+  return found;
+}
+
+/** Top-level `X…` instances (a subcircuit body has none of those). */
+function instanceLines(netlist: string): Array<{ name: string; nodes: string[]; subckt: string; line: string }> {
+  const found: Array<{ name: string; nodes: string[]; subckt: string; line: string }> = [];
+  let inside = false;
+  for (const raw of netlist.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line || line.startsWith("*")) continue;
+    if (SUBCKT_HEADER_RE.test(line)) { inside = true; continue; }
+    if (inside) { if (SUBCKT_ENDS_RE.test(line)) inside = false; continue; }
+    if (line.startsWith(".")) continue;
+    const x = INSTANCE_LINE_RE.exec(line);
+    if (!x) continue;
+    const tokens = x[2].trim().split(/\s+/);
+    found.push({ name: x[1], nodes: tokens.slice(0, -1), subckt: tokens[tokens.length - 1], line });
+  }
+  return found;
+}
+
+/**
+ * Split a simulation netlist into "the DUT" and "the testbench".
+ *
+ * Both netlist producers mark the split: `composeSimulationNetlist` writes
+ * `* ── Directives ──` and the assistant tool writes `* ── Testbench ──`
+ * right before the testbench section. When there is no marker the split falls
+ * back to structure — a netlist with `.subckt` blocks keeps its top level as
+ * the testbench — and finally to whatever the caller knows.
+ */
+export function splitSimulationSections(
+  netlist: string,
+  fallback?: { dut: string; testbench: string },
+): { dut: string; testbench: string } {
+  const lines = netlist.split(/\r?\n/);
+  for (let i = 0; i < lines.length; i++) {
+    if (SECTION_MARKER_RE.test(lines[i].trim())) {
+      return { dut: lines.slice(0, i).join("\n"), testbench: lines.slice(i + 1).join("\n") };
+    }
+  }
+  const { top, subcktCount } = splitTopLevel(netlist);
+  if (subcktCount > 0) return { dut: netlist, testbench: top.join("\n") };
+  return fallback ?? { dut: netlist, testbench: "" };
+}
+
+/** First free `X…` name, given the instances the testbench already has. */
+function uniqueInstanceName(instances: Array<{ name: string }>): string {
+  const taken = new Set(instances.map((i) => i.name.toLowerCase()));
+  let n = 1;
+  while (taken.has(`x${n}`)) n++;
+  return `X${n}`;
+}
+
+export interface TestbenchViewResult {
+  /** The netlist the testbench tab draws: a DUT block with no body + the testbench. */
+  netlist: string;
+  /** Name of the DUT block, when one could be built. */
+  dutName: string | null;
+  /** Ports of the DUT block, in order. */
+  ports: string[];
+  /** True when the view has a DUT block with at least one pin. */
+  ok: boolean;
+  /** Why the DUT block is missing. */
+  message?: string;
+}
+
+/**
+ * The netlist the testbench view draws — and the only one it ever draws.
+ *
+ * The testbench tab answers "what drives what", so it gets the testbench
+ * elements plus ONE rectangle for the DUT with its pins. The DUT's own body
+ * is dropped on purpose: without this guard a flat netlist (the way the
+ * assistant tool emits it) makes the view degenerate into a picture of the
+ * whole chip, which tells the user nothing about the testbench.
+ *
+ * @param input.dutNetlist  the DUT — a `.subckt` block or a flat device list
+ * @param input.directives  the testbench — sources, loads, analysis, `.print`
+ * @param input.dutName     block name when the DUT is flat or has several subcircuits
+ */
+export function buildTestbenchViewNetlist(input: {
+  dutNetlist?: string;
+  directives?: string;
+  dutName?: string;
+}): TestbenchViewResult {
+  const dut = input.dutNetlist ?? "";
+  const testbench = stripSubcircuitBlocks(input.directives ?? "");
+  const wanted = input.dutName?.trim() ?? "";
+  const instances = instanceLines(testbench);
+  const headers = subcktHeaders(dut);
+  // The DUT section may already carry the instance (`wrapFlatDut` writes it
+  // there); reusing it keeps the testbench's own net spellings.
+  const dutInstances = instanceLines(dut);
+
+  // Which subcircuit is "the DUT"? Whatever the testbench instantiates, else
+  // the name the page has selected, else the only one there is.
+  const chosen =
+    headers.find((h) => instances.some((i) => i.subckt.toLowerCase() === h.name.toLowerCase())) ??
+    (wanted ? headers.find((h) => h.name.toLowerCase() === wanted.toLowerCase()) : undefined) ??
+    headers[0];
+
+  let dutName: string | null = chosen?.name ?? null;
+  let ports: string[] = chosen?.ports ?? [];
+  /** An instance line the testbench itself does not have. */
+  let generatedInstance: string | null = null;
+
+  if (chosen) {
+    const inTestbench = instances.some((i) => i.subckt.toLowerCase() === chosen.name.toLowerCase());
+    if (!inTestbench) {
+      const fromDut = dutInstances.find((i) => i.subckt.toLowerCase() === chosen.name.toLowerCase());
+      generatedInstance = fromDut
+        ? fromDut.line
+        : `${uniqueInstanceName([...instances, ...dutInstances])} ${ports.join(" ")} ${chosen.name}`;
+    }
+  } else {
+    // Flat DUT: the pins are inferred the way the simulator infers them, and
+    // `wrapFlatDut` writes the instance the testbench is missing.
+    const wrapped = wrapFlatDut(dut, testbench, wanted || "chip");
+    if (wrapped.wrapped) {
+      const header = subcktHeaders(wrapped.netlist)[0];
+      dutName = header?.name ?? null;
+      ports = header?.ports ?? wrapped.ports;
+      generatedInstance = instanceLines(wrapped.netlist)[0]?.line ?? null;
+    }
+  }
+
+  const withBlock = dutName !== null && ports.length > 0;
+  const parts: string[] = [];
+  if (withBlock) {
+    parts.push("* ── Testbench view ── the DUT is a block, its contents are not drawn");
+    parts.push(`.subckt ${dutName} ${ports.join(" ")}`.trimEnd());
+    parts.push(`.ends ${dutName}`);
+    parts.push("");
+  }
+  parts.push(testbench.trim());
+  if (withBlock && generatedInstance) {
+    parts.push("");
+    parts.push(generatedInstance);
+  }
+
+  return {
+    netlist: parts.join("\n").replace(/\n{3,}/g, "\n\n").trim(),
+    dutName: withBlock ? dutName : null,
+    ports: withBlock ? ports : [],
+    ok: withBlock,
+    message: withBlock
+      ? undefined
+      : "the DUT has no subcircuit with pins the testbench touches — nothing to draw it as a block",
+  };
+}
+
+// ── requested signals ────────────────────────────────────────────
+
+/** Analysis keyword that opens a `.print`/`.plot` argument list. */
+const PRINT_ANALYSIS_RE = /^(op|dc|tran|ac|noise|tf|disto|pz|sens|transfer)$/i;
+/** `.save` words that are not signals. */
+const SAVE_KEYWORDS = new Set(["all", "none", "one", "two", "three", "four", "five"]);
+/** An explicit vector call: `v(ref)`, `i(vdd)`, `vm(out)`, … */
+const VECTOR_CALL_RE = /^[vi](?:m|p|r|s)?\s*\(/i;
+/** A bare node name — `.save ref` means "keep v(ref)". */
+const BARE_NAME_RE = /^[A-Za-z_][\w.$]*$/;
+/** Vector calls inside a `.measure` expression. */
+const VECTOR_IN_EXPR_RE = /\b([vi](?:m|p|r|s)?\s*\([^()]*\))/gi;
+/** Device-internal collector vectors: `@m1[ic]`. */
+const AT_VECTOR_RE = /@[A-Za-z_][\w.]*\[[^\]]*\]/g;
+
+/**
+ * The signals the netlist explicitly asks for: `.print`, `.save`, `.plot`,
+ * `.measure` and the `print`/`save`/`plot` commands inside a `.control` block.
+ *
+ * An empty result means "the netlist does not care" — every vector of the run
+ * is worth showing. A non-empty result is a request to keep only those, so a
+ * testbench that writes `.print v(ref)` gets one graph instead of one per
+ * internal node of the chip.
+ */
+export function requestedSignals(netlist: string): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+
+  const keep = (token: string) => {
+    let t = token.trim().replace(/^['"]+|['"]+$/g, "");
+    // one wrapping layer: `.print (vref)` means the node vref, and `save (vref)`
+    // is not a vector ngspice understands
+    if (t.startsWith("(") && t.endsWith(")") && t.indexOf(")") === t.length - 1) t = t.slice(1, -1).trim();
+    if (!t || t.includes("=")) return;
+    const low = t.toLowerCase();
+    if (SAVE_KEYWORDS.has(low)) return;
+    if (!t.startsWith("@") && !VECTOR_CALL_RE.test(t) && !BARE_NAME_RE.test(t)) return;
+    if (seen.has(low)) return;
+    seen.add(low);
+    out.push(t);
+  };
+
+  let inControl = false;
+  for (const raw of netlist.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line || line.startsWith("*")) continue;
+    if (/^\.control\b/i.test(line)) { inControl = true; continue; }
+    if (/^\.endc\b/i.test(line)) { inControl = false; continue; }
+
+    const directive = /^\.(print|save|plot)\b\s*(.*)$/i.exec(line);
+    const command = !directive && inControl ? /^(print|save|plot)\b\s*(.*)$/i.exec(line) : null;
+    const list = directive ?? command;
+    if (list) {
+      let rest = list[2];
+      if (list[1].toLowerCase() !== "save") {
+        // `.print dc v(out)` opens with the analysis name; `.print v(out)` does not.
+        const head = /^(\S+)\s*/.exec(rest);
+        if (head && PRINT_ANALYSIS_RE.test(head[1])) rest = rest.slice(head[0].length);
+      }
+      for (const token of rest.split(/[\s,]+/)) keep(token);
+      continue;
+    }
+    if (MEASURE_RE.test(line) || (inControl && /^meas(ure)?\b/i.test(line))) {
+      for (const m of line.matchAll(VECTOR_IN_EXPR_RE)) keep(m[1]);
+      for (const m of line.matchAll(AT_VECTOR_RE)) keep(m[0]);
+    }
+  }
+  return out;
+}
+
+const VECTOR_PREFIX_RE = /^([vi](?:m|p|r|s)?)\s*\((.+)\)$/i;
+
+/**
+ * Comparison keys for a signal the testbench asked for, so `.print` matches
+ * however it was spelled: `v(ref)`, `(vref)` and `ref` all name the same node.
+ *
+ * An explicit `v(…)`/`i(…)` stays exact — a type is never guessed away, so
+ * asking for the supply current does not pull in the supply voltage.
+ */
+export function requestedSignalKeys(token: string): string[] {
+  let t = token.trim().toLowerCase().replace(/^['"]+|['"]+$/g, "");
+  if (!t) return [];
+  // one wrapping layer: "(vref)" → "vref"
+  if (t.startsWith("(") && t.endsWith(")") && t.indexOf(")") === t.length - 1) t = t.slice(1, -1).trim();
+  const prefixed = VECTOR_PREFIX_RE.exec(t);
+  if (prefixed) {
+    if (prefixed[1] === "v" || prefixed[1] === "i") return [t];
+    return [t, `v(${prefixed[2]})`];
+  }
+  // A bare name: `.save ref` means both `ref` and `v(ref)` to a reader.
+  const keys = new Set<string>([t, `v(${t})`, `i(${t})`]);
+  if (t.length > 1 && /^[vi]/.test(t)) keys.add(t.slice(1));
+  return [...keys];
+}
+
+/**
+ * Comparison keys of a measured vector: `v(ref)` is known as `v(ref)` and as
+ * the node `ref`, which is how a bare or vref-style request spells it.
+ */
+export function vectorKeys(name: string): string[] {
+  const t = name.trim().toLowerCase();
+  if (!t) return [];
+  const prefixed = VECTOR_PREFIX_RE.exec(t);
+  if (prefixed) return prefixed[1] === "v" || prefixed[1] === "i" ? [t, prefixed[2]] : [t];
+  return [t];
+}
