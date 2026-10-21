@@ -399,6 +399,7 @@ export function createAssistantRouter(config: { dataRoot: string }) {
 CRITICAL RULES:
 - The DUT (device under test) is ALREADY in the netlist. DO NOT repeat the .subckt definition, the .model cards, or any DUT-internal component.
 - Your output should contain ONLY the testbench: voltage/current sources, loads, analysis commands, and measurement commands.
+- When the netlist you are given already contains a testbench (sources, loads, an analysis), that testbench is the thing you are being asked to change. Keep everything the user did not ask you to change and edit the rest in place — do not start over from a blank testbench, and never output the testbench twice.
 - Read the port order from the .subckt line of the netlist you are given and instantiate it in exactly that order (the X1 line must have as many nodes as the .subckt has ports). Never guess the port order.
 - The testbench MUST contain an analysis directive: .op (DC operating point), .dc (sweep), .tran (transient) or .ac (AC). Without one the simulation returns nothing.
 - Always drive the DUT: a source on its supply rail and a load on its output node. A DUT with floating supply pins returns zeros, which is not a result.

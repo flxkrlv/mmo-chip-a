@@ -14,7 +14,7 @@
 import { useCallback, useRef, useState } from "react";
 import { apiPost } from "../../api/client";
 import { runFullSimulation } from "./spiceService";
-import { autoInstantiateDut } from "shared/spiceNetlist";
+import { autoInstantiateDut, splitAtSectionMarker } from "shared/spiceNetlist";
 import type { SpiceAgentTurn, SpiceSimulationOutput } from "./types";
 import type { AssistantLlmConfig } from "shared";
 
@@ -220,20 +220,18 @@ export function useSpiceAgent({ dieId, netlist, llmConfig, onDirectivesUpdate, m
  * Strips any existing directives from the DUT netlist to avoid duplication.
  */
 function buildSimNetlist(dutNetlist: string, directives: string): string {
-  const parts: string[] = [];
-
   // Extract ONLY models + DUT (strip existing directives section).
   // The model cards already live inside the DUT block — they must not be
-  // emitted twice or ngspice complains about a redefined model.
-  const dutOnly = extractDutOnly(dutNetlist);
-
-  // DUT netlist (models + devices), no directives
-  parts.push(dutOnly);
-  parts.push("");
+  // emitted twice or ngspice complains about a redefined model. Both the
+  // backend tool and the composed netlist mark the split, so the same marker
+  // splits it back if this run is handed over to the simulator.
+  const split = splitAtSectionMarker(dutNetlist);
+  const dutOnly = split.dut ?? stripDirectivesSection(dutNetlist);
 
   // Clean LLM directives (strip any accidental DUT content)
   const cleanDirectives = stripDutContent(directives);
-  parts.push(cleanDirectives);
+
+  const parts: string[] = [dutOnly, "", SECTION_MARKER, cleanDirectives];
 
   // A model that writes only the supply and the load leaves the DUT dangling:
   // the subcircuit is then instantiated from its own port list.
@@ -241,18 +239,19 @@ function buildSimNetlist(dutNetlist: string, directives: string): string {
   return completed.netlist;
 }
 
+/** Where the testbench starts in a composed netlist. */
+const SECTION_MARKER = "* ── Directives ──";
+
 /**
- * Extract only model cards and DUT from a full netlist.
- * Strips everything after "* ── Directives ──" or similar markers.
+ * Fallback for a netlist that carries no section marker: keep the lines up to
+ * the first testbench-ish directive, so the DUT is not emitted twice either.
  */
-function extractDutOnly(netlist: string): string {
-  const lines = netlist.split("\n");
+function stripDirectivesSection(netlist: string): string {
   const result: string[] = [];
-  for (const line of lines) {
+  for (const line of netlist.split("\n")) {
     const t = line.trim();
-    // Stop at directives markers
-    if (/^\*\s*─+\s*Directives?\s*─+/i.test(t)) break;
-    if (/^\*\s*─+\s*User\s+Directives/i.test(t)) break;
+    if (/^\*\s*─+\s*(Directives?|User\s+Directives|Testbench)\b/i.test(t)) break;
+    if (/^\.(dc|ac|tran|op|noise|tf|meas|print|save|step|control|end)\b/i.test(t)) break;
     result.push(line);
   }
   return result.join("\n").trimEnd();

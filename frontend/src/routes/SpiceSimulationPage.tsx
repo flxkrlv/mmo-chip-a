@@ -27,7 +27,7 @@ import { useModelFile, useDirectives, useModelSelection } from "../lib/simulatio
 import { composeSimulationNetlist, extractModelCards } from "shared/spiceModels";
 import { buildTestbenchViewNetlist, splitSimulationSections } from "shared/spiceNetlist";
 import { useAssistantSession } from "../state/assistantSession";
-import { useSpiceHandoff } from "../state/spiceHandoff";
+import { useSpiceHandoff, type SpiceHandoff } from "../state/spiceHandoff";
 import { collectDieWideAnalogDevices } from "../api/dieWideAnalog";
 import type { SpiceSimulationOutput } from "../lib/simulation/types";
 import { useDie } from "../api/dies";
@@ -151,11 +151,18 @@ function SpiceSimulator({ dieId }: { dieId: string }) {
 
   // Persistent model file + directives
   const [customModels, setCustomModels] = useModelFile(dieId, DEFAULT_MODEL_FILE);
-  const { selection: modelSelection, select: selectModel } = useModelSelection(dieId);
+  const { selection: modelSelection, setSelection: setModelSelection, select: selectModel } = useModelSelection(dieId);
   const [directives, setDirectives] = useDirectives(dieId, selectedSubcircuit, DEFAULT_DIRECTIVES);
 
   // The user may edit the generated netlist by hand; the override wins.
   const [netlistOverride, setNetlistOverride] = useState<string | null>(null);
+  /**
+   * The DUT of a run handed over from the assistant: models + the circuit as
+   * it was actually simulated. It replaces the page's own DUT so the composed
+   * netlist is the one the agent ran — and stays composed from the page's own
+   * fields, so editing the testbench or the models changes what Run simulates.
+   */
+  const [handedDut, setHandedDut] = useState<{ netlist: string; name: string | null } | null>(null);
   const [modelPopupOpen, setModelPopupOpen] = useState(false);
   const [agentOpen, setAgentOpen] = useState(false);
 
@@ -195,11 +202,20 @@ function SpiceSimulator({ dieId }: { dieId: string }) {
   // to filter devices when the subcircuit name doesn't match a floorplan region.
   const selectedDeviceNames = selectedSubckt?.deviceNames;
 
-  /** The DUT section: AI findings are written in Spectre, subcircuits in ngspice. */
+  /**
+   * The DUT section: AI findings are written in Spectre, subcircuits in ngspice.
+   *
+   * A handed-over run supplies its own DUT — the exact models and circuit the
+   * agent simulated — but only until the user picks another subcircuit, which
+   * means they want the page's own again.
+   */
   const dutNetlist = useMemo(() => {
+    if (handedDut && (!selectedSubckt || selectedSubckt.name === handedDut.name)) {
+      return handedDut.netlist;
+    }
     const raw = selectedSubckt ? selectedSubckt.netlist : fullNetlist;
     return selectedSubckt?.source === "ai" ? spectreToNgspice(raw) : raw;
-  }, [selectedSubckt, fullNetlist]);
+  }, [handedDut, selectedSubckt, fullNetlist]);
 
   const simulationNetlist = useMemo(() => {
     return composeSimulationNetlist({
@@ -235,37 +251,58 @@ function SpiceSimulator({ dieId }: { dieId: string }) {
     });
   }, [effectiveNetlist, dutNetlist, directives, selectedSubckt]);
 
-  // A run handed over from the assistant thread: load its testbench and run it.
+  // A run handed over from the assistant thread. The page is rebuilt from it —
+  // models, testbench, DUT — so Run reproduces what the agent got, and so the
+  // fields stay live instead of hiding behind a frozen copy of the netlist.
   const handoff = useSpiceHandoff((state) => state.handoff);
   const clearHandoff = useSpiceHandoff((state) => state.clear);
   const appliedHandoffRef = useRef<string | null>(null);
   const runRef = useRef<(() => void) | null>(null);
-  /** Netlist that still has to be run once it lands in `effectiveNetlist`. */
-  const [pendingHandoffRun, setPendingHandoffRun] = useState<string | null>(null);
+  /** Pieces of the handed-over run that still have to reach page state. */
+  const [pendingHandoff, setPendingHandoff] = useState<SpiceHandoff | null>(null);
+  /** Bumped once the handed-over netlist is in place, to run it exactly once. */
+  const [handoffRunNonce, setHandoffRunNonce] = useState(0);
 
   useEffect(() => {
     if (!handoff || handoff.dieId !== dieId) return;
     if (appliedHandoffRef.current === String(handoff.at)) return;
     appliedHandoffRef.current = String(handoff.at);
-    setNetlistOverride(handoff.netlist);
+    setNetlistOverride(null);
     setAgentOpen(false);
     setRightView("waveforms");
     // Select the DUT the assistant simulated, so the picker, the schematic and
     // the netlist agree instead of falling back to "the whole chip".
     const dut = detectDutName(handoff.netlist);
     if (dut && allSubcircuits.some((s) => s.name === dut)) setSelectedSubcircuit(dut);
-    setPendingHandoffRun(handoff.netlist);
+    // The agent's DUT and models take over — but only until the user picks a
+    // different subcircuit, which means they want the page's own back.
+    setHandedDut(handoff.dut !== null ? { netlist: handoff.dut, name: dut } : null);
+    setPendingHandoff(handoff);
   }, [handoff, dieId, allSubcircuits]);
 
-  // Run the handed-over netlist once it has actually reached the simulator.
-  // Waiting for the value beats a setTimeout: React may flush the state update
-  // after the timer, and the old netlist would be the one that runs.
+  /**
+   * Land the handed-over pieces in page state.
+   *
+   * A render has to happen in between: the directives hook reloads itself from
+   * storage whenever the subcircuit changes, and this effect is declared after
+   * it — so the agent's testbench is written after that reload instead of being
+   * wiped by the stored default a moment later.
+   */
   useEffect(() => {
-    if (pendingHandoffRun === null) return;
-    if (effectiveNetlist !== pendingHandoffRun) return;
-    setPendingHandoffRun(null);
+    if (!pendingHandoff) return;
+    setDirectives(pendingHandoff.directives);
+    setCustomModels(pendingHandoff.customModels);
+    setModelSelection(pendingHandoff.modelSelection);
+    setPendingHandoff(null);
+    setHandoffRunNonce((n) => n + 1);
+  }, [pendingHandoff, setDirectives, setCustomModels, setModelSelection]);
+
+  // Run the handed-over netlist once. By now the handoff has been recomposed
+  // through the page's own fields, so `runRef` holds the fresh netlist.
+  useEffect(() => {
+    if (handoffRunNonce === 0) return;
     void runRef.current?.();
-  }, [pendingHandoffRun, effectiveNetlist]);
+  }, [handoffRunNonce]);
 
   const runSimulation = useCallback(async () => {
     if (!engineReady || running) return;
@@ -523,10 +560,19 @@ function SpiceSimulator({ dieId }: { dieId: string }) {
                   Simulation Netlist (ngspice format) — editable
                 </span>
                 <div style={{ flex: 1 }} />
-                {netlistOverride !== null && (
-                  <button className="btn ghost" style={{ fontSize: 9 }} onClick={() => setNetlistOverride(null)}>
+                {(netlistOverride !== null || handedDut !== null) && (
+                  <button
+                    className="btn ghost"
+                    style={{ fontSize: 9 }}
+                    onClick={() => { setNetlistOverride(null); setHandedDut(null); }}
+                  >
                     reset to generated
                   </button>
+                )}
+                {handedDut !== null && (
+                  <span style={{ fontSize: 9, color: "var(--ink3)" }}>
+                    DUT from the assistant's run
+                  </span>
                 )}
                 {netlistOverride !== null && (
                   <span style={{ fontSize: 9, color: "var(--ink3)" }}>edited</span>

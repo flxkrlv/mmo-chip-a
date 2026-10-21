@@ -7,7 +7,9 @@ import {
   renameGroundNets,
   requestedSignalKeys,
   requestedSignals,
+  splitAtSectionMarker,
   splitSimulationSections,
+  stripRunScaffolding,
   vectorKeys,
   wrapFlatDut,
 } from "shared/spiceNetlist";
@@ -19,8 +21,11 @@ import {
   composeSimulationNetlist,
   extractModelCards,
   optionById,
+  optionForCard,
   optionsFor,
+  restoreModelSelection,
 } from "shared/spiceModels";
+import { handoffSections } from "../../state/spiceHandoff";
 import { detectDutName, parseTestbenchNetlist } from "../../lib/schematic/testbench";
 import { parseDcOperatingPoint } from "./spiceService";
 
@@ -460,4 +465,125 @@ test("requestedSignalKeys matches a request however it is spelled", () => {
   // A bare name is loose: `.save ref` means v(ref) to a reader.
   const bare = new Set(requestedSignalKeys("ref"));
   expect(vectorKeys("v(ref)").some((k) => bare.has(k))).toBe(true);
+});
+
+test("stripRunScaffolding drops the runner's plumbing but keeps the testbench", () => {
+  const tb = [
+    ".dc VDD 0 5 1",
+    ".print dc v(ref)",
+    ".measure dc vout find v(out) at=5",
+    ".control",
+    "save v(ref)",
+    "run",
+    "set filetype=ascii",
+    "write sim.raw",
+    "quit",
+    ".endc",
+    ".end",
+  ].join("\n");
+  expect(stripRunScaffolding(tb)).toBe(".dc VDD 0 5 1\n.print dc v(ref)\n.measure dc vout find v(out) at=5");
+});
+
+test("stripRunScaffolding keeps a .save the testbench asked for", () => {
+  // The runner's own save lives inside `.control`; one written at top level is
+  // the testbench speaking, and it is what decides what the viewer draws.
+  expect(stripRunScaffolding(".op\n.save v(out)\n.end")).toBe(".op\n.save v(out)");
+  // A `.measure` and a stray blank line survive too.
+  expect(stripRunScaffolding(".tran 1u 10u\n\n.measure tran tp v(out)\n.end"))
+    .toBe(".tran 1u 10u\n\n.measure tran tp v(out)");
+});
+
+test("splitAtSectionMarker splits on either marker and refuses to guess", () => {
+  const backend = [
+    "* a title",
+    ".subckt dut a b",
+    ".ends dut",
+    "* ── Testbench ──",
+    "X1 a b dut",
+    ".dc VDD 0 5 1",
+  ].join("\n");
+  const split = splitAtSectionMarker(backend);
+  expect(split.dut).toContain(".subckt dut a b");
+  expect(split.dut).not.toContain("X1 a b dut");
+  expect(split.testbench).toContain("X1 a b dut");
+
+  // The composed netlist marks the same place with a different word…
+  expect(splitAtSectionMarker("dut\n* ── Directives ──\n.op").dut).toBe("dut");
+  // …and ASCII box drawing reads the same.
+  expect(splitAtSectionMarker("dut\n* -- Directives --\n.op").dut).toBe("dut");
+
+  // No marker: the split cannot be trusted, so it is refused, not guessed —
+  // guessing would duplicate the testbench the moment it is recomposed.
+  expect(splitAtSectionMarker("X1 a b dut\n.dc VDD 0 5 1").dut).toBeNull();
+});
+
+test("handoffSections turns a simulated netlist back into editable page state", () => {
+  const run = [
+    "* ── Models ──",
+    ".MODEL LM2937 CAP (C=10p)",
+    "* ── DUT: LM2937 ──",
+    ".subckt LM2937 IN OUT GND",
+    "C1 OUT GND 10p",
+    ".ends LM2937",
+    "* ── Testbench ──",
+    "X1 OUT VDD 0 LM2937",
+    "VDD VDD 0 5",
+    "RLOAD OUT 0 1k",
+    ".dc VDD 0 5 1",
+    ".print dc v(out)",
+    ".control",
+    "save v(out)",
+    "run",
+    "set filetype=ascii",
+    "write sim.raw",
+    "quit",
+    ".endc",
+    ".end",
+  ].join("\n");
+
+  const sections = handoffSections(run);
+  // The DUT keeps its own card and subcircuit, and none of the testbench.
+  expect(sections.dut).toContain(".subckt LM2937 IN OUT GND");
+  expect(sections.dut).not.toContain("RLOAD OUT 0 1k");
+  // The testbench is everything after the marker, minus the plumbing.
+  expect(sections.directives).toContain("X1 OUT VDD 0 LM2937");
+  expect(sections.directives).toContain(".print dc v(out)");
+  expect(sections.directives).not.toMatch(/\.control|\.endc|write sim\.raw|^\.end$/im);
+
+  // Recomposed through the page's own path, the netlist carries every piece
+  // the agent ran, with the cards exactly once — so Run reproduces the run.
+  const recomposed = composeSimulationNetlist({
+    dutNetlist: sections.dut!,
+    directives: sections.directives,
+    selection: sections.modelSelection,
+    customModels: sections.customModels,
+    dutName: "LM2937",
+  });
+  expect(recomposed).toContain(".subckt LM2937 IN OUT GND");
+  expect(recomposed).toContain("RLOAD OUT 0 1k");
+  expect(recomposed).toContain(".print dc v(out)");
+  expect(extractModelCards(recomposed)).toEqual(sections.modelCards);
+  // One "Models" label, not one per pass through the composer.
+  expect(recomposed.split("── Models ──")).toHaveLength(2);
+});
+
+test("optionForCard recognises a library card however it is spelled", () => {
+  const option = SPICE_MODEL_LIBRARY.nmos[0];
+  expect(optionForCard(option.card)?.id).toBe(option.id);
+  expect(optionForCard(option.card.toLowerCase())?.id).toBe(option.id);
+  expect(optionForCard(option.card.replace(/\s+/g, "   "))?.id).toBe(option.id);
+  expect(optionForCard(".MODEL myCap CAP (C=1p)")).toBeUndefined();
+  expect(optionForCard("")).toBeUndefined();
+});
+
+test("restoreModelSelection separates the library's cards from the user's own", () => {
+  const nmos = SPICE_MODEL_LIBRARY.nmos[0];
+  const own = ".MODEL LM2937 CAP (C=10p)";
+  const { selection, customModels } = restoreModelSelection({ nmos: nmos.card, lm2937: own });
+
+  expect(selection.nmos).toBe(nmos.id);
+  // One device type never touches another.
+  expect(selection.pmos).toBeUndefined();
+  // The card the library owns stays out of the user's own cards.
+  expect(extractModelCards(customModels)).toEqual({ lm2937: own });
 });

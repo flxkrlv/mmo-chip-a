@@ -1003,6 +1003,49 @@ export function splitSimulationSections(
   return fallback ?? { dut: netlist, testbench: "" };
 }
 
+/**
+ * Split a netlist the assistant ran into "the DUT" and "the testbench" using
+ * only the section marker both producers write (`* ── Testbench ──` from the
+ * backend tool, `* ── Directives ──` from the composed netlist).
+ *
+ * `dut` is null when there is no marker. A netlist that does not say where the
+ * testbench starts cannot be split safely, and guessing would duplicate the
+ * testbench as soon as the netlist is recomposed.
+ */
+export function splitAtSectionMarker(netlist: string): { dut: string | null; testbench: string } {
+  const lines = netlist.split(/\r?\n/);
+  for (let i = 0; i < lines.length; i++) {
+    if (SECTION_MARKER_RE.test(lines[i].trim())) {
+      return { dut: lines.slice(0, i).join("\n"), testbench: lines.slice(i + 1).join("\n") };
+    }
+  }
+  return { dut: null, testbench: "" };
+}
+
+/**
+ * Drop the scaffolding the runner wraps around a netlist, so a simulated
+ * netlist becomes an editable testbench again.
+ *
+ * The assistant tool assembles `save … / run / write sim.raw / quit` inside a
+ * `.control` block and closes the deck with `.end`. That is the runner's own
+ * plumbing — the simulator drives ngspice itself and would otherwise execute a
+ * second `run` and quit out from under it. `.print`, `.save`, `.measure`, the
+ * sources and the analysis all belong to the testbench and stay.
+ */
+export function stripRunScaffolding(netlist: string): string {
+  const out: string[] = [];
+  let inControl = false;
+  for (const raw of netlist.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (/^\.control\b/i.test(line)) { inControl = true; continue; }
+    if (inControl) { if (/^\.endc\b/i.test(line)) inControl = false; continue; }
+    if (SECTION_MARKER_RE.test(line)) continue;
+    if (/^\.end\s*$/i.test(line)) continue;
+    out.push(raw);
+  }
+  return out.join("\n").trim();
+}
+
 /** First free `X…` name, given the instances the testbench already has. */
 function uniqueInstanceName(instances: Array<{ name: string }>): string {
   const taken = new Set(instances.map((i) => i.name.toLowerCase()));

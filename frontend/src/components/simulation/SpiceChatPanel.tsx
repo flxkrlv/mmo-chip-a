@@ -9,7 +9,7 @@ import { useCallback, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useSpiceAgent } from "../../lib/simulation/useSpiceAgent";
 import { usePreferences } from "../../state/preferences";
-import { useSpiceHandoff } from "../../state/spiceHandoff";
+import { handoffFromNetlist, useSpiceHandoff } from "../../state/spiceHandoff";
 
 type Props = {
   dieId: string;
@@ -39,7 +39,9 @@ export function SpiceChatPanel({ dieId, netlist, onApplyDirectives }: Props) {
   const openResults = useCallback((turnIndex: number) => {
     const turn = turns[turnIndex];
     if (!turn?.simResult?.netlist) return;
-    setHandoff({
+    // Decomposed the same way the assistant card's run is, so this tab's own
+    // "Go to SPICE results" restores the whole page too, not just the plot.
+    setHandoff(handoffFromNetlist({
       dieId,
       netlist: turn.simResult.netlist,
       summary: turn.simResult.measurements
@@ -48,7 +50,7 @@ export function SpiceChatPanel({ dieId, netlist, onApplyDirectives }: Props) {
       measurements: turn.simResult.measurements,
       origin: "assistant",
       at: Date.now(),
-    });
+    }));
     navigate(`/spice-sim?die=${encodeURIComponent(dieId)}`);
   }, [turns, dieId, navigate, setHandoff]);
 

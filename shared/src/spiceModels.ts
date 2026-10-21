@@ -213,6 +213,56 @@ export function optionsFor(deviceType: SpiceDeviceType): SpiceModelOption[] {
   return SPICE_MODEL_LIBRARY[deviceType] ?? [];
 }
 
+/** A card compared the way a card is read: case and layout do not matter. */
+function normalizeCard(card: string): string {
+  return card.trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+/**
+ * The library option a card came from, if any.
+ *
+ * A run handed over from the assistant carries its cards as text. Matching
+ * them back to the library lets the picker show the model that was actually
+ * simulated instead of a stale radio button — the card text alone would leave
+ * the UI disagreeing with the netlist.
+ */
+export function optionForCard(card: string): SpiceModelOption | undefined {
+  const wanted = normalizeCard(card);
+  if (!wanted) return undefined;
+  for (const list of Object.values(SPICE_MODEL_LIBRARY)) {
+    const found = list.find((option) => normalizeCard(option.card) === wanted);
+    if (found) return found;
+  }
+  return undefined;
+}
+
+/**
+ * Rebuild the picker state a set of cards came from: one library option per
+ * device type, and every card that is not a library card kept as a user card.
+ *
+ * Returns `selection` (for the radio buttons) and `customModels` (the netlist
+ * text of the cards the library does not know), so the netlist that gets
+ * recomposed carries exactly the models the run used — no more, no less.
+ */
+export function restoreModelSelection(cards: Record<string, string>): {
+  selection: SpiceModelSelection;
+  customModels: string;
+} {
+  const selection: SpiceModelSelection = {};
+  const unknown: string[] = [];
+  for (const [name, card] of Object.entries(cards)) {
+    const option = optionForCard(card);
+    if (!option) { unknown.push(card); continue; }
+    // The card in the netlist already matches this option, so recording it
+    // keeps the composed netlist byte-identical while the picker moves.
+    selection[option.deviceType] = option.id;
+  }
+  return {
+    selection,
+    customModels: unknown.length > 0 ? `* ── Custom Models ──\n${unknown.join("\n")}\n` : "",
+  };
+}
+
 /** The selection the UI keeps: one option id per device type (null = keep the netlist's own card). */
 export type SpiceModelSelection = Partial<Record<SpiceDeviceType, string | null>>;
 
@@ -236,8 +286,9 @@ export function stripModelCards(text: string): string {
     .split(/\r?\n/)
     .filter((line) => {
       if (/^\s*\.model\b/i.test(line)) return false;
-      // The converter's "* -- Model Cards --" label goes with the cards.
-      if (/^\s*\*\s*-*\s*model cards\s*-*\s*$/i.test(line)) return false;
+      // The label above the cards goes with them, however it was spelled —
+      // otherwise a netlist that was composed once comes back with two.
+      if (/^\s*\*\s*(?:[-─]\s*)*(?:model\s*cards|models)\s*(?:[-─]\s*)*$/i.test(line)) return false;
       return true;
     })
     .join("\n");
