@@ -312,6 +312,8 @@ export function CellAnalogSchematicCanvas({
       hierarchical: false,
       // No port labels for cell-level nets (user said not needed)
       showNetLabels: false,
+      capDensity_fF_um2: cfg.capDensity_fF_um2,
+      sheetR_ohms: cfg.sheetR_ohms,
     });
   }, [devices, namedNets, moduleName, spiceConfig]);
 

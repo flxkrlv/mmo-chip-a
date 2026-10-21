@@ -169,7 +169,15 @@ export function SchematicViewPanel({
       named,
       namedNets,
       moduleName,
-      { vdd: config.vdd ?? "VDD", gnd: config.gnd ?? "GND", hierarchical, ioNetIds, showNetLabels: false },
+      {
+        vdd: config.vdd ?? "VDD",
+        gnd: config.gnd ?? "GND",
+        hierarchical,
+        ioNetIds,
+        showNetLabels: false,
+        capDensity_fF_um2: config.capDensity_fF_um2,
+        sheetR_ohms: config.sheetR_ohms,
+      },
     );
 
     return { flatJson: flat, floorplanDevices, namedNets, ioNetIds, devices: named as import("shared").AnalogDevice[] };
@@ -192,7 +200,15 @@ export function SchematicViewPanel({
       manualData.devices,
       manualData.namedNets,
       `${moduleName}.tentative`,
-      { vdd: spiceConfig?.vdd ?? "VDD", gnd: spiceConfig?.gnd ?? "GND", hierarchical: false, ioNetIds: new Set(), showNetLabels: false },
+      {
+        vdd: spiceConfig?.vdd ?? "VDD",
+        gnd: spiceConfig?.gnd ?? "GND",
+        hierarchical: false,
+        ioNetIds: new Set(),
+        showNetLabels: false,
+        capDensity_fF_um2: spiceConfig?.capDensity_fF_um2,
+        sheetR_ohms: spiceConfig?.sheetR_ohms,
+      },
     );
     return {
       flatJson: flat,
@@ -228,7 +244,12 @@ export function SchematicViewPanel({
       n2sData.namedNets,
       n2sData.ioNetIds,
       moduleName,
-      { vdd: cfg.vdd ?? "VDD", gnd: cfg.gnd ?? "GND" },
+      {
+        vdd: cfg.vdd ?? "VDD",
+        gnd: cfg.gnd ?? "GND",
+        capDensity_fF_um2: cfg.capDensity_fF_um2,
+        sheetR_ohms: cfg.sheetR_ohms,
+      },
       unassignedDevices.length > 0 ? unassignedDevices : undefined,
     );
   }, [isManual, hierarchical, floorplanRegions, n2sData, moduleName, spiceConfig]);
@@ -329,7 +350,15 @@ useEffect(() => {
           selected,
           n2sData.namedNets,
           `${moduleName}.assistant_fragment`,
-          { vdd: spiceConfig?.vdd ?? "VDD", gnd: spiceConfig?.gnd ?? "GND", hierarchical: false, ioNetIds: n2sData.ioNetIds, showNetLabels: true },
+          {
+            vdd: spiceConfig?.vdd ?? "VDD",
+            gnd: spiceConfig?.gnd ?? "GND",
+            hierarchical: false,
+            ioNetIds: n2sData.ioNetIds,
+            showNetLabels: true,
+            capDensity_fF_um2: spiceConfig?.capDensity_fF_um2,
+            sheetR_ohms: spiceConfig?.sheetR_ohms,
+          },
         );
       }
     }
@@ -340,7 +369,15 @@ useEffect(() => {
           regionDevices,
           n2sData.namedNets,
           `${moduleName}.${activeRegion.slice(0, 8)}`,
-          { vdd: spiceConfig?.vdd ?? "VDD", gnd: spiceConfig?.gnd ?? "GND", hierarchical, ioNetIds: n2sData.ioNetIds, showNetLabels: false },
+          {
+            vdd: spiceConfig?.vdd ?? "VDD",
+            gnd: spiceConfig?.gnd ?? "GND",
+            hierarchical,
+            ioNetIds: n2sData.ioNetIds,
+            showNetLabels: false,
+            capDensity_fF_um2: spiceConfig?.capDensity_fF_um2,
+            sheetR_ohms: spiceConfig?.sheetR_ohms,
+          },
         );
       }
       return null;

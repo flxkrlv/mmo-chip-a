@@ -10,6 +10,7 @@
 import type { AssistantFinding, AnalogDevice, DeviceGeometryResistor, DeviceGeometryCapacitor, DeviceGeometryBJT, SpiceConfig } from "shared";
 import type { SubcircuitEntry } from "../../components/simulation/SubcircuitPicker";
 import { effectiveSheetR } from "../export/resistorDefaults";
+import { effectiveCapacitance } from "../export/capacitorDefaults";
 
 /**
  * Extract device instance names from netlist text.
@@ -93,7 +94,7 @@ function formatDeviceLine(
     }
     case "capacitor": {
       const cg = g as DeviceGeometryCapacitor;
-      const cFf = cg.capacitance_fF ?? (cg.area_um2 ?? 1) * 2;
+      const cFf = effectiveCapacitance(cg, config?.capDensity_fF_um2) ?? 1;
       return `  ${instName} (${terminals.join(" ")}) ${token} c=${cFf.toFixed(1)}f`;
     }
     case "diode":

@@ -34,6 +34,10 @@ import {
   ANNOTATION_KIND_VALUES,
   type AnnotationKind
 } from "./annotationKinds";
+import {
+  DEFAULT_CAP_DENSITY,
+  effectiveCapDensity,
+} from "../lib/export/capacitorDefaults";
 
 /** Persisted display settings for a single overlay layer. */
 export interface OverlayLayerPersistedSettings {
@@ -226,6 +230,12 @@ interface PreferencesState {
   /** Per-resistor-type sheet resistance overrides (persisted). Keyed by
    *  ResistorType: poly, hsr, pb, npl, film. */
   sheetR: Record<string, number>;
+  /** Specific capacitance per unit area for capacitors [fF/μm²].
+   *  A capacitor's capacitance is its plate area × this density —
+   *  the same way a resistor's resistance is its squares × the sheet
+   *  resistance. Edited in Settings → RE Cell Settings, persisted
+   *  like `sheetR`. */
+  capDensity: number;
   /** @deprecated Per-cell-type analog device parameter overrides.
    *  Key: cellTypeId → deviceFingerprint → paramName → value.
    *  Migrated into deviceRegistry on first pipeline run; this field is
@@ -500,6 +510,9 @@ interface PreferencesActions {
   setNgspiceMode: (v: "wasm" | "server") => void;
   setNgspicePath: (v: string) => void;
   setBrowserWheelZoomEnabled: (v: boolean) => void;
+  /** Set the specific capacitance per unit area [fF/μm²] used
+   *  for every capacitor. */
+  setCapDensity: (density: number) => void;
 }
 
 const DEFAULT_EXPANDED_SECTIONS: AnnotationKind[] = ["net", "via", "roi"];
@@ -565,6 +578,7 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
         analogCellLast: null,
         analogInstancesCollapsed: false,
         sheetR: {},
+        capDensity: DEFAULT_CAP_DENSITY,
         analogOverrides: {},
         wireLayerColors: {
           metal1: WIRE_LAYER_COLOR.metal1,
@@ -930,6 +944,8 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
         setNgspiceMode: (v) => set({ ngspiceMode: v }),
         setNgspicePath: (v) => set({ ngspicePath: v }),
         setBrowserWheelZoomEnabled: (v) => set({ browserWheelZoomEnabled: v }),
+        setCapDensity: (density) =>
+          set({ capDensity: effectiveCapDensity(density) }),
       }),
       {
         name: "mmo-chip-preferences",
@@ -1003,6 +1019,7 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
           analogCellLast: state.analogCellLast,
           analogInstancesCollapsed: state.analogInstancesCollapsed,
           sheetR: state.sheetR,
+          capDensity: state.capDensity,
           analogOverrides: state.analogOverrides,
           wireLayerColors: state.wireLayerColors,
           autoViaEnabled: state.autoViaEnabled,

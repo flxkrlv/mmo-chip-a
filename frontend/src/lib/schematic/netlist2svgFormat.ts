@@ -31,6 +31,8 @@ import type {
   DeviceGeometryResistor,
   DeviceGeometryCapacitor,
 } from "shared";
+import { effectiveCapacitance } from "../export/capacitorDefaults";
+import { effectiveSheetR } from "../export/resistorDefaults";
 
 // ── Yosys JSON types ─────────────────────────────────────────────
 
@@ -98,22 +100,44 @@ export function cellTypeForDevice(d: AnalogDevice): string {
   }
 }
 
+/**
+ * The technology values a schematic label needs: the specific
+ * capacitance for capacitors and the sheet resistance for resistors.
+ * Both come from the user's settings — the extracted geometry only
+ * holds the defaults, so a schematic drawn from the same devices as
+ * the netlist shows the same numbers.
+ */
+export interface SchematicValues {
+  /** Specific capacitance per unit area [fF/μm²]. */
+  capDensity?: number;
+  /** Sheet resistance per resistor type [Ω/─]. */
+  sheetR?: Record<string, number>;
+}
+
 // ── Value string for passives ────────────────────────────────────
 
-function valueString(d: AnalogDevice): string | undefined {
+function valueString(d: AnalogDevice, values?: SchematicValues): string | undefined {
   switch (d.kind) {
     case "resistor": {
       const g = d.geometry as DeviceGeometryResistor;
       const lines: string[] = [];
-      if (g.resistance_ohms != null) lines.push(formatValue(g.resistance_ohms, "Ω"));
+      // The resistance follows the current sheet resistance — the same
+      // way the netlist resolves it.
+      const rOhms = g.squares > 0
+        ? Math.round(g.squares * effectiveSheetR(g.resistorType, values?.sheetR))
+        : g.resistance_ohms;
+      if (rOhms != null) lines.push(formatValue(rOhms, "Ω"));
       if (g.squares != null && g.squares > 0) lines.push(`${g.squares.toFixed(1)} sq`);
       if (g.resistorType) lines.push(resistorTypeLabel(g.resistorType));
       return lines.length > 0 ? lines.join("\n") : undefined;
     }
     case "capacitor": {
       const g = d.geometry as DeviceGeometryCapacitor;
-      if (g.capacitance_fF == null) return undefined;
-      return formatCapacitance(g.capacitance_fF);
+      // The capacitance is the plate area × the specific
+      // capacitance — the same way the netlist resolves it.
+      const cFf = effectiveCapacitance(g, values?.capDensity);
+      if (cFf == null) return undefined;
+      return formatCapacitance(cFf);
     }
     case "inductor":
       return undefined;
@@ -195,8 +219,11 @@ function bjtAttributes(d: AnalogDevice): Record<string, string> | undefined {
  * passives, M for BJTs). Shared by the static Yosys formatter and the
  * interactive symbol renderer so both show identical labels.
  */
-export function deviceAttributes(d: AnalogDevice): { ref: string; value?: string } {
-  let value: string | undefined = valueString(d);
+export function deviceAttributes(
+  d: AnalogDevice,
+  values?: SchematicValues,
+): { ref: string; value?: string } {
+  let value: string | undefined = valueString(d, values);
   const mos = mosAttributes(d);
   if (mos?.value) value = mos.value;
   const bjt = bjtAttributes(d);
@@ -344,6 +371,12 @@ export interface Netlist2SvgConfig {
    * @default true
    */
   showNetLabels?: boolean;
+  /** Specific capacitance per unit area [fF/μm²] — the
+   *  capacitor labels. */
+  capDensity_fF_um2?: number;
+  /** Sheet resistance per resistor type [Ω/─] — the resistor
+   *  labels. */
+  sheetR_ohms?: Record<string, number>;
 }
 
 /**
@@ -404,7 +437,10 @@ export function formatDevicesAsNetlist2Svg(
     if (Object.keys(conns).length === 0) continue;
 
     const cellAttrs: Record<string, string> = {};
-    const val = valueString(d);
+    const val = valueString(d, {
+      capDensity: cfg.capDensity_fF_um2,
+      sheetR: cfg.sheetR_ohms,
+    });
     if (val) cellAttrs.value = val;
     const mosAttrs = mosAttributes(d);
     if (mosAttrs) Object.assign(cellAttrs, mosAttrs);

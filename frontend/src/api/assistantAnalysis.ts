@@ -1,5 +1,6 @@
 import type {
   AnalogDevice,
+  DeviceGeometryCapacitor,
   AssistantAnalysisBrief,
   AssistantAnalysisMode,
   AssistantAnalysisRequest,
@@ -21,6 +22,20 @@ import type {
   AssistantToolFlags,
 } from "shared";
 import { apiGet, apiPost, authHeaders, ApiError } from "./client";
+import { usePreferences } from "../state/preferences";
+import { effectiveCapacitance } from "../lib/export/capacitorDefaults";
+
+/**
+ * The geometry the backend sees. A capacitor's capacitance is derived from
+ * its plate area and the specific capacitance, so the snapshot carries the
+ * derived value — the backend's DUT netlist then uses the real one.
+ */
+function snapshotGeometry(device: AnalogDevice): AnalogDevice["geometry"] {
+  if (device.kind !== "capacitor") return device.geometry;
+  const g = device.geometry as DeviceGeometryCapacitor;
+  const cFf = effectiveCapacitance(g, usePreferences.getState().capDensity);
+  return cFf != null ? { ...g, capacitance_fF: cFf } : g;
+}
 
 /**
  * Converts the current browser extraction to a serialisable read-only snapshot.
@@ -44,7 +59,7 @@ export function buildAssistantCircuitSnapshot(
         netId: terminal.netId,
         shapeIds: terminal.shapeIds ?? [],
       })),
-      geometry: device.geometry,
+      geometry: snapshotGeometry(device),
       bbox: device.bbox,
       cellId: (device as any)._cellId as string | undefined,
     })),

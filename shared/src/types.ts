@@ -1236,8 +1236,10 @@ export interface SpiceConfig {
   technology?: string;
   /** Sheet resistance per layer [Ω/□] */
   sheetR_ohms?: Record<string, number>;
-  /** Capacitance density per layer pair [fF/μm2] */
-  capDensity_fF?: Record<string, number>;
+  /** Specific capacitance per unit area for capacitors [fF/μm2].
+   *  Every capacitor's capacitance is derived from its plate area:
+   *  C [fF] = area_um2 [μm2] × capDensity_fF_um2. */
+  capDensity_fF_um2?: number;
   /** SPICE model definitions (modelName → .MODEL card) */
   models?: Record<string, string>;
   /** Default VDD net name */

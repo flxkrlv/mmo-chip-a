@@ -22,7 +22,12 @@
  */
 
 import { CUSTOM_ANALOG_SKIN } from "./netlist2svgSkin";
-import { cellTypeForDevice, DEVICE_PORT_MAP, deviceAttributes } from "./netlist2svgFormat";
+import {
+  cellTypeForDevice,
+  DEVICE_PORT_MAP,
+  deviceAttributes,
+  type SchematicValues,
+} from "./netlist2svgFormat";
 import type { AnalogDevice, DeviceGeometryMOS } from "shared";
 
 // ── Types ────────────────────────────────────────────────────────
@@ -244,9 +249,14 @@ export function pinForTerminal(
 }
 
 /** Resolve a label spec to concrete text for a device. */
-export function labelForSpec(spec: SymbolLabelSpec, d: AnalogDevice, deviceKey: string): string {
+export function labelForSpec(
+  spec: SymbolLabelSpec,
+  d: AnalogDevice,
+  deviceKey: string,
+  values?: SchematicValues,
+): string {
   if (spec.source === "name") return deviceKey;
-  const attrs = deviceAttributes(d);
+  const attrs = deviceAttributes(d, values);
   return spec.source === "ref" ? attrs.ref : (attrs.value ?? "");
 }
 

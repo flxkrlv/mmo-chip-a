@@ -188,6 +188,9 @@ function RE({ dieId }: { dieId: string }) {
   const layerHidden = usePreferences((s) => s.reLayerHidden);
   const layerSelectable = usePreferences((s) => s.reLayerSelectable);
   const useCleanSpecimens = usePreferences((s) => s.useCleanSpecimens);
+  // The schematic labels follow the user's technology values.
+  const capDensity = usePreferences((s) => s.capDensity);
+  const sheetR = usePreferences((s) => s.sheetR);
   const specimenIndex = useCellSpecimens(dieId).data ?? null;
 
   const canvasRef = useRef<CellRECanvasHandle | null>(null);
@@ -995,6 +998,8 @@ function RE({ dieId }: { dieId: string }) {
                 spiceConfig={{
                   vdd: "VDD",
                   gnd: "GND",
+                  capDensity_fF_um2: capDensity,
+                  sheetR_ohms: sheetR,
                 }}
                 loading={extraction.loading}
               />

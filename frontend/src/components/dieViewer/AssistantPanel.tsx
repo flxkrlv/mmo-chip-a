@@ -399,7 +399,20 @@ export function AssistantPanel({ dieId, annotations, devices, netNames, warnings
     const allNames = [...netNames.values()];
     const vdd = allNames.find((n) => /^(VDD|VCC|AVDD)$/i.test(n)) ?? "VDD";
     const gnd = allNames.find((n) => /^(GND|VSS)$/i.test(n)) ?? "GND";
-    const json = formatDevicesAsNetlist2Svg(fragDevices, netNames, `finding-${finding.id}`, { vdd, gnd, showNetLabels: true });
+    // The fragment's labels follow the user's technology values.
+    const prefs = usePreferences.getState();
+    const json = formatDevicesAsNetlist2Svg(
+      fragDevices,
+      netNames,
+      `finding-${finding.id}`,
+      {
+        vdd,
+        gnd,
+        showNetLabels: true,
+        capDensity_fF_um2: prefs.capDensity,
+        sheetR_ohms: prefs.sheetR,
+      },
+    );
     setSchematicPopup({
       title: `${finding.label} · ${finding.instanceNames.join(", ")}`,
       json,

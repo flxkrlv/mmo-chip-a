@@ -13,6 +13,7 @@ import type { AnalogDevice, DeviceGeometry, DeviceKind } from "shared";
 import { TreeRow, TreeSep } from "../tree/TreeRow";
 import { Ic } from "../../icons";
 import { usePreferences } from "../../state/preferences";
+import { effectiveCapacitance } from "../../lib/export/capacitorDefaults";
 
 // ── Color swatches per device kind ─────────────────────────────
 
@@ -42,7 +43,7 @@ const KIND_TITLES: Record<string, string> = {
 
 // ── Helpers ────────────────────────────────────────────────────
 
-function deviceMeta(dev: AnalogDevice): string {
+function deviceMeta(dev: AnalogDevice, capDensity: number): string {
   const g = dev.geometry as any;
   switch (dev.kind) {
     case "mos": {
@@ -72,7 +73,8 @@ function deviceMeta(dev: AnalogDevice): string {
       return type;
     }
     case "capacitor": {
-      if (g.capacitance_fF) return `${g.capacitance_fF.toFixed(2)}fF`;
+      const cFf = effectiveCapacitance(g, capDensity);
+      if (cFf) return `${cFf.toFixed(2)}fF`;
       return "cap";
     }
     case "diode": return "diode";
@@ -101,6 +103,8 @@ export function DeviceInstancePanel({
     return all;
   });
   const panelCollapsed = usePreferences((s) => s.analogInstancesCollapsed);
+  // Specific capacitance per unit area [fF/μm²].
+  const capDensity = usePreferences((s) => s.capDensity);
   const setPanelCollapsed = usePreferences((s) => s.setAnalogInstancesCollapsed);
   const toggle = useCallback((kind: string) => {
     setCollapsed((prev) => {
@@ -178,7 +182,7 @@ export function DeviceInstancePanel({
                 {!isCollapsed &&
                   list.map((dev) => {
                     const name = dev.instanceName ?? dev.id;
-                    const meta = deviceMeta(dev);
+                    const meta = deviceMeta(dev, capDensity);
                     const selected = selectedDevice === dev;
                     return (
                       <TreeRow

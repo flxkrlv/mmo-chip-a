@@ -35,6 +35,7 @@ import { useAnnotations } from "../api/annotations";
 import { useAnnotationsWebSocket } from "../api/annotationsWebSocket";
 import { useSession } from "../state/session";
 import { usePreferences } from "../state/preferences";
+import { DEFAULT_CAP_DENSITY } from "../lib/export/capacitorDefaults";
 import { useAnalogNetlist, loadSpiceConfig } from "../api/analogNetlist";
 import type { SpiceConfig, SpiceDialect } from "shared";
 
@@ -78,6 +79,10 @@ function SpiceSimulator({ dieId }: { dieId: string }) {
   useAnnotationsWebSocket(dieId);
   const annotations = annotationsQ.data;
   const sheetRPrefs = usePreferences((s) => (s as any).sheetR ?? {});
+  // Specific capacitance per unit area [fF/μm²] for capacitors.
+  const capDensityPref = usePreferences(
+    (s) => (s as any).capDensity ?? DEFAULT_CAP_DENSITY,
+  );
   const analogOverrides = usePreferences((s) => (s as any).analogOverrides ?? {});
 
   const [spiceConfig, setSpiceConfig] = useState<SpiceConfig>({});
@@ -88,8 +93,12 @@ function SpiceSimulator({ dieId }: { dieId: string }) {
   }, [dieId]);
 
   const mergedConfig: SpiceConfig = useMemo(
-    () => ({ ...spiceConfig, sheetR_ohms: { ...(spiceConfig.sheetR_ohms ?? {}), ...sheetRPrefs } }),
-    [spiceConfig, sheetRPrefs],
+    () => ({
+      ...spiceConfig,
+      sheetR_ohms: { ...(spiceConfig.sheetR_ohms ?? {}), ...sheetRPrefs },
+      capDensity_fF_um2: capDensityPref,
+    }),
+    [spiceConfig, sheetRPrefs, capDensityPref],
   );
 
   const moduleName = useMemo(() => (die?.name ?? dieId).replace(/[^A-Za-z0-9_]/g, "_"), [die?.name, dieId]);

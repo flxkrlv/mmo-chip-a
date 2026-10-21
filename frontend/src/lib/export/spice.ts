@@ -30,6 +30,7 @@ import type {
   FloorplanRegion,
 } from "shared";
 import { effectiveSheetR, RESISTOR_PARAM_NAMES } from "./resistorDefaults";
+import { effectiveCapacitance } from "./capacitorDefaults";
 import {
   deviceInRegion,
   detectBoundaryNets,
@@ -142,12 +143,24 @@ function fmtRes(geom: DeviceGeometryResistor, config: SpiceConfig): string {
   const rOhms = Math.round(sq * sr);
   return `r=${rOhms}`;
 }
-/** Capacitor: c=<value> — in femtofarads if known. */
-function fmtCap(geom: DeviceGeometryCapacitor): string {
-  if (geom.capacitance_fF != null && geom.capacitance_fF > 0) {
-    return `c=${geom.capacitance_fF.toFixed(3)}f`;
+/**
+ * Capacitor: c=<value> — in femtofarads.
+ *
+ * The value comes from the plate area and the specific capacitance
+ * (fF/μm²), the same way a resistor's resistance comes from
+ * its squares and the sheet resistance. A capacitance the user pinned
+ * by hand (a Cell RE override) wins over the derived one.
+ */
+function fmtCap(
+  geom: DeviceGeometryCapacitor,
+  config?: SpiceConfig,
+  overridden = false,
+): string {
+  const cFf = effectiveCapacitance(geom, config?.capDensity_fF_um2, overridden);
+  if (cFf != null && cFf > 0) {
+    return `c=${cFf.toFixed(3)}f`;
   }
-  return `c=${geom.area_um2.toFixed(1)}`; // flat-area fallback
+  return `c=${(geom.area_um2 ?? 0).toFixed(1)}`; // flat-area fallback
 }
 
 // ═════════════════════════════════════════════════════════════════
@@ -369,7 +382,11 @@ function paramString(d: AnalogDevice, dialect: "cdl" | "spectre" | "hspice", con
     case "resistor":
       return fmtRes(g as DeviceGeometryResistor, config ?? {});
     case "capacitor":
-      return fmtCap(g as DeviceGeometryCapacitor);
+      return fmtCap(
+        g as DeviceGeometryCapacitor,
+        config,
+        (d as any)._overriddenParams?.has("capacitance_fF") === true,
+      );
     case "diode":
     case "zener":
     case "schottky": {

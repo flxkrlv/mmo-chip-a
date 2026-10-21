@@ -17,6 +17,8 @@ import type { AnalogDevice } from "shared";
 import type { LiveValue } from "../../lib/liveValue";
 import { useLiveValue } from "../../lib/liveValue";
 import type { Viewport } from "../../renderer/types";
+import { usePreferences } from "../../state/preferences";
+import { effectiveCapacitance } from "../../lib/export/capacitorDefaults";
 
 // ── Colour palette per device kind ───────────────────────────────
 
@@ -88,6 +90,9 @@ export function AnalogDeviceHighlights({
   cellTypeByCellId,
 }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  // The capacitance of a capacitor comes from its plate area ×
+  // the specific capacitance, so the label follows the setting.
+  const capDensity = usePreferences((s) => s.capDensity);
   const viewport = useLiveValue(viewportStore);
 
   // Drawing: the viewport is read inside the effect via a ref, so the effect
@@ -196,7 +201,7 @@ export function AnalogDeviceHighlights({
           ctx.fillText(labelFull, labelBX + 4, labelBY + labelH / 2);
 
           // Parameter hint from first device
-          const paramStr = paramHint(dev);
+          const paramStr = paramHint(dev, capDensity);
           if (paramStr && sw > 120 && vp.zoom >= PARAM_MIN_ZOOM) {
             ctx.font = `400 ${Math.max(9, Math.min(13, sw * 0.14))}px monospace`;
             ctx.fillStyle = "rgba(255, 255, 255, 0.6)";
@@ -226,7 +231,7 @@ export function AnalogDeviceHighlights({
       ro.disconnect();
       unsubVp();
     };
-  }, [devices, viewportStore, showNetIds]);
+  }, [devices, viewportStore, showNetIds, capDensity]);
 
   // ── Click / double-click handling ───────────────────────────
   // Tracks click timing for double-click detection (300ms threshold).
@@ -318,7 +323,7 @@ function deviceTypeString(dev: AnalogDevice): string {
   }
 }
 
-function paramHint(dev: AnalogDevice): string {
+function paramHint(dev: AnalogDevice, capDensity: number): string {
   const g = dev.geometry;
   switch (dev.kind) {
     case "mos": {
@@ -356,8 +361,9 @@ function paramHint(dev: AnalogDevice): string {
     }
     case "capacitor": {
       if ("capacitance_fF" in g) {
-        const cg = g as { capacitance_fF?: number };
-        if (cg.capacitance_fF) return `${cg.capacitance_fF.toFixed(2)}fF`;
+        const cg = g as { area_um2?: number; capacitance_fF?: number };
+        const cFf = effectiveCapacitance(cg, capDensity);
+        if (cFf) return `${cFf.toFixed(2)}fF`;
       }
       return "";
     }

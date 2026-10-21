@@ -10,6 +10,7 @@
 import { useEffect, useRef } from "react";
 import type { AssistantDataFlags, AssistantLlmConfig } from "shared";
 import { SheetRConfigPanel } from "../config/SheetRConfigPanel";
+import { CapDensityConfigPanel } from "../config/CapDensityConfigPanel";
 import { usePreferences } from "../../state/preferences";
 
 type Props = {
@@ -216,6 +217,8 @@ export function SettingsPanel({
             RE Cell Settings
           </div>
           <SheetRConfigPanel compact />
+          <div style={{ height: 8 }} />
+          <CapDensityConfigPanel compact />
         </div>
 
         {/* AI Assistant — LLM Provider */}
