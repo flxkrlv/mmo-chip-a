@@ -281,6 +281,7 @@ export function FloorplanOverlay({
           return (
             <svg
               key={region.id}
+              data-canvas-wheel
               style={{
                 position: "absolute",
                 top: 0,
@@ -356,6 +357,7 @@ export function FloorplanOverlay({
         return (
           <svg
             key={region.id}
+            data-canvas-wheel
             style={{
               position: "absolute",
               top: 0,
