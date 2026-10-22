@@ -588,6 +588,11 @@ function nodesOfDeviceLine(line: string): string[] {
  * would infer them: a net used exactly once inside the DUT *and* referenced
  * by the testbench is a pin; anything used more than once is an internal
  * node. Ground (node 0) is global and never becomes a pin.
+ *
+ * A net the testbench only measures is a pin as well. ngspice keeps the
+ * top-level nodes of a subcircuit in the raw file and drops the internal
+ * ones, so a node that stays inside is computed but never drawn — a
+ * `.measure` still returns its number while its graph is missing.
  */
 export function wrapFlatDut(dut: string, testbench = "", name = "dut"): WrapFlatDutResult {
   const safeName = name.replace(/[^\w]/g, "_") || "dut";
@@ -623,18 +628,31 @@ export function wrapFlatDut(dut: string, testbench = "", name = "dut"): WrapFlat
   // instance uses the testbench's spelling (the net outside).
   const pins: Array<{ inDut: string; inTb: string }> = [];
   const seen = new Set<string>();
+  const addPin = (node: string) => {
+    const key = node.toLowerCase();
+    if (!node || key === "0" || seen.has(key)) return;  // ground is global
+    seen.add(key);
+    const inDut = usage.get(key);
+    if (!inDut) return;   // a net that lives entirely in the testbench
+    pins.push({ inDut, inTb: node });
+  };
+
   for (const raw of testbench.split(/\r?\n/)) {
     const line = raw.trim();
     if (!line || line.startsWith("*") || line.startsWith(".")) continue;
-    for (const node of nodesOfDeviceLine(line)) {
-      const key = node.toLowerCase();
-      if (!node || key === "0" || seen.has(key)) continue;  // ground is global
-      seen.add(key);
-      const inDut = usage.get(key);
-      if (!inDut) continue;   // a net that lives entirely in the testbench
-      pins.push({ inDut, inTb: node });
-    }
+    for (const node of nodesOfDeviceLine(line)) addPin(node);
   }
+
+  // A node the testbench only *measures* is a pin too. `.measure`, `.print`,
+  // `.save` and `.plot` name vectors, not device lines, so the pass above never
+  // sees them — and ngspice keeps only the top-level nodes of a subcircuit in
+  // the raw file. Without this the vector is computed (a `.measure` still
+  // returns its number) but there is nothing left to draw.
+  for (const signal of requestedSignals(testbench)) {
+    const node = /^v(?:m|p|r|s)?\s*\(\s*([^()]+?)\s*\)$/i.exec(signal.trim())?.[1];
+    if (node) addPin(node);
+  }
+
   if (pins.length === 0) return { netlist: dut, wrapped: false, ports: [] };
 
   // Power and ground pins first: that is how the block reads.

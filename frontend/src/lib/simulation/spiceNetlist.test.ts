@@ -223,6 +223,32 @@ RB vcc in 10k`,
   expect(netlist).toMatch(/^\s+Q1 out in 0 npn$/m);
 });
 
+test("wrapFlatDut exports a net the testbench only measures", () => {
+  // ngspice keeps the top-level nodes of a subcircuit in the raw file and drops
+  // the internal ones. A node that stays inside is computed but never drawn, so
+  // the `.measure` returns its number while its graph is missing — exporting it
+  // is what makes the trace appear.
+  const { ports, netlist } = wrapFlatDut(
+    `Q1 out ref 0 npn
+R1 vcc out 1k
+R2 ref 0 2k`,
+    "VDD vcc 0 DC 5\nRLOAD out 0 10k\n.op\n.measure op vref find v(ref)",
+    "bandgap",
+  );
+
+  expect(ports).toEqual(["vcc", "out", "ref"]);
+  expect(netlist).toMatch(/^\.subckt bandgap vcc out ref$/m);
+  expect(netlist).toMatch(/^Xbandgap vcc out ref bandgap$/m);
+
+  // A testbench that only drives the DUT gains no pin for a net it never names.
+  const driveOnly = wrapFlatDut(
+    "Q1 out ref 0 npn\nR1 vcc out 1k\nR2 ref 0 2k",
+    "VDD vcc 0 DC 5\nRLOAD out 0 10k\n.op",
+    "bandgap",
+  );
+  expect(driveOnly.ports).toEqual(["vcc", "out"]);
+});
+
 test("wrapFlatDut leaves a hierarchical DUT and a testbench-only net alone", () => {
   const hierarchical = `.subckt bandgap out vcc\nR1 vcc out 1k\n.ends bandgap`;
   expect(wrapFlatDut(hierarchical, "VDD vcc 0 DC 5", "chip").wrapped).toBe(false);
