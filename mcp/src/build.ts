@@ -4,6 +4,7 @@ import { loadConfig, type McpConfig } from "./config.js";
 import { registerAnnotationTools } from "./tools/annotations.js";
 import { registerInspectTools } from "./tools/inspect.js";
 import { registerJobTools } from "./tools/jobs.js";
+import { registerNetlistTools } from "./tools/netlist.js";
 import { registerProjectTools } from "./tools/projects.js";
 import { registerSimulationTools } from "./tools/simulate.js";
 
@@ -28,6 +29,7 @@ export function buildServer(
     ...registerAnnotationTools(server, client, config),
     ...registerInspectTools(server, client, config),
     ...registerSimulationTools(server, client),
+    ...registerNetlistTools(server, client),
     ...registerJobTools(server, client)
   ];
   return { server, config, client, tools };

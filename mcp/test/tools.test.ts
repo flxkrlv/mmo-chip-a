@@ -22,6 +22,7 @@ const EXPECTED_TOOLS = [
   "edit_pins",
   "edit_rulers",
   "export_project",
+  "export_netlist",
   "get_analog_devices",
   "get_annotations",
   "get_crop",

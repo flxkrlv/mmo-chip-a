@@ -35,8 +35,8 @@ async function check(client: Client): Promise<void> {
   const names = tools.map((tool) => tool.name).sort();
   console.log(`[smoke] tools/list OK: ${names.length} tools`);
   console.log(`        ${names.join(", ")}`);
-  if (names.length !== 19) {
-    console.error(`[smoke] expected 19 tools, got ${names.length}`);
+  if (names.length !== 20) {
+    console.error(`[smoke] expected 20 tools, got ${names.length}`);
     process.exitCode = 1;
     return;
   }
