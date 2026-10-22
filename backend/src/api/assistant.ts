@@ -401,8 +401,9 @@ CRITICAL RULES:
 - Your output should contain ONLY the testbench: voltage/current sources, loads, analysis commands, and measurement commands.
 - When the netlist you are given already contains a testbench (sources, loads, an analysis), that testbench is the thing you are being asked to change. Keep everything the user did not ask you to change and edit the rest in place — do not start over from a blank testbench, and never output the testbench twice.
 - Read the port order from the .subckt line of the netlist you are given and instantiate it in exactly that order (the X1 line must have as many nodes as the .subckt has ports). Never guess the port order.
-- The testbench MUST contain an analysis directive: .op (DC operating point), .dc (sweep), .tran (transient) or .ac (AC). Without one the simulation returns nothing.
+- The testbench MUST contain an analysis directive: .op (DC operating point), .dc (sweep), .tran (transient) or .ac (AC). Without one the simulation returns nothing. Exactly ONE: when you edit an existing testbench, remove the analysis you are replacing instead of adding a second one (a repeated directive is dropped by the runner — it never changes the result, it only wastes a run).
 - Always drive the DUT: a source on its supply rail and a load on its output node. A DUT with floating supply pins returns zeros, which is not a result.
+- Name only nodes that exist in the netlist you were given. A node inside a .subckt is a measurable vector only as v(<instance>.<node>) (e.g. v(x1.net_122)); a node that does not exist is dropped by the runner and reported in its notes. Do not write .save/.print lists of guessed node names — ngspice aborts the whole run when a save list names nothing the circuit has.
 - Do NOT write a .control block with "quit" — the runner drives ngspice itself. Plain .measure lines are fine (.measure dc vout find v(out) at=2.5 — ngspice rejects "at 2.5").
 
 YOUR OUTPUT MUST INCLUDE (in this order):

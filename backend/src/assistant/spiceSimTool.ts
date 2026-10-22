@@ -25,6 +25,13 @@
  *  5. ngspice runs only one analysis per plot and silently drops the others
  *     when a netlist mixes `.op` with `.dc`/`.tran`. The tool runs every
  *     analysis separately and reports each result.
+ *  6. A `save` list whose vectors do not exist in the circuit (a node inside
+ *     a .subckt written without its instance prefix, a typo, a renamed net)
+ *     makes ngspice abort with "no data saved for Transient analysis;
+ *     analysis not run" — and the raw file then holds only ngspice's built-in
+ *     constants, which used to be reported as "no analysis directive found".
+ *     The tool validates every signal against the circuit (rewriting internal
+ *     nodes to `x1.node`) and re-runs without the save filter as a fallback.
  */
 
 import { writeFile, unlink, readFile, mkdir, access } from "node:fs/promises";
@@ -44,6 +51,8 @@ import {
   flattenControlBlocks,
   parseNgspiceMeasurements,
   requestedSignals,
+  resolveSignals,
+  sanitizeSignalDirectives,
   stripOpMeasurementDirectives,
 } from "shared/spiceNetlist";
 import { applyModelCards, cardsForOptionIds } from "shared/spiceModels";
@@ -245,7 +254,7 @@ function planNetlist(netlist: string, modelOptionIds: string[] = []): NetlistPla
 
   // Read the signal list BEFORE the .control block is flattened away: a model
   // that writes `save v(ref)` inside .control still means "plot only this".
-  const signals = requestedSignals(converted.netlist);
+  const requested = requestedSignals(converted.netlist);
 
   const flattened = flattenControlBlocks(converted.netlist);
   if (flattened.hoisted.length > 0) {
@@ -261,10 +270,20 @@ function planNetlist(netlist: string, modelOptionIds: string[] = []): NetlistPla
     notes.push(`evaluated .measure op directive(s) in the tool (ngspice rejects the 'op' measurement type): ${stripped.stripped.join(" | ")}`);
   }
 
+  // A `.save`/`.print` naming a node the circuit does not have is cleaned
+  // here, and the signal list is validated against the deck: an all-unknown
+  // `save` list makes ngspice abort the analysis entirely ("no data saved for
+  // Transient analysis; analysis not run").
+  const sanitized = sanitizeSignalDirectives(stripped.netlist);
+  notes.push(...sanitized.notes);
+  const signalResolution = resolveSignals(sanitized.netlist, requested);
+  notes.push(...signalResolution.notes);
+  const signals = signalResolution.resolved;
+
   const circuit: string[] = [];
   const analyses: string[] = [];
   const measures: Array<{ line: string; type: string }> = [];
-  for (const raw of stripped.netlist.split(/\r?\n/)) {
+  for (const raw of sanitized.netlist.split(/\r?\n/)) {
     const trimmed = raw.trim();
     if (ANALYSIS_LINE_RE.test(trimmed)) { analyses.push(trimmed); continue; }
     if (MEASURE_LINE_RE.test(trimmed)) { measures.push({ line: trimmed, type: measureType(trimmed) }); continue; }
@@ -280,11 +299,42 @@ function planNetlist(netlist: string, modelOptionIds: string[] = []): NetlistPla
     }
   }
 
-  if (analyses.length > 1) {
-    notes.push(`the netlist requests ${analyses.length} analyses (${analyses.join(", ")}) — ngspice keeps one plot per run, so each analysis was run separately`);
+  // A model that writes the testbench into BOTH `testbench` and `directives`
+  // repeats the analysis (and the measurements). Repeating an analysis never
+  // changes the result — drop the copies instead of simulating twice.
+  const uniqueAnalyses: string[] = [];
+  const duplicateAnalyses: string[] = [];
+  for (const analysis of analyses) {
+    const key = analysis.toLowerCase().replace(/\s+/g, " ");
+    if (uniqueAnalyses.some((u) => u.toLowerCase().replace(/\s+/g, " ") === key)) {
+      duplicateAnalyses.push(analysis);
+      continue;
+    }
+    uniqueAnalyses.push(analysis);
+  }
+  if (duplicateAnalyses.length > 0) {
+    notes.push(`dropped ${duplicateAnalyses.length} duplicate analysis directive(s) (${duplicateAnalyses.join(", ")}) — a repeated .op/.dc/.tran/.ac does not change the result, it only runs the same analysis again`);
   }
 
-  return { circuit, analyses, measures, signals, notes };
+  const uniqueMeasures: Array<{ line: string; type: string }> = [];
+  const duplicateMeasures: string[] = [];
+  for (const measure of measures) {
+    const key = measure.line.toLowerCase().replace(/\s+/g, " ");
+    if (uniqueMeasures.some((m) => m.line.toLowerCase().replace(/\s+/g, " ") === key)) {
+      duplicateMeasures.push(measure.line);
+      continue;
+    }
+    uniqueMeasures.push(measure);
+  }
+  if (duplicateMeasures.length > 0) {
+    notes.push(`dropped ${duplicateMeasures.length} duplicate measurement directive(s): ${duplicateMeasures.join(" | ")}`);
+  }
+
+  if (uniqueAnalyses.length > 1) {
+    notes.push(`the netlist requests ${uniqueAnalyses.length} analyses (${uniqueAnalyses.join(", ")}) — ngspice keeps one plot per run, so each analysis was run separately`);
+  }
+
+  return { circuit, analyses: uniqueAnalyses, measures: uniqueMeasures, signals, notes };
 }
 
 /** Assemble the netlist for one analysis run. */
@@ -292,9 +342,9 @@ function assembleNetlist(plan: NetlistPlan, analysis: string): string {
   const type = analysisType(analysis);
   const measures = plan.measures.filter((m) => m.type === type).map((m) => m.line);
   // `save` runs before `run`, so ngspice writes only the vectors the testbench
-  // asked for (`.print`/`.save`/`.measure`). Without it the raw file carries
-  // every internal node and the viewer plots all of them. Names ngspice does
-  // not know are ignored, so a guess costs nothing.
+  // asked for (`.print`/`.save`/`.measure`) instead of every internal node of
+  // the chip. The list is already validated against the circuit — an unknown
+  // name here would abort the analysis, not just be ignored.
   const save = plan.signals.length > 0 ? `save ${plan.signals.join(" ")}` : "";
   const controlBlock = [".control", save, "run", "set filetype=ascii", "write sim.raw", "quit", ".endc"]
     .filter((line) => line !== "")
@@ -394,6 +444,12 @@ async function runNgspice(netlist: string, bin: string, runDir: string): Promise
     }
 
     const measurements = parseNgspiceMeasurements(combined);
+    // ngspice aborts the analysis when the `save` list contains nothing it can
+    // find; the raw file then holds only the built-in constants, which would
+    // look like "no analysis directive was present". Say what actually happened.
+    const saveAborted = /no data saved for/i.test(combined);
+    const saveAbortError =
+      "ngspice aborted the run because a .save/.print/.measure directive names vectors that do not exist in the circuit: the analysis never produced data. Use node names that exist in the netlist — a node inside a .subckt must be written with the instance prefix, e.g. v(x1.net_122).";
 
     if (!rawData.trim()) {
       const diagnostics = extractDiagnostics(combined);
@@ -402,13 +458,17 @@ async function runNgspice(netlist: string, bin: string, runDir: string): Promise
         : combined.split(/\r?\n/).filter((l) => l.trim()).slice(-8).join(" | ");
       return {
         plot, variables, varTypes, numPoints, dataMap, measurements, output: combined,
-        error: `ngspice produced no raw output. ${detail || "The simulation produced no data — check the netlist, the analysis directive and the sources."}`,
+        error: saveAborted
+          ? `${saveAbortError} (ngspice: ${detail})`
+          : `ngspice produced no raw output. ${detail || "The simulation produced no data — check the netlist, the analysis directive and the sources."}`,
       };
     }
     if (/^constants$/i.test(plot)) {
       return {
         plot, variables, varTypes, numPoints, dataMap, measurements, output: combined,
-        error: "ngspice ran no analysis: the netlist has no .op/.dc/.tran/.ac directive, so only ngspice's built-in constants were returned.",
+        error: saveAborted
+          ? saveAbortError
+          : "ngspice ran no analysis: the netlist has no .op/.dc/.tran/.ac directive, so only ngspice's built-in constants were returned.",
       };
     }
     if (variables.length === 0) {
@@ -461,7 +521,17 @@ export async function executeSpiceSimTool(args: SpiceSimToolArgs): Promise<{ tex
 
     for (const analysis of plan.analyses) {
       const netlist = assembleNetlist(plan, analysis);
-      const run = await runNgspice(netlist, bin, runDir);
+      let run = await runNgspice(netlist, bin, runDir);
+      // Safety net: the save list is validated up front, but ngspice aborts
+      // the whole analysis when not one of its vectors exists — the run must
+      // not fail because of a filter. Retry once without it.
+      if (run.error && /no data saved for/i.test(run.output) && plan.signals.length > 0) {
+        const withoutSave = await runNgspice(assembleNetlist({ ...plan, signals: [] }, analysis), bin, runDir);
+        if (!withoutSave.error) {
+          run = withoutSave;
+          notes.push(`ngspice aborted the first attempt because the requested save list had no vector the circuit provides — reran keeping every vector of the ${analysis} analysis`);
+        }
+      }
       rawRuns.push(run);
       runs.push({
         analysis,
@@ -634,14 +704,21 @@ export const SPICE_SIM_TOOL = {
   function: {
     name: "mmochip_spice_sim",
     description:
-      "Run an ngspice simulation of the extracted circuit with a testbench you write, and return the measured results. You write ONLY the testbench: the supply source(s), the load(s) and an analysis directive (.op for a DC operating point, .dc for a sweep, .tran for transient, .ac for AC). The tool adds the DUT netlist itself, converts the extracted Spectre syntax to ngspice, and returns every node voltage / source current plus any `.measure` results (e.g. `.measure dc vout find v(out) at=2.5` — note the `at=` form). The testbench MUST contain an analysis directive, and the supply MUST be connected to the DUT's power net (a floating supply gives zeros, which is not a result). Use this to verify circuit behavior — e.g. compute gain, bandwidth, PSRR, transient response, DC operating point. The simulation runs server-side with ngspice in batch mode.",
+      "Run an ngspice simulation of the extracted circuit with a testbench you write, and return the measured results. You write ONLY the testbench: supply source(s), load(s), exactly one analysis directive and optional .measure lines. The tool adds the DUT netlist itself, converts the extracted Spectre syntax to ngspice, and returns every node voltage / source current plus any `.measure` results (e.g. `.measure dc vout find v(out) at=2.5` — note the `at=` form).\n" +
+      "Testbench rules:\n" +
+      "- ONE analysis directive only (.op = DC operating point, .dc = sweep, .tran = transient, .ac = AC). Write it in `testbench` OR in `directives`, never in both — a repeated directive is dropped by the tool, it never changes the result.\n" +
+      "- The supply MUST be connected to the DUT's power net (a floating supply gives zeros, which is not a result).\n" +
+      "- Name only nets that exist in the netlist you were given. A node inside a .subckt is a vector only as v(<instance>.<node>) — the tool rewrites a bare internal node to that form; a node that does not exist at all is dropped and reported in the notes.\n" +
+      "- No .control blocks, no .model cards, no DUT devices, no .save/.print lists of guessed node names.\n" +
+      "- Example testbench:\nVDD VCC 0 DC 5\nVIN in 0 PULSE(0 5 0 100p 100p 49n 100n)\nRLOAD out 0 10k\n.tran 1ns 500ns uic\n.measure tran vout_max MAX v(out)\n" +
+      "Use this to verify circuit behavior — e.g. compute gain, bandwidth, PSRR, transient response, DC operating point. The simulation runs server-side with ngspice in batch mode. If a run fails, read the returned error and the notes, fix the testbench and retry.",
     parameters: {
       type: "object",
       properties: {
         testbench: {
           type: "string",
           description:
-            "The testbench: supply sources (e.g. 'VDD VCC 0 DC 5'), loads (e.g. 'RLOAD ref 0 10k') and an analysis directive (.op / .dc / .tran / .ac). Use the net names of the extracted circuit. The DUT netlist is supplied by the tool.",
+            "The testbench only: supply sources ('VDD VCC 0 DC 5'), stimulus ('VIN in 0 PULSE(0 5 0 100p 100p 49n 100n)'), loads ('RLOAD out 0 10k'), ONE analysis directive (.op / .dc V1 0 5 0.01 / .tran 1ns 500ns uic / .ac dec 10 1 1meg) and optional .measure lines. Net names must come from the extracted netlist; the DUT netlist is supplied by the tool.",
         },
         netlist: {
           type: "string",
@@ -653,7 +730,8 @@ export const SPICE_SIM_TOOL = {
         },
         directives: {
           type: "string",
-          description: "ngspice directives: source definitions (VDD, VIN), analysis commands (.op, .dc, .tran, .ac), load caps, .measure commands, etc.",
+          description:
+            "ngspice directives appended AFTER the testbench: source definitions (VDD, VIN), load caps, .measure commands. Only put the analysis directive (.op, .dc, .tran, .ac) here when `testbench` does not already contain one.",
         },
         analysis: {
           type: "string",

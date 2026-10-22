@@ -1275,3 +1275,278 @@ export function vectorKeys(name: string): string[] {
   if (prefixed) return prefixed[1] === "v" || prefixed[1] === "i" ? [t, prefixed[2]] : [t];
   return [t];
 }
+
+// ── signal resolution ────────────────────────────────────────────
+
+/**
+ * Vectors ngspice plots whatever the circuit contains.
+ *
+ * Everything else must name a node or a device of the deck: a `save`/`.save`
+ * list with nothing that resolves makes ngspice abort the whole run with
+ *   Error: no data saved for Transient analysis; analysis not run
+ * and the raw file then carries only ngspice's built-in constants — which the
+ * tool reports as "ran no analysis" even though a `.tran` was present.
+ */
+const ALWAYS_PRESENT_VECTORS = new Set(["time", "frequency", "sweep", "v-sweep"]);
+
+/** What a netlist contains, as ngspice will see it after the deck is read. */
+export interface SignalIndex {
+  /** top-level node names: lowercase → the spelling in the netlist. */
+  topNodes: Map<string, string>;
+  /** every instance / source name in the deck (lowercase). */
+  devices: Set<string>;
+  /** subckt name (lowercase) → its internal node names. */
+  internalNodes: Map<string, Map<string, string>>;
+  /** subckt name (lowercase) → the top-level instances of it. */
+  instances: Map<string, string[]>;
+  /** every top-level instance name (lowercase). */
+  instanceNames: Set<string>;
+}
+
+/**
+ * Collect the nodes and devices of a netlist — top level and `.subckt` bodies
+ * separately, because a name that lives inside a subcircuit is only reachable
+ * from the deck as `x1.name`.
+ */
+export function buildSignalIndex(netlist: string): SignalIndex {
+  const index: SignalIndex = {
+    topNodes: new Map(),
+    devices: new Set(),
+    internalNodes: new Map(),
+    instances: new Map(),
+    instanceNames: new Set(),
+  };
+  let current: string | null = null;
+
+  for (const raw of netlist.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line || line.startsWith("*")) continue;
+    const sub = /^\.subckt\s+(\S+)\s*(.*)$/i.exec(line);
+    if (sub) {
+      current = sub[1].toLowerCase();
+      const bucket = index.internalNodes.get(current) ?? new Map<string, string>();
+      for (const port of sub[2].trim().split(/\s+/).filter(Boolean)) bucket.set(port.toLowerCase(), port);
+      index.internalNodes.set(current, bucket);
+      continue;
+    }
+    if (/^\.ends\b/i.test(line)) { current = null; continue; }
+    if (line.startsWith(".")) continue;
+
+    const name = /^(\S+)/.exec(line)?.[1] ?? "";
+    if (!name) continue;
+    index.devices.add(name.toLowerCase());
+    const isInstance = name[0].toLowerCase() === "x";
+    const nodes = nodesOfDeviceLine(line);
+
+    if (current) {
+      const bucket = index.internalNodes.get(current) ?? new Map<string, string>();
+      for (const node of nodes) if (node) bucket.set(node.toLowerCase(), node);
+      index.internalNodes.set(current, bucket);
+      continue;
+    }
+
+    if (isInstance) {
+      const tokens = line.split(/\s+/);
+      const subckt = (tokens[tokens.length - 1] ?? "").toLowerCase();
+      for (const node of tokens.slice(1, -1)) if (node) index.topNodes.set(node.toLowerCase(), node);
+      const list = index.instances.get(subckt) ?? [];
+      list.push(name);
+      index.instances.set(subckt, list);
+      index.instanceNames.add(name.toLowerCase());
+      continue;
+    }
+
+    for (const node of nodes) if (node) index.topNodes.set(node.toLowerCase(), node);
+  }
+  return index;
+}
+
+/** The subckt (if any) whose body defines this node name. */
+function internalNodeOwner(index: SignalIndex, lowerName: string): { subckt: string; original: string } | null {
+  for (const [subckt, nodes] of index.internalNodes) {
+    const original = nodes.get(lowerName);
+    if (original) return { subckt, original };
+  }
+  return null;
+}
+
+interface SignalResolution {
+  /** The signal as ngspice should see it, or null when it does not exist. */
+  resolved?: string;
+  /** What went wrong, in the model's terms. */
+  reason?: string;
+  /** What was rewritten (a bare internal node → its hierarchical name). */
+  note?: string;
+}
+
+/**
+ * Turn one requested signal (`v(net_122)`, `i(vdd)`, `out`, `@m1[ic]`) into
+ * something ngspice can actually save — or say why it cannot.
+ */
+function resolveSignalToken(index: SignalIndex, token: string): SignalResolution {
+  const t = token.trim();
+  if (!t) return { reason: "empty signal name" };
+  const low = t.toLowerCase();
+  if (ALWAYS_PRESENT_VECTORS.has(low)) return { resolved: t };
+
+  if (t.startsWith("@")) {
+    const device = /^[^\[]+/.exec(t.slice(1))?.[0].toLowerCase() ?? "";
+    if (index.devices.has(device)) return { resolved: t };
+    return { reason: `${t}: there is no device "${device}" in the circuit` };
+  }
+
+  const call = /^([vi])(?:m|p|r|s)?\s*\(\s*([^()]+?)\s*\)$/i.exec(t);
+  if (call) {
+    const kind = call[1].toLowerCase();
+    const name = call[2].trim();
+    const lower = name.toLowerCase();
+
+    if (kind === "i") {
+      if (index.devices.has(lower)) return { resolved: t };
+      const instance = lower.split(".")[0];
+      if (lower.includes(".") && index.instanceNames.has(instance)) return { resolved: t };
+      return { reason: `${t}: there is no source or device named "${name}"` };
+    }
+
+    if (index.topNodes.has(lower)) return { resolved: t };
+    if (lower.includes(".") && index.instanceNames.has(lower.split(".")[0])) return { resolved: t };
+    const owner = internalNodeOwner(index, lower);
+    if (owner) {
+      const insts = index.instances.get(owner.subckt) ?? [];
+      if (insts.length === 1) {
+        return {
+          resolved: `${call[1]}(${insts[0]}.${owner.original})`,
+          note: `${t} is an internal node of the .subckt "${owner.subckt}" — saved as ${call[1]}(${insts[0]}.${owner.original})`,
+        };
+      }
+      if (insts.length > 1) {
+        return { reason: `${t}: "${name}" is an internal node of "${owner.subckt}" and there are ${insts.length} instances (${insts.join(", ")}) — name it with the instance, e.g. v(${insts[0]}.${owner.original})` };
+      }
+      return { reason: `${t}: "${name}" only exists inside the .subckt "${owner.subckt}", which is never instantiated` };
+    }
+    return { reason: `${t}: the circuit has no node named "${name}"` };
+  }
+
+  // A bare name: a node (kept as ngspice saves it) or a device.
+  if (index.topNodes.has(low)) return { resolved: t };
+  if (index.devices.has(low)) return { resolved: t };
+  if (index.instanceNames.has(low)) return { resolved: t };
+  const owner = internalNodeOwner(index, low);
+  if (owner) {
+    const insts = index.instances.get(owner.subckt) ?? [];
+    if (insts.length === 1) {
+      return {
+        resolved: `v(${insts[0]}.${owner.original})`,
+        note: `${t} is an internal node of the .subckt "${owner.subckt}" — saved as v(${insts[0]}.${owner.original})`,
+      };
+    }
+    if (insts.length > 1) {
+      return { reason: `${t}: "${t}" is an internal node of "${owner.subckt}" and there are ${insts.length} instances (${insts.join(", ")}) — name it as v(${insts[0]}.${owner.original})` };
+    }
+    return { reason: `${t}: "${t}" only exists inside the .subckt "${owner.subckt}", which is never instantiated` };
+  }
+  return { reason: `${t}: the circuit has no node or device named "${t}"` };
+}
+
+export interface ResolvedSignalsResult {
+  /** Signals ngspice will find, in the spelling it expects. */
+  resolved: string[];
+  /** Signals the circuit does not have. */
+  dropped: string[];
+  /** What was dropped / rewritten, for the LLM. */
+  notes: string[];
+}
+
+/**
+ * Filter (and where possible rewrite) a list of requested signals against the
+ * netlist.
+ *
+ * The tool turns these into a `save …` line before `run`, and ngspice aborts
+ * the analysis when not a single listed vector exists — so an unvalidated list
+ * turns a missing node name into "the simulation did not run at all".
+ */
+export function resolveSignals(netlist: string, signals: string[]): ResolvedSignalsResult {
+  const index = buildSignalIndex(netlist);
+  const resolved: string[] = [];
+  const dropped: string[] = [];
+  const notes: string[] = [];
+  const seen = new Set<string>();
+
+  for (const signal of signals) {
+    const result = resolveSignalToken(index, signal);
+    if (!result.resolved) {
+      dropped.push(signal);
+      continue;
+    }
+    if (result.note) notes.push(result.note);
+    const key = result.resolved.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    resolved.push(result.resolved);
+  }
+
+  if (dropped.length > 0) {
+    notes.push(
+      `the circuit has no such vector(s): ${dropped.join(", ")} — dropped; drive/measure a net that exists in the netlist (a node inside a .subckt is named v(<instance>.<node>))`,
+    );
+  }
+  return { resolved, dropped, notes };
+}
+
+/**
+ * Validate the `.save` / `.print` / `.plot` directives of a netlist.
+ *
+ * A `.save` whose vectors are all unknown aborts the run the same way the
+ * tool's own `save` line does, and a `.print` naming a missing node only
+ * prints an error. Both are cleaned here; a directive with nothing left is
+ * replaced by a comment so the deck still says what was asked for.
+ */
+export function sanitizeSignalDirectives(netlist: string): { netlist: string; notes: string[] } {
+  const index = buildSignalIndex(netlist);
+  const notes: string[] = [];
+  const keptLines: string[] = [];
+
+  for (const raw of netlist.split(/\r?\n/)) {
+    const trimmed = raw.trim();
+    const directive = /^(\.(?:save|print|plot))\b\s*(.*)$/i.exec(trimmed);
+    if (!directive) { keptLines.push(raw); continue; }
+
+    const keyword = directive[1];
+    let rest = directive[2];
+    let analysisHead = "";
+    if (!/^\.save$/i.test(keyword)) {
+      // `.print tran v(out)` opens with the analysis name; `.print v(out)` does not.
+      const head = /^(\S+)\s*/.exec(rest);
+      if (head && PRINT_ANALYSIS_RE.test(head[1])) {
+        analysisHead = `${head[1]} `;
+        rest = rest.slice(head[0].length);
+      }
+    }
+
+    const tokens = rest.split(/[\s,]+/).filter(Boolean);
+    const resolved: string[] = [];
+    const dropped: string[] = [];
+    for (const token of tokens) {
+      // `.save all` / `.save none` are ngspice keywords, not node names.
+      if (SAVE_KEYWORDS.has(token.trim().toLowerCase())) { resolved.push(token); continue; }
+      const result = resolveSignalToken(index, token);
+      if (result.resolved) {
+        if (result.note) notes.push(result.note);
+        resolved.push(result.resolved);
+      } else {
+        dropped.push(token);
+      }
+    }
+    if (dropped.length > 0) {
+      notes.push(`${trimmed}: dropped ${dropped.join(", ")} — no such vector in the circuit`);
+    }
+    if (resolved.length === 0) {
+      notes.push(`${trimmed}: removed — none of its vectors exist in the circuit`);
+      keptLines.push(`* ${trimmed} (removed: no such vector)`);
+      continue;
+    }
+    keptLines.push(`${keyword} ${analysisHead}${resolved.join(" ")}`);
+  }
+
+  return { netlist: keptLines.join("\n"), notes };
+}

@@ -26,6 +26,8 @@ import {
   findAnalysisDirectives,
   flattenControlBlocks,
   parseNgspiceMeasurements,
+  resolveSignals,
+  sanitizeSignalDirectives,
 } from "shared/spiceNetlist";
 import { executeSpiceSimTool } from "./spiceSimTool.js";
 
@@ -123,8 +125,39 @@ test("parseNgspiceMeasurements reads the measurement block", () => {
 
 vout_max            =  5.00000e+00 at=  1.00000e+01
 vout_avg            =  2.50000e+00 from=  -1.00000e+99 to=  1.00000e+01
-`;
+ `;
   assert.deepEqual(parseNgspiceMeasurements(stdout), { vout_max: 5, vout_avg: 2.5 });
+});
+
+test("resolveSignals drops unknown vectors and rewrites internal nodes", () => {
+  const { resolved, dropped, notes } = resolveSignals(`* dut
+.subckt dut VCC out
+R1 VCC mid 1k
+R2 mid out 1k
+.ends dut
+X1 VCC out dut
+VDD VCC 0 DC 5
+RLOAD out 0 10k
+.op`, ["v(mid)", "v(out)", "v(nosuch)", "i(vdd)", "@r1[resistance]", "@nope[x]"]);
+
+  assert.deepEqual(resolved, ["v(X1.mid)", "v(out)", "i(vdd)", "@r1[resistance]"]);
+  assert.deepEqual(dropped, ["v(nosuch)", "@nope[x]"]);
+  assert.ok(notes.some((n) => /internal node/i.test(n)), `missing rewrite note: ${JSON.stringify(notes)}`);
+  assert.ok(notes.some((n) => /no such vector/i.test(n)), `missing drop note: ${JSON.stringify(notes)}`);
+});
+
+test("sanitizeSignalDirectives removes a .save list with no existing vector", () => {
+  const { netlist, notes } = sanitizeSignalDirectives(`V1 in 0 DC 5
+R1 in out 1k
+.save v(nosuch)
+.save all
+.print tran v(out) v(also_missing)
+.op`);
+
+  assert.ok(!/^\s*\.save\b/im.test(netlist.replace(/\.save all/i, "")), `.save must be gone:\n${netlist}`);
+  assert.match(netlist, /\.save all/i, "ngspice keywords must survive");
+  assert.match(netlist, /\.print tran v\(out\)/);
+  assert.ok(notes.some((n) => /removed/.test(n)), JSON.stringify(notes));
 });
 
 // ── integration: the real tool ──────────────────────────────────
@@ -374,4 +407,74 @@ VDD VCC 0 DC 5
     !parsed.variables.some((v: string) => /mid/i.test(v)),
     `internal nodes must stay out of the raw file, got ${JSON.stringify(parsed.variables)}`,
   );
+});
+
+test("tool runs when the testbench asks for a vector the circuit does not have", { skip: skipWithoutNgspice }, async () => {
+  // This is the exact abort ngspice reports as
+  // "Error: no data saved for Transient analysis; analysis not run": a save
+  // list in which nothing exists makes the raw file hold only the constants.
+  const { text, result } = await executeSpiceSimTool({
+    dutNetlist: `.subckt dut VCC out
+R1 VCC out 1k
+.ends dut`,
+    testbench: `X1 VCC out dut
+VDD VCC 0 DC 5
+.dc VDD 0 5 1
+.save v(clk_missing)
+.measure dc vout find v(zzz) at=5`,
+    binPath: NGSPICE ?? undefined,
+  });
+
+  assert.equal(result.success, true, result.error);
+  const parsed = JSON.parse(text);
+  assert.ok(
+    parsed.notes.some((n: string) => /no such vector/i.test(n)),
+    `expected a note about the missing vector, got: ${JSON.stringify(parsed.notes)}`,
+  );
+  assert.ok(!parsed.variables.includes("boltz"), "must not return ngspice's constants");
+  assert.ok(parsed.variables.includes("v(out)"));
+});
+
+test("tool keeps only one of a duplicated analysis directive", { skip: skipWithoutNgspice }, async () => {
+  const { text, result } = await executeSpiceSimTool({
+    netlist: `* divider
+V1 in 0 PULSE(0 5 0 1n 1n 50n 100n)
+R1 in out 1k
+C1 out 0 1n
+.tran 1ns 100ns uic
+.tran 1ns 100ns uic
+.end`,
+    binPath: NGSPICE ?? undefined,
+  });
+
+  assert.equal(result.success, true, result.error);
+  const parsed = JSON.parse(text);
+  assert.equal(parsed.analyses.length, 1, `expected a single run, got ${JSON.stringify(parsed.analyses)}`);
+  assert.ok(
+    parsed.notes.some((n: string) => /duplicate analysis directive/i.test(n)),
+    `expected a duplicate-directive note, got: ${JSON.stringify(parsed.notes)}`,
+  );
+});
+
+test("tool saves an internal DUT node under its instance name", { skip: skipWithoutNgspice }, async () => {
+  const { text, result } = await executeSpiceSimTool({
+    dutNetlist: `.subckt dut VCC out
+R1 VCC mid 1k
+R2 mid out 1k
+R3 out 0 1k
+.ends dut`,
+    testbench: `X1 VCC out dut
+VDD VCC 0 DC 5
+.dc VDD 0 5 1
+.print dc v(mid)`,
+    binPath: NGSPICE ?? undefined,
+  });
+
+  assert.equal(result.success, true, result.error);
+  const parsed = JSON.parse(text);
+  assert.ok(
+    parsed.variables.includes("v(x1.mid)"),
+    `the internal node must be saved as v(x1.mid), got ${JSON.stringify(parsed.variables)}`,
+  );
+  assert.ok(!parsed.variables.includes("v(mid)"), "the bare internal name does not exist at the top level");
 });
