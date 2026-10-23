@@ -18,6 +18,7 @@ import { createMetalStackRouter } from "./api/metalStack.js";
 import { createProjectIORouter } from "./api/projectIO.js";
 import { createFsRouter } from "./api/fs.js";
 import { createAssistantRouter } from "./api/assistant.js";
+import { createSpiceHandoffRouter } from "./api/spiceHandoff.js";
 import { createTilesRouter } from "./api/tiles.js";
 import { enqueueOverlayPrebuilds } from "./api/overlayImages.js";
 import { createMLPredictor } from "./ml/predict.js";
@@ -128,6 +129,7 @@ export function createApp(config: {
   app.use(createProjectIORouter({ dataRoot: config.dataRoot, tileScheduler }));
   app.use(createFsRouter({ dataRoot: config.dataRoot, tileScheduler }));
   app.use(createAssistantRouter({ dataRoot: config.dataRoot }));
+  app.use(createSpiceHandoffRouter({ dataRoot: config.dataRoot }));
   app.use(createDebugRouter({ dataRoot: config.dataRoot }));
 
   // Resume/create the complete overlay disk cache for every known project.

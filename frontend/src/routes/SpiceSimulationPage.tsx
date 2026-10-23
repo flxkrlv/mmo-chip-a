@@ -28,6 +28,7 @@ import { composeSimulationNetlist, extractModelCards } from "shared/spiceModels"
 import { buildTestbenchViewNetlist, splitSimulationSections } from "shared/spiceNetlist";
 import { useAssistantSession } from "../state/assistantSession";
 import { useSpiceHandoff, type SpiceHandoff } from "../state/spiceHandoff";
+import { fetchLatestSpiceHandoff } from "../api/spiceHandoff";
 import { collectDieWideAnalogDevices } from "../api/dieWideAnalog";
 import type { SpiceSimulationOutput } from "../lib/simulation/types";
 import { useDie } from "../api/dies";
@@ -256,12 +257,31 @@ function SpiceSimulator({ dieId }: { dieId: string }) {
   // fields stay live instead of hiding behind a frozen copy of the netlist.
   const handoff = useSpiceHandoff((state) => state.handoff);
   const clearHandoff = useSpiceHandoff((state) => state.clear);
+  const setHandoff = useSpiceHandoff((state) => state.setHandoff);
+  const [agentRun, setAgentRun] = useState<SpiceHandoff | null>(null);
   const appliedHandoffRef = useRef<string | null>(null);
   const runRef = useRef<(() => void) | null>(null);
   /** Pieces of the handed-over run that still have to reach page state. */
   const [pendingHandoff, setPendingHandoff] = useState<SpiceHandoff | null>(null);
   /** Bumped once the handed-over netlist is in place, to run it exactly once. */
   const [handoffRunNonce, setHandoffRunNonce] = useState(0);
+
+  // An MCP agent can publish a finished block run; offer it here. The user
+  // clicks Open, which feeds the normal handoff path (models + testbench +
+  // auto-run), so what they see is reproducible instead of a frozen snapshot.
+  useEffect(() => {
+    let cancelled = false;
+    fetchLatestSpiceHandoff(dieId)
+      .then((record) => {
+        if (!cancelled && record?.netlist) setAgentRun(record);
+      })
+      .catch(() => {
+        // 404 = no agent run for this die; nothing to show.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [dieId]);
 
   useEffect(() => {
     if (!handoff || handoff.dieId !== dieId) return;
@@ -379,6 +399,39 @@ function SpiceSimulator({ dieId }: { dieId: string }) {
           {running ? "Running..." : "Run"}
         </button>
       </SubBar>
+
+      {/* An MCP agent published a block run; open it through the normal
+          handoff path so the testbench and models become editable. */}
+      {agentRun && !handoff && (
+        <div
+          style={{
+            display: "flex", alignItems: "center", gap: 10, padding: "5px 12px",
+            borderBottom: "1px solid var(--l2)", background: "rgba(32,201,151,0.08)",
+            fontSize: 10, color: "var(--ink2)",
+          }}
+        >
+          <span style={{ color: "#20c997", fontWeight: 600 }}>⚡ MCP agent run</span>
+          <span>{agentRun.summary ?? "block simulation"}</span>
+          {agentRun.measurements && Object.keys(agentRun.measurements).length > 0 && (
+            <span style={{ color: "var(--ink3)" }}>
+              {Object.entries(agentRun.measurements)
+                .map(([k, v]) => `${k} = ${typeof v === "number" ? v.toPrecision(5) : v}`)
+                .join(", ")}
+            </span>
+          )}
+          <div style={{ flex: 1 }} />
+          <button
+            className="btn"
+            style={{ fontSize: 9 }}
+            onClick={() => { setHandoff(agentRun); setAgentRun(null); }}
+          >
+            Open run →
+          </button>
+          <button className="btn ghost" style={{ fontSize: 9 }} onClick={() => setAgentRun(null)}>
+            dismiss
+          </button>
+        </div>
+      )}
 
       {/* Handoff banner: the testbench came from the assistant thread */}
       {handoff && handoff.dieId === dieId && (

@@ -25,6 +25,11 @@ export interface OverlayImageListItem {
   ready: boolean;
   createdAt: string;
   updatedAt: string;
+  purpose?: string | null;
+  explicitPurpose?: string | null;
+  purposeSource?: "user" | "auto" | "none";
+  suggestedPurpose?: string | null;
+  purposeEditable?: boolean;
   legacy?: boolean;
 }
 
@@ -136,9 +141,11 @@ export function registerOverlayTools(
       description:
         "List the die's image layers: the base photograph (id `__base__`) plus every overlay source " +
         "(for example `sirtl`, a developed-silicon image, or a metal layer). Returns each layer's " +
-        "id, display name, pixel size, tile format and tile-build progress. Pass the id or name as " +
-        "`overlayId` to get_crop, or to get_overlay_image, to inspect that layer. This is the read " +
-        "tool to call before claiming that a wire is or is not connected: crops of a metal layer show " +
+        "id, display name, pixel size, tile format, purpose (`purpose`, `purposeSource` = user/auto/none, " +
+        "`suggestedPurpose`) and tile-build progress. `sirtl` auto-detects as diffusion, `me1` as metal1; " +
+        "a layer with no match reports `purposeSource:none`, so an absent purpose is explicit rather than guessed. " +
+        "Pass the id or name as `overlayId` to get_crop, or to get_overlay_image, to inspect that layer. " +
+        "This is the read tool to call before claiming that a wire is or is not connected: crops of a metal layer show " +
         "the actual metal, which the base photograph may hide.",
       inputSchema: {
         dieId: z.string().describe("Project id from list_projects")
@@ -183,6 +190,11 @@ export function registerOverlayTools(
               maxZoomLevel: image.maxZoomLevel,
               legacy: Boolean(image.legacy),
               ready: image.ready,
+              purpose: image.purpose ?? null,
+              explicitPurpose: image.explicitPurpose ?? null,
+              purposeSource: image.purposeSource ?? "none",
+              suggestedPurpose: image.suggestedPurpose ?? null,
+              purposeEditable: image.purposeEditable ?? !image.legacy,
               createdAt: image.createdAt,
               updatedAt: image.updatedAt,
               tileProgress: progress ?? null

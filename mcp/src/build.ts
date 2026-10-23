@@ -2,6 +2,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { BackendClient } from "./client.js";
 import { loadConfig, type McpConfig } from "./config.js";
 import { registerAnnotationTools } from "./tools/annotations.js";
+import { registerBlockTools } from "./tools/block.js";
 import { registerInspectTools } from "./tools/inspect.js";
 import { registerJobTools } from "./tools/jobs.js";
 import { registerNetlistTools } from "./tools/netlist.js";
@@ -30,6 +31,7 @@ export function buildServer(
     ...registerProjectTools(server, client, config),
     ...registerOverlayTools(server, client, config),
     ...registerRegionTools(server, client),
+    ...registerBlockTools(server, client),
     ...registerAnnotationTools(server, client, config),
     ...registerInspectTools(server, client, config),
     ...registerSimulationTools(server, client),

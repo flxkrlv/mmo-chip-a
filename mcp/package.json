@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "tsx src/server.ts",
     "start": "tsx src/server.ts",
-    "test": "node --import tsx --test test/client.test.ts test/footprint.test.ts test/summary.test.ts test/tools.test.ts",
+    "test": "node --import tsx --test test/client.test.ts test/footprint.test.ts test/summary.test.ts test/block.test.ts test/tools.test.ts",
     "smoke": "tsx scripts/smoke.ts"
   },
   "dependencies": {

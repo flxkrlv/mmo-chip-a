@@ -17,6 +17,7 @@ import multer from "multer";
 import sharp from "sharp";
 import { ensurePreviewImage } from "../imagePreview.js";
 import type { OverlayTileProgress, OverlayTileSourceProgress } from "shared";
+import { resolveLayerPurpose } from "shared/layerPurpose";
 import { buildLevels } from "../dieImport/importer.js";
 import { resolveProjectDir } from "../projectLayout.js";
 import type { PyramidSource } from "../tileCrop.js";
@@ -58,9 +59,18 @@ export interface OverlayImageManifest {
   ready: boolean;
   createdAt: string;
   updatedAt: string;
+  /** Explicit user choice; null/absent means "auto-detect from the name". */
+  purpose?: string | null;
 }
 
-interface OverlayImageListItem extends Omit<OverlayImageManifest, "originalPath"> {
+interface OverlayImageListItem extends Omit<OverlayImageManifest, "originalPath" | "purpose"> {
+  /** Effective purpose: explicit user value, or the name-based suggestion. */
+  purpose: string | null;
+  explicitPurpose: string | null;
+  purposeSource: "user" | "auto" | "none";
+  suggestedPurpose: string | null;
+  /** Legacy flat files have no manifest to persist a purpose in. */
+  purposeEditable: boolean;
   legacy?: boolean;
 }
 
@@ -99,8 +109,16 @@ export async function readManifest(
 }
 
 function toListItem(manifest: OverlayImageManifest): OverlayImageListItem {
-  const { originalPath: _originalPath, ...item } = manifest;
-  return item;
+  const { originalPath: _originalPath, purpose, ...item } = manifest;
+  const resolved = resolveLayerPurpose(purpose ?? null, manifest.name);
+  return {
+    ...item,
+    purpose: resolved.purpose,
+    explicitPurpose: resolved.explicit,
+    purposeSource: resolved.source,
+    suggestedPurpose: resolved.suggested,
+    purposeEditable: true
+  };
 }
 
 async function listFullManifests(
@@ -141,9 +159,11 @@ async function listLegacyFiles(dataRoot: string, dieId: string): Promise<Overlay
         .map(async (entry) => {
           const filePath = path.join(dir, entry.name);
           const stat = await fs.stat(filePath);
+          const name = entry.name.replace(/\.[^.]+$/, "");
+          const resolved = resolveLayerPurpose(null, name);
           return {
             id: entry.name,
-            name: entry.name.replace(/\.[^.]+$/, ""),
+            name,
             originalFilename: entry.name,
             size: stat.size,
             width: 0,
@@ -156,6 +176,11 @@ async function listLegacyFiles(dataRoot: string, dieId: string): Promise<Overlay
             ready: true,
             createdAt: stat.birthtime.toISOString(),
             updatedAt: stat.mtime.toISOString(),
+            purpose: resolved.purpose,
+            explicitPurpose: null,
+            purposeSource: resolved.source,
+            suggestedPurpose: resolved.suggested,
+            purposeEditable: false,
             legacy: true
           } satisfies OverlayImageListItem;
         })
@@ -963,6 +988,35 @@ export function createOverlayImagesRouter(config: { dataRoot: string }) {
       }
     }
   );
+
+  router.patch("/api/dies/:dieId/overlay-images/:id", async (request, response, next) => {
+    try {
+      const { dieId, id } = request.params;
+      if (!SAFE_ID.test(dieId) || !SAFE_ID.test(id)) {
+        response.status(400).json({ error: "Invalid id" });
+        return;
+      }
+      const manifest = await readManifest(config.dataRoot, dieId, id);
+      if (!manifest) {
+        response.status(404).json({ error: "Overlay image not found or not editable" });
+        return;
+      }
+      const body = (request.body ?? {}) as { purpose?: unknown };
+      if (body.purpose !== undefined && body.purpose !== null && typeof body.purpose !== "string") {
+        response.status(400).json({ error: "purpose must be a string or null" });
+        return;
+      }
+      const raw = typeof body.purpose === "string" ? body.purpose.trim() : "";
+      // An empty string / "auto" clears the explicit value; "none" is kept as
+      // an explicit suppression of the name heuristic.
+      manifest.purpose = raw && raw.toLowerCase() !== "auto" ? raw.slice(0, 80) : null;
+      manifest.updatedAt = new Date().toISOString();
+      await writeManifest(manifest);
+      response.json({ image: toListItem(manifest) });
+    } catch (error) {
+      next(error);
+    }
+  });
 
   router.get("/api/dies/:dieId/overlay-images/:id/tiles/:z/:x/:y", async (request, response, next) => {
     try {

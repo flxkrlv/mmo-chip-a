@@ -50,7 +50,7 @@ first one`.
 | `MMO_CROPS_DIR` | `<os tmp>/mmo-crops` | Where `get_crop` writes images (files >24 h are swept at startup) |
 | `MMO_EXPORT_DIR` | `<os tmp>/mmo-exports` | Where `export_project` writes ZIPs when no `outPath` is given |
 
-## Tools (24)
+## Tools (25)
 
 **Read**
 
@@ -59,7 +59,7 @@ first one`.
 | `list_projects` | Every die: id, name, image size, cell library/scale, location, availability. Start here for `dieId`s. |
 | `get_project` | One project's full record (geometry, progress, location). |
 | `get_annotations` | `mode:"summary"` (default): `rev`, `umPerPx`, counts for all 12 collections + an index capped at `limit` rows (500) with die-pixel `rect` per resolvable cell. `mode:"full"`: raw collections, **requires `kinds`**, payloads >4 MB are rejected. |
-| `list_overlay_layers` | The image layers: `__base__` plus every uploaded overlay (e.g. `sirtl`), with id, name, dimensions, format and tile-build progress. Call this before inspecting a layer. |
+| `list_overlay_layers` | The image layers: `__base__` plus every uploaded overlay (e.g. `sirtl`), with id, name, dimensions, format, tile-build progress and **purpose** (`purpose` + `purposeSource: user/auto/none`; `sirtl` auto-detects as `diffusion`). |
 | `get_die_image` | Full-die preview of the base photograph (JPEG, longest side ≤4096), written to disk. |
 | `get_overlay_image` | Full-layer preview of one overlay (JPEG, longest side ≤4096), written to disk. Resolves `overlayId` by id or display name. |
 | `get_crop` | Image crop → file on disk. One target: `cellId` (backend-resolved footprint), `cellTypeId`, or a raw rect `x/y/w/h` (≤4096 px/side, clipped and flagged). `padding` (cellId only) is computed locally; `px` asks for a preview. Pass `overlayId` (id or name) to composite an overlay over the base — this is how you check whether metal actually connects two devices. Returns `path` (+`base64` under 1.5 MB when asked). |
@@ -72,6 +72,7 @@ first one`.
 
 | Tool | Does |
 | --- | --- |
+| `simulate_block` | Extract a floorplan/cell/net selection as a `.SUBCKT` using the rigid boundary rule (only nets crossing the selection become ports), instantiate `X1`, run `testbench`, and publish the run for the SPICE tab. See “Block simulation and handoff”. |
 | `run_ngspice` | Simulate. Needs `netlist`, or `subcircuit` + `directives`. Trims waveform arrays (opt back in with `includeRawData`), truncates output/netlist; `success:false` comes back as an error result. |
 | `run_lvs` | LVS compare (`vyges-lvs` or `name-based` engine); timeouts/missing CLI surface as error results with detail. |
 | `ml_job` | `status` / `start` / `stop` the via-inference sweep (needs the ML sidecar; 503 if it is down). |
@@ -121,6 +122,36 @@ base crop and the same rect on a layer never overwrite each other. Overlay ids
 and names are resolved case-insensitively; an unknown name returns the list of
 available layers instead of a generic 404.
 
+## Block simulation and handoff
+
+`simulate_block` selects devices by `regionId` (floorplan region), `cellIds`
+and/or annotation `netIds`, then applies the same rigid partition rule as the
+SPICE tab's floorplan hierarchy:
+
+- a net touched only by selected devices is **internal**;
+- a net that also reaches an unselected device becomes a **port**;
+- the port order is returned in `block.ports` and used by the generated `X1`.
+
+The testbench must contain only sources, loads, analysis and `.measure`; do not
+write `X1` or the `.SUBCKT` yourself. A typical run:
+
+```jsonc
+{ "tool": "simulate_block", "args": {
+    "dieId": "import-…",
+    "regionId": "mcp-bandgap-core",
+    "name": "error_amp",
+    "testbench": "VCC VCC 0 10\n.op",
+    "binPath": "C:\\Program Files\\Spice64\\bin\\ngspice_con.exe"
+} }
+```
+
+The result includes `block.ports`, `block.internalNets`, the `.SUBCKT`, the full
+deck, measurements and a `handoff`. With `publish:true` (the default) the
+handoff is stored at `<project>/spice-runs/latest.json`; the SPICE Simulation
+tab shows an **“MCP agent run”** banner and opens it through the same path as an
+assistant handoff (editable testbench, models, automatic run). Use
+`publish:false` for a throw-away probe.
+
 ## Conventions and contracts
 
 - **Coordinates are source pixels** (the imported image's own grid), top-left origin —
@@ -152,7 +183,7 @@ until there is a real agent workflow behind them.
 
 ```bash
 npx tsc -p mcp/tsconfig.json --noEmit   # typecheck (shared types imported from the workspace)
-npm run test -w mcp                     # 45 unit/integration tests, mock fetch + in-memory MCP transport
+npm run test -w mcp                     # 50 unit/integration tests, mock fetch + in-memory MCP transport
 npm run smoke -w mcp                    # end-to-end against a live backend (exit 2 = backend down)
 ```
 

@@ -37,7 +37,8 @@ const EXPECTED_TOOLS = [
   "ml_job",
   "run_lvs",
   "run_ngspice",
-  "set_scale"
+  "set_scale",
+  "simulate_block"
 ].sort();
 
 const tmpRoot = path.join(os.tmpdir(), `mmo-mcp-test-${process.pid}`);
@@ -90,6 +91,11 @@ const OVERLAY_IMAGES = [
     hasAlpha: true,
     maxZoomLevel: 3,
     ready: true,
+    purpose: "diffusion",
+    explicitPurpose: null,
+    purposeSource: "auto" as const,
+    suggestedPurpose: "diffusion",
+    purposeEditable: true,
     createdAt: "2026-10-01T00:00:00.000Z",
     updatedAt: "2026-10-01T00:00:00.000Z"
   }
@@ -413,6 +419,8 @@ test("list_overlay_layers returns the base image, overlays and tile progress", a
     assert.equal(payload.layers[1].id, "ov-sirtl");
     assert.equal(payload.layers[1].name, "sirtl");
     assert.equal(payload.layers[1].tileProgress.percentage, 25);
+    assert.equal(payload.layers[1].purpose, "diffusion");
+    assert.equal(payload.layers[1].purposeSource, "auto");
   } finally {
     await session.close();
   }
@@ -469,6 +477,59 @@ test("get_region_summary keeps only cells and nets intersecting the rect", async
     assert.equal(payload.cells[0].id, "c1");
     assert.deepEqual(payload.cells[0].rect, { x: 110, y: 40, width: 20, height: 40 });
     assert.equal(payload.nets[0].name, "VCC");
+  } finally {
+    await session.close();
+  }
+});
+
+test("simulate_block derives ports from the selection and instantiates X1", async () => {
+  const cdl = [
+    ".SUBCKT top a b c",
+    "R1 a b resistor r=1000",
+    "R2 b c resistor r=2000",
+    ".ENDS top"
+  ].join("\n");
+  const { impl, requests } = recordingFetch((url) => {
+    if (url.endsWith("/analog-devices")) {
+      return jsonResponse({ version: 1, devices: { "geores:x@c1": "R1" } });
+    }
+    if (url.endsWith("/annotations")) return jsonResponse(ANNOTATIONS);
+    if (url.endsWith("/netlist-export")) {
+      return jsonResponse({ ok: true, text: cdl, deviceCount: 2, namedNetCount: 2 });
+    }
+    if (url.endsWith("/api/ngspice/run")) {
+      return jsonResponse({
+        ok: true,
+        success: true,
+        plot: "Operating Point",
+        variables: ["v(b)"],
+        numPoints: 1,
+        measurements: { vb: 1 },
+        notes: []
+      });
+    }
+    return jsonResponse(DIE);
+  });
+  const session = await connect(config(), impl);
+  try {
+    const payload = jsonResult<Record<string, any>>(
+      await session.call("simulate_block", {
+        dieId: "die-1",
+        cellIds: ["c1"],
+        testbench: "V1 b 0 1\n.op"
+      })
+    );
+    assert.equal(payload.success, true);
+    assert.deepEqual(payload.block.ports, ["b"]);
+    assert.deepEqual(payload.block.internalNets, ["a"]);
+    assert.match(payload.subckt, /^  R1 a b 1000$/m);
+    assert.match(payload.deck, /^X1 b agent_block$/m);
+    assert.equal(payload.handoff.directives, "V1 b 0 1\n.op");
+    const run = requests.find((request) => request.url.endsWith("/api/ngspice/run"));
+    assert.ok(run);
+    const body = JSON.parse(run.body ?? "{}");
+    assert.match(body.netlist, /\.SUBCKT agent_block b/);
+    assert.match(body.netlist, /X1 b agent_block/);
   } finally {
     await session.close();
   }

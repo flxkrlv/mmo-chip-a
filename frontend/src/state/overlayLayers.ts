@@ -17,6 +17,12 @@ export interface OverlayLayerEntry {
   opacity: number;
   offsetX: number;
   offsetY: number;
+  /** Effective purpose, explicit or auto-detected from the name. */
+  purpose: string | null;
+  explicitPurpose: string | null;
+  purposeSource: "user" | "auto" | "none";
+  suggestedPurpose: string | null;
+  purposeEditable: boolean;
 }
 
 interface OverlayLayersState {
@@ -28,6 +34,7 @@ interface OverlayLayersState {
   setLayerHidden: (id: string, hidden: boolean) => void;
   setLayerOpacity: (id: string, opacity: number) => void;
   renameLayer: (id: string, name: string) => void;
+  applyLayerSource: (id: string, source: OverlayImageSource) => void;
   moveLayer: (fromIndex: number, toIndex: number) => void;
   setLayerOffset: (id: string, offsetX: number, offsetY: number) => void;
   toggleBaseImage: () => void;
@@ -41,7 +48,9 @@ export const useOverlayLayers = create<OverlayLayersState>()((set, get) => ({
     const id = uuid();
     set((state) => ({ layers: [...state.layers, {
       id, name, serverFilename, src: image.src, image, source: null, loaded: true,
-      hidden, opacity: 1, offsetX: 0, offsetY: 0
+      hidden, opacity: 1, offsetX: 0, offsetY: 0,
+      purpose: null, explicitPurpose: null, purposeSource: "none",
+      suggestedPurpose: null, purposeEditable: false
     }] }));
     return id;
   },
@@ -51,7 +60,12 @@ export const useOverlayLayers = create<OverlayLayersState>()((set, get) => ({
     const id = uuid();
     set((state) => ({ layers: [...state.layers, {
       id, name: source.name, serverFilename: source.id, src: "", image: null, source,
-      loaded: source.ready, hidden, opacity: 1, offsetX: 0, offsetY: 0
+      loaded: source.ready, hidden, opacity: 1, offsetX: 0, offsetY: 0,
+      purpose: source.purpose ?? null,
+      explicitPurpose: source.explicitPurpose ?? null,
+      purposeSource: source.purposeSource ?? "none",
+      suggestedPurpose: source.suggestedPurpose ?? null,
+      purposeEditable: source.purposeEditable ?? !source.legacy
     }] }));
     return id;
   },
@@ -63,6 +77,18 @@ export const useOverlayLayers = create<OverlayLayersState>()((set, get) => ({
   setLayerHidden: (id, hidden) => set((state) => ({ layers: state.layers.map((layer) => layer.id === id ? { ...layer, hidden } : layer) })),
   setLayerOpacity: (id, opacity) => set((state) => ({ layers: state.layers.map((layer) => layer.id === id ? { ...layer, opacity: Math.min(1, Math.max(0, opacity)) } : layer) })),
   renameLayer: (id, name) => set((state) => ({ layers: state.layers.map((layer) => layer.id === id ? { ...layer, name } : layer) })),
+  applyLayerSource: (id, source) => set((state) => ({
+    layers: state.layers.map((layer) => layer.id === id ? {
+      ...layer,
+      source,
+      name: layer.name,
+      purpose: source.purpose ?? null,
+      explicitPurpose: source.explicitPurpose ?? null,
+      purposeSource: source.purposeSource ?? "none",
+      suggestedPurpose: source.suggestedPurpose ?? null,
+      purposeEditable: source.purposeEditable ?? !source.legacy
+    } : layer)
+  })),
   moveLayer: (fromIndex, toIndex) => set((state) => {
     if (fromIndex < 0 || toIndex < 0 || fromIndex >= state.layers.length || toIndex >= state.layers.length) return state;
     const layers = [...state.layers];
