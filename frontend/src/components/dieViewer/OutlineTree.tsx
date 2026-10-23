@@ -1047,9 +1047,12 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
                 setDraggedOverlayIndex(null);
               }}
               onDragEnd={() => setDraggedOverlayIndex(null)}
-              label={<><OverlayLayerLabel layerId={layer.id} name={layer.name} /> <OverlayLayerPurpose layerId={layer.id} /></>}
+              label={<OverlayLayerLabel layerId={layer.id} name={layer.name} />}
               controls={
-                <OverlayLayerSettings layerId={layer.id} />
+                <>
+                  <OverlayLayerPurpose layerId={layer.id} />
+                  <OverlayLayerSettings layerId={layer.id} />
+                </>
               }
               visibility={{
                 visible: !layer.hidden,
@@ -1518,7 +1521,11 @@ function OverlayLayerPurpose({ layerId }: { layerId: string }) {
     border: "1px solid var(--l3)",
     color: layer.purpose ? "var(--ink2)" : "var(--ink3)",
     background: "var(--l1)",
-    whiteSpace: "nowrap"
+    whiteSpace: "nowrap",
+    maxWidth: 120,
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+    display: "inline-block"
   };
 
   if (!layer.purposeEditable || !layer.serverFilename || !dieId) {
@@ -1545,6 +1552,7 @@ function OverlayLayerPurpose({ layerId }: { layerId: string }) {
     <SettingsPopover
       label="Overlay layer purpose"
       triggerContent={<span title="Click to set the layer purpose" style={style}>{badge}</span>}
+      triggerStyle={{ width: "auto", minWidth: 0, height: 18, padding: "0 4px" }}
     >
       <div className="u" style={{ marginBottom: 6 }}>Layer purpose</div>
       <div style={{ fontSize: 9, color: "var(--ink3)", marginBottom: 6, lineHeight: 1.4 }}>
@@ -1555,12 +1563,24 @@ function OverlayLayerPurpose({ layerId }: { layerId: string }) {
         disabled={saving}
         onChange={(event) => void onChange(event.target.value)}
         onClick={(event) => event.stopPropagation()}
-        style={{ width: "100%", background: "var(--l1)", color: "inherit", border: "1px solid var(--l2)" }}
+        style={{
+          width: "100%",
+          background: "#171b20",
+          color: "#e6edf3",
+          colorScheme: "dark",
+          border: "1px solid var(--l2)",
+          borderRadius: 3,
+          padding: "3px 4px"
+        }}
       >
-        <option value="">Auto{layer.suggestedPurpose ? ` (${layer.suggestedPurpose})` : " (no name match)"}</option>
-        <option value="none">None</option>
+        <option value="" style={{ background: "#171b20", color: "#e6edf3" }}>
+          Auto{layer.suggestedPurpose ? ` (${layer.suggestedPurpose})` : " (no name match)"}
+        </option>
+        <option value="none" style={{ background: "#171b20", color: "#e6edf3" }}>None</option>
         {LAYER_PURPOSE_OPTIONS.map((purpose) => (
-          <option key={purpose} value={purpose}>{purpose}</option>
+          <option key={purpose} value={purpose} style={{ background: "#171b20", color: "#e6edf3" }}>
+            {purpose}
+          </option>
         ))}
       </select>
       <div style={{ fontSize: 9, color: "var(--ink3)", marginTop: 6 }}>
