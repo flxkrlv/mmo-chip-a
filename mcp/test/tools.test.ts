@@ -26,9 +26,13 @@ const EXPECTED_TOOLS = [
   "get_analog_devices",
   "get_annotations",
   "get_crop",
+  "get_die_image",
   "get_metal_stack",
+  "get_overlay_image",
   "get_project",
+  "get_region_summary",
   "get_spice_config",
+  "list_overlay_layers",
   "list_projects",
   "ml_job",
   "run_lvs",
@@ -71,6 +75,44 @@ const ANNOTATIONS: DieAnnotations = {
   cellTypes: [{ id: "ct1", name: "inv", cropRect: { x: 0, y: 0, width: 40, height: 20 } }],
   cells: [{ id: "c1", cellTypeId: "ct1", x: 100, y: 50, rotation: 90 }],
   grids: []
+};
+
+const OVERLAY_IMAGES = [
+  {
+    id: "ov-sirtl",
+    name: "sirtl",
+    originalFilename: "sirtl.png",
+    size: 100,
+    width: 1200,
+    height: 900,
+    tileSize: 256,
+    tileFormat: "png" as const,
+    hasAlpha: true,
+    maxZoomLevel: 3,
+    ready: true,
+    createdAt: "2026-10-01T00:00:00.000Z",
+    updatedAt: "2026-10-01T00:00:00.000Z"
+  }
+];
+
+const DIE_WITH_OVERLAYS: DieSummary = {
+  ...DIE,
+  overlayTileProgress: {
+    completedTiles: 1,
+    totalTiles: 4,
+    percentage: 25,
+    isPaused: false,
+    sources: [
+      {
+        id: "ov-sirtl",
+        name: "sirtl",
+        completedTiles: 1,
+        totalTiles: 4,
+        percentage: 25,
+        status: "generating"
+      }
+    ]
+  }
 };
 
 test("registers exactly the v0 tool set", async () => {
@@ -313,6 +355,120 @@ test("get_crop refuses ambiguous or incomplete targets", async () => {
     const both = await session.call("get_crop", { dieId: "die-1", cellId: "c1", w: 8, h: 8, x: 0, y: 0 });
     assert.equal(isErrorResult(both), true);
     assert.equal(requests.length, 0);
+  } finally {
+    await session.close();
+  }
+});
+
+test("get_crop composites a named overlay layer and marks the file", async () => {
+  const jpeg = new Uint8Array([0xff, 0xd8, 0xff, 0xd9]);
+  const { impl, requests } = recordingFetch((url) => {
+    if (url.endsWith("/overlay-images/list")) {
+      return jsonResponse({ images: OVERLAY_IMAGES });
+    }
+    return new Response(jpeg, {
+      status: 200,
+      headers: { "content-type": "image/jpeg" }
+    });
+  });
+  const session = await connect(config(), impl);
+  try {
+    const payload = jsonResult<{ path: string; overlayId: string; overlayName: string }>(
+      await session.call("get_crop", {
+        dieId: "die-1",
+        x: 10,
+        y: 20,
+        w: 64,
+        h: 32,
+        overlayId: "SIRTL"
+      })
+    );
+    assert.equal(payload.overlayId, "ov-sirtl");
+    assert.equal(payload.overlayName, "sirtl");
+    assert.match(payload.path, /_ov-ov-sirtl\.jpg$/);
+    assert.ok(
+      requests.some((request) => request.url.includes("overlaySourceId=ov-sirtl"))
+    );
+    assert.ok(requests.some((request) => request.url.endsWith("/overlay-images/list")));
+  } finally {
+    await session.close();
+  }
+});
+
+test("list_overlay_layers returns the base image, overlays and tile progress", async () => {
+  const { impl } = recordingFetch((url) =>
+    url.endsWith("/overlay-images/list")
+      ? jsonResponse({ images: OVERLAY_IMAGES })
+      : jsonResponse(DIE_WITH_OVERLAYS)
+  );
+  const session = await connect(config(), impl);
+  try {
+    const payload = jsonResult<{
+      count: number;
+      layers: Array<Record<string, any>>;
+    }>(await session.call("list_overlay_layers", { dieId: "die-1" }));
+    assert.equal(payload.count, 2);
+    assert.equal(payload.layers[0].id, "__base__");
+    assert.equal(payload.layers[0].kind, "base");
+    assert.equal(payload.layers[1].id, "ov-sirtl");
+    assert.equal(payload.layers[1].name, "sirtl");
+    assert.equal(payload.layers[1].tileProgress.percentage, 25);
+  } finally {
+    await session.close();
+  }
+});
+
+test("get_overlay_image resolves a name and writes the preview", async () => {
+  const jpeg = new Uint8Array([0xff, 0xd8, 0xff, 0xd9]);
+  const { impl, requests } = recordingFetch((url) => {
+    if (url.endsWith("/overlay-images/list")) {
+      return jsonResponse({ images: OVERLAY_IMAGES });
+    }
+    return new Response(jpeg, {
+      status: 200,
+      headers: { "content-type": "image/jpeg" }
+    });
+  });
+  const session = await connect(config(), impl);
+  try {
+    const payload = jsonResult<{ path: string; overlayId: string; bytes: number }>(
+      await session.call("get_overlay_image", { dieId: "die-1", overlayId: "sirtl" })
+    );
+    assert.equal(payload.overlayId, "ov-sirtl");
+    assert.equal(payload.bytes, 4);
+    assert.match(payload.path, /overlay-ov-sirtl-preview\.jpg$/);
+    assert.ok(
+      requests.some((request) => request.url.endsWith("/overlay-images/ov-sirtl/original"))
+    );
+  } finally {
+    await session.close();
+  }
+});
+
+test("get_region_summary keeps only cells and nets intersecting the rect", async () => {
+  const { impl } = recordingFetch((url) =>
+    url.endsWith("/annotations") ? jsonResponse(ANNOTATIONS) : jsonResponse(DIE)
+  );
+  const session = await connect(config(), impl);
+  try {
+    const payload = jsonResult<{
+      counts: Record<string, number>;
+      cells: Array<Record<string, any>>;
+      nets: Array<Record<string, any>>;
+    }>(
+      await session.call("get_region_summary", {
+        dieId: "die-1",
+        x: 0,
+        y: 0,
+        w: 200,
+        h: 100
+      })
+    );
+    assert.equal(payload.counts.cells, 1);
+    assert.equal(payload.counts.nets, 1);
+    assert.equal(payload.cells[0].id, "c1");
+    assert.deepEqual(payload.cells[0].rect, { x: 110, y: 40, width: 20, height: 40 });
+    assert.equal(payload.nets[0].name, "VCC");
   } finally {
     await session.close();
   }

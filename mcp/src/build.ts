@@ -5,7 +5,9 @@ import { registerAnnotationTools } from "./tools/annotations.js";
 import { registerInspectTools } from "./tools/inspect.js";
 import { registerJobTools } from "./tools/jobs.js";
 import { registerNetlistTools } from "./tools/netlist.js";
+import { registerOverlayTools } from "./tools/overlays.js";
 import { registerProjectTools } from "./tools/projects.js";
+import { registerRegionTools } from "./tools/region.js";
 import { registerSimulationTools } from "./tools/simulate.js";
 
 export const SERVER_NAME = "mmo-chip";
@@ -26,6 +28,8 @@ export function buildServer(
   const server = new McpServer({ name: SERVER_NAME, version: SERVER_VERSION });
   const tools = [
     ...registerProjectTools(server, client, config),
+    ...registerOverlayTools(server, client, config),
+    ...registerRegionTools(server, client),
     ...registerAnnotationTools(server, client, config),
     ...registerInspectTools(server, client, config),
     ...registerSimulationTools(server, client),

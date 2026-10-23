@@ -15,6 +15,10 @@ import {
   type Rect
 } from "../footprint.js";
 import { InputError, guarded, json, requireFields } from "../result.js";
+import {
+  resolveOverlaySource,
+  type OverlayImageListItem
+} from "./overlays.js";
 
 const BASE64_LIMIT_BYTES = 1_500_000;
 const CROP_MAX_AGE_MS = 24 * 60 * 60 * 1000;
@@ -32,11 +36,17 @@ export function registerInspectTools(
     {
       title: "Get image crop",
       description:
-        "Fetch a JPEG/PNG crop of the die image and write it to disk. Target one of: cellId (the cell's footprint, resolved by the backend), cellTypeId (a type's reference window), or a raw rect x/y/w/h in source pixels (w/h must be ≤ 4096; anything larger is clipped and flagged). `padding` (px, cellId only) expands the cell footprint — computed locally and served through the rect endpoint. `px` asks for a preview limited to that long side instead of full resolution. Returns an absolute file path (plus base64 when asked and the bytes fit), so you can hand the file to any vision tool.",
+        "Fetch a JPEG/PNG crop of the die image and write it to disk. Target one of: cellId (the cell's footprint, resolved by the backend), cellTypeId (a type's reference window), or a raw rect x/y/w/h in source pixels (w/h must be ≤ 4096; anything larger is clipped and flagged). `padding` (px, cellId only) expands the cell footprint — computed locally and served through the rect endpoint. `px` asks for a preview limited to that long side instead of full resolution. Pass `overlayId` (id or name from list_overlay_layers, e.g. `sirtl`) to crop an overlay layer composited over the base image; this is the tool that shows whether metal really connects two devices. Returns an absolute file path (plus base64 when asked and the bytes fit), so you can hand the file to any vision tool.",
       inputSchema: {
         dieId: z.string().describe("Project id from list_projects"),
         cellId: z.string().optional().describe("Crop this cell instance's footprint"),
         cellTypeId: z.string().optional().describe("Crop this cell type's reference window"),
+        overlayId: z
+          .string()
+          .optional()
+          .describe(
+            "Overlay layer id or name from list_overlay_layers (e.g. `sirtl`); omit for the base image"
+          ),
         x: z.number().optional().describe("Rect left, source pixels"),
         y: z.number().optional().describe("Rect top, source pixels"),
         w: z.number().optional().describe("Rect width, source pixels (≤ 4096)"),
@@ -59,7 +69,7 @@ export function registerInspectTools(
     },
     async (args) =>
       guarded(async () => {
-        const { dieId, cellId, cellTypeId, x, y, w, h, padding, px, encoding } = args;
+        const { dieId, cellId, cellTypeId, overlayId, x, y, w, h, padding, px, encoding } = args;
         const rectGiven = [x, y, w, h].some((value) => value !== undefined);
         const targets = [cellId ? "cellId" : null, cellTypeId ? "cellTypeId" : null, rectGiven ? "rect" : null]
           .filter((value): value is string => value !== null);
@@ -70,8 +80,14 @@ export function registerInspectTools(
           );
         }
 
+        let overlay: OverlayImageListItem | undefined;
+        if (overlayId && overlayId !== "__base__") {
+          overlay = await resolveOverlaySource(client, dieId, overlayId);
+        }
+
         const notes: string[] = [];
         const query: string[] = [];
+        if (overlay) query.push(`overlaySourceId=${encodeURIComponent(overlay.id)}`);
         if (px !== undefined) query.push(`px=${px}`);
         let rect: Rect | undefined;
         let url: string;
@@ -98,15 +114,15 @@ export function registerInspectTools(
               notes.push(`crop clamped to the die and to at most ${MAX_CROP_SIDE}px per side`);
             }
             url = `${diePath(dieId)}/crop?x=${rect.x}&y=${rect.y}&w=${rect.width}&h=${rect.height}`;
-            stem = rectStem(dieId, rect, px);
+            stem = rectStem(dieId, rect, px, overlay?.id);
           } else {
             url = `${diePath(dieId)}/cells/${encodeURIComponent(cellId)}/crop`;
-            stem = targetStem(dieId, "cell", cellId, px);
+            stem = targetStem(dieId, "cell", cellId, px, overlay?.id);
           }
         } else if (cellTypeId) {
           if (padding > 0) notes.push("padding is ignored for cellTypeId; use a rect target");
           url = `${diePath(dieId)}/cell-types/${encodeURIComponent(cellTypeId)}/crop`;
-          stem = targetStem(dieId, "type", cellTypeId, px);
+          stem = targetStem(dieId, "type", cellTypeId, px, overlay?.id);
         } else {
           requireFields("get_crop rect", { x, y, w, h }, ["x", "y", "w", "h"]);
           rect = { x: x!, y: y!, width: w!, height: h! };
@@ -116,7 +132,7 @@ export function registerInspectTools(
           url =
             `${diePath(dieId)}/crop?x=${Math.round(rect.x)}&y=${Math.round(rect.y)}` +
             `&w=${Math.round(rect.width)}&h=${Math.round(rect.height)}`;
-          stem = rectStem(dieId, rect, px);
+          stem = rectStem(dieId, rect, px, overlay?.id);
         }
         if (query.length > 0) url += (url.includes("?") ? "&" : "?") + query.join("&");
 
@@ -134,6 +150,10 @@ export function registerInspectTools(
         };
         if (cellId) payload.cellId = cellId;
         if (cellTypeId) payload.cellTypeId = cellTypeId;
+        if (overlay) {
+          payload.overlayId = overlay.id;
+          payload.overlayName = overlay.name;
+        }
         if (rect) payload.rect = rect;
         if (encoding === "base64") {
           if (raw.data.length <= BASE64_LIMIT_BYTES) {
@@ -215,21 +235,31 @@ function pxSuffix(px: number | undefined): string {
   return px === undefined ? "" : `_px${px}`;
 }
 
-function rectStem(dieId: string, rect: Rect, px: number | undefined): string {
+function overlaySuffix(overlayId: string | undefined): string {
+  return overlayId ? `_ov-${safe(overlayId)}` : "";
+}
+
+function rectStem(
+  dieId: string,
+  rect: Rect,
+  px: number | undefined,
+  overlayId: string | undefined
+): string {
   const x = Math.round(rect.x);
   const y = Math.round(rect.y);
   const w = Math.round(rect.width);
   const h = Math.round(rect.height);
-  return `crop_${safe(dieId)}_${x}_${y}_${w}x${h}${pxSuffix(px)}`;
+  return `crop_${safe(dieId)}_${x}_${y}_${w}x${h}${pxSuffix(px)}${overlaySuffix(overlayId)}`;
 }
 
 function targetStem(
   dieId: string,
   kind: "cell" | "type",
   targetId: string,
-  px: number | undefined
+  px: number | undefined,
+  overlayId: string | undefined
 ): string {
-  return `crop_${safe(dieId)}_${kind}_${safe(targetId)}${pxSuffix(px)}`;
+  return `crop_${safe(dieId)}_${kind}_${safe(targetId)}${pxSuffix(px)}${overlaySuffix(overlayId)}`;
 }
 
 /** Drop crops older than 24h so the directory cannot grow without bound. */

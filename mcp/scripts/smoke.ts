@@ -35,8 +35,8 @@ async function check(client: Client): Promise<void> {
   const names = tools.map((tool) => tool.name).sort();
   console.log(`[smoke] tools/list OK: ${names.length} tools`);
   console.log(`        ${names.join(", ")}`);
-  if (names.length !== 20) {
-    console.error(`[smoke] expected 20 tools, got ${names.length}`);
+  if (names.length !== 24) {
+    console.error(`[smoke] expected 24 tools, got ${names.length}`);
     process.exitCode = 1;
     return;
   }
@@ -72,6 +72,34 @@ async function check(client: Client): Promise<void> {
     console.log(
       "[smoke] no projects imported yet — import a die image in the app to exercise the rest."
     );
+    return;
+  }
+
+  const first = rows[0];
+  if (first?.id) {
+    const layersResult = (await client.callTool({
+      name: "list_overlay_layers",
+      arguments: { dieId: first.id }
+    })) as CallResult;
+    const layerText = (layersResult.content ?? []).map((entry) => entry.text ?? "").join("\n");
+    if (layersResult.isError) {
+      console.error(`[smoke] list_overlay_layers -> error: ${layerText.split("\n")[0]}`);
+      process.exitCode = 1;
+      return;
+    }
+    try {
+      const layers = JSON.parse(layerText) as { count?: number; layers?: Array<{ name?: string }> };
+      console.log(
+        `[smoke] list_overlay_layers OK: ${layers.count ?? 0} layer(s)` +
+          (layers.layers?.length
+            ? ` (${layers.layers.map((layer) => layer.name).join(", ")})`
+            : "")
+      );
+    } catch {
+      console.error(`[smoke] list_overlay_layers returned non-JSON: ${layerText.slice(0, 200)}`);
+      process.exitCode = 1;
+      return;
+    }
   }
   console.log("[smoke] PASS");
 }

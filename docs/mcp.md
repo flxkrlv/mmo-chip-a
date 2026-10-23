@@ -50,7 +50,7 @@ first one`.
 | `MMO_CROPS_DIR` | `<os tmp>/mmo-crops` | Where `get_crop` writes images (files >24 h are swept at startup) |
 | `MMO_EXPORT_DIR` | `<os tmp>/mmo-exports` | Where `export_project` writes ZIPs when no `outPath` is given |
 
-## Tools (19)
+## Tools (24)
 
 **Read**
 
@@ -59,7 +59,11 @@ first one`.
 | `list_projects` | Every die: id, name, image size, cell library/scale, location, availability. Start here for `dieId`s. |
 | `get_project` | One project's full record (geometry, progress, location). |
 | `get_annotations` | `mode:"summary"` (default): `rev`, `umPerPx`, counts for all 12 collections + an index capped at `limit` rows (500) with die-pixel `rect` per resolvable cell. `mode:"full"`: raw collections, **requires `kinds`**, payloads >4 MB are rejected. |
-| `get_crop` | Image crop → file on disk. One target: `cellId` (backend-resolved footprint), `cellTypeId`, or a raw rect `x/y/w/h` (≤4096 px/side, clipped and flagged). `padding` (cellId only) is computed locally; `px` asks for a preview. Returns `path` (+`base64` under 1.5 MB when asked). |
+| `list_overlay_layers` | The image layers: `__base__` plus every uploaded overlay (e.g. `sirtl`), with id, name, dimensions, format and tile-build progress. Call this before inspecting a layer. |
+| `get_die_image` | Full-die preview of the base photograph (JPEG, longest side ≤4096), written to disk. |
+| `get_overlay_image` | Full-layer preview of one overlay (JPEG, longest side ≤4096), written to disk. Resolves `overlayId` by id or display name. |
+| `get_crop` | Image crop → file on disk. One target: `cellId` (backend-resolved footprint), `cellTypeId`, or a raw rect `x/y/w/h` (≤4096 px/side, clipped and flagged). `padding` (cellId only) is computed locally; `px` asks for a preview. Pass `overlayId` (id or name) to composite an overlay over the base — this is how you check whether metal actually connects two devices. Returns `path` (+`base64` under 1.5 MB when asked). |
+| `get_region_summary` | Spatial query over `x/y/w/h`: cells (with their computed rect), nets with bounding boxes, pins, comments, floorplans and rulers that intersect. Cheaper than reading all annotations when studying one block. |
 | `get_metal_stack` | Interconnect stack (metals, vias, defaults). |
 | `get_spice_config` | Saved SPICE technology config (`{}` if none). |
 | `get_analog_devices` | Device-name store used by netlist export. |
@@ -86,6 +90,37 @@ first one`.
 | `set_scale` | Sets `umPerPx` (the ruler "set scale" workflow). |
 | `export_project` | ZIP (`light`/`full`) → disk, returns the absolute path and byte count. |
 
+## Layers and images
+
+The base photograph often hides the layer that answers the question. Before
+claiming that two devices are (or are not) connected, look at the relevant
+overlay — for this project `sirtl` is the developed-silicon image, and metal
+layers usually carry `me`/`metal` plus a number in their name.
+
+```jsonc
+// 1. which layers exist?
+{ "tool": "list_overlay_layers", "args": { "dieId": "..." } }
+// -> layers: [ {id:"__base__", kind:"base"},
+//              {id:"<uuid>", name:"sirtl", kind:"overlay", width, height, ...} ]
+
+// 2. native-resolution crop of one layer, composited over the base
+{ "tool": "get_crop", "args": {
+    "dieId": "...", "overlayId": "sirtl",
+    "x": 3000, "y": 6000, "w": 900, "h": 900
+} }
+
+// 3. cheap full-layer overview (JPEG, ≤4096 px)
+{ "tool": "get_overlay_image", "args": { "dieId": "...", "overlayId": "sirtl" } }
+
+// 4. full-die base overview
+{ "tool": "get_die_image", "args": { "dieId": "..." } }
+```
+
+`get_crop` keeps overlay crops in a separate file (`..._ov-<id>.jpg`), so a
+base crop and the same rect on a layer never overwrite each other. Overlay ids
+and names are resolved case-insensitively; an unknown name returns the list of
+available layers instead of a generic 404.
+
 ## Conventions and contracts
 
 - **Coordinates are source pixels** (the imported image's own grid), top-left origin —
@@ -107,16 +142,17 @@ first one`.
 
 ## Not covered (v0)
 
-Importing/creating projects, bulk annotation replacement, running or approving ML/CV
-extraction, editing cell-type layer shapes, saving metal-stack / SPICE config / analog
-device stores (read-only here), and destructive ML clears (delete all detections).
-Those stay in the UI until there is a real agent workflow behind them.
+Importing/creating projects, uploading/deleting overlay images, bulk annotation
+replacement, running or approving ML/CV extraction, editing cell-type layer
+shapes, saving metal-stack / SPICE config / analog device stores (read-only
+here), and destructive ML clears (delete all detections). Those stay in the UI
+until there is a real agent workflow behind them.
 
 ## Development
 
 ```bash
 npx tsc -p mcp/tsconfig.json --noEmit   # typecheck (shared types imported from the workspace)
-npm run test -w mcp                     # 41 unit/integration tests, mock fetch + in-memory MCP transport
+npm run test -w mcp                     # 45 unit/integration tests, mock fetch + in-memory MCP transport
 npm run smoke -w mcp                    # end-to-end against a live backend (exit 2 = backend down)
 ```
 
