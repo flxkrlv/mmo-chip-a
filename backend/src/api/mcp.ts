@@ -26,7 +26,6 @@ import {
  *   POST /mcp                        Streamable HTTP transport (JSON responses
  *                                    only, no server-initiated SSE stream) for
  *                                    every die: each tool takes a `dieId`
- *   POST /mcp/:dieId                 older per-die endpoint (tools without dieId)
  *   GET  /api/mcp/access             access entries of all dies (GUI prompt)
  *   PUT  /api/mcp/access/:dieId      { state: "approved" | "denied" }
  *   GET  /api/dies/:dieId/mcp        status for the GUI's MCP panel
@@ -41,7 +40,7 @@ import {
  * GET /api/dies/* exemption) and requires the same Bearer JWT as the API when
  * auth is enabled.
  *
- * Either endpoint only touches a die a user approved (mcpAccess.ts): the first
+ * The endpoint only touches a die a user approved (mcpAccess.ts): the first
  * call on a die nobody decided on yet marks it pending, the GUI shows a prompt
  * and the call waits up to `approvalWaitMs` for the answer.
  */
@@ -51,7 +50,7 @@ const SERVER_VERSION = "0.1.0";
 const PROTOCOL_VERSIONS = ["2025-06-18", "2025-03-26", "2024-11-05"];
 const MCP_MODES: McpWriteMode[] = ["off", "create", "edit"];
 
-const GLOBAL_INSTRUCTIONS =
+const INSTRUCTIONS =
   "This server exposes the chip dies of mmo-chip, a tool for reverse engineering integrated circuits " +
   "from die photos. Call list_dies first; every other tool takes the `dieId` of the die to work on. " +
   "A user must approve MCP access to each die once: the first call on a new die waits for that " +
@@ -60,16 +59,6 @@ const GLOBAL_INSTRUCTIONS =
   "get_die_info, look at the die with get_die_image (zoom in with a region), and read the extracted " +
   "circuit with get_annotations (find_wires_near gives exact wire ids around a point). Everything is " +
   "read-only except, when a user enabled it for that die: markup (comments, floorplan regions, rulers) " +
-  "and, behind a separate switch, wires and vias — or everything with full edits. get_die_info says " +
-  "what is currently allowed. render_annotated_image draws the layout with annotations, highlights and " +
-  "your own marks; attach such a render to a comment with add_comment's `image` to show people what you mean.";
-
-const INSTRUCTIONS =
-  "This server exposes one chip die from mmo-chip, a tool for reverse engineering integrated circuits " +
-  "from die photos. Coordinates are full-resolution die image pixels (origin top-left). Start with " +
-  "get_die_info, look at the die with get_die_image (zoom in with a region), and read the extracted " +
-  "circuit with get_annotations (find_wires_near gives exact wire ids around a point). Everything is " +
-  "read-only except, when a user enabled it for this die: markup (comments, floorplan regions, rulers) " +
   "and, behind a separate switch, wires and vias — or everything with full edits. get_die_info says " +
   "what is currently allowed. render_annotated_image draws the layout with annotations, highlights and " +
   "your own marks; attach such a render to a comment with add_comment's `image` to show people what you mean.";
@@ -113,8 +102,6 @@ interface RouterConfig {
 
 interface CallContext {
   config: RouterConfig;
-  /** Die of the per-die endpoint; null on the global one. */
-  boundDieId: string | null;
   clientName: string | null;
 }
 
@@ -123,22 +110,7 @@ export function createMcpRouter(config: RouterConfig) {
 
   // ─── MCP endpoint ────────────────────────────────────────────────
 
-  router.post("/mcp", rejectForeignOrigin, requireAuth, (request, response) =>
-    serveRpc(request, response, null)
-  );
-
-  router.post("/mcp/:dieId", rejectForeignOrigin, requireAuth, async (request, response) => {
-    const dieId = request.params.dieId as string;
-    try {
-      await readDieRecord(config.dataRoot, dieId);
-    } catch {
-      response.status(404).json(rpcError(null, -32001, `Unknown die ${dieId}`));
-      return;
-    }
-    await serveRpc(request, response, dieId);
-  });
-
-  async function serveRpc(request: Request, response: Response, boundDieId: string | null) {
+  router.post("/mcp", rejectForeignOrigin, requireAuth, async (request, response) => {
     const body = request.body as JsonRpcMessage | JsonRpcMessage[] | undefined;
     const messages = Array.isArray(body) ? body : body ? [body] : [];
     if (messages.length === 0 || messages.some((m) => !m || typeof m !== "object" || m.jsonrpc !== "2.0")) {
@@ -159,7 +131,6 @@ export function createMcpRouter(config: RouterConfig) {
       replies.push(
         await handle(message, {
           config,
-          boundDieId,
           clientName: sessionId ? sessionClients.get(sessionId) ?? null : null
         })
       );
@@ -171,17 +142,15 @@ export function createMcpRouter(config: RouterConfig) {
       return;
     }
     response.json(Array.isArray(body) ? replies : replies[0]);
-  }
+  });
 
   // No server-initiated stream and no session teardown to do.
-  for (const path of ["/mcp", "/mcp/:dieId"]) {
-    router.get(path, (_request, response) => {
-      response.status(405).set("Allow", "POST").end();
-    });
-    router.delete(path, (_request, response) => {
-      response.status(405).set("Allow", "POST").end();
-    });
-  }
+  router.get("/mcp", (_request, response) => {
+    response.status(405).set("Allow", "POST").end();
+  });
+  router.delete("/mcp", (_request, response) => {
+    response.status(405).set("Allow", "POST").end();
+  });
 
   // ─── GUI: per-die access approval ────────────────────────────────
 
@@ -306,17 +275,17 @@ async function handle(message: JsonRpcMessage, ctx: CallContext): Promise<unknow
         capabilities: { tools: { listChanged: false } },
         serverInfo: {
           name: SERVER_NAME,
-          title: ctx.boundDieId ? "mmo-chip die" : "mmo-chip",
+          title: "mmo-chip",
           version: SERVER_VERSION
         },
-        instructions: ctx.boundDieId ? INSTRUCTIONS : GLOBAL_INSTRUCTIONS
+        instructions: INSTRUCTIONS
       });
     }
     case "ping":
       return rpcResult(id, {});
     case "tools/list":
       return rpcResult(id, {
-        tools: ctx.boundDieId ? listMcpTools() : [LIST_DIES_TOOL, ...listMcpTools().map(withDieIdArgument)]
+        tools: [LIST_DIES_TOOL, ...listMcpTools().map(withDieIdArgument)]
       });
     case "tools/call": {
       const name = params.name;
@@ -339,30 +308,24 @@ async function handle(message: JsonRpcMessage, ctx: CallContext): Promise<unknow
   }
 }
 
-/** Resolve the die (bound, or the `dieId` argument), check access, run the tool. */
+/** Resolve the die from the `dieId` argument, check access, run the tool. */
 async function callTool(
   ctx: CallContext,
   name: string,
   args: Record<string, unknown>
 ): Promise<McpToolResult | null> {
   const { config } = ctx;
-  if (!ctx.boundDieId && name === "list_dies") return listDies(config.dataRoot);
+  if (name === "list_dies") return listDies(config.dataRoot);
   if (!listMcpTools().some((tool) => tool.name === name)) return null;
 
-  let dieId = ctx.boundDieId;
-  let toolArgs = args;
-  if (!dieId) {
-    const { dieId: requested, ...rest } = args;
-    if (typeof requested !== "string" || !requested) {
-      return toolError(`"dieId" is required: the id of the die to work on (see list_dies).`);
-    }
-    try {
-      await readDieRecord(config.dataRoot, requested);
-    } catch {
-      return toolError(`Unknown die ${requested}. list_dies shows the available dies.`);
-    }
-    dieId = requested;
-    toolArgs = rest;
+  const { dieId, ...toolArgs } = args;
+  if (typeof dieId !== "string" || !dieId) {
+    return toolError(`"dieId" is required: the id of the die to work on (see list_dies).`);
+  }
+  try {
+    await readDieRecord(config.dataRoot, dieId);
+  } catch {
+    return toolError(`Unknown die ${dieId}. list_dies shows the available dies.`);
   }
 
   const denied = await checkAccess(ctx, dieId);

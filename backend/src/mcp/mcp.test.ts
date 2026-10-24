@@ -24,7 +24,7 @@ test("speaks the MCP Streamable HTTP handshake", async () => {
   const { app, dieId } = await createHarness();
 
   const init = await request(app)
-    .post(`/mcp/${dieId}`)
+    .post("/mcp")
     .send({
       jsonrpc: "2.0",
       id: 1,
@@ -38,45 +38,38 @@ test("speaks the MCP Streamable HTTP handshake", async () => {
   assert.ok(session);
 
   const initialized = await request(app)
-    .post(`/mcp/${dieId}`)
+    .post("/mcp")
     .set("Mcp-Session-Id", session)
     .send({ jsonrpc: "2.0", method: "notifications/initialized" });
   assert.equal(initialized.status, 202);
 
-  const list = await rpc(app, dieId, "tools/list", {}, session);
+  const list = await rpc(app, "tools/list", {}, session);
   const names = list.result.tools.map((t: { name: string }) => t.name);
   assert.ok(names.includes("get_die_image"));
   assert.ok(names.includes("add_comment"));
   assert.ok(names.includes("add_wire"));
   assert.ok(!names.some((n: string) => /cell|pin/.test(n)), "no cell / pin editing tools");
 
-  assert.equal((await rpc(app, dieId, "nope", {}, session)).error.code, -32601);
-  assert.equal((await request(app).get(`/mcp/${dieId}`)).status, 405);
+  assert.equal((await rpc(app, "nope", {}, session)).error.code, -32601);
+  assert.equal((await request(app).get("/mcp")).status, 405);
   assert.equal(
-    (await request(app).post(`/mcp/${dieId}`).set("Origin", "https://evil.example").send({ jsonrpc: "2.0", id: 1, method: "ping" })).status,
+    (await request(app).post("/mcp").set("Origin", "https://evil.example").send({ jsonrpc: "2.0", id: 1, method: "ping" })).status,
     403
   );
-  assert.equal((await request(app).post(`/mcp/missing-die`).send({ jsonrpc: "2.0", id: 1, method: "ping" })).status, 404);
+  assert.equal((await request(app).post(`/mcp/${dieId}`).send({ jsonrpc: "2.0", id: 1, method: "ping" })).status, 404);
 });
 
 test("global endpoint serves every die after a user approves it", async () => {
   const { app, dieId } = await createHarness({ approve: false });
-  const global = async (method: string, params: unknown, session?: string) => {
-    const req = request(app).post("/mcp");
-    if (session) req.set("Mcp-Session-Id", session);
-    const response = await req.send({ jsonrpc: "2.0", id: ++rpcId, method, params });
-    assert.equal(response.status, 200);
-    return response.body;
-  };
   const init = await request(app)
     .post("/mcp")
     .send({ jsonrpc: "2.0", id: 0, method: "initialize", params: { clientInfo: { name: "global-client" } } });
   assert.match(init.body.result.instructions, /list_dies/);
   const session = init.headers["mcp-session-id"] as string;
   const callTool = async (name: string, args: Record<string, unknown>) =>
-    (await global("tools/call", { name, arguments: args }, session)).result;
+    (await rpc(app, "tools/call", { name, arguments: args }, session)).result;
 
-  const tools = (await global("tools/list", {}, session)).result.tools as {
+  const tools = (await rpc(app, "tools/list", {}, session)).result.tools as {
     name: string;
     inputSchema: { required?: string[] };
   }[];
@@ -107,11 +100,9 @@ test("global endpoint serves every die after a user approves it", async () => {
   assert.equal(info.isError, undefined);
   assert.equal(JSON.parse(info.content[0].text).dieId, dieId);
 
-  // Denied: refused right away, on the per-die endpoint too.
+  // Denied: refused right away.
   assert.equal((await request(app).put(`/api/mcp/access/${dieId}`).send({ state: "denied" })).status, 200);
   assert.match((await callTool("get_die_info", { dieId })).content[0].text, /denied/);
-  const legacy = await rpc(app, dieId, "tools/call", { name: "get_die_info", arguments: {} });
-  assert.equal(legacy.result.isError, true);
   assert.equal((await request(app).put(`/api/mcp/access/${dieId}`).send({ state: "maybe" })).status, 400);
 });
 
@@ -405,8 +396,8 @@ async function commentText(app: Server, dieId: string, id: string): Promise<stri
 }
 
 let rpcId = 0;
-async function rpc(app: Server, dieId: string, method: string, params: unknown, session?: string) {
-  const req = request(app).post(`/mcp/${dieId}`);
+async function rpc(app: Server, method: string, params: unknown, session?: string) {
+  const req = request(app).post("/mcp");
   if (session) req.set("Mcp-Session-Id", session);
   const response = await req.send({ jsonrpc: "2.0", id: ++rpcId, method, params });
   assert.equal(response.status, 200);
@@ -418,12 +409,12 @@ async function call(app: Server, dieId: string, name: string, args: Record<strin
   let session = sessions.get(app);
   if (!session) {
     const init = await request(app)
-      .post(`/mcp/${dieId}`)
+      .post("/mcp")
       .send({ jsonrpc: "2.0", id: 0, method: "initialize", params: { clientInfo: { name: "test-client" } } });
     session = init.headers["mcp-session-id"] as string;
     sessions.set(app, session);
   }
-  const body = await rpc(app, dieId, "tools/call", { name, arguments: args }, session);
+  const body = await rpc(app, "tools/call", { name, arguments: { dieId, ...args } }, session);
   assert.equal(body.error, undefined, JSON.stringify(body.error));
   return body.result;
 }

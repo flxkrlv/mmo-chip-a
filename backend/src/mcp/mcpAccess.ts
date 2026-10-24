@@ -44,9 +44,10 @@ async function readFile(dataRoot: string): Promise<AccessFile> {
 }
 
 /**
- * Before the global endpoint, each die had its own `/mcp/<dieId>` URL. Dies
- * whose MCP settings were touched or that MCP wrote to (they have an
- * `mcp.json`) count as already accessed, so they stay usable without a prompt.
+ * Before the global endpoint, each die had its own `/mcp/<dieId>` URL (now
+ * removed). Dies whose MCP settings were touched or that MCP wrote to (they
+ * have an `mcp.json`) count as already accessed, so they stay usable without
+ * a prompt.
  */
 async function legacyApprovals(dataRoot: string): Promise<Record<string, McpDieAccess>> {
   const dies: Record<string, McpDieAccess> = {};

@@ -92,8 +92,7 @@ npm run mcpb        # → dist/mmo-chip.mcpb
 
 Open `dist/mmo-chip.mcpb` with Claude Desktop (or drag it onto
 Settings → Extensions), then paste the endpoint from the MCP tab. The
-older per-die endpoint `/mcp/<dieId>` still works and binds the extension to
-that one die. The backend must be running.
+backend must be running.
 
 After adding or renaming MCP tools, bump `version` in `mcpb/manifest.json`,
 rebuild and reinstall the extension: Claude Desktop goes by the installed
