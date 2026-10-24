@@ -5,6 +5,7 @@
  * ReservedBy section is shown only when non-null.
  */
 
+import { PROCESS_LAYERS, processTagName, type ProcessConfig, type ProcessLayer, type ProcessTag } from "shared";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { DieAnnotations, FloorplanRegion } from "shared";
 import type { ActionDispatcher, AnnotationAction } from "../../api/actions";
@@ -101,6 +102,7 @@ export function FloorplanRegionPopover({
 }: Props) {
   const [name, setName] = useState(region.name);
   const [color, setColor] = useState(region.color || "#4dabf7");
+  const [layerTag, setLayerTag] = useState<ProcessTag | null>(region.layerTag ?? null);
   const [portAliases, setPortAliases] = useState<Record<string, string>>(() => {
     const init: Record<string, string> = {};
     if (region.portAliases) {
@@ -157,6 +159,7 @@ export function FloorplanRegionPopover({
     if (dirty) return;
     setName(region.name);
     setColor(region.color || "#4dabf7");
+    setLayerTag(region.layerTag ?? null);
     const next: Record<string, string> = {};
     for (const [netIdStr, alias] of Object.entries(region.portAliases ?? {})) next[`n${netIdStr}`] = alias;
     setPortAliases(next);
@@ -332,6 +335,7 @@ export function FloorplanRegionPopover({
             ...region,
             name: normalizeFloorplanName(name),
             color,
+            layerTag: layerTag ?? undefined,
             createdByName: region.createdByName ?? null,
             reservedByName: region.reservedByName ?? null,
             portAliases: Object.keys(finalAliases).length > 0 ? finalAliases : undefined,
@@ -357,6 +361,7 @@ export function FloorplanRegionPopover({
         ...region,
         name: normalizeFloorplanName(name),
         color,
+        layerTag: layerTag ?? undefined,
         createdByName: region.createdByName ?? null,
         reservedByName: region.reservedByName ?? null,
         portAliases: Object.keys(newAliases).length > 0 ? newAliases : undefined,
@@ -460,6 +465,29 @@ export function FloorplanRegionPopover({
           title="Enter adds a line · Ctrl+Enter saves and closes"
           style={{ width: "100%", boxSizing: "border-box", resize: "vertical", fontFamily: "inherit", lineHeight: 1.35 }}
         />
+      </label>
+
+      {/* Canonical process layer this region outlines; flips with the die's
+          polarity toggle (Net settings → Process). */}
+      <label style={{ display: "block", marginBottom: 8 }}>
+        <span style={{ fontSize: 10, color: "#888", textTransform: "uppercase", marginBottom: 2, display: "block" }}>
+          Layer
+        </span>
+        <select
+          className="input"
+          value={layerTag ?? ""}
+          onChange={(e) => {
+            setLayerTag((e.target.value || null) as ProcessTag | null);
+            setDirty(true);
+          }}
+          title="Canonical layer name shown with the region; follows the die's P-sub ⇄ N-sub flip"
+          style={{ width: "100%", boxSizing: "border-box" }}
+        >
+          <option value="">— none —</option>
+          {layerTagOptions(annotations?.process, layerTag).map((tag) => (
+            <option key={tag} value={tag}>{processTagName(tag)}</option>
+          ))}
+        </select>
       </label>
 
       {/* Port aliases (B3) */}
@@ -635,4 +663,13 @@ export function FloorplanRegionPopover({
       </span>
     </div>
   );
+}
+
+/** Layer tags offered for a region: the die's substrate and process layers
+ *  (every tag when the die has no process), plus the current one. */
+function layerTagOptions(process: ProcessConfig | undefined, current: ProcessTag | null): ProcessTag[] {
+  const tags: ProcessTag[] = process
+    ? [process.substrate === "p" ? "psub" : "nsub", ...process.layers]
+    : ["psub", "nsub", ...(Object.keys(PROCESS_LAYERS) as ProcessLayer[])];
+  return current && !tags.includes(current) ? [...tags, current] : tags;
 }

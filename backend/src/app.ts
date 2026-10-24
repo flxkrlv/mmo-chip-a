@@ -20,6 +20,7 @@ import { createFsRouter } from "./api/fs.js";
 import { createAssistantRouter } from "./api/assistant.js";
 import { createSpiceHandoffRouter } from "./api/spiceHandoff.js";
 import { createTilesRouter } from "./api/tiles.js";
+import { createMcpRouter } from "./api/mcp.js";
 import { enqueueOverlayPrebuilds } from "./api/overlayImages.js";
 import { createMLPredictor } from "./ml/predict.js";
 import { listDieRecords } from "./store.js";
@@ -37,6 +38,8 @@ export function createApp(config: {
   mlSidecarUrl: string;
   mlPredictPad: number;
   broadcaster?: AnnotationBroadcaster;
+  /** How long an MCP call on a die awaiting approval waits (default 50 s). */
+  mcpApprovalWaitMs?: number;
 }) {
   const app = express();
   const tileScheduler = createTileScheduler({
@@ -129,6 +132,15 @@ export function createApp(config: {
   app.use(createProjectIORouter({ dataRoot: config.dataRoot, tileScheduler }));
   app.use(createFsRouter({ dataRoot: config.dataRoot, tileScheduler }));
   app.use(createAssistantRouter({ dataRoot: config.dataRoot }));
+  app.use(
+    createMcpRouter({
+      dataRoot: config.dataRoot,
+      onAnnotationsChanged: (dieId, rev) =>
+        config.broadcaster?.emitAnnotationChange(dieId, rev),
+      onAccessChanged: () => config.broadcaster?.emitMcpAccess(),
+      approvalWaitMs: config.mcpApprovalWaitMs
+    })
+  );
   app.use(createSpiceHandoffRouter({ dataRoot: config.dataRoot }));
   app.use(createDebugRouter({ dataRoot: config.dataRoot }));
 

@@ -7,7 +7,7 @@ import type { FloorplanClip } from "../lib/floorplanClipboard";
 
 /** Which right-panel tab is showing. The ML tab also drives a render mode:
  *  traces/vias size from `mlConfig` instead of display preferences. */
-export type InspectorTab = "inspector" | "ml" | "cells" | "cv" | "ai" | "lib";
+export type InspectorTab = "inspector" | "ml" | "cells" | "cv" | "ai" | "lib" | "mcp";
 
 /** Mockup defaults for the ML config until a real per-die value is seeded
  *  from the annotations blob. Source-pixel units. */

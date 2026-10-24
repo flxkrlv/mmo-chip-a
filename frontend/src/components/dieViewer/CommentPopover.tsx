@@ -1,9 +1,11 @@
 import { useCallback, useState, type KeyboardEvent } from "react";
-import type { CommentAnnotation, CommentReply } from "shared";
+import { MCP_AUTHOR_ID, type CommentAnnotation, type CommentImage, type CommentReply } from "shared";
 import { Ic } from "../../icons";
 import { useAuth } from "../../state/auth";
 
 interface Props {
+  /** Die the comment belongs to (attached image URLs). */
+  dieId: string;
   /** Live comment (re-rendered as annotations change), or the unsaved draft. */
   comment: CommentAnnotation;
   onClose: () => void;
@@ -24,7 +26,7 @@ interface Props {
   onRedo: () => void;
 }
 
-export function CommentPopover({ comment, onClose, onCreate, onReply, onEdit, onEditReply, onDeleteReply, onDelete, onUndo, onRedo }: Props) {
+export function CommentPopover({ dieId, comment, onClose, onCreate, onReply, onEdit, onEditReply, onDeleteReply, onDelete, onUndo, onRedo }: Props) {
   const { userId, username } = useAuth();
   const [replyText, setReplyText] = useState("");
   // For a new (unsaved) comment, we show an initial text input.
@@ -34,6 +36,11 @@ export function CommentPopover({ comment, onClose, onCreate, onReply, onEdit, on
   // live comment, so undo / redo of the creation flips it back and forth.
   const saved = !!comment.text;
   const isAuthor = !!userId && userId === comment.authorId;
+  // MCP-authored comments / replies have no human author to delete them, so
+  // any user may (a regular, Ctrl+Z-undoable delete — not the MCP history).
+  const canDelete = isAuthor || (!!userId && comment.authorId === MCP_AUTHOR_ID);
+  const canDeleteReply = (reply: CommentReply) =>
+    !!userId && (reply.authorId === userId || reply.authorId === MCP_AUTHOR_ID);
   // Editing the saved text (author only); null when not editing.
   const [editText, setEditText] = useState<string | null>(null);
   // The reply being edited (own replies only) and its draft text.
@@ -95,7 +102,7 @@ export function CommentPopover({ comment, onClose, onCreate, onReply, onEdit, on
   }, [replyEdit, comment.replies, userId, onEditReply]);
 
   const handleDeleteReply = useCallback(async (reply: CommentReply) => {
-    if (!userId || reply.authorId !== userId) return;
+    if (!canDeleteReply(reply)) return;
     setSaving(true);
     try {
       await onDeleteReply(reply);
@@ -103,10 +110,10 @@ export function CommentPopover({ comment, onClose, onCreate, onReply, onEdit, on
     } finally {
       setSaving(false);
     }
-  }, [userId, onDeleteReply]);
+  }, [userId, onDeleteReply]); // canDeleteReply only reads userId
 
   const handleDelete = useCallback(async () => {
-    if (!userId || userId !== comment.authorId) return;
+    if (!canDelete) return;
     setSaving(true);
     try {
       await onDelete();
@@ -114,7 +121,7 @@ export function CommentPopover({ comment, onClose, onCreate, onReply, onEdit, on
     } finally {
       setSaving(false);
     }
-  }, [userId, comment.authorId, onDelete, onClose]);
+  }, [canDelete, onDelete, onClose]);
 
   // Inputs keep native text undo; once empty (e.g. right after sending a
   // reply) ⌘Z / ⌘⇧Z go to the die's undo stack instead.
@@ -208,9 +215,12 @@ export function CommentPopover({ comment, onClose, onCreate, onReply, onEdit, on
                 </div>
               </div>
             ) : saved ? (
-              <div style={{ color: "var(--ink2)", lineHeight: 1.5, whiteSpace: "pre-wrap" }}>
-                {comment.text}
-              </div>
+              <>
+                <div style={{ color: "var(--ink2)", lineHeight: 1.5, whiteSpace: "pre-wrap" }}>
+                  {comment.text}
+                </div>
+                <CommentImages dieId={dieId} images={comment.images} />
+              </>
             ) : (
               <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
                 <input
@@ -256,7 +266,7 @@ export function CommentPopover({ comment, onClose, onCreate, onReply, onEdit, on
               ✎
             </button>
           )}
-          {saved && isAuthor && (
+          {saved && canDelete && (
             <button
               className="btn ghost"
               onClick={handleDelete}
@@ -352,9 +362,12 @@ export function CommentPopover({ comment, onClose, onCreate, onReply, onEdit, on
                       </div>
                     </div>
                   ) : (
-                    <div style={{ color: "var(--ink2)", marginTop: 1, whiteSpace: "pre-wrap" }}>
-                      {reply.text}
-                    </div>
+                    <>
+                      <div style={{ color: "var(--ink2)", marginTop: 1, whiteSpace: "pre-wrap" }}>
+                        {reply.text}
+                      </div>
+                      <CommentImages dieId={dieId} images={reply.images} />
+                    </>
                   )}
                 </div>
                 {userId === reply.authorId && replyEdit?.id !== reply.id && (
@@ -368,7 +381,7 @@ export function CommentPopover({ comment, onClose, onCreate, onReply, onEdit, on
                     ✎
                   </button>
                 )}
-                {userId === reply.authorId && (
+                {canDeleteReply(reply) && (
                   <button
                     className="btn ghost"
                     onClick={() => handleDeleteReply(reply)}
@@ -415,5 +428,43 @@ export function CommentPopover({ comment, onClose, onCreate, onReply, onEdit, on
         )}
       </div>
     </>
+  );
+}
+
+/** Images attached to a comment / reply (e.g. annotated renders from an MCP
+ *  client). Click opens the full-size image in a new tab. */
+function CommentImages({ dieId, images }: { dieId: string; images?: CommentImage[] }) {
+  if (!images?.length) return null;
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 6 }}>
+      {images.map((image) => {
+        const url = `/api/dies/${encodeURIComponent(dieId)}/comment-images/${image.id}.jpg`;
+        return (
+          <figure key={image.id} style={{ margin: 0 }}>
+            <a href={url} target="_blank" rel="noreferrer" title="Open full size">
+              <img
+                src={url}
+                alt={image.caption ?? "Attached image"}
+                width={image.width}
+                height={image.height}
+                style={{
+                  display: "block",
+                  width: "100%",
+                  height: "auto",
+                  maxHeight: 240,
+                  objectFit: "contain",
+                  background: "var(--l1)",
+                  border: "1px solid var(--l2)",
+                  borderRadius: 4
+                }}
+              />
+            </a>
+            {image.caption && (
+              <figcaption style={{ fontSize: 10.5, color: "var(--ink3)", marginTop: 2 }}>{image.caption}</figcaption>
+            )}
+          </figure>
+        );
+      })}
+    </div>
   );
 }

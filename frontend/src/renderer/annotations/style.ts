@@ -1,4 +1,4 @@
-import type { LayerType, ShapeLabel } from "shared";
+import { PROCESS_LAYERS, type LayerType, type ShapeLabel } from "shared";
 
 /**
  * Visual tokens + sizing math for die annotations. Pure constants/functions —
@@ -181,6 +181,7 @@ export const NET_COLOR = NET_COLOR_OPTIONS[0].value;
  *  not here — it falls back to the user-configurable base net color. Chosen
  *  bright/opaque and mutually distinct (orange / teal / violet). */
 export const WIRE_LAYER_COLOR: Record<string, string> = {
+  ...Object.fromEntries(Object.entries(PROCESS_LAYERS).map(([layer, def]) => [layer, def.color])),
   poly: "#fb923c",
   metal1: "#2dd4bf",
   metal2: "#a78bfa",

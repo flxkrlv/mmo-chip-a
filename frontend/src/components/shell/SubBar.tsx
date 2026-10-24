@@ -21,7 +21,8 @@ export function SubBar({ children, right }: Props) {
     >
       {children}
       <div style={{ flex: 1 }} />
-      {right}
+      {/* The right-hand controls never shrink; tool options give way. */}
+      {right && <div style={{ flex: "0 0 auto", display: "flex", alignItems: "center" }}>{right}</div>}
     </div>
   );
 }

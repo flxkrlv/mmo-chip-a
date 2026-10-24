@@ -7,7 +7,7 @@
  */
 
 import type { FloorplanRegion } from "shared";
-import { floorplanNameLines } from "./floorplanName";
+import { floorplanDisplayName, floorplanNameLines } from "./floorplanName";
 
 /** FloorplanOverlay's visibility rule: a per-name override, else the global
  *  "floorplan" kind. */
@@ -62,7 +62,7 @@ export function drawFloorplansForSnapshot(
     ctx.stroke();
     ctx.restore();
 
-    const lines = floorplanNameLines(region.name);
+    const lines = floorplanNameLines(floorplanDisplayName(region));
     if (lines.length === 0) continue;
     const fontCss = Math.max(13, (14 * view.zoom) / 1000);
     const fontWorld = fontCss * cssToWorld;

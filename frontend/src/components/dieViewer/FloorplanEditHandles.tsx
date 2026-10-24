@@ -309,6 +309,7 @@ export function FloorplanEditHandles({ region, viewport, live, setLive, onCommit
   return (
     <svg
       ref={svgRef}
+      data-canvas-wheel
       style={{
         position: "absolute",
         top: 0,

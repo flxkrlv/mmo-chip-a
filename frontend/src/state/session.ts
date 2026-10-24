@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
-import type { MetalStack } from "shared";
+import { effectiveLayerStack, type MetalStack, type ProcessConfig } from "shared";
 
 export const DEFAULT_METAL_STACK: MetalStack = {
   metals: [
@@ -45,13 +45,21 @@ interface SessionState {
    *  phases (incl. Library) and a page reload, so the phase tabs can route
    *  back to the same die instead of dropping the context. */
   dieId: string | null;
-  /** Per-die metal stack configuration. Loaded from server on die open. */
+  /** Layer stack the wire tools use: the die's metals followed by its
+   *  process layers (poly, diffusions, wells…) and their contacts / taps —
+   *  see `effectiveLayerStack`. Metal 1 stays at index 0. */
   metalStack: MetalStack | null;
+  /** The die's metal stack as stored on the server (metals + vias only). */
+  rawMetalStack: MetalStack | null;
+  /** The die's process (DieAnnotations.process), mirrored from annotations. */
+  process: ProcessConfig | null;
 }
 
 interface SessionActions {
   setDieId: (dieId: string | null) => void;
+  /** Set the server metal stack (raw); the effective stack is derived. */
   setMetalStack: (stack: MetalStack | null) => void;
+  setProcess: (process: ProcessConfig | null) => void;
 }
 
 /**
@@ -62,8 +70,19 @@ export const useSession = create<SessionState & SessionActions>()(
     (set) => ({
       dieId: null,
       metalStack: null,
+      rawMetalStack: null,
+      process: null,
       setDieId: (dieId) => set({ dieId }),
-      setMetalStack: (stack) => set({ metalStack: stack }),
+      setMetalStack: (stack) =>
+        set((state) => ({
+          rawMetalStack: stack,
+          metalStack: stack ? effectiveLayerStack(stack, state.process) : null
+        })),
+      setProcess: (process) =>
+        set((state) => {
+          const raw = state.rawMetalStack ?? state.metalStack;
+          return { process, metalStack: raw ? effectiveLayerStack(raw, process) : null };
+        }),
     }),
     { name: "mmo-chip-session", version: 1 }
   )

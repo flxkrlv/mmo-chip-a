@@ -255,6 +255,7 @@ export function CommentOverlay({ annotations, viewportStore, dieId, dispatcher, 
         return (
           <div
             key={m.comment.id}
+            data-canvas-wheel
             onPointerDown={(e) => {
               if (e.button !== 0) return;
               e.stopPropagation();
@@ -328,6 +329,7 @@ export function CommentOverlay({ annotations, viewportStore, dieId, dispatcher, 
         <CommentWindow dieId={dieId} comment={shownComment} viewportStore={viewportStore}>
           <CommentPopover
             key={shownComment.id}
+            dieId={dieId}
             comment={shownComment}
             onClose={handlePopoverClose}
             onCreate={handleCreate}

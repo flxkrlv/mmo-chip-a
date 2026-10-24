@@ -203,6 +203,12 @@ async function queueExport(
     if (await fileExists(d)) archive.directory(d, "export");
   });
 
+  // 4b. comment-images/ (optional) — images attached to comments (MCP renders)
+  await measure("comment-images/", async () => {
+    const d = path.join(dieDir, "comment-images");
+    if (await fileExists(d)) archive.directory(d, "comment-images");
+  });
+
   // 5. preferences.json (optional, from frontend)
   await measure("preferences.json", async () => {
     if (body.preferences) archive.append(body.preferences, { name: "preferences.json" });
@@ -376,6 +382,12 @@ async function handleImport(
       if (entry.entryName.startsWith("export/")) {
         const relative = archiveRelativePath(entry.entryName, "export/");
         if (relative) await archive.extractEntry(entry, archiveTarget(path.join(stagedDieDir, "export"), relative));
+        continue;
+      }
+
+      if (entry.entryName.startsWith("comment-images/")) {
+        const relative = archiveRelativePath(entry.entryName, "comment-images/");
+        if (relative) await archive.extractEntry(entry, archiveTarget(path.join(stagedDieDir, "comment-images"), relative));
         continue;
       }
 
@@ -585,7 +597,7 @@ async function pruneProjectArtefacts(dieDir: string): Promise<void> {
   for (const artefact of ["metadata.json", "annotations.json", "spice_config.json", "analog-devices.json"]) {
     await fs.rm(path.join(dieDir, artefact), { force: true }).catch(() => {});
   }
-  for (const dir of ["original", "tiles", "export", "overlay-images"]) {
+  for (const dir of ["original", "tiles", "export", "comment-images", "overlay-images"]) {
     await fs.rm(path.join(dieDir, dir), { recursive: true, force: true }).catch(() => {});
   }
   // Leave project.json in place? No — the project was never created successfully.

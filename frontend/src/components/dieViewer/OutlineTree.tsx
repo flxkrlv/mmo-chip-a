@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ProcessSettings } from "./ProcessControls";
 import type { DieAnnotations, FloorplanRegion } from "shared";
 import { LAYER_PURPOSE_OPTIONS } from "shared/layerPurpose";
 import { COLOR_ML_CELL } from "../../renderer/annotations/cellDetections";
@@ -33,7 +34,7 @@ import { usePreferences, selectNetWidth } from "../../state/preferences";
 import { TreeRow, TreeSep } from "../tree/TreeRow";
 import { NetColorPickerBody } from "./NetColorPickerBody";
 import { OtherDieBadge } from "../cellLibrary/OtherDieBadge";
-import { floorplanNameInline } from "../../lib/floorplanName";
+import { floorplanDisplayName, floorplanNameInline } from "../../lib/floorplanName";
 import { updateOverlayPurpose } from "../../api/overlayImages";
 
 // Re-export so existing imports keep working.
@@ -591,7 +592,7 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
                       key={id}
                       depth={2}
                       icon={Ic.floorplan}
-                      label={floorplanNameInline(region.name) || region.id.slice(0, 8)}
+                      label={floorplanNameInline(floorplanDisplayName(region)) || region.id.slice(0, 8)}
                       selected={selectedIds.has(id)}
                       onSelect={() => select([id])}
                     />
@@ -1232,6 +1233,9 @@ function NetSettingsButton() {
   const netNodeJunctionCross = usePreferences((s) => s.netNodeJunctionCross);
   const setNetNodeJunctionCross = usePreferences((s) => s.setNetNodeJunctionCross);
   const metalStack = useSession((s) => s.metalStack ?? DEFAULT_METAL_STACK);
+  // Metal count comes from the server stack; the effective stack also lists
+  // the process (silicon) layers.
+  const metalCount = useSession((s) => (s.rawMetalStack ?? s.metalStack ?? DEFAULT_METAL_STACK).metals.length);
 
   return (
     <SettingsPopover label="Net settings">
@@ -1303,7 +1307,7 @@ function NetSettingsButton() {
             border: "1px solid var(--l3)", borderRadius: 4,
             padding: "2px 4px",
           }}
-          value={metalStack.metals.length}
+          value={metalCount}
           onChange={async (e) => {
             const count = Number(e.target.value);
             const stack = buildMetalStack(count);
@@ -1321,6 +1325,7 @@ function NetSettingsButton() {
           ))}
         </select>
       </div>
+      <ProcessSettings />
       <div className="u" style={{ margin: "12px 0 8px" }}>
         Layer colors
       </div>

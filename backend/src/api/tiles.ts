@@ -25,7 +25,7 @@ function assertSafeId(value: string): void {
   if (!SAFE_ID.test(value)) throw new Error("Invalid id");
 }
 
-class CropSourceMissing extends Error {}
+export class CropSourceMissing extends Error {}
 
 function cropCachePath(params: {
   projectDir: string;
@@ -40,6 +40,93 @@ function cropCachePath(params: {
     ? `overlay-${encodeURIComponent(params.overlaySourceId)}-`
     : "base-";
   return path.join(cacheDir, `${sourcePrefix}${params.basename}`);
+}
+
+/**
+ * Render (or reuse from the project's crop cache) `rect` of the die, with an
+ * optional overlay composited on top. `minPx` asks for a quick preview: the
+ * coarsest pyramid level whose output long side is still >= minPx. Returns
+ * the cached JPEG and the pyramid scale it was rendered at (output pixel =
+ * `scale` die pixels).
+ */
+export async function renderDieCrop(params: {
+  dataRoot: string;
+  dieId: string;
+  record: DieRecord;
+  /** Cache basename prefix (cell / type id). */
+  key: string;
+  rect: CropRect;
+  minPx?: number;
+  overlaySourceId?: string;
+}): Promise<{ path: string; scale: number }> {
+  const { record, rect, overlaySourceId } = params;
+  const requestedScale = pickCropScale(record.levels, rect, params.minPx);
+  const { dir: projectDir } = await resolveProjectDir(params.dataRoot, params.dieId);
+  const overlay = overlaySourceId
+    ? await getOverlayCropSource({
+        dataRoot: params.dataRoot,
+        dieId: params.dieId,
+        sourceId: overlaySourceId
+      })
+    : null;
+  const tilesDir = path.join(projectDir, "tiles");
+  const base: PyramidSource = {
+    levels: record.levels,
+    tileSize: record.tileSize,
+    peekTile: async (z, x, y) => {
+      const tilePath = path.join(tilesDir, String(z), `${x}_${y}.jpg`);
+      try {
+        await fs.access(tilePath);
+        return tilePath;
+      } catch {
+        return null;
+      }
+    }
+  };
+
+  // Tiles are used only where they are already built. A preview may come
+  // from any coarser complete level (the client stretches it to the cell
+  // box); a full-resolution crop needs the scale-1 tiles. Otherwise one
+  // direct extract from the original at the requested scale.
+  const candidates = [
+    requestedScale,
+    ...record.levels.map((l) => l.scale).filter((s) => requestedScale > 1 && s > requestedScale).sort((a, b) => a - b)
+  ];
+  let scale = requestedScale;
+  let fromTiles = false;
+  for (const s of candidates) {
+    if (await tilesAvailable({ base, overlay: overlay?.pyramid, rect, scale: s })) {
+      scale = s;
+      fromTiles = true;
+      break;
+    }
+  }
+
+  // Position, size and scale are all in the key: moving or resizing a cell
+  // yields a fresh crop, and a preview never masquerades as the full crop.
+  const cachePath = cropCachePath({
+    projectDir,
+    overlaySourceId,
+    basename: `${params.key}-${rect.left}-${rect.top}-${rect.width}x${rect.height}-s${scale}.jpg`
+  });
+
+  await ensureCrop(cachePath, async () => {
+    if (fromTiles && await renderCropFromTiles({ base, overlay: overlay?.pyramid, rect, scale, target: cachePath })) {
+      return;
+    }
+    const originalDir = path.join(projectDir, "original");
+    const originalFiles = await fs.readdir(originalDir);
+    if (originalFiles.length === 0) throw new CropSourceMissing();
+    await renderCropFromOriginal({
+      basePath: path.join(originalDir, originalFiles[0]),
+      overlayPath: overlay?.originalPath,
+      imageSize: { width: record.width, height: record.height },
+      rect,
+      scale,
+      target: cachePath
+    });
+  });
+  return { path: cachePath, scale };
 }
 
 export function createTilesRouter(config: {
@@ -68,74 +155,15 @@ export function createTilesRouter(config: {
       return;
     }
     const rawOverlaySourceId = request.query.overlaySourceId;
-    const overlaySourceId =
-      typeof rawOverlaySourceId === "string" ? rawOverlaySourceId : undefined;
     const minPx = Number(request.query.px);
-    const requestedScale = pickCropScale(record.levels, rect, Number.isFinite(minPx) ? minPx : undefined);
-    const { dir: projectDir } = await resolveProjectDir(config.dataRoot, params.dieId);
-    const overlay = overlaySourceId
-      ? await getOverlayCropSource({
-          dataRoot: config.dataRoot,
-          dieId: params.dieId,
-          sourceId: overlaySourceId
-        })
-      : null;
-    const tilesDir = path.join(projectDir, "tiles");
-    const base: PyramidSource = {
-      levels: record.levels,
-      tileSize: record.tileSize,
-      peekTile: async (z, x, y) => {
-        const tilePath = path.join(tilesDir, String(z), `${x}_${y}.jpg`);
-        try {
-          await fs.access(tilePath);
-          return tilePath;
-        } catch {
-          return null;
-        }
-      }
-    };
-
-    // Tiles are used only where they are already built. A preview may come
-    // from any coarser complete level (the client stretches it to the cell
-    // box); a full-resolution crop needs the scale-1 tiles. Otherwise one
-    // direct extract from the original at the requested scale.
-    const candidates = [
-      requestedScale,
-      ...record.levels.map((l) => l.scale).filter((s) => requestedScale > 1 && s > requestedScale).sort((a, b) => a - b)
-    ];
-    let scale = requestedScale;
-    let fromTiles = false;
-    for (const s of candidates) {
-      if (await tilesAvailable({ base, overlay: overlay?.pyramid, rect, scale: s })) {
-        scale = s;
-        fromTiles = true;
-        break;
-      }
-    }
-
-    // Position, size and scale are all in the key: moving or resizing a cell
-    // yields a fresh crop, and a preview never masquerades as the full crop.
-    const cachePath = cropCachePath({
-      projectDir,
-      overlaySourceId,
-      basename: `${params.key}-${rect.left}-${rect.top}-${rect.width}x${rect.height}-s${scale}.jpg`
-    });
-
-    await ensureCrop(cachePath, async () => {
-      if (fromTiles && await renderCropFromTiles({ base, overlay: overlay?.pyramid, rect, scale, target: cachePath })) {
-        return;
-      }
-      const originalDir = path.join(projectDir, "original");
-      const originalFiles = await fs.readdir(originalDir);
-      if (originalFiles.length === 0) throw new CropSourceMissing();
-      await renderCropFromOriginal({
-        basePath: path.join(originalDir, originalFiles[0]),
-        overlayPath: overlay?.originalPath,
-        imageSize: { width: record.width, height: record.height },
-        rect,
-        scale,
-        target: cachePath
-      });
+    const { path: cachePath } = await renderDieCrop({
+      dataRoot: config.dataRoot,
+      dieId: params.dieId,
+      record,
+      key: params.key,
+      rect,
+      minPx: Number.isFinite(minPx) ? minPx : undefined,
+      overlaySourceId: typeof rawOverlaySourceId === "string" ? rawOverlaySourceId : undefined
     });
     response.sendFile(cachePath);
   }

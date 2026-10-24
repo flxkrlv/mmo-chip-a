@@ -5,6 +5,8 @@
  * joined with " · ". Exports sanitize names on their own (newline → "_").
  */
 
+import { processTagName, type FloorplanRegion } from "shared";
+
 /** Separator for showing a multiline name on one line. */
 export const FLOORPLAN_NAME_JOIN = " · ";
 
@@ -28,4 +30,13 @@ export function floorplanNameInline(name: string): string {
     .map((l) => l.trim())
     .filter(Boolean)
     .join(FLOORPLAN_NAME_JOIN);
+}
+
+/** What a region shows: its name, plus the canonical name of its process
+ *  layer tag (e.g. "N-well") as the last line — or just that when unnamed. */
+export function floorplanDisplayName(region: Pick<FloorplanRegion, "name" | "layerTag">): string {
+  const name = normalizeFloorplanName(region.name ?? "");
+  if (!region.layerTag) return name;
+  const tag = processTagName(region.layerTag);
+  return name ? `${name}\n${tag}` : tag;
 }
