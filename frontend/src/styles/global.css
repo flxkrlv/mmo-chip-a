@@ -1074,3 +1074,41 @@ input.switch[type="checkbox"]:focus-visible {
     transform: rotate(360deg);
   }
 }
+
+/* The bottom status line. It never wraps: it sits in the flex column under
+   the canvas, so a second line would shrink the canvas and make it
+   flicker. When the text does not fit, it scrolls like a ticker instead. */
+.sb-track {
+  display: flex;
+  align-items: center;
+  width: max-content;
+  height: 100%;
+}
+.sb-copy {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex: none;
+  white-space: nowrap;
+}
+.sb-track--scroll {
+  animation: sb-marquee 20s linear infinite;
+  will-change: transform;
+}
+/* Hovering the line stops the ticker so the text can be read. */
+.sb-track--scroll:hover {
+  animation-play-state: paused;
+}
+@keyframes sb-marquee {
+  from {
+    transform: translateX(0);
+  }
+  to {
+    transform: translateX(-50%);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .sb-track--scroll {
+    animation: none;
+  }
+}

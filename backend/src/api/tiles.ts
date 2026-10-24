@@ -3,6 +3,7 @@ import path from "node:path";
 import { Router, type Request, type Response } from "express";
 import { getOverlayCropSource } from "./overlayImages.js";
 import { ensurePreviewImage } from "../imagePreview.js";
+import { resolveCellType } from "../cellLibrary.js";
 import { readAnnotations, readDieRecord } from "../store.js";
 import { resolveProjectDir } from "../projectLayout.js";
 import {
@@ -187,7 +188,10 @@ export function createTilesRouter(config: {
 
       const cell = annotations.cells.find((c) => c.id === cellId);
       if (!cell) { console.warn(`[crop] cell ${cellId} not found in annotations`); response.status(404).json({ error: "Cell not found" }); return; }
-      const cellType = annotations.cellTypes.find((ct) => ct.id === cell.cellTypeId);
+      // Own type, or a library type owned by another die (in this die's px).
+      const cellType = (
+        await resolveCellType(config.dataRoot, record, annotations, cell.cellTypeId, cell.cellTypeDieId)
+      )?.type;
       if (!cellType) { response.status(404).json({ error: "Cell type not found" }); return; }
 
       await serveCrop({
@@ -237,6 +241,37 @@ export function createTilesRouter(config: {
         key: `ct-${cellTypeId}`,
         rect: clampRect(record, cropX, cropY, cellType.cropRect.width, cellType.cropRect.height)
       });
+    } catch (error) {
+      if (error instanceof CropSourceMissing) {
+        response.status(404).json({ error: "Crop source image not found" });
+        return;
+      }
+      next(error);
+    }
+  });
+
+  // Crop an arbitrary source rect — thumbnails for ML cell proposals, which
+  // have no cell id yet. Cached like cell crops (keyed by the rect).
+  router.get("/api/dies/:dieId/crop", async (request, response, next) => {
+    try {
+      const { dieId } = request.params;
+      assertSafeId(dieId);
+      const q = request.query;
+      const x = Math.round(Number(q.x));
+      const y = Math.round(Number(q.y));
+      const w = Math.round(Number(q.w));
+      const h = Math.round(Number(q.h));
+      if (![x, y, w, h].every(Number.isFinite) || w <= 0 || h <= 0 || w > 4096 || h > 4096) {
+        response.status(400).json({ error: "x, y, w, h (source px, w/h ≤ 4096) required" });
+        return;
+      }
+      const record = await readDieRecord(config.dataRoot, dieId);
+      const rect = clampRect(record, x, y, w, h);
+      if (rect.width <= 0 || rect.height <= 0) {
+        response.status(400).json({ error: "Invalid crop region" });
+        return;
+      }
+      await serveCrop({ request, response, dieId, record, key: "rect", rect });
     } catch (error) {
       if (error instanceof CropSourceMissing) {
         response.status(404).json({ error: "Crop source image not found" });

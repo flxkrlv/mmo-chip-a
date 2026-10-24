@@ -1,7 +1,9 @@
 import { useEffect } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import type { MLInferenceJob } from "shared";
+import type { CellDetectionJob, CellImagingJob, MLInferenceJob } from "shared";
+import type { QueryClient } from "@tanstack/react-query";
 import { annotationKeys } from "./annotations";
+import { dieKeys } from "./dies";
 import { getAuthToken } from "../state/auth";
 import { useOnlineUsers, type OnlineUser } from "../state/onlineUsers";
 
@@ -14,6 +16,9 @@ import { useOnlineUsers, type OnlineUser } from "../state/onlineUsers";
 export type DieSocketMessage =
   | { type: "annotations"; dieId: string; rev: number }
   | { type: "mlJob"; dieId: string; job: MLInferenceJob }
+  | { type: "cellJob"; dieId: string; job: CellDetectionJob }
+  | { type: "imagingJob"; dieId: string; job: CellImagingJob }
+  | { type: "die"; dieId: string }
   | { type: "user/list"; users: Array<{ userId: string; username: string; dieId: string | null; tool: string | null }> }
   | { type: "user/online"; userId: string; username: string; dieId: string | null; tool: string | null }
   | { type: "user/offline"; userId: string }
@@ -159,22 +164,38 @@ export function useAnnotationsWebSocket(dieId: string | undefined): void {
 
   useEffect(() => {
     if (!dieId) return;
+    const onAnnotations = annotationInvalidator(qc, dieId);
     return subscribeToDie(dieId, (msg) => {
-      if (msg.type !== "annotations" || msg.dieId !== dieId) return;
-      const current = qc.getQueryData<{ rev?: number }>(
-        annotationKeys.forDie(dieId)
-      );
-      if (
-        current &&
-        typeof current.rev === "number" &&
-        current.rev >= msg.rev
-      ) {
-        // We already have this revision or newer — likely our own mutation.
-        return;
-      }
-      void qc.invalidateQueries({ queryKey: annotationKeys.forDie(dieId) });
+      // Die properties changed somewhere (every client hears it once, here):
+      // the library / scale of this die or of one it shares cells with.
+      if (msg.type === "die") void qc.invalidateQueries({ queryKey: dieKeys.all });
+      else onAnnotations(msg);
     });
   }, [dieId, qc]);
+}
+
+/** `useAnnotationsWebSocket` for a set of other dies — the ones a page's cell
+ *  library draws on — minus the die-properties handling. */
+export function useAnnotationsWebSocketMany(dieIds: readonly string[]): void {
+  const qc = useQueryClient();
+  const key = dieIds.join(",");
+  useEffect(() => {
+    if (!key) return;
+    const unsubs = key.split(",").map((id) => subscribeToDie(id, annotationInvalidator(qc, id)));
+    return () => unsubs.forEach((u) => u());
+  }, [key, qc]);
+}
+
+function annotationInvalidator(qc: QueryClient, dieId: string): MessageHandler {
+  return (msg) => {
+    if (msg.type !== "annotations" || msg.dieId !== dieId) return;
+    const current = qc.getQueryData<{ rev?: number }>(annotationKeys.forDie(dieId));
+    if (current && typeof current.rev === "number" && current.rev >= msg.rev) {
+      // We already have this revision or newer — likely our own mutation.
+      return;
+    }
+    void qc.invalidateQueries({ queryKey: annotationKeys.forDie(dieId) });
+  };
 }
 
 /**

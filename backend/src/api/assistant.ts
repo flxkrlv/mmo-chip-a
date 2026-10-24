@@ -137,7 +137,7 @@ export function createAssistantRouter(config: { dataRoot: string }) {
         });
         return;
       }
-      const { reply, durationMs, cardUpdate, lvsResults } = await discussFindingWithLlm(
+      const { reply, durationMs, cardUpdate, lvsResults, questions } = await discussFindingWithLlm(
         body.finding,
         Array.isArray(body.messages) ? body.messages : [],
         body.circuit,
@@ -149,7 +149,7 @@ export function createAssistantRouter(config: { dataRoot: string }) {
         dieId,
         body.assistantDataFlags,
       );
-      response.json({ ok: true, reply, durationMs, cardUpdate: cardUpdate ?? null, lvsResults: lvsResults ?? [] });
+      response.json({ ok: true, reply, durationMs, cardUpdate: cardUpdate ?? null, lvsResults: lvsResults ?? [], questions: questions ?? [] });
     } catch (error) {
       const reason = error instanceof Error ? error.message : "Unknown LLM error";
       console.error(`[assistant/discuss] failed for ${request.params.dieId}: ${reason}`);
@@ -188,7 +188,7 @@ export function createAssistantRouter(config: { dataRoot: string }) {
       // reasoning models can pause for tens of seconds between token bursts.
       const heartbeat = setInterval(() => sendEvent("heartbeat", {}), 10_000);
 
-      const { reply, durationMs, cardUpdate, lvsResults } = await discussFindingWithLlm(
+      const { reply, durationMs, cardUpdate, lvsResults, questions } = await discussFindingWithLlm(
         body.finding,
         Array.isArray(body.messages) ? body.messages : [],
         body.circuit,
@@ -204,10 +204,11 @@ export function createAssistantRouter(config: { dataRoot: string }) {
           else if (ev.type === "thinking") sendEvent("thinking", { content: ev.content });
           else if (ev.type === "tool_start") sendEvent("tool_start", { tool: ev.tool, args: ev.args });
           else if (ev.type === "tool_result") sendEvent("tool_result", { tool: ev.tool, ok: ev.ok, images: ev.images });
+          else if (ev.type === "spice_result") sendEvent("spice_result", { run: ev.run });
         },
       );
       clearInterval(heartbeat);
-      sendEvent("done", { ok: true, reply, durationMs, cardUpdate: cardUpdate ?? null, lvsResults: lvsResults ?? [] });
+      sendEvent("done", { ok: true, reply, durationMs, cardUpdate: cardUpdate ?? null, lvsResults: lvsResults ?? [], questions: questions ?? [] });
       response.end();
     } catch (error) {
       const reason = error instanceof Error ? error.message : "Unknown LLM error";
@@ -396,16 +397,21 @@ export function createAssistantRouter(config: { dataRoot: string }) {
       const systemPrompt = `You are an expert SPICE simulation engineer. You generate testbench directives for ngspice.
 
 CRITICAL RULES:
-- The DUT (device under test) is ALREADY connected in the netlist as X1. DO NOT include the .subckt definition, .model cards, or any DUT-internal components.
-- Your output should contain ONLY the testbench: voltage/current sources, loads, analysis commands, and output commands.
-- The subcircuit port order is: X1 GND_1 net230 ref VDD GND bandgap (match the .subckt definition)
+- The DUT (device under test) is ALREADY in the netlist. DO NOT repeat the .subckt definition, the .model cards, or any DUT-internal component.
+- Your output should contain ONLY the testbench: voltage/current sources, loads, analysis commands, and measurement commands.
+- When the netlist you are given already contains a testbench (sources, loads, an analysis), that testbench is the thing you are being asked to change. Keep everything the user did not ask you to change and edit the rest in place — do not start over from a blank testbench, and never output the testbench twice.
+- Read the port order from the .subckt line of the netlist you are given and instantiate it in exactly that order (the X1 line must have as many nodes as the .subckt has ports). Never guess the port order.
+- The testbench MUST contain an analysis directive: .op (DC operating point), .dc (sweep), .tran (transient) or .ac (AC). Without one the simulation returns nothing. Exactly ONE: when you edit an existing testbench, remove the analysis you are replacing instead of adding a second one (a repeated directive is dropped by the runner — it never changes the result, it only wastes a run).
+- Always drive the DUT: a source on its supply rail and a load on its output node. A DUT with floating supply pins returns zeros, which is not a result.
+- Name only nodes that exist in the netlist you were given. A node inside a .subckt is a measurable vector only as v(<instance>.<node>) (e.g. v(x1.net_122)); a node that does not exist is dropped by the runner and reported in its notes. Do not write .save/.print lists of guessed node names — ngspice aborts the whole run when a save list names nothing the circuit has.
+- Do NOT write a .control block with "quit" — the runner drives ngspice itself. Plain .measure lines are fine (.measure dc vout find v(out) at=2.5 — ngspice rejects "at 2.5").
 
 YOUR OUTPUT MUST INCLUDE (in this order):
 1. Voltage/current sources (VDD, input sources, ground references)
-2. Subcircuit instantiation (X1 ports subcktname)
+2. Subcircuit instantiation (X1 ports subcktname) — only when the netlist has no instantiation yet
 3. Load components (resistors, capacitors)
-4. Analysis directives (.dc, .tran, .ac, .op)
-5. Output directives (.print, .control/.endc if needed)
+4. Analysis directive (.op, .dc, .tran, .ac)
+5. Measurement directives (.measure ...) — optional
 6. .end
 
 DO NOT output:
@@ -413,12 +419,12 @@ DO NOT output:
 - .subckt/.ends blocks (DUT is provided separately)
 - Any device inside the DUT
 
-Example of CORRECT output:
+Example of CORRECT output (ports taken from the .subckt definition):
 VDD VDD 0 DC 3.3
 X1 GND_1 net230 ref VDD GND bandgap
 Rload ref 0 10k
 .dc VDD 0 5 0.01
-.print dc V(ref) V(net230) I(VDD)
+.measure dc vout find v(ref) at=3.3
 .end
 
 Example of WRONG output (DO NOT DO THIS):

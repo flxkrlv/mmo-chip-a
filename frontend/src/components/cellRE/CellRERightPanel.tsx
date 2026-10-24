@@ -16,6 +16,7 @@ import { parseShapeKey, shapeKey, useCellREStore } from "../../state/cellRE";
 import { usePreferences } from "../../state/preferences";
 import { setDeviceOverride, getDeviceRecord, getRegistryVersion } from "../../state/deviceRegistry";
 import { effectiveSheetR } from "../../lib/export/resistorDefaults";
+import { effectiveCapacitance } from "../../lib/export/capacitorDefaults";
 import {
   rowMatchesEntity,
   type HoverEntity,
@@ -1720,6 +1721,8 @@ function AnalogDeviceRow({ device, cellTypeId, onOverride }: AnalogDeviceRowProp
   // Reference registryTick so React keeps the subscription alive.
   void registryTick;
 
+  // Specific capacitance per unit area [fF/μm²].
+  const capDensity = usePreferences((s) => s.capDensity);
   const label = device.instanceName ?? device.id;
   // Physical type (nmos/pmos/npn/pnp/...) rather than the raw kind value,
   // so the panel agrees with the canvas overlay (see physicalType in
@@ -1755,10 +1758,20 @@ function AnalogDeviceRow({ device, cellTypeId, onOverride }: AnalogDeviceRowProp
       paramStr = `${sq.toFixed(1)}sq ${Math.round(sr * sq)}Ω`;
       break;
     }
-    case "capacitor":
-      paramStr = `${eff("area_um2", 0).toFixed(1)}μm²`;
-      if (g.capacitance_fF != null) paramStr += ` ${g.capacitance_fF}fF`;
+    case "capacitor": {
+      const area = eff("area_um2", 0);
+      // The capacitance comes from the plate area × the specific
+      // capacitance, unless the user pinned it by hand.
+      const cFf = isOverridden("capacitance_fF")
+        ? eff("capacitance_fF", 0)
+        : effectiveCapacitance(
+            { area_um2: area, capacitance_fF: g.capacitance_fF as number | undefined },
+            capDensity,
+          );
+      paramStr = `${area.toFixed(1)}μm²`;
+      if (cFf != null) paramStr += ` ${cFf.toFixed(2)}fF`;
       break;
+    }
     case "diode":
       paramStr = `${eff("area_um2", 0).toFixed(1)}μm²`;
       break;

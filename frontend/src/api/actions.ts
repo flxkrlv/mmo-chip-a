@@ -1,4 +1,4 @@
-import { useCallback, useEffect } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import type {
   AnnotationNet,
@@ -84,6 +84,10 @@ export type AnnotationAction =
   | { kind: "updateCommentReply"; commentId: string; reply: CommentReply; prevReply: CommentReply }
   | { kind: "upsertFloorplan"; region: FloorplanRegion; prevRegion: FloorplanRegion | null }
   | { kind: "removeFloorplan"; region: FloorplanRegion }
+  // Part of a gesture that lands on another die: a cell type shared through
+  // the cell library lives in — and is written to — the die that owns it.
+  // Applied, persisted and undone against that die.
+  | { kind: "onDie"; dieId: string; action: AnnotationAction }
   | { kind: "batch"; actions: AnnotationAction[] };
 
 export function inverseOf(action: AnnotationAction): AnnotationAction {
@@ -188,6 +192,8 @@ export function inverseOf(action: AnnotationAction): AnnotationAction {
       return { kind: "upsertFloorplan", region: action.region, prevRegion: null };
     case "batch":
       return { kind: "batch", actions: [...action.actions].reverse().map(inverseOf) };
+    case "onDie":
+      return { kind: "onDie", dieId: action.dieId, action: inverseOf(action.action) };
     case "upsertAnalogLayers":
       return { kind: "upsertAnalogLayers", layers: action.prevLayers!, prevLayers: action.layers };
   }
@@ -329,6 +335,9 @@ export function applyAction(annotations: DieAnnotations, action: AnnotationActio
       };
     case "batch":
       return action.actions.reduce(applyAction, annotations);
+    case "onDie":
+      // Another die's share of the gesture — not part of this snapshot.
+      return annotations;
     case "upsertAnalogLayers":
       return { ...annotations, analogLayers: action.layers };
   }
@@ -443,7 +452,37 @@ export async function requestAction(
     }
     case "upsertAnalogLayers":
       return apiPut(`/api/dies/${dieId}/analog-layers`, action.layers);
+    case "onDie":
+      return requestAction(action.dieId, action.action);
   }
+}
+
+/**
+ * A gesture's edits grouped by the die they land on — `home` for everything
+ * not wrapped in `onDie` — each die's share one action (a batch when it has
+ * several), in application order.
+ */
+export function splitByDie(home: string, action: AnnotationAction): Map<string, AnnotationAction> {
+  const parts = new Map<string, AnnotationAction[]>();
+  const visit = (a: AnnotationAction, dieId: string): void => {
+    if (a.kind === "batch") {
+      for (const sub of a.actions) visit(sub, dieId);
+      return;
+    }
+    if (a.kind === "onDie") {
+      visit(a.action, a.dieId);
+      return;
+    }
+    const list = parts.get(dieId);
+    if (list) list.push(a);
+    else parts.set(dieId, [a]);
+  };
+  visit(action, home);
+  const out = new Map<string, AnnotationAction>();
+  for (const [dieId, list] of parts) {
+    out.set(dieId, list.length === 1 ? list[0] : { kind: "batch", actions: list });
+  }
+  return out;
 }
 
 // ── Dispatcher ───────────────────────────────────────────────────────
@@ -463,13 +502,26 @@ export interface ActionDispatcher {
   canRedo: boolean;
 }
 
+export interface ActionDispatcherOptions {
+  /** Rewrites each dispatched action before it's applied and recorded (the
+   *  cell library sends edits of another die's type to that die). Null drops
+   *  the action. */
+  route?: (action: AnnotationAction) => AnnotationAction | null;
+}
+
 /**
  * One dispatcher per die. Dispatching is the only way to mutate annotations;
  * persistence happens automatically (optimistic cache update → server call
- * → rollback on error → invalidate on settled).
+ * → rollback on error → invalidate on settled). Parts wrapped in `onDie` go
+ * to their own die the same way.
  */
-export function useActionDispatcher(dieId: string): ActionDispatcher {
+export function useActionDispatcher(
+  dieId: string,
+  options: ActionDispatcherOptions = {}
+): ActionDispatcher {
   const qc = useQueryClient();
+  const routeRef = useRef(options.route);
+  routeRef.current = options.route;
 
   const undoStack = useDieViewerStore((s) => s.undoStack);
   const redoStack = useDieViewerStore((s) => s.redoStack);
@@ -488,20 +540,29 @@ export function useActionDispatcher(dieId: string): ActionDispatcher {
 
   const apply = useCallback(
     async (action: AnnotationAction): Promise<boolean> => {
-      const key = annotationKeys.forDie(dieId);
-      await qc.cancelQueries({ queryKey: key });
-      const previous = qc.getQueryData<DieAnnotations>(key);
-      if (previous) {
-        qc.setQueryData<DieAnnotations>(key, applyAction(previous, action));
+      const parts = splitByDie(dieId, action);
+      const snaps: Array<{ key: readonly unknown[]; previous: DieAnnotations | undefined }> = [];
+      for (const [partDie, part] of parts) {
+        const key = annotationKeys.forDie(partDie);
+        await qc.cancelQueries({ queryKey: key });
+        const previous = qc.getQueryData<DieAnnotations>(key);
+        snaps.push({ key, previous });
+        if (previous) qc.setQueryData<DieAnnotations>(key, applyAction(previous, part));
       }
       try {
-        await requestAction(dieId, action);
+        // Each die's share is one request (its own persistence).
+        await Promise.all([...parts].map(([partDie, part]) => requestAction(partDie, part)));
         return true;
       } catch (error) {
         // Rollback the optimistic update.
-        if (previous) qc.setQueryData(key, previous);
+        for (const { key, previous } of snaps) {
+          if (previous) qc.setQueryData(key, previous);
+        }
         console.warn(`[action] ${action.kind} failed`, error);
         return false;
+      } finally {
+        // Safety net: the server is authoritative.
+        for (const { key } of snaps) void qc.invalidateQueries({ queryKey: key });
       }
     },
     [qc, dieId]
@@ -509,10 +570,13 @@ export function useActionDispatcher(dieId: string): ActionDispatcher {
 
   const dispatch = useCallback<ActionDispatcher["dispatch"]>(
     async (action) => {
-      const ok = await apply(action);
+      const route = routeRef.current;
+      const routed = route ? route(action) : action;
+      if (!routed) return false;
+      const ok = await apply(routed);
       if (!ok) return false;
       ensureHistoryFor(dieId);
-      pushUndo(action);
+      pushUndo(routed);
       clearRedo();
       return true;
     },

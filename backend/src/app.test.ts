@@ -7,6 +7,7 @@ import test, { afterEach } from "node:test";
 import sharp from "sharp";
 import request from "supertest";
 import { createApp } from "./app.js";
+import { resolveOverlayOriginalPath } from "./api/overlayImages.js";
 import { ensureDataStore } from "./store.js";
 
 const tempRoots: string[] = [];
@@ -253,6 +254,85 @@ test("overlay upload accepts a pyramidal TIFF and prebuilds it from its stored l
   assert.equal(fullLevel.filter((name) => name.endsWith(".jpg")).length, 6 * 4);
 });
 
+test("overlay purpose persists, auto-detects from the name and can be forced to none", async () => {
+  const { app } = await createHarness();
+  const dieImage = await sharp({
+    create: { width: 64, height: 64, channels: 3, background: { r: 0, g: 0, b: 0 } }
+  })
+    .png()
+    .toBuffer();
+  const importResponse = await request(app)
+    .post("/api/dies/import")
+    .attach("file", dieImage, { filename: "die.png", contentType: "image/png" });
+  const { dieId } = await waitForCompletedJob(app, importResponse.body.id);
+
+  const upload = await request(app)
+    .post(`/api/dies/${dieId}/overlay-images/upload`)
+    .attach("file", dieImage, { filename: "sirtl.png", contentType: "image/png" });
+  assert.equal(upload.status, 201, JSON.stringify(upload.body));
+  const id = upload.body.image.id;
+  assert.equal(upload.body.image.purpose, "diffusion");
+  assert.equal(upload.body.image.purposeSource, "auto");
+  assert.equal(upload.body.image.purposeEditable, true);
+
+  const explicit = await request(app)
+    .patch(`/api/dies/${dieId}/overlay-images/${id}`)
+    .send({ purpose: "metal2" });
+  assert.equal(explicit.status, 200, JSON.stringify(explicit.body));
+  assert.equal(explicit.body.image.purpose, "metal2");
+  assert.equal(explicit.body.image.purposeSource, "user");
+  assert.equal(explicit.body.image.explicitPurpose, "metal2");
+
+  const listed = await request(app).get(`/api/dies/${dieId}/overlay-images/list`);
+  assert.equal(listed.body.images[0].purpose, "metal2");
+
+  const cleared = await request(app)
+    .patch(`/api/dies/${dieId}/overlay-images/${id}`)
+    .send({ purpose: null });
+  assert.equal(cleared.body.image.purpose, "diffusion");
+  assert.equal(cleared.body.image.purposeSource, "auto");
+
+  const forcedNone = await request(app)
+    .patch(`/api/dies/${dieId}/overlay-images/${id}`)
+    .send({ purpose: "none" });
+  assert.equal(forcedNone.body.image.purpose, null);
+  assert.equal(forcedNone.body.image.purposeSource, "user");
+  assert.equal(forcedNone.body.image.explicitPurpose, "none");
+});
+
+test("SPICE handoff is stored per project and returned as latest", async () => {
+  const { app } = await createHarness();
+  const dieImage = await sharp({
+    create: { width: 64, height: 64, channels: 3, background: { r: 0, g: 0, b: 0 } }
+  })
+    .png()
+    .toBuffer();
+  const importResponse = await request(app)
+    .post("/api/dies/import")
+    .attach("file", dieImage, { filename: "die.png", contentType: "image/png" });
+  const { dieId } = await waitForCompletedJob(app, importResponse.body.id);
+
+  const missing = await request(app).get(`/api/dies/${dieId}/spice-handoff/latest`);
+  assert.equal(missing.status, 404);
+
+  const posted = await request(app)
+    .post(`/api/dies/${dieId}/spice-handoff`)
+    .send({
+      netlist: "* test\n.op\n.end",
+      directives: ".op",
+      summary: "Operating Point — 1 device",
+      measurements: { vout: 1.2 }
+    });
+  assert.equal(posted.status, 200, JSON.stringify(posted.body));
+
+  const latest = await request(app).get(`/api/dies/${dieId}/spice-handoff/latest`);
+  assert.equal(latest.status, 200);
+  assert.equal(latest.body.dieId, dieId);
+  assert.match(latest.body.netlist, /\.op/);
+  assert.equal(latest.body.measurements.vout, 1.2);
+  assert.equal(typeof latest.body.at, "number");
+});
+
 test("overlay delete removes the source for everyone", async () => {
   const { app, dataRoot } = await createHarness();
   const dieImage = await sharp({
@@ -280,6 +360,62 @@ test("overlay delete removes the source for everyone", async () => {
   assert.deepEqual(list.body.images, []);
   const again = await request(app).delete(`/api/dies/${dieId}/overlay-images/${id}`);
   assert.equal(again.status, 404);
+});
+
+test("overlay source resolution accepts legacy filenames and tiled ids", async () => {
+  const { dataRoot } = await createHarness();
+  const dieId = "die1";
+  const dieImage = await sharp({
+    create: { width: 64, height: 64, channels: 3, background: { r: 0, g: 0, b: 0 } }
+  })
+    .png()
+    .toBuffer();
+  const overlayDir = path.join(dataRoot, "overlay-images", dieId);
+  await fs.mkdir(overlayDir, { recursive: true });
+
+  // Legacy flat overlays keep their filename (with extension) as the source id.
+  const legacyPath = path.join(overlayDir, "me2.png");
+  await fs.writeFile(legacyPath, dieImage);
+  assert.equal(
+    await resolveOverlayOriginalPath({ dataRoot, dieId, sourceId: "me2.png" }),
+    legacyPath
+  );
+  assert.equal(
+    await resolveOverlayOriginalPath({ dataRoot, dieId, sourceId: "../me2.png" }),
+    null
+  );
+
+  // Tiled sources resolve through their manifest, even after a move leaves the
+  // recorded absolute originalPath stale (copied folder project).
+  const id = "tiled1";
+  const sourceDir = path.join(overlayDir, id);
+  const originalPath = path.join(sourceDir, "original.png");
+  await fs.mkdir(sourceDir, { recursive: true });
+  await fs.writeFile(originalPath, dieImage);
+  const manifestPath = path.join(sourceDir, "manifest.json");
+  const manifest = {
+    id,
+    name: id,
+    originalFilename: "original.png",
+    originalPath,
+    size: dieImage.length,
+    width: 64,
+    height: 64,
+    tileSize: 512,
+    tileFormat: "png",
+    hasAlpha: false,
+    maxZoomLevel: 0,
+    levels: [],
+    ready: true,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString()
+  };
+  await fs.writeFile(manifestPath, JSON.stringify(manifest, null, 2), "utf8");
+  assert.equal(await resolveOverlayOriginalPath({ dataRoot, dieId, sourceId: id }), originalPath);
+
+  manifest.originalPath = path.join("Z:", "moved-away", "original.png");
+  await fs.writeFile(manifestPath, JSON.stringify(manifest, null, 2), "utf8");
+  assert.equal(await resolveOverlayOriginalPath({ dataRoot, dieId, sourceId: id }), originalPath);
 });
 
 test("overlay upload rejects formats other than PNG, JPEG, WebP and TIFF", async () => {

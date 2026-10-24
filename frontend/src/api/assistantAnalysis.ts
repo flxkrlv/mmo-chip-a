@@ -1,5 +1,6 @@
 import type {
   AnalogDevice,
+  DeviceGeometryCapacitor,
   AssistantAnalysisBrief,
   AssistantAnalysisMode,
   AssistantAnalysisRequest,
@@ -17,9 +18,24 @@ import type {
   AssistantLvsCheckRequest,
   AssistantLvsCheckResponse,
   AssistantLvsLibrarySummary,
+  AssistantSpiceRun,
   AssistantToolFlags,
 } from "shared";
 import { apiGet, apiPost, authHeaders, ApiError } from "./client";
+import { usePreferences } from "../state/preferences";
+import { effectiveCapacitance } from "../lib/export/capacitorDefaults";
+
+/**
+ * The geometry the backend sees. A capacitor's capacitance is derived from
+ * its plate area and the specific capacitance, so the snapshot carries the
+ * derived value — the backend's DUT netlist then uses the real one.
+ */
+function snapshotGeometry(device: AnalogDevice): AnalogDevice["geometry"] {
+  if (device.kind !== "capacitor") return device.geometry;
+  const g = device.geometry as DeviceGeometryCapacitor;
+  const cFf = effectiveCapacitance(g, usePreferences.getState().capDensity);
+  return cFf != null ? { ...g, capacitance_fF: cFf } : g;
+}
 
 /**
  * Converts the current browser extraction to a serialisable read-only snapshot.
@@ -43,7 +59,7 @@ export function buildAssistantCircuitSnapshot(
         netId: terminal.netId,
         shapeIds: terminal.shapeIds ?? [],
       })),
-      geometry: device.geometry,
+      geometry: snapshotGeometry(device),
       bbox: device.bbox,
       cellId: (device as any)._cellId as string | undefined,
     })),
@@ -150,13 +166,15 @@ function buildDiscussRequest(
 // ── Streaming (SSE) client for analyse/discuss ──
 
 export interface AssistantStreamEvent {
-  type: "token" | "thinking" | "questions" | "tool_start" | "tool_result" | "done" | "error" | "heartbeat";
+  type: "token" | "thinking" | "questions" | "tool_start" | "tool_result" | "spice_result" | "done" | "error" | "heartbeat";
   content?: string;
   questions?: string[];
   tool?: string;
   args?: unknown;
   ok?: boolean;
   images?: number;
+  /** Payload of a "spice_result" event: one ngspice run of the assistant. */
+  run?: AssistantSpiceRun;
   reply?: string;
   cardUpdate?: AssistantFindingPatch | null;
   lvsResults?: Array<AssistantLvsCheckResponse["data"]>;
@@ -269,8 +287,8 @@ export async function discussFindingStream(
   dieId: string,
   input: Parameters<typeof discussFinding>[1],
   handlers: AssistantStreamHandlers,
-): Promise<{ reply: string; cardUpdate: AssistantFindingPatch | null; lvsResults: Array<AssistantLvsCheckResponse["data"]> }> {
-  let final: { reply: string; cardUpdate: AssistantFindingPatch | null; lvsResults: Array<AssistantLvsCheckResponse["data"]> } | null = null;
+): Promise<{ reply: string; cardUpdate: AssistantFindingPatch | null; lvsResults: Array<AssistantLvsCheckResponse["data"]>; questions: string[] }> {
+  let final: { reply: string; cardUpdate: AssistantFindingPatch | null; lvsResults: Array<AssistantLvsCheckResponse["data"]>; questions: string[] } | null = null;
   let streamError: string | null = null;
   await streamAssistantRequest(
     `/api/dies/${encodeURIComponent(dieId)}/assistant/discuss/stream`,
@@ -280,7 +298,7 @@ export async function discussFindingStream(
       onEvent: (ev) => {
         handlers.onEvent(ev);
         if (ev.type === "done" && typeof ev.reply === "string") {
-          final = { reply: ev.reply, cardUpdate: ev.cardUpdate ?? null, lvsResults: ev.lvsResults ?? [] };
+          final = { reply: ev.reply, cardUpdate: ev.cardUpdate ?? null, lvsResults: ev.lvsResults ?? [], questions: ev.questions ?? [] };
         }
         if (ev.type === "error" && typeof ev.error === "string") streamError = ev.error;
       },

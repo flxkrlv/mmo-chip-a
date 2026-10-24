@@ -10,13 +10,16 @@ import { Ic } from "../../icons";
 export function SettingsPopover({
   label,
   children,
-  triggerContent
+  triggerContent,
+  triggerStyle
 }: {
   label: string;
   children: React.ReactNode;
   /** Replace the default sliders icon with custom content
    *  (e.g. a colored swatch that acts as the trigger). */
   triggerContent?: ReactNode;
+  /** Extra style for the trigger button (e.g. auto width for a text badge). */
+  triggerStyle?: React.CSSProperties;
 }) {
   const [open, setOpen] = useState(false);
   const triggerRef = useRef<HTMLButtonElement>(null);
@@ -84,6 +87,7 @@ export function SettingsPopover({
         aria-label={label}
         aria-haspopup="dialog"
         aria-expanded={open}
+        style={triggerStyle}
         onClick={(e) => {
           e.stopPropagation();
           setOpen((o) => !o);

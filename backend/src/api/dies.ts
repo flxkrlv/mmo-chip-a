@@ -2,17 +2,22 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { Router } from "express";
 import multer from "multer";
+import type { DieUpdateRequest } from "shared";
+import { normalizeCellLibrary } from "shared/cellLibrary";
 import type { createImportJobManager } from "../dieImport/jobs.js";
 import {
   deleteDieRecord,
   deleteImportJobsForDie,
   ensureDataStore,
   listDieRecords,
-  readDieRecord
+  readDieRecord,
+  withDieLock,
+  writeDieRecord
 } from "../store.js";
 import type { createTileScheduler } from "../tileScheduler.js";
 import { resolveProjectDir } from "../projectLayout.js";
 import type { DieRecord } from "../types.js";
+import type { AnnotationBroadcaster } from "../ws.js";
 import type { DieTileInfo, OverlayTileProgress, ProjectStorageUsage } from "shared";
 import { toPublicImportJob } from "./jobs.js";
 import {
@@ -21,10 +26,16 @@ import {
   resumeOverlayPrebuilds
 } from "./overlayImages.js";
 
+/** Bounds on `cellScale` — a die photographed 1000× larger or smaller than
+ *  another of its library is a typo, not a scale. */
+const MIN_CELL_SCALE = 1e-3;
+const MAX_CELL_SCALE = 1e3;
+
 export function createDiesRouter(config: {
   dataRoot: string;
   tileScheduler: ReturnType<typeof createTileScheduler>;
   importJobManager: ReturnType<typeof createImportJobManager>;
+  broadcaster?: AnnotationBroadcaster;
 }) {
   const router = Router();
   const uploadDirectory = path.join(config.dataRoot, "tmp");
@@ -129,6 +140,44 @@ export function createDiesRouter(config: {
     }
   });
 
+  // Die properties: the cell library it belongs to and its scale in it.
+  router.patch("/api/dies/:dieId", async (request, response, next) => {
+    const { dieId } = request.params;
+    try {
+      const patch = parseDieUpdate(request.body);
+      if (typeof patch === "string") {
+        response.status(400).json({ error: patch });
+        return;
+      }
+      const record = await withDieLock(dieId, async () => {
+        const current = await readDieRecord(config.dataRoot, dieId);
+        const next: DieRecord = { ...current, updatedAt: new Date().toISOString() };
+        if ("cellLibrary" in patch) {
+          if (patch.cellLibrary) next.cellLibrary = patch.cellLibrary;
+          else delete next.cellLibrary;
+        }
+        if ("cellScale" in patch) {
+          if (patch.cellScale != null) next.cellScale = patch.cellScale;
+          else delete next.cellScale;
+        }
+        await writeDieRecord(config.dataRoot, next);
+        return next;
+      });
+      config.broadcaster?.emitDieChange(dieId);
+      const resolved = await resolveProjectDir(config.dataRoot, record.id);
+      response.json(
+        toPublicRecord(
+          record,
+          config.tileScheduler.getProgress(record.id),
+          await getOverlayTileProgress(config.dataRoot, record.id),
+          { available: resolved.available, folderPath: resolved.kind === "folder" ? resolved.dir : undefined }
+        )
+      );
+    } catch (error) {
+      next(error);
+    }
+  });
+
   router.delete("/api/dies/:dieId", async (request, response, next) => {
     const dieId = request.params.dieId;
     try {
@@ -184,6 +233,33 @@ export function createDiesRouter(config: {
   });
 
   return router;
+}
+
+/** Validate a `PATCH /api/dies/:dieId` body. Returns the fields to change
+ *  (library name normalised, empty ⇒ cleared) or an error message. */
+export function parseDieUpdate(body: unknown): DieUpdateRequest | string {
+  if (!body || typeof body !== "object" || Array.isArray(body)) return "Expected a JSON object";
+  const input = body as Record<string, unknown>;
+  const out: DieUpdateRequest = {};
+  if ("cellLibrary" in input) {
+    const v = input.cellLibrary;
+    if (v !== null && typeof v !== "string") return "cellLibrary must be a string or null";
+    out.cellLibrary = normalizeCellLibrary(v);
+  }
+  if ("cellScale" in input) {
+    const v = input.cellScale;
+    if (v === null) out.cellScale = null;
+    else if (
+      typeof v !== "number" ||
+      !Number.isFinite(v) ||
+      v < MIN_CELL_SCALE ||
+      v > MAX_CELL_SCALE
+    ) {
+      return `cellScale must be a number in [${MIN_CELL_SCALE}, ${MAX_CELL_SCALE}] or null`;
+    } else out.cellScale = v;
+  }
+  if (!("cellLibrary" in out) && !("cellScale" in out)) return "Nothing to update";
+  return out;
 }
 
 async function withOverlaySourceStorage(

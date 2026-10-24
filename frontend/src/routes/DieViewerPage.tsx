@@ -6,6 +6,12 @@ import { annotationKeys, useAnnotations } from "../api/annotations";
 import { useAnnotationsWebSocket } from "../api/annotationsWebSocket";
 import { netChangesToAction, useActionDispatcher } from "../api/actions";
 import { useDie } from "../api/dies";
+import { useCellLibrary } from "../api/cellLibrary";
+import { routeLibraryAction, withLibraryTypes } from "../lib/cellLibrary";
+import { useWireMapInfo, wireTileUrl } from "../api/cellImaging";
+import { useCellDetections } from "../api/cellDetection";
+import { proposalsFor, type Proposal } from "../lib/cellDetection";
+import { populateCellDetectionLayer } from "../renderer/annotations/cellDetections";
 import { AppShell } from "../components/shell/AppShell";
 import { StatusBar } from "../components/shell/StatusBar";
 import { SubBar } from "../components/shell/SubBar";
@@ -99,6 +105,10 @@ import {
 } from "../components/dieViewer/useWireTool";
 import { buildInstanceTerminalMap } from "../lib/extraction/terminalDetect";
 import { useCellTool } from "../components/dieViewer/useCellTool";
+import { useLibraryCellTool } from "../components/dieViewer/useLibraryCellTool";
+import { LibraryCellOverlay } from "../components/dieViewer/LibraryCellOverlay";
+import { useAnalogCellTool } from "../components/dieViewer/useAnalogCellTool";
+import { AnalogCellOverlay } from "../components/dieViewer/AnalogCellOverlay";
 import { useViaPolyTool } from "../components/dieViewer/useViaPolyTool";
 import {
   previewEnds,
@@ -296,15 +306,29 @@ export function DieViewerPage() {
 
 function DieViewer({ dieId }: { dieId: string }) {
   const { data: die, isLoading, error } = useDie(dieId);
-  const { data: annotations } = useAnnotations(dieId);
+  const { data: ownAnnotations } = useAnnotations(dieId);
   // The die's process adds its silicon layers to the session's layer stack.
-  const dieProcess = annotations?.process ?? null;
+  const dieProcess = ownAnnotations?.process ?? null;
   useEffect(() => {
     useSession.getState().setProcess(dieProcess);
   }, [dieProcess]);
   const toast = useToast();
   const dialog = useDialog();
   useAnnotationsWebSocket(dieId);
+  // The cell library: other dies' types this die uses or is offered, merged
+  // into the annotations at this die's scale (the page draws, hit-tests and
+  // edits them like its own); edits to them are routed to their die.
+  const library = useCellLibrary(dieId, ownAnnotations);
+  const libraryRef = useRef(library);
+  libraryRef.current = library;
+  const annotations = useMemo(
+    () => (ownAnnotations ? withLibraryTypes(ownAnnotations, library) : undefined),
+    [ownAnnotations, library]
+  );
+  const foreignTypeOwners = useMemo(
+    () => new Map([...library.foreign].map(([id, f]) => [id, f.ownerName])),
+    [library]
+  );
 
   // Scope the per-project analog device name store to this die.
   useEffect(() => {
@@ -334,6 +358,12 @@ function DieViewer({ dieId }: { dieId: string }) {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [leftCollapsed, toggleLeft] = usePanelCollapsed("die.left");
   const [rightCollapsed, toggleRight] = usePanelCollapsed("die.right");
+  // The "I" hotkey opens the right panel for the analog library — the
+  // keydown handler is registered once, so it reads the state from a ref.
+  const rightCollapsedRef = useRef(rightCollapsed);
+  rightCollapsedRef.current = rightCollapsed;
+  const toggleRightRef = useRef(toggleRight);
+  toggleRightRef.current = toggleRight;
   useEffect(() => {
     const handler = () => setShortcutsOpen((v) => !v);
     window.addEventListener("toggle-shortcuts", handler);
@@ -351,7 +381,9 @@ function DieViewer({ dieId }: { dieId: string }) {
   // Broadcast status to other users
   useUserStatus(dieId, activeTool);
   const navigate = useNavigate();
-  const dispatcher = useActionDispatcher(dieId);
+  const dispatcher = useActionDispatcher(dieId, {
+    route: (action) => routeLibraryAction(action, libraryRef.current)
+  });
 
   // Hot-path live values. These never trigger DieViewer re-renders — only the
   // tiny readout subcomponents subscribe via `useLiveValue`. The renderer
@@ -711,6 +743,15 @@ function DieViewer({ dieId }: { dieId: string }) {
         }
       }
 
+      // "I" — the analog library in the right panel.
+      if (!e.shiftKey && !e.altKey && e.key.toLowerCase() === "i") {
+        e.preventDefault();
+        const prefs = usePreferences.getState();
+        prefs.setInspectorTab(prefs.inspectorTab === "lib" ? "inspector" : "lib");
+        if (rightCollapsedRef.current) toggleRightRef.current();
+        return;
+      }
+
       // Tool switch hotkeys.
       const toolId = DIE_VIEWER_HOTKEYS[e.key];
       if (toolId && toolId !== "pan") {
@@ -812,6 +853,37 @@ function DieViewer({ dieId }: { dieId: string }) {
     ];
   }, [die]);
 
+  // Wire-likelihood overlay (pixels under recognised cells that aren't part
+  // of the cell — mostly wires routed over them). Same tile geometry as the
+  // die image, so it reuses the image layer with its own RGBA tile source.
+  // Rebuilt when the map is regenerated (the version busts tile caches).
+  const wireMapInfo = useWireMapInfo(die?.id ?? null).data ?? null;
+  const wireMapVersion = wireMapInfo?.createdAt ?? null;
+  const wireMapMinLevel = wireMapInfo?.minZoomLevel ?? 0;
+  const wireMapLayer = useMemo(
+    () =>
+      die && wireMapVersion
+        ? new DieImageLayer(
+            die,
+            {
+              getHidden: () => usePreferences.getState().wireMapHidden,
+              getOpacity: () => usePreferences.getState().wireMapOpacity
+            },
+            {
+              id: "wire-map",
+              tileUrl: (z, x, y) => wireTileUrl(die.id, wireMapVersion, z, x, y),
+              pyramid: false,
+              minLevel: wireMapMinLevel
+            }
+          )
+        : null,
+    [die, wireMapVersion, wireMapMinLevel]
+  );
+  useEffect(() => {
+    useDieViewerStore.getState().setWireMapAvailable(wireMapLayer !== null);
+    return () => useDieViewerStore.getState().setWireMapAvailable(false);
+  }, [wireMapLayer]);
+
   // ML via predictions, fetched per backend tile (server-side cached). Lives
   // above the die image but below the annotation layer so user-drawn
   // geometry still wins for picks / selection. Recreated per die so each
@@ -871,6 +943,36 @@ function DieViewer({ dieId }: { dieId: string }) {
     mlViasLayer?.clearCache();
   }, [mlCheckpointHash, mlViasLayer]);
 
+  // ML cell proposals (cell-detection results). Their own rbush layer so
+  // picks / marquee / visibility behave like real annotations without mixing
+  // into the persisted-annotation layer. Rebuilt whenever the results, the
+  // placed cells (approvals hide the proposal underneath) or the confidence
+  // threshold change.
+  const proposalLayer = useMemo(
+    () => (die ? new AnnotationLayer("cell-detections") : null),
+    [die]
+  );
+  const cellDetectionsQ = useCellDetections(die?.id ?? null);
+  const cellDetectionThreshold = usePreferences((s) => s.cellDetectionThreshold);
+  const proposals = useMemo<Proposal[]>(
+    () =>
+      annotations && cellDetectionsQ.data
+        ? proposalsFor(cellDetectionsQ.data, annotations, {
+            threshold: cellDetectionThreshold
+          })
+        : [],
+    [annotations, cellDetectionsQ.data, cellDetectionThreshold]
+  );
+  useEffect(() => {
+    if (!proposalLayer) return;
+    populateCellDetectionLayer(proposalLayer, proposals);
+    useDieViewerStore.getState().setCellDetectionsCount(proposals.length);
+  }, [proposalLayer, proposals]);
+  const cellDetectionsHidden = usePreferences((s) => s.cellDetectionsHidden);
+  useEffect(() => {
+    proposalLayer?.setVisibleKinds(cellDetectionsHidden ? new Set() : null);
+  }, [proposalLayer, cellDetectionsHidden]);
+
   // Analog-device terminal points that are genuinely connected to a net,
   // grouped per net (annotation net UUID) and quantised into a grid. The net
   // renderer reads this live so a mid-net vertex that sits on a device
@@ -915,6 +1017,9 @@ function DieViewer({ dieId }: { dieId: string }) {
       },
       cellColor: () => usePreferences.getState().cellColor,
       cellShowShapes: () => usePreferences.getState().cellShowShapes,
+      // The die's library scale — the default a cell is drawn at. A cell
+      // with its own `scale` deviates from it.
+      dieScale: library.scale,
       pointViaWorldRadius: () => {
         // ML tab forces the export footprint (mockup ml-config). Otherwise
         // use the global `viaSize` pref so manual vias render the same
@@ -976,7 +1081,7 @@ function DieViewer({ dieId }: { dieId: string }) {
   // need the redraw to kick.
   useEffect(() => {
     const unsubs = (
-      ["baseImageHidden", "baseImageOpacity", "mlResultsHidden"] as const
+      ["baseImageHidden", "baseImageOpacity", "mlResultsHidden", "wireMapHidden", "wireMapOpacity"] as const
     ).map((key) =>
       usePreferences.subscribe(
         (s) => s[key],
@@ -1112,7 +1217,8 @@ function DieViewer({ dieId }: { dieId: string }) {
   useEffect(() => {
     annotationLayer?.setSelectedIds(selectedIds);
     mlViasLayer?.setSelectedIds(selectedIds);
-  }, [annotationLayer, mlViasLayer, selectedIds]);
+    proposalLayer?.setSelectedIds(selectedIds);
+  }, [annotationLayer, mlViasLayer, proposalLayer, selectedIds]);
 
   // Overlay image layers — one Layer instance per user-loaded image.
   // Instances live in a ref so they persist across renders; the map is
@@ -1246,10 +1352,19 @@ function DieViewer({ dieId }: { dieId: string }) {
     // Paint order: die image → overlay layers → ML via overlay → user annotations.
     const out: Layer[] = [...layers];
     for (const ol of overlayLayerInstances) out.push(ol);
+    if (wireMapLayer) out.push(wireMapLayer);
     if (mlViasLayer) out.push(mlViasLayer);
+    if (proposalLayer) out.push(proposalLayer);
     if (annotationLayer) out.push(annotationLayer);
     return out;
-  }, [layers, overlayLayerInstances, mlViasLayer, annotationLayer]);
+  }, [
+    layers,
+    wireMapLayer,
+    overlayLayerInstances,
+    mlViasLayer,
+    proposalLayer,
+    annotationLayer
+  ]);
 
   // ── Behaviors (extracted hooks) ─────────────────────────────────
 
@@ -1722,6 +1837,27 @@ function DieViewer({ dieId }: { dieId: string }) {
     setActiveTool
   });
 
+  const libraryCell = useLibraryCellTool({
+    dieId,
+    library,
+    dispatcher,
+    viewportLive,
+    containerRef,
+    activeTool
+  });
+
+  // The analog library: parametric devices (pmos / nmos / npn / pnp / lpnp)
+  // laid out from their parameters and placed over the die image.
+  const analogCell = useAnalogCellTool({
+    dieId,
+    dispatcher,
+    viewportLive,
+    activeTool,
+    setActiveTool,
+    dieScale: library.scale,
+    umPerPx: ownAnnotations?.umPerPx ?? null
+  });
+
   const viaPoly = useViaPolyTool({ dispatcher, activeTool, setActiveTool });
   const viaPolyPointsRef = useRef(viaPoly.points);
   viaPolyPointsRef.current = viaPoly.points;
@@ -1764,8 +1900,11 @@ function DieViewer({ dieId }: { dieId: string }) {
     const round = placed > 0
       ? `corner ${placed + 1} of ${running}`
       : `click near each wire to place its corner (${running})`;
-    return `${round} · Enter / double-click to finish${ended ? ` · ${ended} ended on vias` : ""} · Esc to cancel`;
-  }, [multiWire.phase, multiWire.points, multiWire.draft]);
+    const lead = multiWire.continued
+      ? `continuing from ${multiWire.points.length} ends · `
+      : "";
+    return `${lead}${round} · Enter / double-click to finish${ended ? ` · ${ended} ended on vias` : ""} · Esc to cancel`;
+  }, [multiWire.phase, multiWire.points, multiWire.draft, multiWire.continued]);
 
   /**
    * Multi-wire phase-2 helper: find the via the cursor is pointing at and
@@ -2232,6 +2371,8 @@ function DieViewer({ dieId }: { dieId: string }) {
       wireSnapLive.set(
         tool === "wire" && !wire.draft ? wire.resolveWireSnap(world) : null
       );
+      // The analog device template sticks to the pointer until it is dropped.
+      if (tool === "analogCell") analogCell.follow(world);
     },
     [
       cursorLive,
@@ -2248,7 +2389,8 @@ function DieViewer({ dieId }: { dieId: string }) {
       findNearestVia,
       findMultiWireEndpointViaSnap,
       findMultiWireAutoEndSnaps,
-      selectedCellSideAt
+      selectedCellSideAt,
+      analogCell
     ]
   );
 
@@ -2329,6 +2471,14 @@ function DieViewer({ dieId }: { dieId: string }) {
       // forces pan regardless of the active tool.
       if (spacePanRef.current) return "pan";
       const tool = useDieViewerStore.getState().activeTool;
+
+      // Place library cell: drag the template's body to move it, a corner to
+      // scale it; anywhere else pans (and a click moves the template there).
+      if (tool === "libraryCell") return libraryCell.pointerDown(e);
+
+      // Place analog device: same gesture — drag the body to move the
+      // template, a corner to stretch it over the device in the image.
+      if (tool === "analogCell") return analogCell.pointerDown(e);
 
       if (tool === "measure" || tool === "select") {
         const vp = viewportLive.get();
@@ -2627,7 +2777,7 @@ function DieViewer({ dieId }: { dieId: string }) {
         const instances = ann0.cells.filter((c) => c.cellTypeId === rType.id);
         const restore = () => {
           for (const c of instances) {
-            annotationLayer.update(buildCellAnnotation(c, rType, getCellC, getCellShapes));
+            annotationLayer.update(buildCellAnnotation(c, rType, getCellC, getCellShapes, undefined, library.scale));
           }
           editPreviewLive.set(null);
         };
@@ -2639,7 +2789,7 @@ function DieViewer({ dieId }: { dieId: string }) {
               return;
             }
             for (const { cell: c } of res.cells) {
-              annotationLayer.update(buildCellAnnotation(c, res.cellType, getCellC, getCellShapes));
+              annotationLayer.update(buildCellAnnotation(c, res.cellType, getCellC, getCellShapes, undefined, library.scale));
             }
             const dragged = res.cells.find((x) => x.cell.id === rCell.id)!.cell;
             const { width, height } = res.cellType.cropRect;
@@ -2764,7 +2914,7 @@ function DieViewer({ dieId }: { dieId: string }) {
                 annotationLayer.update(buildNetAnnotation(net, getNetW, getNetC()));
               }
               for (const entry of moved.cells) {
-                annotationLayer.update(buildCellAnnotation(entry.cell, entry.cellType, getCellC, getCellShapes));
+                annotationLayer.update(buildCellAnnotation(entry.cell, entry.cellType, getCellC, getCellShapes, undefined, library.scale));
               }
             },
             onPointerUp: ({ dragged, worldPoint, startWorld, modifiers }) => {
@@ -2791,7 +2941,7 @@ function DieViewer({ dieId }: { dieId: string }) {
                 annotationLayer.update(buildNetAnnotation(net, getNetW, getNetC()));
               }
               for (const entry of mixedCells) {
-                annotationLayer.update(buildCellAnnotation(entry.cell, entry.cellType, getCellC, getCellShapes));
+                annotationLayer.update(buildCellAnnotation(entry.cell, entry.cellType, getCellC, getCellShapes, undefined, library.scale));
               }
             }
           };
@@ -2999,8 +3149,11 @@ function DieViewer({ dieId }: { dieId: string }) {
           return handler;
         }
 
-        // Dragging a placed cell repositions it — same live-update / commit-on-
-        // up scheme as the net-vertex drag above.
+        // Dragging a placed cell repositions it; Alt-dragging drops a copy
+        // there instead and leaves the original in place (Alt is read live,
+        // as in the guide drag). Grabbing a cell that's part of a multi-cell
+        // selection carries every selected cell. Same live-update / commit-
+        // on-up scheme as the net-vertex drag above; one undo step.
         const cellHit = cell.cellFromHit(hit);
         if (cellHit) {
           if (usePreferences.getState().cellsLocked) {
@@ -3026,10 +3179,15 @@ function DieViewer({ dieId }: { dieId: string }) {
                   entry.cellType != null
                 )
             : [{ cell: original, cellType }];
+          // Copies get their ids up front so the live preview and the commit
+          // agree (the layer is rebuilt from the annotations after either).
+          const copyIds = movingCells.map(() => uuid());
           // Shift locks the move to the dominant axis (re-evaluated live, so
-          // tapping Shift mid-drag snaps it straight without restarting).
-          const moveCell = (
-            source: typeof original,
+          // tapping Shift mid-drag snaps it straight without restarting). The
+          // committed offset is rounded — not the position — so an origin on a
+          // half pixel (a type turned a quarter turn) keeps its footprint on
+          // whole pixels.
+          const offset = (
             worldPoint: { x: number; y: number },
             startWorld: { x: number; y: number },
             shift: boolean,
@@ -3041,16 +3199,24 @@ function DieViewer({ dieId }: { dieId: string }) {
               if (Math.abs(dx) >= Math.abs(dy)) dy = 0;
               else dx = 0;
             }
-            const x = round ? Math.round(source.x + dx) : source.x + dx;
-            const y = round ? Math.round(source.y + dy) : source.y + dy;
-            return { ...source, x, y };
+            return round ? { dx: Math.round(dx), dy: Math.round(dy) } : { dx, dy };
           };
-          // A lone moving cell carries its resize handles along: push its live
-          // footprint to the handles overlay (multi-cell moves show none).
-          const previewHandles = (moved: typeof original) => {
+          const draw = (c: typeof original, ct: typeof cellType) =>
+            buildCellAnnotation(c, ct, getCellC, getCellShapes, undefined, library.scale);
+          // A lone moving cell carries its resize handles along (multi-cell
+          // moves show none); they follow the copy when Alt is held.
+          const previewHandles = (c: typeof original) => {
             if (movingCells.length !== 1) return;
             const { width, height } = movingCells[0].cellType.cropRect;
-            editPreviewLive.set({ kind: "cellRect", rect: cellWorldRect(moved, width, height) });
+            editPreviewLive.set({ kind: "cellRect", rect: cellWorldRect(c, width, height) });
+          };
+          /** Put the layer back: originals where they were, no copies. */
+          const restore = () => {
+            movingCells.forEach(({ cell: c, cellType: ct }, i) => {
+              annotationLayer.update(draw(c, ct));
+              annotationLayer.remove(`cell:${copyIds[i]}`);
+            });
+            editPreviewLive.set(null);
           };
           const handler: DragHandler = {
             onDragStart: () => {
@@ -3059,40 +3225,66 @@ function DieViewer({ dieId }: { dieId: string }) {
               }
             },
             onDragMove: ({ worldPoint, startWorld, modifiers }) => {
-              for (const entry of movingCells) {
-                const moved = moveCell(entry.cell, worldPoint, startWorld, modifiers.shift, false);
-                annotationLayer.update(
-                  buildCellAnnotation(moved, entry.cellType, getCellC, getCellShapes)
-                );
-                previewHandles(moved);
-              }
+              const { dx, dy } = offset(worldPoint, startWorld, modifiers.shift, false);
+              movingCells.forEach(({ cell: c, cellType: ct }, i) => {
+                const moved = { ...c, x: c.x + dx, y: c.y + dy };
+                if (modifiers.alt) {
+                  annotationLayer.update(draw(c, ct));
+                  annotationLayer.add(draw({ ...moved, id: copyIds[i] }, ct));
+                  previewHandles({ ...moved, id: copyIds[i] });
+                } else {
+                  annotationLayer.remove(`cell:${copyIds[i]}`);
+                  annotationLayer.update(draw(moved, ct));
+                  previewHandles(moved);
+                }
+              });
             },
             onPointerUp: ({ dragged, worldPoint, startWorld, modifiers }) => {
               if (!dragged) {
                 selectFromHit(hit, modifiers.shift);
                 return;
               }
-              const moved = movingCells.map((entry) => ({
-                kind: "upsertCell" as const,
-                cell: moveCell(entry.cell, worldPoint, startWorld, modifiers.shift, true),
-                prevCell: entry.cell
-              }));
+              const { dx, dy } = offset(worldPoint, startWorld, modifiers.shift, true);
+              if (dx === 0 && dy === 0) {
+                // Nothing moved (or a copy would sit exactly on its original).
+                restore();
+                return;
+              }
+              const actions: AnnotationAction[] = movingCells.map(({ cell: c }, i) =>
+                modifiers.alt
+                  ? {
+                      kind: "upsertCell",
+                      cell: { ...c, id: copyIds[i], x: c.x + dx, y: c.y + dy },
+                      prevCell: null
+                    }
+                  : {
+                      kind: "upsertCell",
+                      cell: { ...c, x: c.x + dx, y: c.y + dy },
+                      prevCell: c
+                    }
+              );
+              if (modifiers.alt) {
+                useDieViewerStore
+                  .getState()
+                  .select(
+                    copyIds.map((id) => `cell:${id}`),
+                    "replace"
+                  );
+              }
               // Keep the handles on the final spot until the optimistic
               // update lands (dispatch applies it a tick later), else they'd
               // flash back to the old position.
-              previewHandles(moved[0].cell);
+              const last = movingCells[movingCells.length - 1].cell;
+              previewHandles(
+                modifiers.alt
+                  ? { ...last, id: copyIds[copyIds.length - 1], x: last.x + dx, y: last.y + dy }
+                  : { ...last, x: last.x + dx, y: last.y + dy }
+              );
               void dispatcher
-                .dispatch({ kind: "batch", actions: moved })
+                .dispatch(actions.length === 1 ? actions[0] : { kind: "batch", actions })
                 .finally(() => editPreviewLive.set(null));
             },
-            onCancel: () => {
-              for (const entry of movingCells) {
-                annotationLayer.update(
-                  buildCellAnnotation(entry.cell, entry.cellType, getCellC, getCellShapes)
-                );
-              }
-              editPreviewLive.set(null);
-            }
+            onCancel: restore
           };
           return handler;
         }
@@ -3204,6 +3396,22 @@ function DieViewer({ dieId }: { dieId: string }) {
             if (!dragged) selectFromHit(hit, modifiers.shift);
           }
         };
+      }
+
+      // No annotation hit → maybe an ML cell proposal (dashed pink box).
+      // Click selects it; the inspector then offers approve / dismiss.
+      if (proposalLayer) {
+        const pHit = proposalLayer.hitTest(e.worldPoint, tolerance);
+        if (pHit) {
+          return {
+            onPointerUp: ({ dragged, modifiers }) => {
+              if (dragged) return;
+              useDieViewerStore
+                .getState()
+                .select([pHit.partId], modifiers.shift ? "toggle" : "replace");
+            }
+          };
+        }
       }
 
       // No annotation hit → maybe an ML via. The hit-area matches the visible
@@ -3384,6 +3592,9 @@ function DieViewer({ dieId }: { dieId: string }) {
               ids.push(v.id);
             }
           }
+          if (proposalLayer) {
+            for (const a of proposalLayer.queryRect(world)) ids.push(a.id);
+          }
           selectFromMarquee(ids, modifiers.shift);
         },
         onCancel: () => marqueeLive.set(null)
@@ -3393,6 +3604,7 @@ function DieViewer({ dieId }: { dieId: string }) {
     [
       annotationLayer,
       mlViasLayer,
+      proposalLayer,
       marqueeLive,
       selectFromHit,
       selectedCellSideAt,
@@ -3412,7 +3624,9 @@ function DieViewer({ dieId }: { dieId: string }) {
       getNetC,
       getCellC,
       getCellShapes,
-      getPinNamesVisible
+      getPinNamesVisible,
+      libraryCell.pointerDown,
+      analogCell.pointerDown
     ]
   );
 
@@ -3420,6 +3634,14 @@ function DieViewer({ dieId }: { dieId: string }) {
   const onCanvasClick = useCallback(
     ({ x, y }: { x: number; y: number }) => {
       const tool = useDieViewerStore.getState().activeTool;
+      if (tool === "libraryCell") {
+        libraryCell.moveTo({ x, y });
+        return;
+      }
+      if (tool === "analogCell") {
+        analogCell.moveTo({ x, y });
+        return;
+      }
       if (tool === "wire") {
         wire.addWirePoint({ x, y }, shiftRef.current);
         return;
@@ -3555,7 +3777,8 @@ function DieViewer({ dieId }: { dieId: string }) {
       viewportLive,
       findNearestVia,
       findMultiWireEndpointViaSnap,
-      findMultiWireAutoEndSnaps
+      findMultiWireAutoEndSnaps,
+      libraryCell.moveTo
     ]
   );
 
@@ -3877,7 +4100,30 @@ function DieViewer({ dieId }: { dieId: string }) {
   const focusOnIds = useCallback(
     (ids: string[], opts?: { tight?: boolean }) => {
       if (!annotationLayer || !containerRef.current) return;
-      const box = annotationLayer.unionBBox(ids);
+      const list = [...ids];
+      let box = annotationLayer.unionBBox(list);
+      // Rulers aren't indexed in the annotation layer (they render via their
+      // own overlay), so frame them from their endpoints here.
+      const rulerIds = list.filter((id) => id.startsWith("ruler:"));
+      if (rulerIds.length) {
+        const rulers = annotationsRef.current?.rulers ?? [];
+        for (const rid of rulerIds) {
+          const r = rulers.find((x) => x.id === rid.slice("ruler:".length));
+          if (!r) continue;
+          const rx = Math.min(r.x1, r.x2);
+          const ry = Math.min(r.y1, r.y2);
+          const rw = Math.abs(r.x2 - r.x1);
+          const rh = Math.abs(r.y2 - r.y1);
+          box = box
+            ? {
+                x: Math.min(box.x, rx),
+                y: Math.min(box.y, ry),
+                width: Math.max(box.x + box.width, rx + rw) - Math.min(box.x, rx),
+                height: Math.max(box.y + box.height, ry + rh) - Math.min(box.y, ry)
+              }
+            : { x: rx, y: ry, width: rw, height: rh };
+        }
+      }
       if (!box) return;
       const rect = containerRef.current.getBoundingClientRect();
       // `tight`: bbox fills the viewport edge-to-edge (uniform zoom, so the
@@ -4153,6 +4399,7 @@ function DieViewer({ dieId }: { dieId: string }) {
           activeTool={activeTool}
           setActiveTool={setActiveTool}
           multiWireHint={multiWireHint}
+          libraryCell={libraryCell}
         />
       </SubBar>
       <main
@@ -4188,6 +4435,7 @@ function DieViewer({ dieId }: { dieId: string }) {
                 const ct = annotations?.cellTypes.find((t) => t.id === cellTypeId);
                 if (ct) void dispatcher.dispatch({ kind: "upsertCellType", cellType: { ...ct, color }, prevCellType: ct });
               }}
+              foreignTypeOwners={foreignTypeOwners}
             />
           </aside>
         )}
@@ -4396,6 +4644,12 @@ function DieViewer({ dieId }: { dieId: string }) {
               onAnnotationChange={() => canvasHandle.current?.invalidate()}
             />
           )}
+          {activeTool === "libraryCell" && (
+            <LibraryCellOverlay tool={libraryCell} library={library} viewportStore={viewportLive} />
+          )}
+          {activeTool === "analogCell" && (
+            <AnalogCellOverlay tool={analogCell} viewportStore={viewportLive} />
+          )}
         </section>
         {!rightCollapsed && (
         <aside style={{ ...panelStyle, gridColumn: 3 }}>
@@ -4404,7 +4658,10 @@ function DieViewer({ dieId }: { dieId: string }) {
             annotations={annotations}
             dispatcher={dispatcher}
             dieId={dieId}
+            die={die}
+            library={library}
             mlViasLayer={mlViasLayer}
+            proposals={proposals}
             cellTypeCounts={cellTypeCounts}
             devices={analogDevices}
             netNames={netNames}
@@ -4412,6 +4669,8 @@ function DieViewer({ dieId }: { dieId: string }) {
             floorplanRegions={floorplanRegions}
             onActivateAssistantFinding={activateAssistantFinding}
             onOpenAssistantNetlist={openAssistantNetlist}
+            onEditAnalogCell={analogCell.beginEdit}
+            analogCell={analogCell}
           />
           </div>
           <div style={{ flexShrink: 0, display: "flex", flexDirection: "column", borderTop: "1px solid var(--l2)" }}>
@@ -4503,6 +4762,18 @@ function DieViewer({ dieId }: { dieId: string }) {
             : null,
           activeTool === "addCell"
             ? "add cell — drag to draw · corners resize · Enter to add · Esc to cancel"
+            : null,
+          activeTool === "libraryCell"
+            ? libraryCell.hasDraft
+              ? "place library cell — drag to move · corners scale · click to move here · Enter to accept · Esc to cancel"
+              : (libraryCell.notice ?? "place library cell — pick a cell in the toolbar")
+            : null,
+          activeTool === "analogCell"
+            ? analogCell.following
+              ? "place analog device — it follows the mouse · click to drop it · corners set the size · Enter to accept · Esc to cancel"
+              : analogCell.hasDraft
+                ? "place analog device — drag to move · corners stretch it over the device · Enter to accept · Esc to cancel"
+                : "place analog device — move the mouse over the die · it sticks to the cursor · click to drop it"
             : null,
           extractionRunning
             ? `extracting ${extractionProgress?.done ?? 0}/${extractionProgress?.total ?? 1}…`

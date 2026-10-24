@@ -1,18 +1,27 @@
 import { useEffect, useMemo, useRef, useState, useCallback, type CSSProperties } from "react";
 import { createPortal } from "react-dom";
-import type { AnalogDevice, AssistantAnalysisBrief, AssistantAnalysisMode, AssistantChatMessage, AssistantClarificationMode, AssistantConfidenceLevel, AssistantFinding, AssistantFindingKind, AssistantFindingPatch, AssistantFindingStatus, AssistantLlmConfig, AssistantLvsCheckResponse, AssistantLvsLibrarySummary, AssistantLvsMatch, AssistantToolUseEvent, DieAnnotations, FloorplanRegion } from "shared";
+import { useNavigate } from "react-router-dom";
+import type { AnalogDevice, AssistantAnalysisBrief, AssistantAnalysisMode, AssistantChatMessage, AssistantClarificationMode, AssistantConfidenceLevel, AssistantFinding, AssistantFindingKind, AssistantFindingPatch, AssistantFindingStatus, AssistantLlmConfig, AssistantLvsCheckResponse, AssistantLvsLibrarySummary, AssistantLvsMatch, AssistantSpiceRun, AssistantToolUseEvent, AssistantVisionToolUse, DieAnnotations, FloorplanRegion } from "shared";
 import { addLvsCell, analyseAssistantCircuitStream, checkAssistantLvsStream, discussFindingStream, listAssistantLvsLibraries } from "../../api/assistantAnalysis";
 import { ApiError } from "../../api/client";
 import { LvsMatchCard } from "./LvsMatchCard";
+import { SpiceRunCard } from "./SpiceRunCard";
 import { formatDevicesAsNetlist2Svg } from "../../lib/schematic/netlist2svgFormat";
 import { Netlist2SvgView } from "../netlist/Netlist2SvgView";
 import { InteractiveAnalogSchematic } from "../netlist/InteractiveAnalogSchematic";
 import { scopeKey as interactiveScopeKey } from "../../state/interactiveSchematic";
 import { useAssistantSession } from "../../state/assistantSession";
+import { useSpiceHandoff } from "../../state/spiceHandoff";
 import { usePreferences } from "../../state/preferences";
 import { renderDeviceCrop, getTopVisibleLayerName, resolveLayerNameToSourceId } from "../../lib/vision/renderDeviceCrop";
 import { topVisibleOverlaySourceId, useOverlayLayers } from "../../state/overlayLayers";
 import { floorplanNameInline } from "../../lib/floorplanName";
+import {
+  CONTINUE_PROMPT,
+  failureFromError,
+  lvsResultsDigest,
+  spiceRunDigest,
+} from "../../lib/assistant/discussionMemory";
 
 interface Props {
   dieId: string;
@@ -87,6 +96,8 @@ export function AssistantPanel({ dieId, annotations, devices, netNames, warnings
   const [lvsEnabled, setLvsEnabled] = useState(true);
   const [visionEnabled, setVisionEnabled] = useState(true);
   const [spiceEnabled, setSpiceEnabled] = useState(true);
+  const navigate = useNavigate();
+  const setSpiceHandoff = useSpiceHandoff((state) => state.setFromRun);
   const ngspicePath = usePreferences((state) => state.ngspicePath);
   const ngspiceMode = usePreferences((state) => state.ngspiceMode);
   const [lvsOpen, setLvsOpen] = useState(false);
@@ -394,7 +405,20 @@ export function AssistantPanel({ dieId, annotations, devices, netNames, warnings
     const allNames = [...netNames.values()];
     const vdd = allNames.find((n) => /^(VDD|VCC|AVDD)$/i.test(n)) ?? "VDD";
     const gnd = allNames.find((n) => /^(GND|VSS)$/i.test(n)) ?? "GND";
-    const json = formatDevicesAsNetlist2Svg(fragDevices, netNames, `finding-${finding.id}`, { vdd, gnd, showNetLabels: true });
+    // The fragment's labels follow the user's technology values.
+    const prefs = usePreferences.getState();
+    const json = formatDevicesAsNetlist2Svg(
+      fragDevices,
+      netNames,
+      `finding-${finding.id}`,
+      {
+        vdd,
+        gnd,
+        showNetLabels: true,
+        capDensity_fF_um2: prefs.capDensity,
+        sheetR_ohms: prefs.sheetR,
+      },
+    );
     setSchematicPopup({
       title: `${finding.label} · ${finding.instanceNames.join(", ")}`,
       json,
@@ -848,7 +872,7 @@ function FindingCard({ finding, active, discussOpen, onToggleDiscuss, onActivate
   );
 }
 
-function ToolUseCard({ toolUse }: { toolUse: AssistantToolUseEvent }) {
+function ToolUseCard({ toolUse }: { toolUse: AssistantVisionToolUse }) {
   const [expanded, setExpanded] = useState(false);
   return (
     <div style={{
@@ -946,8 +970,19 @@ function DiscussPopup({
   const appendMessage = useAssistantSession((state) => state.appendFindingMessage);
   const resetThread = useAssistantSession((state) => state.resetFindingThread);
   const updateFinding = useAssistantSession((state) => state.updateFinding);
+  const navigate = useNavigate();
+  const setSpiceHandoff = useSpiceHandoff((state) => state.setFromRun);
   const [pendingCardUpdate, setPendingCardUpdate] = useState<AssistantFindingPatch | null>(null);
+  // The questions the model needs answered before it can go on.
+  const [pendingQuestions, setPendingQuestions] = useState<string[]>([]);
+  const [questionAnswer, setQuestionAnswer] = useState("");
   const firstAssistantIndex = thread.findIndex((message) => message.role === "assistant");
+
+  /** Hand this run over to the SPICE simulator and open it. */
+  const openSpiceResults = useCallback((run: AssistantSpiceRun) => {
+    setSpiceHandoff(dieId, run);
+    navigate(`/spice-sim?die=${encodeURIComponent(dieId)}`);
+  }, [dieId, navigate, setSpiceHandoff]);
 
   // Apply a structured card correction proposed by the model once the user confirms it:
   // merge new elements (union) and overwrite the chosen fields.
@@ -1014,8 +1049,8 @@ function DiscussPopup({
     controllerRef.current?.abort();
   };
 
-  const send = async () => {
-    const text = input.trim();
+  const send = async (textOverride?: string) => {
+    const text = (textOverride ?? input).trim();
     if (!text || busy) return;
     setBusy(true);
     setError(null);
@@ -1028,7 +1063,9 @@ function DiscussPopup({
     const userTurn: AssistantChatMessage = { role: "user", content: text };
     const history: AssistantChatMessage[] = [...thread, userTurn];
     appendMessage(dieId, finding.id, userTurn);
-    setInput("");
+    // A prepared text (the Continue button, the answers to the model's
+    // questions) must not wipe what the user is typing.
+    if (textOverride == null) setInput("");
     const controller = new AbortController();
     controllerRef.current = controller;
     // Idle safety-net only — with streaming the connection stays alive while
@@ -1042,7 +1079,7 @@ function DiscussPopup({
     };
     armHardTimeout();
     try {
-        const { reply, cardUpdate, lvsResults } = await discussFindingStream(dieId, {
+        const { reply, cardUpdate, lvsResults, questions } = await discussFindingStream(dieId, {
         expectedRev,
         finding: {
           id: finding.id,
@@ -1090,19 +1127,44 @@ function DiscussPopup({
             setStreamingReply("");
             if (ev.tool === "mmochip_vision") setStreamingTool("🔍 mmochip_vision — inspecting device crops…");
             else if (ev.tool === "mmochip_lvs_check") setStreamingTool("🔬 mmochip_lvs_check — verifying against reference library…");
+            else if (ev.tool === "mmochip_spice_sim") setStreamingTool("⚡ mmochip_spice_sim — running ngspice…");
             else if (ev.tool === "mmochip_card_update") setStreamingTool("📋 mmochip_card_update — preparing card update…");
           } else if (ev.type === "tool_result") {
             setStreamingTool(null);
+          } else if (ev.type === "spice_result" && ev.run) {
+            // Keep the whole run in the thread: netlist, numbers, notes.
+            setStreamingTool(null);
+            appendMessage(dieId, finding.id, {
+              role: "assistant",
+              content: "",
+              toolUse: { type: "spice", run: ev.run },
+              // The digest is what the model sees on the NEXT turn.
+              digest: spiceRunDigest(ev.run),
+            });
           }
         },
       });
        setStreamingReply(null);
        setStreamingTool(null);
-       appendMessage(dieId, finding.id, { role: "assistant", content: reply });
+       // The model must see its own questions next time, even when the reply
+       // did not spell them out.
+       const replyWithQuestions = questions.length
+         ? `${reply}\n\nУточнения, которые нужны:\n${questions.map((question, index) => `${index + 1}. ${question}`).join("\n")}`
+         : reply;
+       appendMessage(dieId, finding.id, { role: "assistant", content: replyWithQuestions });
        if (cardUpdate) setPendingCardUpdate(cardUpdate);
+       if (questions.length) setPendingQuestions(questions);
        // LVS results are committed to the thread history (not a separate sticky
        // panel) so they scroll up as a message when new replies arrive.
-       if (lvsResults.length) appendMessage(dieId, finding.id, { role: "assistant", content: "", lvsResults });
+        if (lvsResults.length) {
+          appendMessage(dieId, finding.id, {
+            role: "assistant",
+            content: "",
+            lvsResults,
+            // The digest is what the model sees on the NEXT turn.
+            digest: lvsResultsDigest(lvsResults),
+          });
+        }
     } catch (cause) {
       // Keep whatever partial reply already streamed so the user isn't left empty-handed.
       if (streamingReplyRef.current) {
@@ -1110,7 +1172,15 @@ function DiscussPopup({
       }
       if (!cancelledRef.current) {
         console.debug("[assistant/discuss] request failed", cause);
-        setError(formatApiError(cause));
+        const message = formatApiError(cause);
+        setError(message);
+        // Remember the failure IN THE THREAD: without it the model starts
+        // the next turn blind and repeats the very approach that just died.
+        appendMessage(dieId, finding.id, {
+          role: "assistant",
+          content: "",
+          failed: failureFromError(message),
+        });
       }
     } finally {
       if (hardTimeout) clearTimeout(hardTimeout);
@@ -1121,6 +1191,20 @@ function DiscussPopup({
       setStreamingThinking(null);
       setBusy(false);
     }
+  };
+
+  // The model asked for clarifications: the answers go back as a user turn,
+  // and the turn is repeated with the answers in the history.
+  const answerQuestions = () => {
+    const answer = questionAnswer.trim();
+    if (!answer) return;
+    const numbered = pendingQuestions
+      .map((question, index) => `${index + 1}. ${question}`)
+      .join("\n");
+    const text = `Ответы на твои вопросы:\n${numbered}\n\n${answer}`;
+    setPendingQuestions([]);
+    setQuestionAnswer("");
+    void send(text);
   };
 
   return (
@@ -1170,8 +1254,18 @@ function DiscussPopup({
             {index === firstAssistantIndex && message.role === "assistant" && (
               <div style={{ fontSize: 8, color: "var(--ink3)", marginBottom: 2 }}>Первичный ответ</div>
             )}
-            {message.toolUse ? (
-              <ToolUseCard toolUse={message.toolUse} />
+            {message.failed ? (
+              <div style={{ display: "grid", gap: 3, maxWidth: "100%", border: "1px solid var(--danger, #ed6a5e)", borderRadius: 5, padding: "5px 7px", background: "rgba(237,106,94,0.08)" }}>
+                <div style={{ fontSize: 9, color: "var(--danger, #ed6a5e)", textTransform: "uppercase", letterSpacing: 0.4 }}>Попытка не удалась</div>
+                <div style={{ fontSize: 10, color: "var(--ink2)", lineHeight: 1.35, overflowWrap: "anywhere" }}>{message.failed.reason}</div>
+                <div style={{ fontSize: 9, color: "var(--ink3)", lineHeight: 1.35, overflowWrap: "anywhere" }}>{message.failed.hint}</div>
+              </div>
+            ) : message.toolUse ? (
+              message.toolUse.type === "spice" ? (
+                <SpiceRunCard run={message.toolUse.run} onOpenResults={openSpiceResults} />
+              ) : (
+                <ToolUseCard toolUse={message.toolUse} />
+              )
             ) : message.lvsResults?.length ? (
               <div style={{ display: "grid", gap: 5, border: "1px solid var(--l2)", borderRadius: 5, padding: "6px 8px", background: "var(--l1)" }}>
                 <div style={{ fontSize: 9, color: "var(--ink2)", textTransform: "uppercase", letterSpacing: 0.4 }}>LVS reference check</div>
@@ -1205,6 +1299,11 @@ function DiscussPopup({
                 }}
               >
                 {message.content}
+              </div>
+            )}
+            {message.digest && !message.failed && (
+              <div style={{ fontSize: 8.5, color: "var(--ink3)", lineHeight: 1.3, maxWidth: "100%", overflowWrap: "anywhere", wordBreak: "break-word" }}>
+                Модель видела: {message.digest}
               </div>
             )}
           </div>
@@ -1250,6 +1349,33 @@ function DiscussPopup({
             <button className="btn ghost" type="button" style={{ marginLeft: "auto", fontSize: 9, padding: "2px 6px" }} onClick={cancel}>Cancel</button>
           </div>
         )}
+        {pendingQuestions.length > 0 && (
+          <div style={{ display: "grid", gap: 5, border: "1px solid var(--l2)", borderRadius: 5, padding: "6px 8px", background: "var(--l1)" }}>
+            <div style={{ fontSize: 9, color: "var(--ink2)", textTransform: "uppercase", letterSpacing: 0.4 }}>Нужны уточнения</div>
+            <ol style={{ margin: 0, paddingLeft: 14, fontSize: 10, color: "var(--ink2)", lineHeight: 1.35 }}>
+              {pendingQuestions.map((question, index) => (
+                <li key={index} style={{ overflowWrap: "anywhere" }}>{question}</li>
+              ))}
+            </ol>
+            <textarea
+              value={questionAnswer}
+              onChange={(event) => setQuestionAnswer(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" && !event.shiftKey) {
+                  event.preventDefault();
+                  answerQuestions();
+                }
+              }}
+              placeholder="Ваши ответы (Enter — ответить и продолжить)"
+              rows={2}
+              style={{ resize: "vertical", font: "inherit", minHeight: 34, background: "var(--l1)", color: "#fff", border: "1px solid var(--l2)", borderRadius: 4, padding: "4px 6px" }}
+            />
+            <div style={{ display: "flex", gap: 6 }}>
+              <button className="btn" type="button" disabled={busy || !questionAnswer.trim()} onClick={answerQuestions}>Ответить и продолжить</button>
+              <button className="btn ghost" type="button" onClick={() => { setPendingQuestions([]); setQuestionAnswer(""); }}>Пропустить</button>
+            </div>
+          </div>
+        )}
         {pendingCardUpdate && (
           <div style={{ display: "grid", gap: 5, border: `1px solid ${colorFor(finding.kind)}`, borderRadius: 5, padding: "6px 8px", background: colorFor(finding.kind) + "10" }}>
             <div style={{ fontSize: 9, color: "var(--ink2)" }}>Модель предлагает обновить карточку</div>
@@ -1271,6 +1397,20 @@ function DiscussPopup({
       {error && (
         <div style={{ color: "var(--danger, #ed6a5e)", fontSize: 10, lineHeight: 1.35, whiteSpace: "pre-wrap", borderTop: "1px solid var(--l2)", paddingTop: 5 }}>
           {error}
+          <div style={{ display: "flex", gap: 6, marginTop: 4, whiteSpace: "normal" }}>
+            <button
+              className="btn ghost"
+              type="button"
+              style={{ fontSize: 9, padding: "2px 6px" }}
+              disabled={busy}
+              onClick={() => void send(CONTINUE_PROMPT)}
+            >
+              Продолжить
+            </button>
+            <button className="btn ghost" type="button" style={{ fontSize: 9, padding: "2px 6px" }} onClick={() => setError(null)}>
+              Скрыть
+            </button>
+          </div>
         </div>
       )}
       <textarea

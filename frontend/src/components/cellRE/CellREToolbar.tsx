@@ -1,19 +1,94 @@
-import { Fragment, type ReactNode } from "react";
+import { Fragment, useEffect, useState, type ReactNode } from "react";
 import type { CellType, LayerType } from "shared";
 import { Ic } from "../../icons";
 import { CELL_RE_HOTKEYS, hotkeyFor } from "../../lib/hotkeys";
+import {
+  LABEL_SCALE_MAX,
+  LABEL_SCALE_MIN,
+  LABEL_SCALE_PRESETS,
+  clampLabelScale
+} from "../../lib/labelScale";
 import { TOOL_LAYERS, type ReToolKind, useCellREStore } from "../../state/cellRE";
 import { usePreferences } from "../../state/preferences";
 import { BigToolDivider, Tool } from "../dieViewer/DieViewerUI";
 import { ToolDivider } from "../shell/SubBar";
 import { LayerChips } from "./LayerChips";
 
-/** Three discrete label sizes. Kept in one place so canvas + toolbar agree. */
-const LABEL_SCALES = [
-  { value: 0 as const, label: "S" },
-  { value: 1 as const, label: "M" },
-  { value: 2 as const, label: "L" },
-];
+/**
+ * The label size as a plain number: a multiplier of the base font sizes
+ * (0.2 = the old "S", 0.5 = "M", 1 = "L"). Bigger than L and smaller than
+ * S are both allowed.
+ *
+ * The text is kept locally while it is being typed (so "1." can be typed on
+ * the way to "1.5") and committed on Enter or blur.
+ */
+function LabelSizeField({
+  value,
+  onCommit
+}: {
+  value: number;
+  onCommit: (v: number) => void;
+}) {
+  const [text, setText] = useState(() => String(value));
+  const [editing, setEditing] = useState(false);
+  // While the field is being edited the store must not overwrite the text.
+  useEffect(() => {
+    if (!editing) setText(String(value));
+  }, [value, editing]);
+
+  const commit = () => {
+    const v = Number(text.trim().replace(",", "."));
+    if (Number.isFinite(v) && v > 0) {
+      const clamped = clampLabelScale(v);
+      onCommit(clamped);
+      setText(String(clamped));
+    } else {
+      setText(String(value));
+    }
+  };
+
+  return (
+    <span className="row" style={{ gap: 4, alignItems: "center" }}>
+      <input
+        type="number"
+        min={LABEL_SCALE_MIN}
+        max={LABEL_SCALE_MAX}
+        step={0.05}
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        onFocus={() => setEditing(true)}
+        onBlur={() => {
+          setEditing(false);
+          commit();
+        }}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") {
+            e.preventDefault();
+            e.currentTarget.blur();
+          } else if (e.key === "Escape") {
+            e.preventDefault();
+            setText(String(value));
+            e.currentTarget.blur();
+          }
+        }}
+        title={`Label size — a multiplier of the base font sizes: ${LABEL_SCALE_PRESETS.small} = S, ${LABEL_SCALE_PRESETS.medium} = M, ${LABEL_SCALE_PRESETS.large} = L. Values above 1 make the labels bigger.`}
+        style={{
+          width: 54,
+          background: "var(--bg1)",
+          border: "1px solid var(--border)",
+          color: "var(--ink0)",
+          fontSize: 10,
+          fontFamily: "var(--mono)",
+          padding: "1px 4px",
+          borderRadius: 3,
+        }}
+      />
+      <span className="m" style={{ fontSize: 10, color: "var(--ink3)" }}>
+        ×
+      </span>
+    </span>
+  );
+}
 
 /** One toolbar entry: a real, selectable tool. */
 interface ToolItem {
@@ -140,38 +215,7 @@ export function CellREToolbar({
       >
         Label size:
       </span>
-      <div
-        role="group"
-        style={{
-          display: "inline-flex",
-          border: "1px solid var(--l2)",
-          borderRadius: 3,
-          overflow: "hidden",
-        }}
-      >
-        {LABEL_SCALES.map((opt, i) => (
-          <button
-            key={opt.value}
-            type="button"
-            onClick={() => setLabelScale(opt.value)}
-            title={`Label size: ${opt.label} (${opt.value === 0 ? "0.2x" : opt.value === 2 ? "1.0x" : "0.5x"})`}
-            style={{
-              padding: "2px 7px",
-              fontSize: 10,
-              fontFamily: "var(--mono)",
-              fontWeight: 600,
-              background: labelScale === opt.value ? "var(--accent)" : "var(--bg1)",
-              color: labelScale === opt.value ? "var(--accentFg, #fff)" : "var(--ink2)",
-              border: 0,
-              borderLeft: i > 0 ? "1px solid var(--l2)" : 0,
-              cursor: "pointer",
-              lineHeight: 1.2,
-            }}
-          >
-            {opt.label}
-          </button>
-        ))}
-      </div>
+      <LabelSizeField value={labelScale} onCommit={setLabelScale} />
       <BigToolDivider />
       {TOOL_GROUPS.map((group, gi) => (
         <Fragment key={gi}>

@@ -1,5 +1,5 @@
 import type { Server as HttpServer } from "node:http";
-import type { MLInferenceJob } from "shared";
+import type { CellDetectionJob, CellImagingJob, MLInferenceJob } from "shared";
 import { WebSocketServer, type WebSocket } from "ws";
 import type { AuthPayload } from "./types.js";
 
@@ -13,6 +13,8 @@ import type { AuthPayload } from "./types.js";
  *                      { "type": "ping" }
  *   server → client :  { "type": "annotations", "dieId": "<id>", "rev": <number> }
  *                      { "type": "mlJob",       "dieId": "<id>", "job": <MLInferenceJob> }
+ *                      { "type": "cellJob",     "dieId": "<id>", "job": <CellDetectionJob> }
+ *                      { "type": "imagingJob",  "dieId": "<id>", "job": <CellImagingJob> }
  *                      { "type": "user/online",  "userId": "<id>", "username": "<name>",
  *                                                          "dieId": "<id>|null", "tool": "<tool>|null" }
  *                      { "type": "user/offline", "userId": "<id>" }
@@ -27,6 +29,9 @@ import type { AuthPayload } from "./types.js";
 type ServerMessage =
   | { type: "annotations"; dieId: string; rev: number }
   | { type: "mlJob"; dieId: string; job: MLInferenceJob }
+  | { type: "cellJob"; dieId: string; job: CellDetectionJob }
+  | { type: "imagingJob"; dieId: string; job: CellImagingJob }
+  | { type: "die"; dieId: string }
   | { type: "user/list"; users: Array<{ userId: string; username: string; dieId: string | null; tool: string | null }> }
   | { type: "user/online"; userId: string; username: string; dieId: string | null; tool: string | null }
   | { type: "user/offline"; userId: string }
@@ -56,6 +61,14 @@ export interface AnnotationBroadcaster {
   emitMLJob(job: MLInferenceJob): void;
   /** Tell every client that an MCP access request / decision changed. */
   emitMcpAccess(): void;
+  /** Push a cell-detection job-state change to subscribed clients. */
+  emitCellJob(job: CellDetectionJob): void;
+  /** Push a cell-imaging (specimens / wire map) job-state change. */
+  emitImagingJob(job: CellImagingJob): void;
+  /** A die's properties changed (cell library / scale). Sent to every
+   *  client, not just the die's subscribers: dies sharing a library draw
+   *  each other's cell types, so they all care. */
+  emitDieChange(dieId: string): void;
   /** Get current list of online users with their status. */
   getOnlineUsers(): Array<{ userId: string; username: string; dieId: string | null; tool: string | null }>;
   /** Close the server. */
@@ -204,6 +217,21 @@ export function attachWebSocketBroadcaster(
     },
     emitMcpAccess() {
       broadcast({ type: "mcp/access" }, null);
+    },
+    emitCellJob(job) {
+      for (const sub of subscriptions.values()) {
+        if (!sub.dies.has(job.dieId)) continue;
+        send(sub.socket, { type: "cellJob", dieId: job.dieId, job });
+      }
+    },
+    emitImagingJob(job) {
+      for (const sub of subscriptions.values()) {
+        if (!sub.dies.has(job.dieId)) continue;
+        send(sub.socket, { type: "imagingJob", dieId: job.dieId, job });
+      }
+    },
+    emitDieChange(dieId) {
+      for (const sub of subscriptions.values()) send(sub.socket, { type: "die", dieId });
     },
     getOnlineUsers() {
       return getOnlineUsersList();

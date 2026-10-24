@@ -1,4 +1,4 @@
-import { apiDelete, apiGet, apiUpload } from "./client";
+import { apiDelete, apiGet, apiPatch, apiUpload } from "./client";
 
 export interface OverlayTileLevel {
   z: number;
@@ -25,6 +25,12 @@ export interface OverlayImageSource {
   ready: boolean;
   createdAt: string;
   updatedAt: string;
+  /** Effective purpose (explicit or auto-detected from the name). */
+  purpose?: string | null;
+  explicitPurpose?: string | null;
+  purposeSource?: "user" | "auto" | "none";
+  suggestedPurpose?: string | null;
+  purposeEditable?: boolean;
   legacy?: boolean;
 }
 
@@ -47,6 +53,20 @@ export async function uploadOverlayImage(
   return apiUpload<{ image: OverlayImageSource }>(
     `/api/dies/${encodeURIComponent(dieId)}/overlay-images/upload`,
     form
+  );
+}
+
+/** Set the project-shared purpose of an overlay source. `null` clears it and
+ *  lets the name heuristic decide; the literal `"none"` suppresses the
+ *  heuristic. */
+export async function updateOverlayPurpose(
+  dieId: string,
+  id: string,
+  purpose: string | null
+): Promise<{ image: OverlayImageSource }> {
+  return apiPatch<{ image: OverlayImageSource }>(
+    `/api/dies/${encodeURIComponent(dieId)}/overlay-images/${encodeURIComponent(id)}`,
+    { purpose }
   );
 }
 

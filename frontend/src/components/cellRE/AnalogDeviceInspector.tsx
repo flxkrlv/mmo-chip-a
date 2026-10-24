@@ -12,6 +12,8 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { AnalogDevice, DeviceKind, DeviceGeometry, SpiceConfig } from "shared";
+import { usePreferences } from "../../state/preferences";
+import { effectiveCapacitance } from "../../lib/export/capacitorDefaults";
 
 // ── Device kind display names ────────────────────────────────────
 
@@ -27,6 +29,8 @@ const KIND_NAME: Record<DeviceKind, string> = {
   zener: "Zener Diode",
   schottky: "Schottky Diode",
   inductor: "Inductor",
+  voltage_source: "V source",
+  current_source: "I source",
   unknown: "Unknown Device",
 };
 
@@ -42,6 +46,8 @@ const KIND_EMOJI: Record<DeviceKind, string> = {
   zener: "⏸",
   schottky: "⏩",
   inductor: "◠◡",
+  voltage_source: "V source",
+  current_source: "I source",
   unknown: "❓",
 };
 
@@ -53,7 +59,7 @@ interface ParamEntry {
   unit?: string;
 }
 
-function deviceParams(device: AnalogDevice): ParamEntry[] {
+function deviceParams(device: AnalogDevice, capDensity: number): ParamEntry[] {
   const g = device.geometry as unknown as Record<string, unknown>;
   const entries: ParamEntry[] = [];
 
@@ -92,11 +98,19 @@ function deviceParams(device: AnalogDevice): ParamEntry[] {
       entries.push({ label: "Fingers", value: String(g.fingers ?? 1) });
       break;
     case "capacitor":
+    case "capacitor": {
+      const cg = g as { area_um2?: number; capacitance_fF?: number };
+      // The capacitance comes from the plate area × the specific
+      // capacitance, the same way a resistor's resistance comes from its
+      // squares × the sheet resistance.
+      const cFf = effectiveCapacitance(cg, capDensity);
       entries.push({ label: "Area", value: (g.area_um2 as number)?.toFixed(2), unit: "μm²" });
       entries.push({ label: "Perimeter", value: (g.perimeter_um as number)?.toFixed(2), unit: "μm" });
       entries.push({ label: "Type", value: g.capType as string ?? "?" });
-      entries.push({ label: "Cap Density", value: g.capDensity_fF != null ? String(g.capDensity_fF) : "—", unit: "fF/μm²" });
-      entries.push({ label: "Capacitance", value: g.capacitance_fF != null ? String((g.capacitance_fF as number).toFixed(2)) : "—", unit: "fF" });
+      entries.push({ label: "Cap Density", value: String(capDensity), unit: "fF/μm²" });
+      entries.push({ label: "Capacitance", value: cFf != null ? cFf.toFixed(2) : "—", unit: "fF" });
+      break;
+    }
       break;
     case "diode":
     case "zener":
@@ -162,7 +176,11 @@ interface Props {
 
 export function AnalogDeviceInspector({ device, spiceConfig, onModelChange, onClose }: Props): React.ReactElement | null {
   const [modelOverride, setModelOverride] = useState<string>(device.modelName ?? "");
-  const params = useMemo(() => deviceParams(device), [device]);
+  const capDensity = usePreferences((s) => s.capDensity);
+  const params = useMemo(
+    () => deviceParams(device, capDensity),
+    [device, capDensity],
+  );
 
   const handleModelChange = useCallback(() => {
     if (modelOverride.trim() && modelOverride !== (device.modelName ?? "")) {

@@ -1,0 +1,145 @@
+* LM2937 bandgap reference - runnable ngspice testbench
+* Source: mmo-chip Spectre export of the extracted LM2937 (see .tools/lm2937.cir)
+* Converted to ngspice syntax by shared/spiceNetlist.
+*
+* The devices use generic placeholder models, so the numbers show the topology
+* and the order of magnitude, not a sign-off of the real LM2937 process.
+*
+* Run:  ngspice -b lm2937_bandgap.cir
+* Expected: v(ref) ~ 0.911 V (bandgap node), v(out) ~ 4.98 V, i(vdd) ~ -0.347 mA
+*
+* For a supply sweep replace the .op block below with:
+*   .dc VDD 0 6 0.5
+*   .measure dc vref_at_5v find v(ref) at=5
+* (one analysis per netlist: ngspice keeps a single plot and drops the other)
+* ngspice netlist
+* LM2937 simplified netlist (from mmo-chip Spectre export)
+* Q: C B E S model ; R: a b r ; D: a b ; C: a b c
+* -- Model Cards --
+.MODEL npn NPN (BF=200 IS=1e-16 VAF=50)
+.MODEL pnp PNP (BF=100 IS=1e-16 VAF=50)
+.MODEL diode D (IS=1e-14 N=1)
+
+.subckt LM2937 OUT VCC GND ref ref_1 net230 net345234
+R1 Net_5 Net_6 4200
+R2 Net_3 Net_125 4200
+R3 Net_7 Net_6 4200
+R4 Net_124 Net_125 4200
+R5 Net_7 Net_9 4200
+R6 Net_124 Net_9 4200
+Q1 Net_59__2_ Net_146 GND 0 npn m=3.62
+Q2 Net_28 net230 Net_3 0 pnp m=1.97
+Q3 GND net230 Net_3 0 pnp m=1.94
+Q4 GND Net_73 Net_5 0 pnp m=1.94
+Q5 Net_54 Net_73 Net_5 0 pnp m=2.03
+Q6 Net_40 Net_12 Net_10 0 pnp m=1.1
+Q7 Net_9 Net_12 Net_10 0 pnp
+Q8 Net_11 Net_11 Net_10 0 pnp m=1.36
+Q9 Net_57 Net_40 Net_91 0 npn m=3.28
+R7 Net_93 Net_57 13
+Q10 Net_35 Net_35 GND 0 npn m=3.47
+Q12 Net_40 Net_28 GND 0 npn m=3.47
+Q13 Net_40 Net_116 GND 0 npn m=3.47
+C1 Net_28 Net_27 33724.783f
+R8 ref_1 Net_29 4850
+R9 GND Net_33 4850
+R10 ref_1 Net_30 4850
+R11 GND Net_30 4850
+R12 ref_1 Net_33 4850
+R13 GND Net_29 4850
+R14 Net_146 GND 1150
+R15 Net_146 GND 1125
+R16 ref Net_50 4225
+R17 Net_35 Net_50 4225
+Q14 Net_57 ref Net_73 0 npn m=3.17
+Q15 Net_57 ref Net_49 0 npn m=3.17
+R18 Net_136 Net_52 3950
+R19 Net_137 Net_52 4000
+R20 ref Net_51 4025
+R21 Net_136 Net_51 4025
+R22 Net_137 Net_53 5825
+R23 Net_53 Net_138__2_ 2925
+R24 Net_138__2_ Net_138 1600
+R25 Net_138 Net_144 975
+R26 Net_144 Net_44 1000
+R27 ref Net_145 3275
+R28 Net_145 net230 2525
+R29 Net_144 Net_44 1025
+R30 Net_49 Net_146 1475
+R31 Net_37 Net_44 3100
+R32 Net_57 Net_59__2_ 1450
+Q16 Net_28 Net_59__2_ Net_57 0 pnp m=1.83
+R33 Net_116 Net_123 1525
+R34 Net_115 Net_123 1525
+R35 Net_123 Net_61 1550
+R36 Net_112 Net_117 1800
+Q17 Net_112 Net_61 GND 0 npn
+R37 Net_112 GND 4775
+R38 Net_131 Net_90 1050
+R39 Net_27 Net_40 19000
+R40 Net_97 Net_72 1650
+R41 Net_11 GND 3350
+R42 Net_108 net345234 1350
+R43 Net_28 Net_139__2_ 950
+D1 Net_94 Net_95 diode
+D2 net345234 Net_94 diode
+D3 Net_95 ref diode
+Q18 Net_105 Net_67 VCC 0 pnp m=2.04
+D4 Net_68 Net_67 diode
+D5 Net_70 Net_68 diode
+D6 Net_71__2_ Net_69 diode
+D7 Net_69 Net_70 diode
+R44 Net_97 Net_81 2000
+R45 VCC Net_147 2950
+R46 Net_147 Net_148 1125
+R47 Net_90 Net_91 1725
+D8 Net_115 GND diode
+R48 VCC Net_98 3650
+R49 ref Net_151 4225
+R50 Net_151 GND 3900
+R51 Net_98 Net_85 3825
+R52 ref Net_85 4300
+Q19 Net_102 Net_101 VCC 0 pnp m=9.68
+Q20 Net_65 Net_101 VCC 0 pnp m=3.7
+Q21 Net_101 Net_101 VCC 0 pnp m=2.65
+Q22 Net_81 Net_101 VCC 0 pnp m=3.52
+Q23 Net_105 Net_101 VCC 0 pnp m=3.14
+Q24 Net_133 Net_150 OUT 0 pnp
+R53 Net_127 GND 450
+R54 GND Net_127 400
+Q25 Net_142 Net_108 Net_93 0 npn m=2.07
+Q26 Net_79 Net_81 Net_97 0 npn m=1.43
+Q27 Net_37 Net_35 ref_1 0 npn m=2.83
+Q28 Net_28 Net_54 GND 0 npn m=3.6
+Q29 Net_54 Net_54 GND 0 npn m=3.6
+D9 Net_79 Net_88__2_ diode
+Q30 Net_123 Net_112 Net_117 0 pnp m=1.84
+Q31 Net_143 Net_88__2_ Net_101 0 pnp m=2
+Q32 Net_143 Net_108 Net_102 0 pnp m=2
+R55 Net_71__2_ net2951 2650
+R56 net2960 Net_118 2875
+R57 Net_118 Net_117 4075
+R58 net2951 net2960 2475
+Q33 Net_88__2_ Net_87 Net_97 0 npn m=2.38
+Q34 Net_131 Net_133 GND 0 npn m=3.72
+D10 Net_143 Net_65 diode
+Q35 Net_142 Net_142 VCC 0 pnp m=1.41
+Q36 Net_65 Net_88__2_ Net_87 0 npn
+R59 Net_131 Net_127 1575
+Q37 Net_87 Net_87 Net_72 0 npn m=24.17
+Q38 Net_149 Net_131 Net_127 0 npn m=37.68
+C2 Net_148 Net_139__2_ 10128.401f
+Q39 OUT Net_150 VCC 0 pnp m=8.7
+Q40 Net_151__2_ Net_151__2_ OUT 0 npn m=21.69
+Q41 Net_151__2_ Net_149 Net_150 0 pnp m=3.59
+.ends LM2937
+
+* -- Testbench --
+VDD VCC 0 DC 5
+RLOAD ref 0 10k
+X1 OUT VCC GND ref ref_1 net230 net345234 LM2937
+
+* -- Analysis --
+.op
+.print op v(ref) v(ref_1) v(out) v(vcc)
+.end

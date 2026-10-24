@@ -74,12 +74,26 @@ export interface DieSummary {
   updatedAt: string;
   tileProgress?: DieTileProgress;
   overlayTileProgress?: OverlayTileProgress;
+  /** Cell library the die belongs to: dies sharing one see — and place —
+   *  each other's cell types. Absent ⇒ none. */
+  cellLibrary?: string;
+  /** This die's pixels per library unit. A type owned by another die of the
+   *  library is drawn here at `cellScale / its die's cellScale` times its
+   *  own size. Absent ⇒ 1. */
+  cellScale?: number;
   /** Where the project's source data lives. Absent ⇒ "managed" (legacy records). */
   location?: ProjectLocationKind;
   /** False when a folder project's directory is missing or unreadable on this machine. */
   available?: boolean;
   /** Absolute directory for folder projects; undefined for managed projects. */
   folderPath?: string;
+}
+
+/** `PATCH /api/dies/:dieId` — die properties. A field left out stays as it
+ *  is; `null` clears it. */
+export interface DieUpdateRequest {
+  cellLibrary?: string | null;
+  cellScale?: number | null;
 }
 
 export interface DieMetadata extends DieSummary {
@@ -401,11 +415,148 @@ export interface CellType {
   /** Per-type display color (#rrggbb) for the cell outline / block fill.
    *  Unique across the die's cell types. Absent ⇒ the global cell color. */
   color?: string;
+  /** The parametric spec of a device laid out by the analog library.
+   *  Absent ⇒ an ordinary, hand-drawn type. Present ⇒ the layers were
+   *  generated from `params`, and can be re-generated with other
+   *  parameters (the layers themselves stay editable either way). */
+  pcell?: AnalogPcellSpec;
+}
+
+// ── Analog library (parametric devices) ────────────────────────────
+
+/** The devices the analog library can lay out. A vertical PNP is not here
+ *  yet: the extractor has no vpnp support, so its cell is deferred. */
+export type AnalogLibTemplate = "pmos" | "nmos" | "npn" | "lpnp";
+
+/** How a generated MOS ties its bulk (well) to the outside world. */
+export type AnalogLibBulk =
+  /** No well contact in the cell: the bulk is resolved from the well. */
+  | "none"
+  /** A well tap inside the well, outside the device's diffusion. */
+  | "tap";
+
+/** Parameters of a generated MOS. */
+export interface AnalogLibMosParams {
+  kind: "mos";
+  /** nmos or pmos — decides the well (pwell / nwell) and the diffusion. */
+  mosType: "nmos" | "pmos";
+  /** Number of gate fingers (parallel transistors) of ONE structure. */
+  fingers: number;
+  /** Number of the structures side by side (a multiplier). */
+  multiplier: number;
+  /** The clear space between two structures of the multiplier [µm]. */
+  multiplierGap_um: number;
+  /** Channel width of ONE finger [µm]. */
+  W_um: number;
+  /** Channel length [µm]. */
+  L_um: number;
+  /** Bulk connection. */
+  bulk: AnalogLibBulk;
+}
+
+/** Which side of a bipolar transistor the base contact sits on. */
+export type AnalogLibBaseContactSide = "left" | "right" | "top" | "bottom";
+
+/** Parameters of a generated bipolar transistor. */
+export interface AnalogLibBjtParams {
+  kind: "bjt";
+  /** npn (vertical) or lpnp (lateral). */
+  bjtType: "npn" | "lpnp";
+  /** Number of emitter stripes. */
+  fingers: number;
+  /** Emitter width of ONE stripe [µm]. */
+  W_um: number;
+  /** Emitter length of ONE stripe [µm]. */
+  L_um: number;
+  /** The base material between the emitter and the edge of the base region
+   *  [µm] — the vertical transistor's base margin around the emitter. */
+  emitterBaseGap_um?: number;
+  /** The distance from the emitter to the collector [µm] — how far the
+   *  collector is moved away from the emitter. */
+  emitterCollectorGap_um?: number;
+  /** The base material between the collector ring and the edge of the base
+   *  region [µm] (lateral PNP) — where the base contact sits. */
+  collectorBaseGap_um?: number;
+  /** Which side the base contact sits on. */
+  baseContactSide?: AnalogLibBaseContactSide;
+}
+
+export type AnalogLibParams = AnalogLibMosParams | AnalogLibBjtParams;
+
+/** The parameters of one template — narrowed by the template's id. */
+export type AnalogParamsFor<T extends AnalogLibTemplate> = T extends "pmos" | "nmos"
+  ? AnalogLibMosParams
+  : AnalogLibBjtParams;
+
+/**
+ * The design rules a device is laid out with [µm]. They are part of the
+ * stored spec, so a device regenerated later comes out identical.
+ */
+export interface AnalogLibRules {
+  /** Width of a source/drain diffusion region (also the emitter gap) [µm]. */
+  spacing: number;
+  /** How far a gate poly reaches past the diffusion edge [µm]. */
+  polyOverhang: number;
+  /** Height of the poly strap joining the gate fingers [µm]. */
+  polyStrap: number;
+  /** Contact size (square) [µm]. */
+  contactSize: number;
+  /** Metal1 pad around a contact, per side [µm]. */
+  metal1Pad: number;
+  /** Well margin around the device [µm]. */
+  wellMargin: number;
+  /** Base margin around the emitters (vertical BJT) [µm]. */
+  baseMargin: number;
+  /** Width of the collector region next to the base (vertical BJT) [µm]. */
+  collectorWidth: number;
+  /** Lateral PNP: base material between the emitter and the collector ring [µm]. */
+  lpnpEmitterCollectorGap: number;
+  /** Lateral PNP: width of the collector ring itself [µm]. */
+  lpnpCollectorWidth: number;
+  /** Vertical BJT: how far the base reaches past the emitter, on the side
+   *  the base contact sits on [µm]. The other sides stay at the junction
+   *  clearance, so the pocket does not grow all around. */
+  npnEmitterBaseGap: number;
+  /** Vertical BJT: distance from the emitter to the collector [µm]. */
+  npnEmitterCollectorGap: number;
+  /** Vertical BJT: width of the collector region [µm]. */
+  npnCollectorWidth: number;
+  /** Vertical BJT: how far the collector reaches past the emitter, above
+   *  and below [µm] — it follows the emitter, not the base. */
+  npnCollectorMargin: number;
+  /** Vertical BJT: the base hugs the emitter this close on the sides
+   *  without the base contact [µm]. */
+  npnBaseClearance: number;
+  /** Lateral PNP: how far the base reaches past the collector ring, on the
+   *  side the base contact sits on [µm]. */
+  lpnpBaseCollectorGap: number;
+  /** Lateral PNP: the base hugs the collector ring this close on the sides
+   *  without the base contact [µm]. */
+  lpnpBaseClearance: number;
+}
+
+/**
+ * The parametric spec of a generated device. Stored on the cell type, so
+ * the device can be re-opened and re-generated with other parameters.
+ */
+export interface AnalogPcellSpec {
+  /** Which template the device was laid out from. */
+  template: AnalogLibTemplate;
+  /** The parameters it was laid out with. */
+  params: AnalogLibParams;
+  /** Pixels per library unit (per µm) the layers were generated at. */
+  scale: number;
+  /** The rules used. */
+  rules: AnalogLibRules;
 }
 
 export interface Cell {
   id: string;
   cellTypeId: string;
+  /** The die that owns `cellTypeId`, when it isn't this die: a type shared
+   *  through the cell library, drawn here at the dies' scale ratio. Absent ⇒
+   *  one of this die's own types. */
+  cellTypeDieId?: string;
   x: number;
   y: number;
   /** Vertical mirror (existing). */
@@ -427,6 +578,10 @@ export interface Cell {
    *  Orientation never affects the footprint — it only changes how the
    *  type's content is presented on the cell. */
   bounds?: AnnotationRect;
+  /** This instance's own scale: its pixels per library unit. Absent ⇒ the
+   *  die's `cellScale` — the library's default. A cell may deviate from
+   *  it, so one library can hold elements drawn at different sizes. */
+  scale?: number;
   /** Piecewise-linear stretch of this instance's image, in its type frame
    *  (after un-orienting), so it lines up exactly with the type in the
    *  merge-cells tool. Absent ⇒ none. */
@@ -937,6 +1092,9 @@ export type DeviceKind =
   | "zener"
   | "schottky"
   | "inductor"
+  /** Independent sources, as written in a testbench netlist (V…/I…). */
+  | "voltage_source"
+  | "current_source"
   | "unknown";
 
 // ── Device geometry parameters ──────────────────────────────────
@@ -1108,8 +1266,10 @@ export interface SpiceConfig {
   technology?: string;
   /** Sheet resistance per layer [Ω/□] */
   sheetR_ohms?: Record<string, number>;
-  /** Capacitance density per layer pair [fF/μm2] */
-  capDensity_fF?: Record<string, number>;
+  /** Specific capacitance per unit area for capacitors [fF/μm2].
+   *  Every capacitor's capacitance is derived from its plate area:
+   *  C [fF] = area_um2 [μm2] × capDensity_fF_um2. */
+  capDensity_fF_um2?: number;
   /** SPICE model definitions (modelName → .MODEL card) */
   models?: Record<string, string>;
   /** Default VDD net name */
@@ -1650,6 +1810,14 @@ export interface AssistantAnalysisErrorResponse {
   detail?: string;
 }
 
+/** A discussion turn that failed — the model produced no answer. */
+export interface AssistantFailedTurn {
+  /** Short reason, e.g. "LLM returned empty content". */
+  reason: string;
+  /** What the model should do differently next time. */
+  hint: string;
+}
+
 /** One turn of a per-finding discussion thread. */
 export interface AssistantChatMessage {
   role: "user" | "assistant";
@@ -1658,10 +1826,21 @@ export interface AssistantChatMessage {
   toolUse?: AssistantToolUseEvent;
   /** Present when this message carries LVS reference-library check results produced during this turn. */
   lvsResults?: Array<AssistantLvsCheckResponse["data"]>;
+  /** Present when this turn FAILED (the model produced no answer). The
+   *  backend replays it to the model as "the previous attempt failed",
+   *  so the next turn changes its approach instead of repeating it. */
+  failed?: AssistantFailedTurn;
+  /** The text of this turn that the MODEL must see — a digest of a tool
+   *  result. Without it the next request would carry an empty assistant
+   *  message and the model would not know what its tool returned. */
+  digest?: string;
 }
 
 /** A tool-use event displayed as a card in the discussion thread. */
-export interface AssistantToolUseEvent {
+export type AssistantToolUseEvent = AssistantVisionToolUse | AssistantSpiceToolUse;
+
+/** Vision tool use: device crops rendered in the thread. */
+export interface AssistantVisionToolUse {
   type: "vision";
   deviceUuids: string[];
   deviceNames: string[];
@@ -1669,6 +1848,36 @@ export interface AssistantToolUseEvent {
   images: string[];
   /** Human-readable name of the visible layer shown in the crops (e.g. "Si", "polysilicon", "me1"). */
   layerName?: string;
+}
+
+/** SPICE tool use: one ngspice run performed by the model. */
+export interface AssistantSpiceToolUse {
+  type: "spice";
+  run: AssistantSpiceRun;
+}
+
+/** One ngspice run performed by the assistant's SPICE tool. */
+export interface AssistantSpiceRun {
+  /** Whether the run produced usable results. */
+  ok: boolean;
+  /** One-line human summary, e.g. "Operating Point — 86 variables, 1 point". */
+  summary: string;
+  /** The netlist that was actually simulated (Spectre syntax is converted first). */
+  netlist: string;
+  /** ngspice plot the numbers came from ("Operating Point", "DC transfer characteristic", …). */
+  plot?: string;
+  /** Results of the .measure directives. */
+  measurements?: Record<string, number>;
+  /** A capped subset of node voltages / source currents (first/last point). */
+  keyValues?: Record<string, number>;
+  /** What the tool auto-fixed and what it wants the model to know. */
+  notes?: string[];
+  /** Error text when the run failed. */
+  error?: string;
+  /** One entry per analysis the tool ran. */
+  analyses?: Array<{ analysis: string; plot?: string; numPoints: number; error?: string }>;
+  /** Timestamp (ms since epoch). */
+  at: number;
 }
 
 /** The finding context the backend needs to scope the discussion subgraph. */
@@ -1736,6 +1945,9 @@ export interface AssistantDiscussResponse {
   cardUpdate?: AssistantFindingPatch | null;
   /** Raw LVS reference-library check results produced via mmochip_lvs_check during this turn. */
   lvsResults?: Array<AssistantLvsCheckResponse["data"]>;
+  /** Clarifying questions the model needs answered before it can go on.
+   *  The user answers them in the chat and the turn is repeated. */
+  questions?: string[];
 }
 
 export interface AssistantDiscussErrorResponse {
@@ -2195,3 +2407,213 @@ export function planProcessFlip(annotations: DieAnnotations): {
   }
   return { process: flipProcessConfig(process), nets, vias, floorplans };
 }
+// ── Cell detection (via-constellation matching of annotated cell types) ──
+
+/**
+ * One proposed placement of a cell type, produced by the cell-detection job
+ * from the cached ML via predictions. Shaped like a `Cell` (same orientation
+ * convention: canonical point p lands at (x, y) + orient(p)) plus a score,
+ * so the die overlay and the merge-cells canvas can treat it as a virtual
+ * cell instance until the user approves it into a real one.
+ */
+export interface CellDetection {
+  id: string;
+  cellTypeId: string;
+  x: number;
+  y: number;
+  flippedH?: boolean;
+  flippedV?: boolean;
+  rotation?: 0 | 90 | 180 | 270;
+  /** 0..1 — F1 between the template's vias and the die vias under the
+   *  footprint. The confidence slider filters on this client-side. */
+  score: number;
+  /** Template vias that found a die via within tolerance. */
+  matched: number;
+  /** Die vias inside the footprint the template doesn't explain. */
+  extra: number;
+}
+
+/** How well a placement matches a type's via template (same F1 as a
+ *  detection's `score`). Computed for the type's own members at run time so
+ *  misclassified members stand out as low scores. */
+export interface CellPlacementScore {
+  score: number;
+  matched: number;
+  extra: number;
+}
+
+/** Persisted output of one detection run for one cell type. Lives beside
+ *  the die's annotations (never inside them) so clearing results can't touch
+ *  human work. */
+export interface CellDetectionResult {
+  version: 1;
+  dieId: string;
+  cellTypeId: string;
+  /** The die that owns the type, when it's another die's library type
+   *  (approved proposals become cells pointing there). Absent ⇒ this die. */
+  cellTypeDieId?: string;
+  /** Name at run time — shown when the type has since been renamed/removed. */
+  cellTypeName: string;
+  /** Via checkpoint the die vias came from. */
+  checkpointHash: string | null;
+  /** `annotations.rev` when the template was built — a later rev means the
+   *  members may have changed and the results could be stale. */
+  annotationsRev: number;
+  /** Member cells the template was averaged from. */
+  memberCount: number;
+  /** Fingerprint of the members' ids + placements at run time. Differs from
+   *  the live annotations → the template may no longer match the type. */
+  memberSignature?: string;
+  /** Vias in the consensus template. */
+  templateVias: number;
+  /** Where the via template came from when it wasn't this die's own members:
+   *  the owner die's members, scaled by `ratio` (this die's px per theirs). */
+  templateSource?: { dieId: string; dieName: string; memberCount: number; ratio: number };
+  /** Set when the template pooled the type's instances from every die of the
+   *  cell library (`CellDetectionOptions.allDies`): which, and how many. */
+  pooledFrom?: Array<{ dieId: string; dieName: string; memberCount: number; ratio: number }>;
+  /** The type's placed members scored against the template, keyed by cell
+   *  id. Absent on results from before this existed. */
+  memberScores?: Record<string, CellPlacementScore>;
+  /** Orientation options the run used (absent on results from before the
+   *  option existed → both flips allowed). */
+  options?: CellDetectionOptions;
+  createdAt: string;
+  detections: CellDetection[];
+  /** Detection ids the user explicitly rejected in merge-cells. */
+  dismissed: string[];
+}
+
+export type CellDetectionJobStatus =
+  | "running"
+  | "stopped"
+  | "completed"
+  | "failed";
+
+/** A cell-detection run. At most one per die at a time; the cell type is
+ *  fixed for the run's lifetime. Broadcast over WS as `cellJob`. */
+export interface CellDetectionJob {
+  dieId: string;
+  cellTypeId: string;
+  cellTypeName: string;
+  status: CellDetectionJobStatus;
+  /** Human-readable stage: "loading vias", "matching", "scoring". */
+  phase: string;
+  /** 0–100 across the whole run. */
+  percentage: number;
+  /** Detections written (completed runs only). */
+  detections: number | null;
+  error: string | null;
+  startedAt: string;
+  updatedAt: string;
+  finishedAt: string | null;
+}
+
+/** Which mirrored placements the matcher may propose. Rotations (90°/180°/
+ *  270°) are always searched; these gate the reflected orientations — a
+ *  "flipped X" copy is the cell mirrored across its vertical axis (any
+ *  rotation of it), "flipped Y" across its horizontal axis. Both default on. */
+export interface CellDetectionOptions {
+  allowFlipX: boolean;
+  allowFlipY: boolean;
+  /** Drop candidates whose footprint overlaps any placed cell (of any type)
+   *  by more than ~30%. Off → only near-duplicates of the type's own placed
+   *  members are dropped, so proposals may sit on cells of other types.
+   *  Default on. */
+  avoidExistingCells: boolean;
+  /** Build the template from the type's instances on every die of the cell
+   *  library (scaled to this die), not just this die's. Default off. */
+  allDies?: boolean;
+}
+
+export interface CellDetectionStartRequest {
+  cellTypeId: string;
+  allowFlipX?: boolean;
+  allowFlipY?: boolean;
+  avoidExistingCells?: boolean;
+  allDies?: boolean;
+}
+
+export interface CellDetectionDismissRequest {
+  ids: string[];
+  /** false → un-dismiss. Default true. */
+  dismissed?: boolean;
+}
+
+// ── Cell imaging (clean specimens + wire-likelihood map) ──────────────
+
+/** One cell type's clean specimen: the per-pixel robust centre of its
+ *  aligned instances, in the type's canonical orientation. */
+export interface CellSpecimenInfo {
+  cellTypeId: string;
+  cellTypeName: string;
+  width: number;
+  height: number;
+  /** Instances stacked (capped per type). */
+  instancesUsed: number;
+  /** Resolution of the display image relative to the cell (2 = reconstructed
+   *  at twice the source resolution from sub-pixel-registered instances).
+   *  Absent → 1. */
+  displayScale?: number;
+  /** Instances that went into the display image (the sharpest subset). */
+  displayInstances?: number;
+  /** Instances that only registered once mirrored relative to their
+   *  annotation — the annotation's flip flags are probably wrong for them. */
+  orientationMismatches?: number;
+  /** Cell ids of those instances. */
+  orientationMismatchIds?: string[];
+  /** Fingerprint of the type's members when it was built (see
+   *  `CellDetectionResult.memberSignature`). */
+  memberSignature: string;
+  /** Dies the stacked instances came from when pooled across the cell
+   *  library (`CellImagingStartRequest.allDies`). Absent ⇒ this die only. */
+  dies?: number;
+  createdAt: string;
+}
+
+export interface CellSpecimenIndex {
+  version: 1;
+  dieId: string;
+  /** Percentile of the stack used as the specimen (50 = median). */
+  percentile: number;
+  createdAt: string;
+  specimens: CellSpecimenInfo[];
+}
+
+/** Die-wide overlay of "pixels under a recognised cell that don't belong to
+ *  the cell" — dominated by wires routed over it. Served as RGBA tiles. */
+export interface WireMapInfo {
+  version: 1;
+  dieId: string;
+  createdAt: string;
+  /** `CellSpecimenIndex.createdAt` it was computed against. */
+  specimensCreatedAt: string;
+  annotationsRev: number;
+  cellsProcessed: number;
+  cellsSkipped: number;
+  /** Lowest pyramid level that has tiles (overlay hides below it). */
+  minZoomLevel: number;
+  maxZoomLevel: number;
+}
+
+export type CellImagingJobKind = "specimens" | "wireMap";
+
+export interface CellImagingJob {
+  dieId: string;
+  kind: CellImagingJobKind;
+  status: "running" | "stopped" | "completed" | "failed";
+  phase: string;
+  percentage: number;
+  error: string | null;
+  startedAt: string;
+  updatedAt: string;
+  finishedAt: string | null;
+}
+
+export interface CellImagingStartRequest {
+  kind: CellImagingJobKind;
+  /** Specimens: stack the type's instances from every die of the cell
+   *  library too (resampled to this die). Default off. */
+  allDies?: boolean;
+}
+

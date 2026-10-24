@@ -123,6 +123,47 @@ export const Ic = {
       <path d="M9 8h5" />
     </>
   ),
+  libraryCell: Icon(
+    <>
+      <rect x="2.5" y="2.5" width="8" height="8" />
+      <path d="M2.5 6.5h8M6.5 2.5v8" opacity=".5" />
+      <path d="M10.5 10.5l3 3M13.5 11v2.5H11" />
+    </>
+  ),
+  // A transistor: gate bar, channel bar, source / drain stubs and a bulk arrow.
+  analogDevice: Icon(
+    <>
+      <path d="M4.5 2.5v11" />
+      <path d="M7.5 4v8" />
+      <path d="M7.5 4h6M7.5 12h6" />
+      <path d="M10 8h4M12.2 6.6 14 8l-1.8 1.4" />
+    </>
+  ),
+  rotateCw: Icon(
+    <>
+      <path d="M13 8a5 5 0 11-1.5-3.5" />
+      <path d="M13 2v3h-3" />
+    </>
+  ),
+  rotateCcw: Icon(
+    <>
+      <path d="M3 8a5 5 0 101.5-3.5" />
+      <path d="M3 2v3h3" />
+    </>
+  ),
+  flipH: Icon(
+    <>
+      <path d="M8 2v12" strokeDasharray="2 1.6" />
+      <path d="M6 5L2.5 8 6 11zM10 5l3.5 3-3.5 3z" />
+    </>
+  ),
+  flipV: Icon(
+    <>
+      <path d="M2 8h12" strokeDasharray="2 1.6" />
+      <path d="M5 6L8 2.5 11 6zM5 10l3 3.5 3-3.5z" />
+    </>
+  ),
+  check: Icon(<path d="M3 8.5l3 3 7-7" />),
   /** Text-lines glyph, used for "toggle name labels" controls. */
   tag: Icon(<path d="M3 5h10M3 8h7M3 11h10" />),
   mlIgnore: Icon(

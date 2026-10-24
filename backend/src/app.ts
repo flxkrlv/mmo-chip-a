@@ -2,6 +2,8 @@ import cors from "cors";
 import express from "express";
 import { createImportJobManager } from "./dieImport/jobs.js";
 import { createAnnotationsRouter } from "./api/annotations.js";
+import { createCellDetectionRouter } from "./api/cellDetection.js";
+import { createCellImagingRouter } from "./api/cellImaging.js";
 import { createDiesRouter } from "./api/dies.js";
 import { createHealthRouter } from "./api/health.js";
 import { createJobsRouter } from "./api/jobs.js";
@@ -16,9 +18,11 @@ import { createMetalStackRouter } from "./api/metalStack.js";
 import { createProjectIORouter } from "./api/projectIO.js";
 import { createFsRouter } from "./api/fs.js";
 import { createAssistantRouter } from "./api/assistant.js";
+import { createSpiceHandoffRouter } from "./api/spiceHandoff.js";
 import { createTilesRouter } from "./api/tiles.js";
 import { createMcpRouter } from "./api/mcp.js";
 import { enqueueOverlayPrebuilds } from "./api/overlayImages.js";
+import { createMLPredictor } from "./ml/predict.js";
 import { listDieRecords } from "./store.js";
 import { resolveProjectDir } from "./projectLayout.js";
 
@@ -82,7 +86,8 @@ export function createApp(config: {
     createDiesRouter({
       dataRoot: config.dataRoot,
       tileScheduler,
-      importJobManager
+      importJobManager,
+      broadcaster: config.broadcaster
     })
   );
   app.use(createTilesRouter({ dataRoot: config.dataRoot, tileScheduler }));
@@ -97,12 +102,32 @@ export function createApp(config: {
   app.use(createAnalogExportRouter({ dataRoot: config.dataRoot }));
   app.use(createLvsRouter({ dataRoot: config.dataRoot }));
   app.use(createOverlayImagesRouter({ dataRoot: config.dataRoot }));
+  const predictor = createMLPredictor({
+    mlSidecarUrl: config.mlSidecarUrl,
+    dataRoot: config.dataRoot,
+    mlPredictPad: config.mlPredictPad
+  });
   app.use(createMLRouter({
     mlSidecarUrl: config.mlSidecarUrl,
     dataRoot: config.dataRoot,
     mlPredictPad: config.mlPredictPad,
-    broadcaster: config.broadcaster
+    broadcaster: config.broadcaster,
+    predictor
   }));
+  app.use(
+    createCellDetectionRouter({
+      dataRoot: config.dataRoot,
+      predictor,
+      broadcaster: config.broadcaster
+    })
+  );
+  app.use(
+    createCellImagingRouter({
+      dataRoot: config.dataRoot,
+      tileScheduler,
+      broadcaster: config.broadcaster
+    })
+  );
   app.use(createMetalStackRouter({ dataRoot: config.dataRoot }));
   app.use(createProjectIORouter({ dataRoot: config.dataRoot, tileScheduler }));
   app.use(createFsRouter({ dataRoot: config.dataRoot, tileScheduler }));
@@ -116,6 +141,7 @@ export function createApp(config: {
       approvalWaitMs: config.mcpApprovalWaitMs
     })
   );
+  app.use(createSpiceHandoffRouter({ dataRoot: config.dataRoot }));
   app.use(createDebugRouter({ dataRoot: config.dataRoot }));
 
   // Resume/create the complete overlay disk cache for every known project.

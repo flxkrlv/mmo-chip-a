@@ -25,6 +25,7 @@ import { useDie } from "../api/dies";
 import { useAnnotations } from "../api/annotations";
 import { useAnnotationsWebSocket } from "../api/annotationsWebSocket";
 import { usePreferences } from "../state/preferences";
+import { DEFAULT_CAP_DENSITY } from "../lib/export/capacitorDefaults";
 import { useSession } from "../state/session";
 import {
   useAnalogNetlist,
@@ -139,6 +140,10 @@ function AnalogNetlist({ dieId }: { dieId: string }) {
 
   // Reactive sheetR from preferences (set in Die Viewer → AnalogDiePanel → SheetRConfigPanel)
   const sheetRPrefs = usePreferences((s) => (s as any).sheetR ?? {});
+  // Specific capacitance per unit area [fF/μm²] for capacitors.
+  const capDensityPref = usePreferences(
+    (s) => (s as any).capDensity ?? DEFAULT_CAP_DENSITY,
+  );
   const analogOverrides = usePreferences((s) => (s as any).analogOverrides ?? {});
 
   const spiceConfig: SpiceConfig = useMemo(
@@ -146,9 +151,13 @@ function AnalogNetlist({ dieId }: { dieId: string }) {
       resistorFormat,
       vdd: vddNet, gnd: gndNet,
       sheetR_ohms: sheetRPrefs,
+      capDensity_fF_um2: capDensityPref,
       matchTolerancePercent: matchEnabled ? matchTolerance : 0,
     }),
-    [resistorFormat, vddNet, gndNet, sheetRPrefs, matchEnabled, matchTolerance],
+    [
+      resistorFormat, vddNet, gndNet, sheetRPrefs, capDensityPref,
+      matchEnabled, matchTolerance,
+    ],
   );
 
   // ══ Ensure Clipper2 WASM is loaded for multi-finger MOS splitting ═
@@ -185,6 +194,15 @@ function AnalogNetlist({ dieId }: { dieId: string }) {
         }
         if (changed) usePreferences.setState({ sheetR: prefsSheetR });
       }
+      // The specific capacitance is a global preference; a die's own
+      // config only seeds it while the preference still sits at the
+      // default value.
+      if (cfg.capDensity_fF_um2 != null) {
+        const prefs = usePreferences.getState() as any;
+        if ((prefs.capDensity ?? DEFAULT_CAP_DENSITY) === DEFAULT_CAP_DENSITY) {
+          usePreferences.setState({ capDensity: cfg.capDensity_fF_um2 });
+        }
+      }
     });
     return () => {
       cancelled = true;
@@ -201,6 +219,7 @@ function AnalogNetlist({ dieId }: { dieId: string }) {
         gnd: gndNet,
         resistorFormat,
         sheetR_ohms: { ...(prefs.sheetR ?? {}) },
+        capDensity_fF_um2: prefs.capDensity ?? DEFAULT_CAP_DENSITY,
         matchTolerancePercent: matchEnabled ? matchTolerance : 0,
       };
       try {
@@ -211,7 +230,7 @@ function AnalogNetlist({ dieId }: { dieId: string }) {
       }
     }, 500);
     return () => clearTimeout(timer);
-  }, [vddNet, gndNet, resistorFormat, dieId]);
+  }, [vddNet, gndNet, resistorFormat, dieId, sheetRPrefs, capDensityPref]);
 
   const netlist = useAnalogNetlist(annotations, moduleName, dialect, spiceConfig, hierarchical, analogOverrides);
 

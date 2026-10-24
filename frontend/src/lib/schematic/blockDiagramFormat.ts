@@ -14,6 +14,9 @@
 
 import type { AnalogDevice, FloorplanRegion } from "shared";
 import { floorplanNameInline } from "../floorplanName";
+import { effectiveCapacitance } from "../export/capacitorDefaults";
+import { effectiveSheetR } from "../export/resistorDefaults";
+import type { SchematicValues } from "./netlist2svgFormat";
 
 // ── Yosys JSON types (mirrors netlist2svgFormat) ─────────────────
 
@@ -43,6 +46,12 @@ interface YosysNetlist {
 export interface BlockDiagramConfig {
   vdd: string;
   gnd: string;
+  /** Specific capacitance per unit area [fF/μm²] — the
+   *  capacitor labels. */
+  capDensity_fF_um2?: number;
+  /** Sheet resistance per resistor type [Ω/─] — the resistor
+   *  labels. */
+  sheetR_ohms?: Record<string, number>;
 }
 
 // ══════════════════════════════════════════════════════════════════
@@ -233,16 +242,24 @@ function sortByNetName(
 
 // ── Value string for unassigned devices (mirrors netlist2svgFormat) ──
 
-function unassignedAttrs(d: AnalogDevice): Record<string, string> | undefined {
+function unassignedAttrs(
+  d: AnalogDevice,
+  values?: SchematicValues,
+): Record<string, string> | undefined {
   const result: Record<string, string> = {};
   switch (d.kind) {
     case "resistor": {
       const g = d.geometry as any;
       const lines: string[] = [];
       const detailLines: string[] = [];
-      if (g.resistance_ohms != null) {
-        lines.push(formatSimple(g.resistance_ohms) + "Ω");
-        detailLines.push(formatSimple(g.resistance_ohms) + "Ω");
+      // The resistance follows the current sheet resistance — the same
+      // way the netlist resolves it.
+      const rOhms = g.squares > 0
+        ? Math.round(g.squares * effectiveSheetR(g.resistorType, values?.sheetR))
+        : g.resistance_ohms;
+      if (rOhms != null) {
+        lines.push(formatSimple(rOhms) + "Ω");
+        detailLines.push(formatSimple(rOhms) + "Ω");
       }
       if (g.squares != null && g.squares > 0) detailLines.push(`${g.squares.toFixed(1)} sq`);
       if (g.resistorType) detailLines.push(g.resistorType);
@@ -277,8 +294,10 @@ function unassignedAttrs(d: AnalogDevice): Record<string, string> | undefined {
     }
     case "capacitor": {
       const g = d.geometry as any;
-      if (g.capacitance_fF == null) return undefined;
-      const fF = g.capacitance_fF;
+      // The capacitance is the plate area × the specific
+      // capacitance — the same way the netlist resolves it.
+      const fF = effectiveCapacitance(g, values?.capDensity);
+      if (fF == null) return undefined;
       let cap: string;
       if (fF >= 1_000_000) cap = `${(fF / 1_000_000).toFixed(1)}uF`;
       else if (fF >= 1_000) cap = `${(fF / 1_000).toFixed(1)}nF`;
@@ -418,7 +437,10 @@ export function generateBlockDiagram(
 
     const attrs: Record<string, string> = { ref: instName };
     // Add value/multiplier attributes (same logic as netlist2svgFormat.ts)
-    const devAttrs = unassignedAttrs(d);
+    const devAttrs = unassignedAttrs(d, {
+      capDensity: cfg.capDensity_fF_um2,
+      sheetR: cfg.sheetR_ohms,
+    });
     if (devAttrs) Object.assign(attrs, devAttrs);
     const dirs = portDirectionsForDevice(d);
     for (const [portName, bitIds] of Object.entries(conns)) {

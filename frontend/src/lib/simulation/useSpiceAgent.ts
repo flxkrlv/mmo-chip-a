@@ -14,6 +14,7 @@
 import { useCallback, useRef, useState } from "react";
 import { apiPost } from "../../api/client";
 import { runFullSimulation } from "./spiceService";
+import { autoInstantiateDut, splitAtSectionMarker } from "shared/spiceNetlist";
 import type { SpiceAgentTurn, SpiceSimulationOutput } from "./types";
 import type { AssistantLlmConfig } from "shared";
 
@@ -24,9 +25,13 @@ type Props = {
   netlist: string;
   llmConfig?: AssistantLlmConfig;
   onDirectivesUpdate: (directives: string) => void;
+  /** Which engine to run: WASM in-browser or the server-side ngspice. */
+  mode?: "wasm" | "server";
+  /** Path to the ngspice binary (server mode only). */
+  binPath?: string;
 };
 
-export function useSpiceAgent({ dieId, netlist, llmConfig, onDirectivesUpdate }: Props) {
+export function useSpiceAgent({ dieId, netlist, llmConfig, onDirectivesUpdate, mode = "wasm", binPath }: Props) {
   const [turns, setTurns] = useState<SpiceAgentTurn[]>([]);
   const [running, setRunning] = useState(false);
   const [status, setStatus] = useState("");
@@ -109,7 +114,7 @@ export function useSpiceAgent({ dieId, netlist, llmConfig, onDirectivesUpdate }:
 
       let simOutput: SpiceSimulationOutput;
       try {
-        simOutput = await runFullSimulation(simNetlist);
+        simOutput = await runFullSimulation(simNetlist, mode, binPath);
       } catch (err) {
         const errMsg = err instanceof Error ? err.message : String(err);
         lastErrors = [errMsg];
@@ -123,14 +128,21 @@ export function useSpiceAgent({ dieId, netlist, llmConfig, onDirectivesUpdate }:
         continue; // retry
       }
 
-      const hasErrors = simOutput.errors.length > 0 ||
-        simOutput.raw.numPoints === 0 ||
-        simOutput.waveforms.length === 0;
+      // An `.op` run has a single point and nothing to plot — its numbers ARE
+      // the result, so "no waveforms" must not count as a failure (otherwise
+      // every operating-point testbench loops until it runs out of retries).
+      const hasResults = simOutput.raw.numPoints > 0 && (
+        simOutput.waveforms.length > 0 ||
+        simOutput.raw.data.length > 0 ||
+        Object.keys(simOutput.measurements ?? {}).length > 0
+      );
+
+      const hasErrors = simOutput.errors.length > 0 || !hasResults;
 
       if (hasErrors) {
         lastErrors = simOutput.errors.length > 0
           ? simOutput.errors
-          : ["No output data (0 points or 0 waveforms)"];
+          : ["No output data (0 points)"];
         lastMeasurements = undefined;
 
         allTurns.push({
@@ -144,7 +156,7 @@ export function useSpiceAgent({ dieId, netlist, llmConfig, onDirectivesUpdate }:
       }
 
       // Success — extract measurements and analyze
-      const measurements: Record<string, number> = {};
+      const measurements: Record<string, number> = { ...(simOutput.measurements ?? {}) };
       for (const v of simOutput.raw.data) {
         if (v.values.length > 0) {
           const last = v.values[v.values.length - 1];
@@ -163,6 +175,8 @@ export function useSpiceAgent({ dieId, netlist, llmConfig, onDirectivesUpdate }:
           measurements,
           variableNames: simOutput.raw.variableNames,
           numPoints: simOutput.raw.numPoints,
+          notes: [...(simOutput.notes ?? []), ...(simOutput.warnings ?? [])],
+          netlist: simNetlist,
         },
       });
       setTurns([...allTurns]);
@@ -194,7 +208,7 @@ export function useSpiceAgent({ dieId, netlist, llmConfig, onDirectivesUpdate }:
 
     setRunning(false);
     setStatus("");
-  }, [running, dieId, netlist, llmConfig, onDirectivesUpdate]);
+  }, [running, dieId, netlist, llmConfig, onDirectivesUpdate, mode, binPath]);
 
   const abort = useCallback(() => { abortRef.current = true; }, []);
 
@@ -206,41 +220,38 @@ export function useSpiceAgent({ dieId, netlist, llmConfig, onDirectivesUpdate }:
  * Strips any existing directives from the DUT netlist to avoid duplication.
  */
 function buildSimNetlist(dutNetlist: string, directives: string): string {
-  const parts: string[] = [];
-
-  // Extract ONLY models + DUT (strip existing directives section)
-  const dutOnly = extractDutOnly(dutNetlist);
-
-  // Auto-generated models from the DUT netlist
-  const modelLines = dutOnly.split("\n").filter((l) => /^\.\s*model\b/i.test(l.trim()));
-  if (modelLines.length > 0) {
-    parts.push(...modelLines);
-    parts.push("");
-  }
-
-  // DUT netlist (no directives)
-  parts.push(dutOnly);
-  parts.push("");
+  // Extract ONLY models + DUT (strip existing directives section).
+  // The model cards already live inside the DUT block — they must not be
+  // emitted twice or ngspice complains about a redefined model. Both the
+  // backend tool and the composed netlist mark the split, so the same marker
+  // splits it back if this run is handed over to the simulator.
+  const split = splitAtSectionMarker(dutNetlist);
+  const dutOnly = split.dut ?? stripDirectivesSection(dutNetlist);
 
   // Clean LLM directives (strip any accidental DUT content)
   const cleanDirectives = stripDutContent(directives);
-  parts.push(cleanDirectives);
 
-  return parts.join("\n");
+  const parts: string[] = [dutOnly, "", SECTION_MARKER, cleanDirectives];
+
+  // A model that writes only the supply and the load leaves the DUT dangling:
+  // the subcircuit is then instantiated from its own port list.
+  const completed = autoInstantiateDut(parts.join("\n"));
+  return completed.netlist;
 }
 
+/** Where the testbench starts in a composed netlist. */
+const SECTION_MARKER = "* ── Directives ──";
+
 /**
- * Extract only model cards and DUT from a full netlist.
- * Strips everything after "* ── Directives ──" or similar markers.
+ * Fallback for a netlist that carries no section marker: keep the lines up to
+ * the first testbench-ish directive, so the DUT is not emitted twice either.
  */
-function extractDutOnly(netlist: string): string {
-  const lines = netlist.split("\n");
+function stripDirectivesSection(netlist: string): string {
   const result: string[] = [];
-  for (const line of lines) {
+  for (const line of netlist.split("\n")) {
     const t = line.trim();
-    // Stop at directives markers
-    if (/^\*\s*─+\s*Directives?\s*─+/i.test(t)) break;
-    if (/^\*\s*─+\s*User\s+Directives/i.test(t)) break;
+    if (/^\*\s*─+\s*(Directives?|User\s+Directives|Testbench)\b/i.test(t)) break;
+    if (/^\.(dc|ac|tran|op|noise|tf|meas|print|save|step|control|end)\b/i.test(t)) break;
     result.push(line);
   }
   return result.join("\n").trimEnd();

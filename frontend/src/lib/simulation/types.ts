@@ -68,6 +68,21 @@ export interface SpiceSimulationOutput {
   waveforms: WaveformTrace[];
   errors: string[];
   durationMs: number;
+  /** What the runner changed or wants the user to know (server mode only). */
+  notes?: string[];
+  /** Warnings that make the result suspicious (e.g. a floating circuit). */
+  warnings?: string[];
+  /** Results of the .measure directives. */
+  measurements?: Record<string, number>;
+  /** Node → value of a single-point (`.op`) run — there is nothing to plot. */
+  dcOp?: Record<string, number>;
+  /**
+   * Signals the netlist asked to print (`.print`/`.save`/`.measure`).
+   * When present, `waveforms` was filtered down to these.
+   */
+  requestedSignals?: string[];
+  /** Every trace the run produced, kept only while `waveforms` is a subset. */
+  allWaveforms?: WaveformTrace[];
 }
 
 // ── Spice Agent types ────────────────────────────────────────────
@@ -85,6 +100,10 @@ export interface SpiceAgentTurn {
     measurements?: Record<string, number>;
     variableNames?: string[];
     numPoints?: number;
+    /** What the runner changed (auto-added analysis, converted syntax, …). */
+    notes?: string[];
+    /** The netlist that was simulated. */
+    netlist?: string;
   };
 }
 

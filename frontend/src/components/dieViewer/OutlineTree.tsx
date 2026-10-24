@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ProcessSettings } from "./ProcessControls";
 import type { DieAnnotations, FloorplanRegion } from "shared";
+import { LAYER_PURPOSE_OPTIONS } from "shared/layerPurpose";
+import { COLOR_ML_CELL } from "../../renderer/annotations/cellDetections";
 import { Ic } from "../../icons";
 import { useToast } from "../Toast";
 import { useOverlayLayers } from "../../state/overlayLayers";
@@ -31,7 +33,9 @@ import { useDieViewerStore } from "../../state/dieViewer";
 import { usePreferences, selectNetWidth } from "../../state/preferences";
 import { TreeRow, TreeSep } from "../tree/TreeRow";
 import { NetColorPickerBody } from "./NetColorPickerBody";
+import { OtherDieBadge } from "../cellLibrary/OtherDieBadge";
 import { floorplanDisplayName, floorplanNameInline } from "../../lib/floorplanName";
+import { updateOverlayPurpose } from "../../api/overlayImages";
 
 // Re-export so existing imports keep working.
 export { ANNOTATION_KIND_VALUES as ANNOTATION_KINDS };
@@ -55,6 +59,9 @@ type Props = {
   searchOpenRef?: React.MutableRefObject<(() => void) | null>;
   /** Set / clear (undefined) a cell type's own color. Absent ⇒ no picker. */
   onSetCellTypeColor?: (cellTypeId: string, color: string | undefined) => void;
+  /** Cell types owned by another die of the cell library ⇒ that die's
+   *  name (badged in the cell list). */
+  foreignTypeOwners?: ReadonlyMap<string, string>;
 };
 
 /** Session-group key for the "ML Regions" parent (it spans two annotation
@@ -76,7 +83,7 @@ const BASE_IMAGES_KEY = "base-images";
 /** Session-group key for the "Overlay Layers" section. */
 const OVERLAY_LAYERS_KEY = "overlay-layers";
 
-export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabels, onDeviceSelect, onOpenInRE, searchOpenRef, onSetCellTypeColor }: Props) {
+export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabels, onDeviceSelect, onOpenInRE, searchOpenRef, onSetCellTypeColor, foreignTypeOwners }: Props) {
   const toast = useToast();
   const expandedSections = usePreferences((s) => s.expandedSections);
   const hiddenKinds = usePreferences((s) => s.hiddenKinds);
@@ -99,6 +106,10 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
 
   const mlResultsHidden = usePreferences((s) => s.mlResultsHidden);
   const setMlResultsHidden = usePreferences((s) => s.setMlResultsHidden);
+  const wireMapHidden = usePreferences((s) => s.wireMapHidden);
+  const setWireMapHidden = usePreferences((s) => s.setWireMapHidden);
+  const cellDetectionsHidden = usePreferences((s) => s.cellDetectionsHidden);
+  const setCellDetectionsHidden = usePreferences((s) => s.setCellDetectionsHidden);
 
   // Read per-net color overrides once (not inside the .map, hooks rules).
   const netColors = usePreferences((s) => s.netColors);
@@ -124,6 +135,8 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
   const expandedGroups = useDieViewerStore((s) => s.expandedGroups);
   const toggleGroup = useDieViewerStore((s) => s.toggleGroup);
   const mlViasCount = useDieViewerStore((s) => s.mlViasCount);
+  const cellDetectionsCount = useDieViewerStore((s) => s.cellDetectionsCount);
+  const wireMapAvailable = useDieViewerStore((s) => s.wireMapAvailable);
 
   // Whole-net ids present in the current selection — includes nets selected
   // by clicking a sub-part (edge/node id like "net:abc/edge:1") on the canvas,
@@ -454,7 +467,16 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
               <TreeRow
                 depth={1}
                 expand={open ? "open" : "closed"}
-                label={group.cellType.name || group.cellType.id}
+                label={
+                  foreignTypeOwners?.has(group.cellType.id) ? (
+                    <>
+                      {group.cellType.name || group.cellType.id}
+                      <OtherDieBadge owner={foreignTypeOwners.get(group.cellType.id)!} />
+                    </>
+                  ) : (
+                    group.cellType.name || group.cellType.id
+                  )
+                }
                 meta={group.cells.length}
                 controls={onSetCellTypeColor ? (
                   <CellTypeColorPicker
@@ -470,7 +492,13 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
                 }}
                 selected={selectedIds.has(groupKey)}
                 onToggleExpand={() => toggleGroup(groupKey)}
-                onSelect={() => select([groupKey])}
+                // Select the type together with every placed instance: the
+                // canvas highlights them all, Delete removes them all (and
+                // the then-empty type), and the inspector keeps showing the
+                // type because the selection is "one type + only its cells".
+                onSelect={() =>
+                  select([groupKey, ...group.cells.map((c) => `cell:${c.id}`)])
+                }
                 onDoubleClick={() =>
                   focus(group.cells.map((c) => `cell:${c.id}`))
                 }
@@ -515,7 +543,11 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
       {/* Floorplans -------------------------------------------------------- */}
       <TreeRow
         expand={isOpen("floorplan") ? "open" : "closed"}
-        label="Floorplans"
+        label={
+          <span title="Used to generate the hierarchical analog netlist">
+            Floorplan regions
+          </span>
+        }
         meta={floorplanRegions.length}
         visibility={{
           ...visibilityFor("floorplan"),
@@ -574,9 +606,13 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
 
       {/* Comments (pins only; no per-comment rows) ------------------------ */}
       <TreeRow
-        icon={Ic.comment}
         label="Comments"
         meta={annotations.comments?.length ?? 0}
+        controls={
+          <span style={{ display: "inline-flex", color: "var(--ink3)" }}>
+            {Ic.comment}
+          </span>
+        }
         visibility={visibilityFor("comment")}
       />
 
@@ -748,21 +784,56 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
       <TreeRow
         expand={mlResultsOpen ? "open" : "closed"}
         label="ML Results"
-        meta={mlViasCount}
+        meta={mlViasCount + cellDetectionsCount}
         visibility={{
-          visible: !mlResultsHidden,
-          onToggle: () => setMlResultsHidden(!mlResultsHidden)
+          visible:
+            !mlResultsHidden || !cellDetectionsHidden || (wireMapAvailable && !wireMapHidden),
+          onToggle: () => {
+            const hide =
+              !mlResultsHidden || !cellDetectionsHidden || (wireMapAvailable && !wireMapHidden);
+            setMlResultsHidden(hide);
+            setCellDetectionsHidden(hide);
+            if (wireMapAvailable) setWireMapHidden(hide);
+          }
         }}
         onToggleExpand={() => toggleGroup(ML_RESULTS_KEY)}
         onSelect={() => toggleGroup(ML_RESULTS_KEY)}
       />
       {mlResultsOpen && (
-        <TreeRow
-          depth={1}
-          swatch="rgba(130, 214, 166, 0.85)"
-          label="vias"
-          meta={mlViasCount}
-        />
+        <>
+          <TreeRow
+            depth={1}
+            swatch="rgba(130, 214, 166, 0.85)"
+            label="vias"
+            meta={mlViasCount}
+            visibility={{
+              visible: !mlResultsHidden,
+              onToggle: () => setMlResultsHidden(!mlResultsHidden)
+            }}
+          />
+          <TreeRow
+            depth={1}
+            swatch={COLOR_ML_CELL}
+            label="cells"
+            meta={cellDetectionsCount}
+            visibility={{
+              visible: !cellDetectionsHidden,
+              onToggle: () => setCellDetectionsHidden(!cellDetectionsHidden)
+            }}
+          />
+          <TreeRow
+            depth={1}
+            swatch="rgb(255, 60, 0)"
+            label="wires over cells"
+            meta={wireMapAvailable ? "map" : "—"}
+            dimmed={!wireMapAvailable}
+            visibility={
+              wireMapAvailable
+                ? { visible: !wireMapHidden, onToggle: () => setWireMapHidden(!wireMapHidden) }
+                : undefined
+            }
+          />
+        </>
       )}
 
       <TreeSep />
@@ -846,6 +917,7 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
               icon={Ic.ruler}
               label={ruler.name || `ruler ${idx + 1}`}
               meta={`${Math.round(ruler.lengthPx).toLocaleString()} px`}
+              onDoubleClick={() => focus([`ruler:${ruler.id}`])}
               visibility={{
                 visible,
                 onToggle: () => setRulerVisible(ruler.id, !visible)
@@ -978,7 +1050,10 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
               onDragEnd={() => setDraggedOverlayIndex(null)}
               label={<OverlayLayerLabel layerId={layer.id} name={layer.name} />}
               controls={
-                <OverlayLayerSettings layerId={layer.id} />
+                <>
+                  <OverlayLayerPurpose layerId={layer.id} />
+                  <OverlayLayerSettings layerId={layer.id} />
+                </>
               }
               visibility={{
                 visible: !layer.hidden,
@@ -1430,6 +1505,97 @@ function OverlayLayerLabel({ layerId, name }: { layerId: string; name: string })
   );
 }
 
+/** Project-shared purpose editor for an overlay source. The tiny badge opens a
+ *  popover; `Auto` clears the explicit value and lets the name heuristic
+ *  (`sirtl` → diffusion, `me1` → metal1) decide. */
+function OverlayLayerPurpose({ layerId }: { layerId: string }) {
+  const layer = useOverlayLayers((s) => s.layers.find((x) => x.id === layerId));
+  const applyLayerSource = useOverlayLayers((s) => s.applyLayerSource);
+  const dieId = useSession((s) => s.dieId);
+  const toast = useToast();
+  const [saving, setSaving] = useState(false);
+  if (!layer) return null;
+
+  const effective = layer.purpose ?? "none";
+  const badge = layer.purposeSource === "auto" ? `${effective} · auto` : effective;
+  const style: React.CSSProperties = {
+    fontSize: 8.5,
+    lineHeight: 1.5,
+    padding: "0 4px",
+    borderRadius: 3,
+    border: "1px solid var(--l3)",
+    color: layer.purpose ? "var(--ink2)" : "var(--ink3)",
+    background: "var(--l1)",
+    whiteSpace: "nowrap",
+    maxWidth: 120,
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+    display: "inline-block"
+  };
+
+  if (!layer.purposeEditable || !layer.serverFilename || !dieId) {
+    return <span title="Purpose is not persisted for legacy overlay files" style={style}>{badge}</span>;
+  }
+
+  const onChange = async (value: string) => {
+    setSaving(true);
+    try {
+      const result = await updateOverlayPurpose(
+        dieId,
+        layer.serverFilename!,
+        value === "" ? null : value
+      );
+      applyLayerSource(layerId, result.image);
+    } catch (error) {
+      toast.error("Failed to save layer purpose", (error as Error).message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <SettingsPopover
+      label="Overlay layer purpose"
+      triggerContent={<span title="Click to set the layer purpose" style={style}>{badge}</span>}
+      triggerStyle={{ width: "auto", minWidth: 0, height: 18, padding: "0 4px" }}
+    >
+      <div className="u" style={{ marginBottom: 6 }}>Layer purpose</div>
+      <div style={{ fontSize: 9, color: "var(--ink3)", marginBottom: 6, lineHeight: 1.4 }}>
+        Persisted for the whole project. Auto matches the layer name; None keeps it unlabeled.
+      </div>
+      <select
+        value={layer.explicitPurpose === "none" ? "none" : layer.explicitPurpose ?? ""}
+        disabled={saving}
+        onChange={(event) => void onChange(event.target.value)}
+        onClick={(event) => event.stopPropagation()}
+        style={{
+          width: "100%",
+          background: "#171b20",
+          color: "#e6edf3",
+          colorScheme: "dark",
+          border: "1px solid var(--l2)",
+          borderRadius: 3,
+          padding: "3px 4px"
+        }}
+      >
+        <option value="" style={{ background: "#171b20", color: "#e6edf3" }}>
+          Auto{layer.suggestedPurpose ? ` (${layer.suggestedPurpose})` : " (no name match)"}
+        </option>
+        <option value="none" style={{ background: "#171b20", color: "#e6edf3" }}>None</option>
+        {LAYER_PURPOSE_OPTIONS.map((purpose) => (
+          <option key={purpose} value={purpose} style={{ background: "#171b20", color: "#e6edf3" }}>
+            {purpose}
+          </option>
+        ))}
+      </select>
+      <div style={{ fontSize: 9, color: "var(--ink3)", marginTop: 6 }}>
+        Effective: <strong style={{ color: "var(--ink2)" }}>{effective}</strong>{" "}
+        ({layer.purposeSource})
+      </div>
+    </SettingsPopover>
+  );
+}
+
 /** Settings popover for an overlay image layer — opacity + delete. */
 function OverlayLayerSettings({ layerId }: { layerId: string }) {
   const opacity = useOverlayLayers((s) => {
@@ -1554,7 +1720,7 @@ function CellSettingsButton() {
           checked={cellShowShapes}
           onChange={(e) => setCellShowShapes(e.target.checked)}
         />
-        Show cell details when zoomed in
+        Show cell details
       </label>
     </SettingsPopover>
   );

@@ -3,10 +3,15 @@
  *   - detectMOSFromLayers() poly gate net grouping
  *
  * Run: cd backend && npx tsx --test src/simpleAnalog.test.ts
+ *
+ * The extractor lives in the frontend (frontend/src/lib/extraction); it is
+ * exercised from here through a cross-package import. Clipper2 is loaded
+ * before the tests: MOS detection needs it (the diffusion is split at the
+ * gates), so without it no MOS device is produced at all.
  */
 
 import assert from "node:assert/strict";
-import test from "node:test";
+import test, { before } from "node:test";
 import { readFileSync } from "node:fs";
 import type { CellLayers, LayerRect } from "../../shared/src/types.js";
 import {
@@ -15,6 +20,14 @@ import {
   mergeMetalConnectedTerminals,
 } from "../../frontend/src/lib/extraction/simpleAnalog.js";
 import { loadClipperWithBinary } from "../../frontend/src/lib/extraction/clipper.js";
+
+before(async () => {
+  const wasmPath = new URL(
+    "../../node_modules/clipper2-wasm/dist/es/clipper2z.wasm",
+    import.meta.url,
+  );
+  await loadClipperWithBinary(readFileSync(wasmPath));
+});
 
 function rr(
   id: string,
@@ -27,22 +40,25 @@ function rr(
 }
 
 // ═════════════════════════════════════════════════════════════════
-// Tests without Clipper (shapeId-only dedup)
+// Gate net grouping
 // ═════════════════════════════════════════════════════════════════
 
 test("detectMOSFromLayers: same poly shape across two diffusions → shared gate net", () => {
   resetDummyNets();
-  // nwell, two side-by-side diffusions, one poly that overlaps both
+  // Two diffusions stacked in y, one vertical poly crossing both. The poly
+  // has to cut each diffusion *through* — a poly that only clips the
+  // diffusion's edge leaves nothing to split (see the splitter in
+  // splitDiffusionAtGates).
   const layers: CellLayers = {
-    nwell: [rr("nw1", 0, 0, 60, 50)],
+    nwell: [rr("nw1", 0, 0, 60, 70)],
     diffusion: [
-      rr("d1", 5, 10, 20, 20),   // spans x=5..25
-      rr("d2", 25, 10, 20, 20),  // spans x=25..45
+      rr("d1", 10, 0, 20, 20),  // x=10..30, y=0..20
+      rr("d2", 10, 30, 20, 20), // x=10..30, y=30..50
     ],
-    polysilicon: [rr("p1", 22, 5, 6, 40)], // spans x=22..28 → overlaps both diffusions
+    polysilicon: [rr("p1", 18, -5, 4, 60)], // x=18..22, y=-5..55 → crosses both
   };
   const devices = detectMOSFromLayers(layers, "test_cell", 1);
-  // Both diffusions have 1 gate each → single-finger, no Clipper split
+  // Both diffusions have 1 gate each → one finger per diffusion
   assert.equal(devices.length, 2, "expected 2 MOS devices (one per diffusion)");
   const gNets = devices.map((d) => d.terminals.find((t) => t.name === "G")!.netId);
   assert.equal(
@@ -72,31 +88,25 @@ test("detectMOSFromLayers: single-finger regression — unchanged behavior", () 
 // ═════════════════════════════════════════════════════════════════
 
 test("detectMOSFromLayers: overlapping poly shapes → shared gate net (with clipper)", async () => {
-  const wasmPath = new URL(
-    "../../node_modules/clipper2-wasm/dist/es/clipper2z.wasm",
-    import.meta.url,
-  );
-  const buf = readFileSync(wasmPath);
-  await loadClipperWithBinary(buf);
-
   resetDummyNets();
-  // Two separate polys that overlap each other. Each crosses a different
-  // diffusion → their gates share one net because the polys are connected.
-  // p1 (x=22..28) overlaps p2 (x=25..31) at x=25..28.
+  // Two polys that overlap each other, each crossing its own diffusion.
+  // p1 (x=18..22, y=-5..28) overlaps p2 (x=20..24, y=26..55) at
+  // x=20..22, y=26..28 → the gates share one net because the polys are
+  // connected.
   const layers: CellLayers = {
-    nwell: [rr("nw1", 0, 0, 60, 50)],
+    nwell: [rr("nw1", 0, 0, 60, 70)],
     diffusion: [
-      rr("d1", 5, 10, 20, 20),   // spans x=5..25
-      rr("d2", 30, 10, 20, 20),  // spans x=30..50
+      rr("d1", 10, 0, 20, 20),  // x=10..30, y=0..20
+      rr("d2", 10, 30, 20, 20), // x=10..30, y=30..50
     ],
     polysilicon: [
-      rr("p1", 22, 5, 6, 40),   // spans x=22..28 → crosses d1 (22..25)
-      rr("p2", 25, 5, 6, 40),   // spans x=25..31 → overlaps p1 (25..28), crosses d2 (30..31)
+      rr("p1", 18, -5, 4, 33),  // crosses d1 only
+      rr("p2", 20, 26, 4, 29),  // crosses d2 only — overlaps p1
     ],
   };
   const devices = detectMOSFromLayers(layers, "test_cell", 1);
   // d1: 1 gate (p1) → 1 device. d2: 1 gate (p2) → 1 device. Total = 2
-  assert.equal(devices.length, 2, "expected 2 devices (one per diffusion)");
+  assert.equal(devices.length, 2, "expected 2 MOS devices (one per diffusion)");
 
   // Both gates share the same netId (p1 and p2 overlap → one connected component)
   const gNets = devices.map((d) => d.terminals.find((t) => t.name === "G")!.netId);
@@ -109,7 +119,6 @@ test("detectMOSFromLayers: overlapping poly shapes → shared gate net (with cli
 });
 
 test("detectMOSFromLayers: separate non-overlapping poly shapes → different gate nets", async () => {
-  // Clipper already loaded from previous test
   resetDummyNets();
   const layers: CellLayers = {
     nwell: [rr("nw1", 0, 0, 100, 50)],

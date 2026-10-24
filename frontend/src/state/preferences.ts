@@ -1,6 +1,14 @@
 import { create } from "zustand";
 import { persist, subscribeWithSelector } from "zustand/middleware";
-import type { AnnotationClass, AssistantClarificationMode, AssistantDataFlags, AssistantLlmConfig, LayerType } from "shared";
+import type {
+  AnalogLibParams,
+  AnalogLibTemplate,
+  AnnotationClass,
+  AssistantClarificationMode,
+  AssistantDataFlags,
+  AssistantLlmConfig,
+  LayerType
+} from "shared";
 import {
   CELL_COLOR,
   NET_COLOR,
@@ -18,9 +26,18 @@ import type { InspectorTab } from "./dieViewer";
 import type { ScreenshotScale } from "../lib/screenshot";
 import type { AngleMode, AngleTool } from "../lib/angleConstraint";
 import {
+  LABEL_SCALE_DEFAULT,
+  clampLabelScale,
+  migrateLabelScale
+} from "../lib/labelScale";
+import {
   ANNOTATION_KIND_VALUES,
   type AnnotationKind
 } from "./annotationKinds";
+import {
+  DEFAULT_CAP_DENSITY,
+  effectiveCapDensity,
+} from "../lib/export/capacitorDefaults";
 
 /** Persisted display settings for a single overlay layer. */
 export interface OverlayLayerPersistedSettings {
@@ -50,8 +67,8 @@ interface PreferencesState {
   netColor: string;
   /** Cell outline + block-fill color (one of CELL_COLOR_OPTIONS). */
   cellColor: string;
-  /** When false, cells always render as a solid block even when zoomed in
-   *  (the detailed inner layer shapes are never drawn). */
+  /** When true, cells draw their inner layer shapes at every zoom level;
+   *  when false, they always render as a solid block. */
   cellShowShapes: boolean;
   /** When true, the cell-rectangle tool snaps the drawn rect's edges to
    *  nearby grid guides (guide behaviour itself lands in a later phase). */
@@ -164,10 +181,44 @@ interface PreferencesState {
    *  Inference caches every detection with its score; this slider filters
    *  the cached results client-side — no re-inference on change. */
   viaConfidenceThreshold: number;
+  /** Minimum score (0..1) for an ML cell proposal to be shown / offered in
+   *  merge-cells. Separate from the via threshold so the two overlays can be
+   *  tuned independently. */
+  cellDetectionThreshold: number;
+  /** Die-viewer: hide the ML cell proposals overlay. */
+  cellDetectionsHidden: boolean;
+  /** Cell detection: search for horizontally / vertically mirrored copies. */
+  cellDetectAllowFlipX: boolean;
+  cellDetectAllowFlipY: boolean;
+  /** Cell detection: drop candidates overlapping any placed cell. */
+  cellDetectAvoidExisting: boolean;
+  /** Cell detection: build the template from the type's instances on every
+   *  die of the cell library. */
+  cellDetectAllDies: boolean;
+  /** Specimens: stack instances from every die of the cell library too. */
+  specimensAllDies: boolean;
+  /** Die-viewer: hide the wire-likelihood overlay. */
+  wireMapHidden: boolean;
+  /** Wire-likelihood overlay opacity 0..1. */
+  wireMapOpacity: number;
+  /** Merge cells / Cell RE: show a type's clean specimen (when generated)
+   *  instead of one raw instance crop. */
+  useCleanSpecimens: boolean;
   /** Die-viewer right-panel tab (Inspector / ML). Persisted so the panel
    *  re-opens where the user left it. The ML tab also drives a canvas
    *  render mode (traces/vias sized from mlConfig). */
   inspectorTab: InspectorTab;
+  /** The analog-library device the user placed last — its template, its
+   *  parameters and its scale. Remembered, so the next device starts from
+   *  the same settings. `scale` null ⇒ the die's own library scale. */
+  analogCellLast: {
+    template: AnalogLibTemplate;
+    params: AnalogLibParams;
+    scale: number | null;
+  } | null;
+  /** Die-viewer: the bottom-right "Analog instances" panel collapsed to just
+   *  its header. Persisted so it stays folded across reloads. */
+  analogInstancesCollapsed: boolean;
   /** Hidden cell-layer keys on the Cells-RE page (absent ⇒ visible). The two
    *  non-editable "groups" (inferred, die-viewer overlay) use the special
    *  keys `_inferred` / `_dieViewer`. */
@@ -179,6 +230,12 @@ interface PreferencesState {
   /** Per-resistor-type sheet resistance overrides (persisted). Keyed by
    *  ResistorType: poly, hsr, pb, npl, film. */
   sheetR: Record<string, number>;
+  /** Specific capacitance per unit area for capacitors [fF/μm²].
+   *  A capacitor's capacitance is its plate area × this density —
+   *  the same way a resistor's resistance is its squares × the sheet
+   *  resistance. Edited in Settings → RE Cell Settings, persisted
+   *  like `sheetR`. */
+  capDensity: number;
   /** @deprecated Per-cell-type analog device parameter overrides.
    *  Key: cellTypeId → deviceFingerprint → paramName → value.
    *  Migrated into deviceRegistry on first pipeline run; this field is
@@ -247,9 +304,10 @@ interface PreferencesState {
    *  Independent from `reDeviceLabelsVisible` so dense layouts can hide
    *  one but keep the other readable. Default true. */
   reTerminalLabelsVisible: boolean;
-  /** RE Cell: label size preset for analog overlay text (instance name,
-   *  terminal letters). 0=small, 1=medium, 2=large. Default 1. */
-  reAnalogLabelScale: 0 | 1 | 2;
+  /** RE Cell: the size of the analog overlay text (instance name, terminal
+   *  letters) — a multiplier of the base font sizes. 0.2 = the old "S",
+   *  0.5 = "M", 1 = "L"; values above 1 make the labels bigger. */
+  reAnalogLabelScale: number;
   /** Per-die overlay layer display settings (visibility, opacity, offset).
    *  Keyed by dieId → serverFilename. */
   overlayLayerSettings: Record<string, Record<string, OverlayLayerPersistedSettings>>;
@@ -291,6 +349,11 @@ interface PreferencesState {
   ngspiceMode: "wasm" | "server";
   /** Path to ngspice binary (only used in server mode). */
   ngspicePath: string;
+  /** When true, Ctrl/Cmd+wheel and pinch zoom the whole browser page (native
+   *  behaviour). Default false: wheel-zoom is blocked app-wide. Ctrl/Cmd +
+   *  "+"/"-"/"0" keyboard zoom is never blocked. Canvas-internal zoom is
+   *  unaffected either way. */
+  browserWheelZoomEnabled: boolean;
 }
 
 interface PreferencesActions {
@@ -350,6 +413,11 @@ interface PreferencesActions {
   setShowFloorplanIO: (visible: boolean) => void;
   /** Toggle cell relations overlay on the die viewer canvas. */
   setShowCellRelations: (visible: boolean) => void;
+  /** Remember the analog-library device the user placed last (its template,
+   *  its parameters and its scale), so the next one starts the same way. */
+  setAnalogCellLast: (
+    last: { template: AnalogLibTemplate; params: AnalogLibParams; scale: number | null } | null
+  ) => void;
   /** Override colour for a specific via layer (VIA12, VIA23, …). */
   setViaLayerColor: (viaId: string, color: string) => void;
   /** Set wire node radius multiplier (0 = hide nodes). */
@@ -406,7 +474,18 @@ interface PreferencesActions {
   setAutoEndOnContact: (enabled: boolean) => void;
   setViaSize: (size: number) => void;
   setViaConfidenceThreshold: (threshold: number) => void;
+  setCellDetectionThreshold: (threshold: number) => void;
+  setCellDetectionsHidden: (hidden: boolean) => void;
+  setCellDetectAllowFlipX: (allow: boolean) => void;
+  setCellDetectAllowFlipY: (allow: boolean) => void;
+  setCellDetectAvoidExisting: (avoid: boolean) => void;
+  setCellDetectAllDies: (all: boolean) => void;
+  setSpecimensAllDies: (all: boolean) => void;
+  setWireMapHidden: (hidden: boolean) => void;
+  setWireMapOpacity: (opacity: number) => void;
+  setUseCleanSpecimens: (use: boolean) => void;
   setInspectorTab: (tab: InspectorTab) => void;
+  setAnalogInstancesCollapsed: (collapsed: boolean) => void;
   toggleKindVisibility: (kind: AnnotationKind) => void;
   toggleSectionExpanded: (kind: AnnotationKind) => void;
   saveViewport: (dieId: string, viewport: Viewport) => void;
@@ -414,7 +493,7 @@ interface PreferencesActions {
   setResistorOpacity: (opacity: number) => void;
   setReDeviceLabelsVisible: (visible: boolean) => void;
   setReTerminalLabelsVisible: (visible: boolean) => void;
-  setReAnalogLabelScale: (scale: 0 | 1 | 2) => void;
+  setReAnalogLabelScale: (scale: number) => void;
   saveOverlayLayerSettings: (dieId: string, settings: Record<string, OverlayLayerPersistedSettings>) => void;
   setLlmProvider: (config: AssistantLlmConfig) => void;
   setAssistantDataFlags: (flags: AssistantDataFlags) => void;
@@ -434,6 +513,10 @@ interface PreferencesActions {
   setNetlistDragMode: (v: "surgical" | "full") => void;
   setNgspiceMode: (v: "wasm" | "server") => void;
   setNgspicePath: (v: string) => void;
+  setBrowserWheelZoomEnabled: (v: boolean) => void;
+  /** Set the specific capacitance per unit area [fF/μm²] used
+   *  for every capacitor. */
+  setCapDensity: (density: number) => void;
 }
 
 const DEFAULT_EXPANDED_SECTIONS: AnnotationKind[] = ["net", "via", "roi"];
@@ -457,6 +540,7 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
         cellColor: CELL_COLOR,
         cellShowShapes: true,
         cellSnapToGuides: false,
+        browserWheelZoomEnabled: false,
         guidesHidden: false,
         guidesLocked: false,
         cellsLocked: false,
@@ -484,8 +568,21 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
         viaColor: VIA_DEFAULT_COLOR,
         viaSize: VIA_DEFAULT_SIZE,
         viaConfidenceThreshold: 0.5,
+        cellDetectionThreshold: 0.5,
+        cellDetectionsHidden: false,
+        cellDetectAllowFlipX: true,
+        cellDetectAllowFlipY: true,
+        cellDetectAvoidExisting: true,
+        cellDetectAllDies: false,
+        specimensAllDies: false,
+        wireMapHidden: false,
+        wireMapOpacity: 0.8,
+        useCleanSpecimens: true,
         inspectorTab: "inspector",
+        analogCellLast: null,
+        analogInstancesCollapsed: false,
         sheetR: {},
+        capDensity: DEFAULT_CAP_DENSITY,
         analogOverrides: {},
         wireLayerColors: {
           metal1: WIRE_LAYER_COLOR.metal1,
@@ -509,7 +606,7 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
         resistorOpacity: 1,
         reDeviceLabelsVisible: true,
         reTerminalLabelsVisible: true,
-        reAnalogLabelScale: 1,
+        reAnalogLabelScale: LABEL_SCALE_DEFAULT,
         overlayLayerSettings: {},
         llmProvider: {},
         assistantDataFlags: { projectJson: true, textNetlist: false },
@@ -528,8 +625,11 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
         netlistShowLegacyStatic: false,
         netlistDragMode: "surgical",
         ngspiceMode: "wasm",
+        // ngspice_con.exe is the console build: ngspice.exe is a GUI-subsystem
+        // binary whose stdout never reaches the backend, so the agent would
+        // get no diagnostics on failure.
         ngspicePath: typeof navigator !== "undefined" && navigator.platform?.includes("Win")
-          ? "C:\\Program Files\\Spice64\\bin\\ngspice.exe"
+          ? "C:\\Program Files\\Spice64\\bin\\ngspice_con.exe"
           : "ngspice",
 
         setNetWidth: (dieId, width) =>
@@ -556,6 +656,7 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
         setFloorplanOverlayOn: (visible) => set({ floorplanOverlayOn: visible }),
         setShowFloorplanIO: (visible) => set({ showFloorplanIO: visible }),
         setShowCellRelations: (visible) => set({ showCellRelations: visible }),
+        setAnalogCellLast: (last) => set({ analogCellLast: last }),
         setViaLayerColor: (viaId, color) =>
           set((state) => ({
             viaLayerColors: { ...state.viaLayerColors, [viaId]: color }
@@ -782,7 +883,22 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
           set({
             viaConfidenceThreshold: Math.min(1, Math.max(0, threshold))
           }),
+        setCellDetectionThreshold: (threshold) =>
+          set({
+            cellDetectionThreshold: Math.min(1, Math.max(0, threshold))
+          }),
+        setCellDetectionsHidden: (hidden) => set({ cellDetectionsHidden: hidden }),
+        setCellDetectAllowFlipX: (allow) => set({ cellDetectAllowFlipX: allow }),
+        setCellDetectAllowFlipY: (allow) => set({ cellDetectAllowFlipY: allow }),
+        setCellDetectAvoidExisting: (avoid) => set({ cellDetectAvoidExisting: avoid }),
+        setCellDetectAllDies: (all) => set({ cellDetectAllDies: all }),
+        setSpecimensAllDies: (all) => set({ specimensAllDies: all }),
+        setWireMapHidden: (hidden) => set({ wireMapHidden: hidden }),
+        setWireMapOpacity: (opacity) => set({ wireMapOpacity: Math.min(1, Math.max(0, opacity)) }),
+        setUseCleanSpecimens: (use) => set({ useCleanSpecimens: use }),
         setInspectorTab: (tab) => set({ inspectorTab: tab }),
+        setAnalogInstancesCollapsed: (collapsed) =>
+          set({ analogInstancesCollapsed: collapsed }),
         toggleKindVisibility: (kind) =>
           set((state) => ({
             hiddenKinds: state.hiddenKinds.includes(kind)
@@ -809,7 +925,8 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
           set({ resistorOpacity: Math.min(1, Math.max(0, opacity)) }),
         setReDeviceLabelsVisible: (visible) => set({ reDeviceLabelsVisible: visible }),
         setReTerminalLabelsVisible: (visible) => set({ reTerminalLabelsVisible: visible }),
-        setReAnalogLabelScale: (scale) => set({ reAnalogLabelScale: scale }),
+        setReAnalogLabelScale: (scale) =>
+          set({ reAnalogLabelScale: clampLabelScale(scale) }),
         saveOverlayLayerSettings: (dieId, settings) =>
           set((state) => ({
             overlayLayerSettings: { ...state.overlayLayerSettings, [dieId]: settings }
@@ -832,10 +949,23 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
         setNetlistDragMode: (v) => set({ netlistDragMode: v }),
         setNgspiceMode: (v) => set({ ngspiceMode: v }),
         setNgspicePath: (v) => set({ ngspicePath: v }),
+        setBrowserWheelZoomEnabled: (v) => set({ browserWheelZoomEnabled: v }),
+        setCapDensity: (density) =>
+          set({ capDensity: effectiveCapDensity(density) }),
       }),
       {
         name: "mmo-chip-preferences",
-        version: 1,
+        version: 2,
+        // v1 stored the label size as a preset index (0=S, 1=M, 2=L); it is
+        // a factor now.
+        migrate: (persisted: unknown, version: number) => {
+          if (version < 2 && persisted && typeof persisted === "object") {
+            const p = persisted as Record<string, unknown>;
+            const scale = migrateLabelScale(p.reAnalogLabelScale);
+            if (scale != null) p.reAnalogLabelScale = scale;
+          }
+          return persisted;
+        },
         // Strip out any unknown kinds that may have been persisted before a
         // schema change, so the UI never references a removed kind.
         partialize: (state) => ({
@@ -881,8 +1011,21 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
           viaColor: state.viaColor,
           viaSize: state.viaSize,
           viaConfidenceThreshold: state.viaConfidenceThreshold,
+          cellDetectionThreshold: state.cellDetectionThreshold,
+          cellDetectionsHidden: state.cellDetectionsHidden,
+          cellDetectAllowFlipX: state.cellDetectAllowFlipX,
+          cellDetectAllowFlipY: state.cellDetectAllowFlipY,
+          cellDetectAvoidExisting: state.cellDetectAvoidExisting,
+          cellDetectAllDies: state.cellDetectAllDies,
+          specimensAllDies: state.specimensAllDies,
+          wireMapHidden: state.wireMapHidden,
+          wireMapOpacity: state.wireMapOpacity,
+          useCleanSpecimens: state.useCleanSpecimens,
           inspectorTab: state.inspectorTab,
+          analogCellLast: state.analogCellLast,
+          analogInstancesCollapsed: state.analogInstancesCollapsed,
           sheetR: state.sheetR,
+          capDensity: state.capDensity,
           analogOverrides: state.analogOverrides,
           wireLayerColors: state.wireLayerColors,
           showUpperMetals: state.showUpperMetals,
@@ -923,6 +1066,7 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
           netlistDragMode: state.netlistDragMode,
           ngspiceMode: state.ngspiceMode,
           ngspicePath: state.ngspicePath,
+          browserWheelZoomEnabled: state.browserWheelZoomEnabled,
         })
       }
     )

@@ -31,6 +31,7 @@ import {
   INTERACTIVE_SCHEMATIC_CSS,
   type SymbolTemplate,
 } from "../../lib/schematic/interactiveSymbols";
+import { usePreferences } from "../../state/preferences";
 import {
   runInteractiveLayout,
   buildNetIndex,
@@ -1617,6 +1618,10 @@ const DeviceNode = memo(function DeviceNode({
   onOpenBlock?: (regionId: string) => void;
 }) {
   const { key, template, size, kind, device, label, powerKind, blockName, blockPorts } = node;
+  // The labels follow the user's technology values: the specific
+  // capacitance for capacitors, the sheet resistance for resistors.
+  const capDensity = usePreferences((s) => s.capDensity);
+  const sheetR = usePreferences((s) => s.sheetR);
   const os = orientedSize(size, orient);
   const rot = orient?.rot ?? 0;
   const flip = orient?.flip ?? "none";
@@ -1715,7 +1720,7 @@ const DeviceNode = memo(function DeviceNode({
           Kept horizontal/un-mirrored by living OUTSIDE the art transform. */}
       {template?.labels.map((spec, i) => {
         const text = device
-          ? labelForSpec(spec, device, key)
+          ? labelForSpec(spec, device, key, { capDensity, sheetR })
           : spec.source === "ref"
             ? (label ?? key)
             : "";

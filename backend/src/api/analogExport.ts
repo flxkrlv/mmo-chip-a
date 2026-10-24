@@ -18,6 +18,7 @@ import { Router } from "express";
 import type { AnalogDevicesFile, SpiceConfig } from "shared";
 import { readDieRecord } from "../store.js";
 import { resolveProjectDir } from "../projectLayout.js";
+import { extractNetlist } from "../netlistExtraction.js";
 
 const ANALOG_DEVICES_FILE = "analog-devices.json";
 
@@ -130,6 +131,62 @@ export function createAnalogExportRouter(config: { dataRoot: string }) {
       await fs.writeFile(netlistPath, netlist, "utf8");
 
       response.status(200).json({ netlistPath, ok: true });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  /**
+   * POST /api/dies/:dieId/netlist-export
+   *
+   * Re-runs the analog extraction pipeline SERVER-SIDE from the project's
+   * persisted state and returns a fresh netlist. Unlike the /analog-export
+   * endpoint above (which only stores text the frontend already generated),
+   * this performs the detection + SPICE generation here, so the result always
+   * matches the current annotations with no UI round-trip.
+   *
+   * Body: {
+   *   moduleName?: string,                 // top-level subckt name
+   *   dialect?: "cdl"|"spectre"|"hspice",  // default "cdl"
+   *   persist?: boolean,                   // also write <projectDir>/export/<moduleName>.<ext>
+   *   timeoutMs?: number,
+   * }
+   *
+   * Response: {
+   *   ok, dieId, text, byKind, totalDevices, deviceCount, namedNetCount,
+   *   warnings, virtualConnects, netlistPath?, persisted?
+   * }
+   */
+  router.post("/api/dies/:dieId/netlist-export", async (request, response, next) => {
+    const { dieId } = request.params;
+    try {
+      await readDieRecord(config.dataRoot, dieId);
+      const { dir: projectDir } = await resolveProjectDir(config.dataRoot, dieId);
+
+      const body = request.body ?? {};
+      const moduleName: string = (body.moduleName ?? "netlist").replace(/[^A-Za-z0-9_-]/g, "_");
+      const dialect: string = body.dialect ?? "cdl";
+      const persist: boolean = Boolean(body.persist);
+      const timeoutMs: number | undefined =
+        typeof body.timeoutMs === "number" && body.timeoutMs > 0 ? body.timeoutMs : undefined;
+
+      const result = await extractNetlist({ dieId, projectDir, moduleName, dialect: dialect as any, timeoutMs });
+
+      if (!result.ok) {
+        response.status(500).json({ ok: false, error: result.error ?? "extraction failed" });
+        return;
+      }
+
+      let netlistPath: string | null = null;
+      if (persist && result.text) {
+        const exportDir = path.join(projectDir, "export");
+        await fs.mkdir(exportDir, { recursive: true });
+        const ext = dialect === "spectre" ? "scs" : "cdl";
+        netlistPath = path.join(exportDir, `${moduleName}.${ext}`);
+        await fs.writeFile(netlistPath, result.text, "utf8");
+      }
+
+      response.status(200).json({ ...result, netlistPath, persisted: netlistPath != null });
     } catch (error) {
       next(error);
     }

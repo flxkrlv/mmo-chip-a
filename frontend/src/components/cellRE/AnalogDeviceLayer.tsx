@@ -17,6 +17,8 @@
 import { useMemo } from "react";
 import type { AnalogDevice, DeviceGeometry, DeviceKind } from "shared";
 import type { Rect } from "../../lib/geometry";
+import { usePreferences } from "../../state/preferences";
+import { effectiveCapacitance } from "../../lib/export/capacitorDefaults";
 
 const DEVICE_COLORS: Record<DeviceKind, string> = {
   mos: "#4488ff",
@@ -30,11 +32,13 @@ const DEVICE_COLORS: Record<DeviceKind, string> = {
   zener: "#ff6666",
   schottky: "#dd6666",
   inductor: "#66aaff",
+  voltage_source: "V source",
+  current_source: "I source",
   unknown: "#888888",
 };
 
 /** Label for the param string (W/L, AE, R, etc.) */
-function paramLabel(device: AnalogDevice): string {
+function paramLabel(device: AnalogDevice, capDensity: number): string {
   const g = device.geometry as unknown as Record<string, unknown>;
   switch (device.kind) {
     case "mos":
@@ -47,8 +51,11 @@ function paramLabel(device: AnalogDevice): string {
         ((g.multiplier as number) > 1 ? ` ×${g.multiplier}` : "");
     case "resistor":
       return `R=${(g.resistance_ohms as number)?.toFixed(0)}Ω`;
-    case "capacitor":
-      return `C=${(g.capacitance_fF as number)?.toFixed(1)}fF`;
+    case "capacitor": {
+      const cg = g as { area_um2?: number; capacitance_fF?: number };
+      const cFf = effectiveCapacitance(cg, capDensity);
+      return `C=${cFf?.toFixed(1)}fF`;
+    }
     case "diode":
       return `A=${(g.area_um2 as number)?.toFixed(1)}`;
     default:
@@ -74,6 +81,8 @@ export function AnalogDeviceLayer({
   onSelect,
 }: Props) {
   const visible = useMemo(() => devices.length > 0, [devices]);
+  // Specific capacitance per unit area [fF/μm²].
+  const capDensity = usePreferences((s) => s.capDensity);
 
   if (!visible) return null;
 
@@ -95,7 +104,7 @@ export function AnalogDeviceLayer({
         const cy = bbox ? bbox.y + bbox.height / 2 : 0;
         const screenC = cellToScreen(cx, cy);
         const label = dev.instanceName ?? "";
-        const params = paramLabel(dev);
+        const params = paramLabel(dev, capDensity);
         const fontSize = Math.max(8, 12 * zoom);
 
         return (

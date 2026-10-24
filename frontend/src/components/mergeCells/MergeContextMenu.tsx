@@ -1,4 +1,5 @@
 import { useEffect, useRef } from "react";
+import type { Proposal } from "../../lib/cellDetection";
 
 export interface ContextMenuState {
   x: number;
@@ -8,17 +9,27 @@ export interface ContextMenuState {
   canUnmatch: boolean;
   /** True when the cell was placed by CV detection. */
   mlDetected?: boolean;
+  /** Set when the row is an ML proposal — offers Dismiss instead of Unmatch. */
+  proposal?: Proposal | null;
 }
 
 interface Props {
   menu: ContextMenuState;
   onClose: () => void;
   onUnmatch: () => void;
+  onDismiss: () => void;
   onJumpToDie: () => void;
   onDelete?: () => void;
 }
 
-export function MergeContextMenu({ menu, onClose, onUnmatch, onJumpToDie, onDelete }: Props) {
+export function MergeContextMenu({
+  menu,
+  onClose,
+  onUnmatch,
+  onDismiss,
+  onJumpToDie,
+  onDelete
+}: Props) {
   const ref = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -68,6 +79,17 @@ export function MergeContextMenu({ menu, onClose, onUnmatch, onJumpToDie, onDele
       >
         Unmatch (own new type)
       </button>
+      {menu.proposal && (
+        <button
+          className="menu-item"
+          onClick={() => {
+            onDismiss();
+            onClose();
+          }}
+        >
+          Dismiss proposal
+        </button>
+      )}
       <button
         className="menu-item"
         onClick={() => {

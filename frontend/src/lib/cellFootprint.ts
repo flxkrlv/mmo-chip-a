@@ -1,5 +1,24 @@
-import type { AnnotationRect, Cell } from "shared";
+import type { AnnotationRect, Cell, CellType } from "shared";
 import { applyOrientation, type Orientation, type Point, type Rect } from "./geometry";
+
+/**
+ * The factor an instance is drawn at, over the size its type is stored at.
+ *
+ * The library's default scale is the die's `cellScale` (pixels per library
+ * unit); a cell may carry its own `scale` and then deviates from it — that
+ * is how one library holds elements drawn at different sizes. A type laid
+ * out by the analog library stores the scale it was generated at
+ * (`CellType.pcell.scale`), so its instances start at 1: their layers are
+ * already the final size.
+ */
+export function cellInstanceScale(cell: Cell, cellType: CellType, dieScale = 1): number {
+  const generated = cellType.pcell?.scale;
+  if (generated != null && generated > 0) {
+    return (cell.scale ?? generated) / generated;
+  }
+  if (cell.scale == null || !(dieScale > 0)) return 1;
+  return cell.scale / dieScale;
+}
 
 /**
  * A placed cell's footprint on the die: its box in *type* coordinates — the

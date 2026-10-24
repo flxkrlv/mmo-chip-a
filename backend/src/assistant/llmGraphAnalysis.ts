@@ -14,6 +14,7 @@ import type {
   AssistantLlmState,
   AssistantToolFlags,
   AssistantLvsCheckResponse,
+  AssistantSpiceRun,
 } from "shared";
 import { emitSubcircuitSpice } from "./subcircuitExtract.js";
 import { loadLibrary, listLibraries, DEFAULT_LIBRARY_ID } from "./lvsLibrary.js";
@@ -22,6 +23,7 @@ import { dedupeCells } from "./lvsDedup.js";
 import { matchSubcircuit } from "./lvsMatch.js";
 import { executeVisionTool } from "./visionTool.js";
 import { SPICE_SIM_TOOL, executeSpiceSimTool, type SpiceSimToolArgs, type SpiceSimToolResult } from "./spiceSimTool.js";
+import { buildSimulationNetlist } from "./spiceDutNetlist.js";
 import { isClientAbortError, streamWithRetries } from "./llmStream.js";
 
 /**
@@ -34,6 +36,7 @@ export type AssistantStreamEvent =
   | { type: "questions"; questions: string[] }
   | { type: "tool_start"; tool: string; args?: unknown }
   | { type: "tool_result"; tool: string; ok: boolean; images?: number }
+  | { type: "spice_result"; run: AssistantSpiceRun }
   | { type: "done"; data: unknown }
   | { type: "error"; message: string };
 
@@ -736,6 +739,49 @@ function sanitizeCardUpdate(patch: AssistantFindingPatch | null | undefined): As
 }
 
 /**
+ * One turn of the incoming discussion history, as the MODEL sees it.
+ *
+ * The browser stores what the USER saw, not what the model produced: a tool
+ * result lives in a separate payload (toolUse / lvsResults) and a failed turn
+ * is not stored at all. Replaying the raw `content` would hand the model a
+ * blank assistant message — it would not know what its tool returned, nor
+ * that the previous attempt died. So:
+ *   - a digest becomes the assistant's own words (the model sees its result),
+ *   - a failure becomes a note the model has to react to,
+ *   - a turn with nothing to say is dropped (some providers reject an empty
+ *     assistant message outright).
+ */
+export function toHistoryTurn(
+  message: AssistantChatMessage,
+): { role: "user" | "assistant"; content: string } | null {
+  const digest = message.digest?.trim();
+  if (digest) return { role: "assistant", content: digest };
+  if (message.failed) {
+    return {
+      role: "user",
+      content: `[previous attempt failed] ${message.failed.reason}. ${message.failed.hint}`,
+    };
+  }
+  const content = message.content?.trim();
+  if (!content) return null;
+  return { role: message.role, content };
+}
+
+/** How many past turns the model sees verbatim. Older turns are summarised in
+ *  the system prompt (the failure ledger), so the prompt stays bounded. */
+export const MAX_HISTORY_TURNS = 16;
+
+/** The past turns of the discussion, as the model sees them. */
+export function buildHistoryTurns(
+  messages: AssistantChatMessage[],
+): Array<{ role: "user" | "assistant"; content: string }> {
+  const turns = messages
+    .map(toHistoryTurn)
+    .filter((turn): turn is { role: "user" | "assistant"; content: string } => turn !== null);
+  return turns.slice(-MAX_HISTORY_TURNS);
+}
+
+/**
  * Focused, multi-turn discussion about a single finding. The model receives the
  * FULL extracted netlist of the die (every device and named net) so it can reason
  * about components adjacent to or outside the finding's immediate fragment, while
@@ -754,7 +800,7 @@ export async function discussFindingWithLlm(
   dieId?: string,
   assistantDataFlags?: AssistantDataFlags,
   onEvent?: (ev: AssistantStreamEvent) => void,
-): Promise<{ reply: string; durationMs: number; cardUpdate: AssistantFindingPatch | null; lvsResults?: Array<AssistantLvsCheckResponse["data"]> }> {
+): Promise<{ reply: string; durationMs: number; cardUpdate: AssistantFindingPatch | null; lvsResults?: Array<AssistantLvsCheckResponse["data"]>; questions?: string[] }> {
   const usingOpenRouter = Boolean(process.env.OPENROUTER_API_KEY);
   const apiKey = llmConfig?.apiKey || process.env.ASSISTANT_LLM_API_KEY || process.env.OPENROUTER_API_KEY;
   const baseUrl = llmConfig?.baseUrl || process.env.ASSISTANT_LLM_BASE_URL || (usingOpenRouter ? "https://openrouter.ai/api/v1" : undefined);
@@ -834,6 +880,12 @@ export async function discussFindingWithLlm(
     `  suggestedChecks: ${finding.suggestedChecks?.length ? finding.suggestedChecks.join("; ") : "—"}`,
   ].join("\n");
 
+  // The failures the browser recorded for this thread. The model must see
+  // them, or it repeats the very approach that just died.
+  const failedTurns = messages
+    .filter((message) => message.failed)
+    .map((message) => ({ reason: message.failed!.reason, hint: message.failed!.hint }));
+
   const cardUpdateRules = [
     "CARD UPDATE CONTRACT: to change the finding card you MUST call the mmochip_card_update function tool with arguments { reply, cardUpdate }. This is the ONLY reliable way — the UI applies the update from the tool's arguments, never from prose. Never write 'I updated the card' in reply without issuing the tool call, and never describe a card change in prose alone. Rules:",
     "  1. kind is FREE-FORM — name the functional block what it actually is, in lowercase snake_case (e.g. \"vco\", \"bandgap_reference\", \"wilson_mirror\", \"ldo_error_amplifier\", \"current_sense\"). Do not invent a fake status; if unsure, prefer keeping the existing kind (omit the field). Example kinds you may reuse: bandgap_precursor, bjt_current_mirror, differential_pair, ldo_error_amplifier_feedback, resistor_divider, protection_clamp, positive_feedback_loop.",
@@ -845,7 +897,8 @@ export async function discussFindingWithLlm(
     "  7. label should be short and descriptive. assistantComment summarizes the reasoning in the discussion language.",
     "  8. limitations and suggestedChecks are arrays of strings; recommended 2-5 items each.",
     "  9. If carrying an unsure kind/status/confidence, prefer a LESS sure value (e.g. candidate/needs_verification) over fabricating verification.",
-    "If function tools are unavailable from your provider, fall back to returning exactly this JSON object in your reply text: {\"reply\": \"<your question/explanation to the user>\", \"cardUpdate\": null | { \"label\": string, \"kind\": string, \"status\": \"verified_topology\"|\"candidate\"|\"needs_verification\", \"confidenceLevel\": \"high\"|\"medium\"|\"low\", \"addDeviceUuids\": string[], \"removeDeviceUuids\": string[], \"addNetIds\": number[], \"removeNetIds\": number[], \"assistantComment\": string, \"limitations\": string[], \"suggestedChecks\": string[] }} — otherwise ALWAYS use the tool call. When using the tool, the visible reply text is the arguments.reply value; keep content short.",
+    "  10. `questions` is an OPTIONAL array of up to 3 clarifying questions. Fill it only when the request is ambiguous or you lack the data; the user answers them in the chat and you continue. Otherwise omit it.",
+    "If function tools are unavailable from your provider, fall back to returning exactly this JSON object in your reply text: {\"reply\": \"<your question/explanation to the user>\", \"questions\": [\"<optional clarifying question>\"], \"cardUpdate\": null | { \"label\": string, \"kind\": string, \"status\": \"verified_topology\"|\"candidate\"|\"needs_verification\", \"confidenceLevel\": \"high\"|\"medium\"|\"low\", \"addDeviceUuids\": string[], \"removeDeviceUuids\": string[], \"addNetIds\": number[], \"removeNetIds\": number[], \"assistantComment\": string, \"limitations\": string[], \"suggestedChecks\": string[] }} — otherwise ALWAYS use the tool call. When using the tool, the visible reply text is the arguments.reply value; keep content short.",
   ].join("\n");
 
   const systemPrompt = [
@@ -855,9 +908,17 @@ export async function discussFindingWithLlm(
     "Keep that fragment as the focus of the conversation, but you MAY reference any device or net from the full netlist to answer follow-up questions (for example a component the user mentions that lies outside the fragment). Do not invent devices, nets or connections that are not present in the supplied netlist.",
     "Before any conclusion about a device's connections, always re-read its terminals (pin→net) directly from the supplied netlist below. If the netlist contradicts claims made in earlier messages of this conversation, the supplied netlist always takes priority.",
     "Be explicit about uncertainty. Never claim electrical proof, values, thresholds, or a complete function without support in the data.",
+    "CLARIFYING QUESTIONS: if the user's request is ambiguous, contradicts the netlist, or needs data you do not have, you MAY return up to 3 clarifying questions instead of guessing. Put them in the `questions` field of your reply (and in the mmochip_card_update tool arguments) and write a short `reply` that asks them; the user answers in the chat and you continue from there. If everything is clear, `questions` stays empty. Never invent a plausible answer instead of asking.",
     `Write in ${brief.language === "en" ? "English" : "Russian"}.`,
     ...briefContextLines(brief),
     currentCardText,
+    ...(failedTurns.length > 0
+      ? [
+        `PREVIOUS ATTEMPTS IN THIS DISCUSSION FAILED (${failedTurns.length}). Do not walk into the same wall again:`,
+        ...failedTurns.map((failed, index) => `  ${index + 1}. ${failed.reason}${failed.hint ? ` — ${failed.hint}` : ""}`),
+        "Change your strategy for this turn: answer briefly (< 300 words), do not re-run a tool that already failed, and if the request is ambiguous or you lack the data, ASK a clarifying question (the `questions` field) instead of guessing.",
+      ]
+      : []),
     "When you reach a conclusion that would CHANGE the card (newly identified elements, a revised explanation, or a changed confidence/status), use the mmochip_card_update tool to propose the NEW card and write the reply as a clear question asking the user to confirm applying it (the user clicks Apply/Reject in the UI).",
     cardUpdateRules,
     "Use the tool (or cardUpdate) only when you actually want to change the card; otherwise pass cardUpdate: null. The reply field always contains your natural-language message shown to the user.",
@@ -867,11 +928,22 @@ export async function discussFindingWithLlm(
     useVision
       ? `You have access to the mmochip_vision tool. CALL it to visually inspect device crops from the die image when you need to confirm a transistor type, check terminal placement, or compare similar devices. Pass the device UUIDs (from the netlist's "uuid" fields) as deviceUuids. The tool returns a cell crop image with the device name and terminal labels (C/B/E or D/G/S) drawn on it, plus a per-cell netlist. Use this proactively when your hypothesis depends on visual verification — for example if you suspect a PNP should be NPN, call mmochip_vision on both devices to compare. Never state "I will look at the image" without actually issuing the tool call.${overlayLayerNameHint(snapshot.overlayLayers)} The layerName parameter selects which die image is shown. Layer naming convention: metal layers usually contain "me"/"metal" plus a metallization number (me1, metal1, metal 2…); semiconductor/diffusion layers are often named diffusion, si, polysi, poly; developed diffusion regions may be named hf, sirtl and similar. The die has a base image (the single raw photograph, id __base__) and overlay images for the remaining layers. You may ask the user which image a name corresponds to if a layer name is not self-explanatory. Request a metal layer to check whether device terminals really are connected, or a diffusion layer to compare whether two transistors look structurally similar by their diffusion regions.`
       : "Visual device inspection is currently disabled; reason about device types from the netlist geometry and model names only.",
-    `You have access to the mmochip_spice_sim tool for running ngspice simulations. CALL it to verify circuit behavior — e.g. compute gain, bandwidth, DC operating point, transient response, or any electrical characteristic. Supply either a full SPICE netlist (standard SPICE/CDL format, NOT Spectre syntax) or a subcircuit block plus analysis directives (.tran, .dc, .ac, .meas, sources, loads, etc.). The tool returns variable names and data point count. You can also use .meas commands to extract specific values (e.g. .meas dc Vout FIND v(out) AT 0.4). Use this proactively when your hypothesis can be verified electrically — for example if you suspect a bandgap reference, simulate it to confirm the output voltage is ~1.2V. If the user asks about electrical behavior, simulate it rather than guessing. The simulation runs server-side with ngspice. If the first simulation fails, analyze the error, fix the netlist or directives, and retry — you have up to 4 iterations.`,
+    `You have access to the mmochip_spice_sim tool for running ngspice simulations. CALL it to verify circuit behavior — e.g. compute gain, bandwidth, DC operating point, transient response, or any electrical characteristic. How to use it:
+- You write ONLY the testbench, in the "testbench" argument: the supply source(s), the load(s) and an analysis directive. The tool adds the extracted circuit itself (with its real values) and converts it to ngspice syntax — do NOT copy the netlist into the tool, do NOT repeat device lines.
+- The testbench MUST contain an analysis directive: .op (DC operating point), .dc (sweep), .tran (transient) or .ac (AC). Without one there is nothing to measure. Write it in the "testbench" argument OR the "directives" argument, never in both: a duplicated .tran does not change the result — the tool drops the copy (and says so in the notes) — it only wastes a run.
+- Always connect the supply to the power net of the circuit (e.g. "VDD VCC 0 DC 5") and put a load on the output node (e.g. "RLOAD ref 0 10k"). A floating supply produces zeros, which is not a result.
+- Use the net names from the extracted netlist above (they are the names of the nodes you can drive and sense). Only reference nodes that exist there: a node inside a .subckt is reachable as v(<instance>.<node>) — the tool rewrites a bare internal node to that form, and a node name that does not exist is dropped with a note instead of being saved. Do not write .control blocks or .save/.print lists of guessed node names; ngspice aborts the whole run when a save list names nothing the circuit has.
+- The tool returns every node voltage and source current of the analysis, plus any .measure results. Use .measure for the headline number, e.g. ".measure dc vout find v(out) at=2.5" (note "at="; ngspice rejects "at 2.5"). .measure op is evaluated by the tool itself, because ngspice has no "op" measurement type.
+- The models are generic placeholders (BF=200, IS=1e-16, …): the numbers show the topology and the order of magnitude, they are not a sign-off of a real process. Say so when you report them.
+Use this proactively when your hypothesis can be verified electrically — for example if you suspect a bandgap reference, simulate it to confirm the output voltage. If the user asks about electrical behavior, simulate it rather than guessing. The simulation runs server-side with ngspice. If the first simulation fails, read the error, fix the testbench, and retry — you have up to 4 iterations.`,
   ].join("\n");
 
   const llmContext = buildLlmContext(resultShell, snapshot, assistantDataFlags);
   const contextMessage = `Full extracted netlist of the die (finding "${finding.label}" focuses on devices ${[...focusInstances].join(", ") || "(none)"} and nets ${[...focusNetNames].join(", ") || "(none)"}):\n${llmContext.content}`;
+
+  // The netlist the SPICE tool simulates: the extracted devices with their real
+  // values. The model writes the testbench around it.
+  const dutNetlist = buildSimulationNetlist(snapshot.devices, snapshot.namedNets);
 
   type ChatMessage = {
     role: "system" | "user" | "assistant" | "tool";
@@ -882,7 +954,7 @@ export async function discussFindingWithLlm(
   const chatMessages: ChatMessage[] = [
     { role: "system", content: systemPrompt },
     { role: "user", content: contextMessage },
-    ...messages.map((message) => ({ role: message.role, content: message.content })),
+    ...buildHistoryTurns(messages),
   ];
 
   const startedAt = Date.now();
@@ -890,15 +962,15 @@ export async function discussFindingWithLlm(
   const MAX_RETRIES = 3;
   const RETRY_BASE_MS = 2000;
 
-  async function doFetch(extra: Record<string, unknown> = {}): Promise<Response> {
+  async function doFetch(extra: Record<string, unknown> = {}, maxTokens = 32000): Promise<Response> {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), attemptTimeoutMs(32000, timeoutMs));
+    const timeout = setTimeout(() => controller.abort(), attemptTimeoutMs(maxTokens, timeoutMs));
     try {
       return await fetch(`${baseUrlResolved.replace(/\/$/, "")}/chat/completions`, {
         method: "POST",
         signal: controller.signal,
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKeyResolved}` },
-        body: JSON.stringify({ model: modelResolved, max_tokens: 32000, messages: chatMessages, ...extra }),
+        body: JSON.stringify({ model: modelResolved, max_tokens: maxTokens, messages: chatMessages, ...extra }),
       });
     } finally {
       clearTimeout(timeout);
@@ -990,6 +1062,11 @@ export async function discussFindingWithLlm(
           reply: {
             type: "string",
             description: "Natural-language message shown to the user (the discussion reply). Ask the user to confirm the proposed card update.",
+          },
+          questions: {
+            type: "array",
+            items: { type: "string" },
+            description: "Up to 3 clarifying questions, ONLY when the request is ambiguous or you lack the data. The user answers them in the chat and you continue. Leave it out otherwise.",
           },
           cardUpdate: {
             type: "object",
@@ -1105,10 +1182,15 @@ export async function discussFindingWithLlm(
     return { tools, tool_choice: "auto" };
   };
 
+  /** Output budget ladder. A reasoning model that spends everything on
+   *  chain-of-thought returns no answer at all; a bigger budget plus an
+   *  explicit "answer now" note rescues most of those turns. */
+  const BUDGET_LADDER = [32000, 64000];
+
   // Make one LLM call and return the accumulated content + tool calls. Streaming
   // forwards content deltas to the caller as they arrive; the non-streaming path
   // keeps the original fetch + 429-retry behaviour.
-  async function callLlm(withTools: boolean): Promise<{ content: string; toolCalls: Array<{ id: string; name: string; arguments: string }> }> {
+  async function callLlmOnce(withTools: boolean, maxTokens: number): Promise<{ content: string; toolCalls: Array<{ id: string; name: string; arguments: string }> }> {
     if (useStreaming) {
       const callStart = Date.now();
       const result = await streamWithRetries({
@@ -1116,7 +1198,7 @@ export async function discussFindingWithLlm(
         apiKey: apiKeyResolved,
         model: modelResolved,
         messages: chatMessages as unknown[],
-        maxTokens: 32000,
+        maxTokens,
         // Streaming idle timeout (independent of wall-clock): keep giving a
         // reasoning model all the time it needs while tokens keep flowing.
         timeoutMs: llmStreamIdleMs(),
@@ -1126,13 +1208,13 @@ export async function discussFindingWithLlm(
           if (delta.reasoning) onEvent?.({ type: "thinking", content: delta.reasoning });
         },
       });
-      console.log(`[assistant/discuss] LLM stream done in ${Date.now() - callStart}ms (tool iter ${toolIterations + 1})`);
+      console.log(`[assistant/discuss] LLM stream done in ${Date.now() - callStart}ms (tool iter ${toolIterations + 1}, maxTokens=${maxTokens})`);
       return { content: result.content, toolCalls: result.toolCalls };
     }
     let response!: Response;
     for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
       const callStart = Date.now();
-      response = await doFetch(buildExtra(withTools));
+      response = await doFetch(buildExtra(withTools), maxTokens);
       console.log(`[assistant/discuss] LLM HTTP ${response.status} in ${Date.now() - callStart}ms (tool iter ${toolIterations + 1}, attempt ${attempt + 1})`);
       if (response.status !== 429) break;
       if (attempt < MAX_RETRIES) {
@@ -1152,6 +1234,31 @@ export async function discussFindingWithLlm(
     };
   }
 
+  /**
+   * One turn of the model, with a budget ladder. A reasoning model that burns
+   * the whole budget on chain-of-thought answers nothing at all; the second
+   * rung has more room AND an explicit note that the previous attempt said
+   * nothing, so the model changes its approach instead of repeating it.
+   */
+  async function callLlm(withTools: boolean): Promise<{ content: string; toolCalls: Array<{ id: string; name: string; arguments: string }> }> {
+    let last: { content: string; toolCalls: Array<{ id: string; name: string; arguments: string }> } = { content: "", toolCalls: [] };
+    for (let rung = 0; rung < BUDGET_LADDER.length; rung++) {
+      const maxTokens = BUDGET_LADDER[rung];
+      if (rung > 0) {
+        // Say it in the conversation, so the model sees why it must answer now.
+        chatMessages.push({
+          role: "user",
+          content: "[system note] Your previous attempt produced no answer — the output budget went into reasoning instead of a reply. Answer NOW and briefly: no long reasoning, no restating the netlist. If you still cannot answer, say exactly which data you are missing.",
+        });
+      }
+      const result = await callLlmOnce(withTools, maxTokens);
+      last = result;
+      if (result.content.trim() || result.toolCalls.length > 0) return result;
+      console.warn(`[assistant/discuss] empty answer at maxTokens=${maxTokens}; escalating to the next rung`);
+    }
+    return last;
+  }
+
   // Tool loop: if the model requested mmochip_lvs_check, mmochip_vision or
   // mmochip_card_update, run it and feed the result back, then ask for the final
   // natural-language reply. mmochip_card_update is TERMINAL: its arguments carry
@@ -1162,6 +1269,8 @@ export async function discussFindingWithLlm(
   let toolIterations = 0;
   const lvsResults: Array<AssistantLvsCheckResponse["data"]> = [];
   let terminalCardUpdate: AssistantFindingPatch | null = null;
+  // Clarifying questions the model needs answered before it can go on.
+  let pendingQuestions: string[] = [];
   while (toolIterations <= MAX_TOOL_ITERS) {
     const { content, toolCalls } = await callLlm(useTools);
     const lvsCall = toolCalls.find((tc) => tc.name === "mmochip_lvs_check");
@@ -1172,9 +1281,10 @@ export async function discussFindingWithLlm(
     // Terminal: card_update brings the final reply + cardUpdate. Use its args.
     if (cardUpdateCall) {
       try {
-        const args = JSON.parse(cardUpdateCall.arguments || "{}") as { reply?: unknown; cardUpdate?: AssistantFindingPatch | null };
+        const args = JSON.parse(cardUpdateCall.arguments || "{}") as { reply?: unknown; cardUpdate?: AssistantFindingPatch | null; questions?: unknown };
         lastContent = typeof args.reply === "string" && args.reply.trim() ? args.reply.trim() : content;
         terminalCardUpdate = sanitizeCardUpdate(args.cardUpdate);
+        pendingQuestions = stringList(args.questions, 3, 300);
       } catch {
         lastContent = content;
       }
@@ -1249,9 +1359,16 @@ export async function discussFindingWithLlm(
       const args = JSON.parse(spiceSimCall.arguments || "{}") as SpiceSimToolArgs;
       // Use ngspice path from toolFlags if not provided by LLM
       if (!args.binPath && ngspicePath) args.binPath = ngspicePath;
+      // The DUT netlist comes from the extracted circuit, not from the model:
+      // a model that has to copy 120 lines of netlist mangles them and
+      // forgets the testbench. The model only writes the testbench.
+      if (!args.netlist && !args.dutNetlist) args.dutNetlist = dutNetlist;
       onEvent?.({ type: "tool_start", tool: "mmochip_spice_sim", args });
       try {
-        const { text: toolResult } = await executeSpiceSimTool(args);
+        const { text: toolResult, result } = await executeSpiceSimTool(args);
+        // The run payload (netlist, numbers, notes) goes to the UI so the
+        // thread can show the trace and offer "go to the SPICE results".
+        if (result.run) onEvent?.({ type: "spice_result", run: result.run });
         chatMessages.push({ role: "tool", tool_call_id: spiceSimCall.id, content: toolResult });
         onEvent?.({ type: "tool_result", tool: "mmochip_spice_sim", ok: true });
       } catch (err) {
@@ -1266,22 +1383,49 @@ export async function discussFindingWithLlm(
     toolIterations += 1;
   }
 
+  if (!lastContent.trim()) {
+    // The model kept calling tools and never wrote an answer — the most
+    // common way this discussion used to end in a 502. One more call with the
+    // tools OFF: it has to answer in prose now.
+    console.warn("[assistant/discuss] the tool loop ended without an answer; asking once more without tools");
+    try {
+      const forced = await callLlm(false);
+      if (forced.content.trim()) lastContent = forced.content;
+    } catch (err) {
+      console.warn(`[assistant/discuss] the forced answer failed too: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
   const content = lastContent.trim();
-  if (!content) throw new Error("LLM returned empty content");
+  if (!content) {
+    throw new Error(
+      `LLM returned empty content after ${toolIterations + 1} tool iteration(s)` +
+      (lvsResults.length ? " (it kept calling tools and never wrote an answer)" : "") +
+      ". Ask a shorter question, or ask the model what data it is missing.",
+    );
+  }
   let reply = content;
   // Prefer a cardUpdate delivered via the mmochip_card_update tool call (reliable,
   // structured). Otherwise try to lift {reply, cardUpdate} out of the reply text —
   // tolerant of prose prefixes and ```json fences, not just a bare leading `{`.
   let cardUpdate: AssistantFindingPatch | null = terminalCardUpdate;
+  let questions = pendingQuestions;
   if (!cardUpdate) {
     const parsed = extractReplyCardUpdate(content);
     if (parsed) {
       if (typeof parsed.reply === "string" && parsed.reply.trim()) reply = parsed.reply.trim();
       if (parsed.cardUpdate && typeof parsed.cardUpdate === "object") cardUpdate = sanitizeCardUpdate(parsed.cardUpdate);
+      if (questions.length === 0) questions = stringList(parsed.questions, 3, 300);
     }
   }
-  console.log(`[assistant/discuss] done in ${Date.now() - startedAt}ms${cardUpdate ? " (cardUpdate)" : ""}${toolCallCount ? ` (lvs tool calls: ${toolCallCount})` : ""}`);
-  return { reply, durationMs: Date.now() - startedAt, cardUpdate, lvsResults: lvsResults.length ? lvsResults : undefined };
+  console.log(`[assistant/discuss] done in ${Date.now() - startedAt}ms${cardUpdate ? " (cardUpdate)" : ""}${questions.length ? ` (${questions.length} questions)` : ""}${toolCallCount ? ` (lvs tool calls: ${toolCallCount})` : ""}`);
+  return {
+    reply,
+    durationMs: Date.now() - startedAt,
+    cardUpdate,
+    lvsResults: lvsResults.length ? lvsResults : undefined,
+    questions: questions.length ? questions : undefined,
+  };
 }
 
 /**
@@ -1289,14 +1433,14 @@ export async function discussFindingWithLlm(
  * prefixes and ```json fences (mirrors parseModelReply's robustness for the
  * discussion JSON shape). Returns null when no object can be parsed.
  */
-function extractReplyCardUpdate(text: string): { reply?: unknown; cardUpdate?: unknown } | null {
+function extractReplyCardUpdate(text: string): { reply?: unknown; cardUpdate?: unknown; questions?: unknown } | null {
   const raw = text.trim();
   const fence = /```json\s*([\s\S]*?)\s*```/i.exec(raw);
   const braces = raw.includes("{") ? raw.slice(raw.indexOf("{"), raw.lastIndexOf("}") + 1) : undefined;
   const candidates = [fence?.[1], raw.startsWith("{") ? raw : undefined, braces && braces !== raw ? braces : undefined].filter((c): c is string => Boolean(c));
   for (const candidate of candidates) {
     try {
-      const obj = JSON.parse(candidate) as { reply?: unknown; cardUpdate?: unknown };
+      const obj = JSON.parse(candidate) as { reply?: unknown; cardUpdate?: unknown; questions?: unknown };
       if (obj && typeof obj === "object") return obj;
     } catch { /* try the next candidate */ }
   }

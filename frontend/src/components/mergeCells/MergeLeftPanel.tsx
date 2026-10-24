@@ -1,30 +1,98 @@
-import { Fragment } from "react";
-import type { Cell, CellType, DieAnnotations } from "shared";
+import { Fragment, type ReactNode } from "react";
+import type {
+  Cell,
+  CellPlacementScore,
+  CellType,
+  DieAnnotations,
+  DieMetadata
+} from "shared";
 import { TreeRow, TreeSep } from "../tree/TreeRow";
+import { OtherDieBadge } from "../cellLibrary/OtherDieBadge";
+import type { ForeignType } from "../../lib/cellLibrary";
 import { Ic } from "../../icons";
 import { useMergeStore } from "../../state/mergeCells";
 import { usePreferences } from "../../state/preferences";
 import { CellTypeColorPicker } from "../dieViewer/CellTypeColorPicker";
 import { CellThumb } from "./CellThumb";
+import { TypeThumb } from "./TypeThumb";
 import {
   candidatesFor,
   cellCropUrl,
   cellTypeById,
   groupCellTypes,
-  membersOf
+  membersOf,
+  type Candidate
 } from "../../lib/mergeCells";
+import {
+  compareByMemberScore,
+  mlCellId,
+  type Proposal
+} from "../../lib/cellDetection";
+import { COLOR_ML_CELL } from "../../renderer/annotations/cellDetections";
 
 interface Props {
   dieId: string;
+  /** The die's tile pyramid — proposals have no stored pixels, so they are
+   *  drawn straight from the tiles. */
+  die: DieMetadata | null;
   annotations: DieAnnotations;
   /** Overlay composited into the crops (same URL as the filmstrip → shared cache). */
   overlaySourceId?: string;
+  /** Visible ML cell proposals (already threshold / overlap filtered). */
+  proposals: Proposal[];
+  /** Placed members' template-match scores (cell id → score), from the
+   *  latest detection run of their type. */
+  memberScores: ReadonlyMap<string, CellPlacementScore>;
+  /** Types owned by another die of the cell library (badged, listed after
+   *  this die's own). */
+  foreignTypes?: ReadonlyMap<string, ForeignType>;
+  /** The page's candidate list (cells, proposals, then whole types); when
+   *  absent the panel derives the cell candidates itself. */
+  candidates?: Candidate[];
   onCandidateContextMenu: (cell: Cell, clientX: number, clientY: number) => void;
   /** Set / clear (undefined) a cell type's own color. */
   onSetCellTypeColor: (cellTypeId: string, color: string | undefined) => void;
 }
 
-export function MergeLeftPanel({ dieId, annotations, overlaySourceId, onCandidateContextMenu, onSetCellTypeColor }: Props) {
+export function MergeLeftPanel({
+  dieId,
+  die,
+  annotations,
+  overlaySourceId,
+  proposals,
+  memberScores,
+  foreignTypes,
+  candidates: pageCandidates,
+  onCandidateContextMenu,
+  onSetCellTypeColor
+}: Props) {
+  const typeLabel = (ct: CellType): ReactNode => {
+    const f = foreignTypes?.get(ct.id);
+    return f ? (
+      <>
+        {ct.name}
+        <OtherDieBadge owner={f.ownerName} />
+      </>
+    ) : (
+      ct.name
+    );
+  };
+  const lowScore = usePreferences((s) => s.cellDetectionThreshold);
+  const byScore = compareByMemberScore(memberScores);
+  /** Score badge for a placed member (null when its type hasn't been run). */
+  const scoreMeta = (cellId: string) => {
+    const s = memberScores.get(cellId);
+    if (!s) return null;
+    return (
+      <span
+        title={`${s.matched} template vias matched · ${s.extra} unexplained`}
+        style={{ color: s.score < lowScore ? "var(--err, #e36854)" : undefined }}
+      >
+        {s.score.toFixed(2)}
+      </span>
+    );
+  };
+
   const specimenTypeId = useMergeStore((s) => s.specimenTypeId);
   const specimenCellId = useMergeStore((s) => s.specimenCellId);
   const candidateCellId = useMergeStore((s) => s.candidateCellId);
@@ -37,6 +105,7 @@ export function MergeLeftPanel({ dieId, annotations, overlaySourceId, onCandidat
   const toggleType = useMergeStore((s) => s.toggleType);
   const setUnmatchedOpen = useMergeStore((s) => s.setUnmatchedOpen);
   const setMlOpen = useMergeStore((s) => s.setMlOpen);
+  const proposalOverrides = useMergeStore((s) => s.proposalOverrides);
   const cellColor = usePreferences((s) => s.cellColor);
   const colorControl = (ct: CellType) => (
     <CellTypeColorPicker
@@ -47,9 +116,30 @@ export function MergeLeftPanel({ dieId, annotations, overlaySourceId, onCandidat
     />
   );
 
-  const { matched, unmatched } = groupCellTypes(annotations);
+  const grouped = groupCellTypes(annotations);
+  const unmatched = grouped.unmatched;
+  // This die's own types first, then the ones shared from other dies.
+  const matched = [
+    ...grouped.matched.filter((ct) => !foreignTypes?.has(ct.id)),
+    ...grouped.matched.filter((ct) => foreignTypes?.has(ct.id))
+  ];
+  const firstShared = matched.findIndex((ct) => foreignTypes?.has(ct.id));
   const specimenType = cellTypeById(annotations, specimenTypeId);
-  const candidates = candidatesFor(annotations, specimenType);
+  const candidates =
+    pageCandidates ??
+    candidatesFor(annotations, specimenType, proposals, proposalOverrides, memberScores);
+  // Whole cell types follow the cells, under their own heading.
+  const firstType = candidates.findIndex((c) => c.mergeType);
+  // Proposals grouped by type, best first within each (input is score-sorted).
+  const mlGroups: { cellType: Proposal["cellType"]; items: Proposal[] }[] = [];
+  for (const p of proposals) {
+    const g = mlGroups.find((x) => x.cellType.id === p.cellType.id);
+    if (g) g.items.push(p);
+    else mlGroups.push({ cellType: p.cellType, items: [p] });
+  }
+  mlGroups.sort((a, b) =>
+    a.cellType.name.localeCompare(b.cellType.name, undefined, { numeric: true })
+  );
   // Index of the first not-yet-matched candidate (done ones sort first); a
   // separator goes here when there are matched ones above it.
   const firstUndone = candidates.findIndex((c) => !c.done);
@@ -64,15 +154,16 @@ export function MergeLeftPanel({ dieId, annotations, overlaySourceId, onCandidat
         </span>
       </div>
       <div style={{ overflow: "auto", flex: "1 1 40%", minHeight: 60 }}>
-        {matched.map((ct) => {
+        {matched.map((ct, i) => {
           const open = expandedTypes.includes(ct.id);
           const members = membersOf(annotations, ct.id);
           return (
             <div key={ct.id}>
+              {i > 0 && i === firstShared && <TreeSep />}
               <TreeRow
                 icon={Ic.cell}
                 expand={members.length ? (open ? "open" : "closed") : "leaf"}
-                label={ct.name}
+                label={typeLabel(ct)}
                 meta={members.length}
                 monoLabel
                 controls={colorControl(ct)}
@@ -81,12 +172,15 @@ export function MergeLeftPanel({ dieId, annotations, overlaySourceId, onCandidat
                 onSelect={() => setSpecimen(ct.id, null)}
               />
               {open &&
-                members.map((m) => (
+                // Worst template match first (unscored last) so a member
+                // that doesn't belong stands out at the top of the list.
+                [...members].sort(byScore).map((m) => (
                   <TreeRow
                     key={m.id}
                     depth={1}
                     icon={Ic.cell}
                     label={`cell ${m.id.slice(0, 6)}`}
+                    meta={scoreMeta(m.id)}
                     monoLabel
                     selected={specimenTypeId === ct.id && specimenCellId === m.id}
                     onSelect={() => {
@@ -115,7 +209,7 @@ export function MergeLeftPanel({ dieId, annotations, overlaySourceId, onCandidat
               key={ct.id}
               depth={1}
               icon={Ic.cell}
-              label={ct.name}
+              label={typeLabel(ct)}
               meta={membersOf(annotations, ct.id).length}
               monoLabel
               dimmed
@@ -125,81 +219,41 @@ export function MergeLeftPanel({ dieId, annotations, overlaySourceId, onCandidat
             />
           ))}
 
-        {(() => {
-          const mlCells = annotations.cells
-            .filter((c) => c.mlDetected)
-            .sort((a, b) => (b.mlConfidence ?? 0) - (a.mlConfidence ?? 0));
-          const mlByType: { name: string; cells: Cell[] }[] = [];
-          const seen = new Set<string>();
-          for (const c of mlCells) {
-            const ct = annotations.cellTypes.find((t) => t.id === c.cellTypeId);
-            const key = ct?.name ?? c.cellTypeId;
-            if (!seen.has(key)) {
-              seen.add(key);
-              mlByType.push({ name: key, cells: [] });
-            }
-            const group = mlByType.find((g) => g.name === key)!;
-            group.cells.push(c);
-            group.cells.sort((a, b) => (b.mlConfidence ?? 0) - (a.mlConfidence ?? 0));
-          }
-          return (
-            <>
-              <TreeRow
-                icon={Ic.cell}
-                expand={mlCells.length ? (mlOpen ? "open" : "closed") : "leaf"}
-                label="ML"
-                meta={mlCells.length}
-                dimmed
-                onToggleExpand={() => setMlOpen(!mlOpen)}
-                onSelect={() => setMlOpen(!mlOpen)}
-              />
-              {mlOpen &&
-                mlByType.map((g) => (
-                  <div key={g.name}>
-                    <TreeRow
-                      depth={1}
-                      icon={Ic.cell}
-                      label={g.name}
-                      meta={g.cells.length}
-                      monoLabel
-                      dimmed
-                    />
-                    {g.cells.map((c) => {
-                      const sel =
-                        specimenTypeId != null &&
-                        specimenCellId === c.id;
-                      return (
-                        <div
-                          key={c.id}
-                          className={"trow" + (sel ? " sel" : "")}
-                          style={{
-                            padding: "3px 8px 3px 24px",
-                            cursor: "pointer",
-                            fontSize: 10,
-                            fontFamily: "var(--mono)",
-                            color: "var(--ink3)"
-                          }}
-                          onClick={() => {
-                            const ct = annotations.cellTypes.find(
-                              (t) => t.id === c.cellTypeId
-                            );
-                            if (ct) setSpecimen(ct.id, c.id);
-                          }}
-                          onContextMenu={(e) => {
-                            e.preventDefault();
-                            onCandidateContextMenu(c, e.clientX, e.clientY);
-                          }}
-                        >
-                          {c.id.slice(0, 6)} [
-                          {c.mlConfidence?.toFixed(2) ?? "?"}]
-                        </div>
-                      );
-                    })}
-                  </div>
-                ))}
-            </>
-          );
-        })()}
+        <TreeRow
+          icon={Ic.cell}
+          expand={mlOpen ? "open" : "closed"}
+          label="ML proposals"
+          meta={proposals.length}
+          dimmed={proposals.length === 0}
+          onToggleExpand={() => setMlOpen(!mlOpen)}
+          onSelect={() => setMlOpen(!mlOpen)}
+        />
+        {mlOpen && mlGroups.length === 0 && (
+          <div
+            className="m"
+            style={{ padding: "6px 16px", fontSize: 10, color: "var(--ink3)" }}
+          >
+            no ML-proposed cells — run cell detection from the die viewer's Cells tab
+          </div>
+        )}
+        {mlOpen &&
+          mlGroups.map((g) => (
+            <TreeRow
+              key={g.cellType.id}
+              depth={1}
+              icon={Ic.cell}
+              label={typeLabel(g.cellType)}
+              meta={g.items.length}
+              monoLabel
+              selected={specimenTypeId === g.cellType.id}
+              onSelect={() => {
+                // Review this type's proposals: specimen = the type, first
+                // (best) proposal loaded as the candidate.
+                setSpecimen(g.cellType.id, null);
+                setCandidate(mlCellId(g.items[0].detection.id));
+              }}
+            />
+          ))}
       </div>
 
       <TreeSep />
@@ -225,9 +279,81 @@ export function MergeLeftPanel({ dieId, annotations, overlaySourceId, onCandidat
             {specimenType ? "nothing left to match" : "pick a cell type above"}
           </div>
         )}
-        {candidates.map(({ cell, cellType, done }, i) => {
+        {candidates.map((c, i) => {
+          const { cell, cellType, done, proposal, memberScore, mergeType } = c;
           const sel = candidateCellId === cell.id;
-          const showSep = i === firstUndone && firstUndone > 0;
+          const showSep = i === firstUndone && firstUndone > 0 && !mergeType;
+          if (mergeType) {
+            const owner = foreignTypes?.get(cellType.id)?.ownerName;
+            return (
+              <Fragment key={cell.id}>
+                {i === firstType && (
+                  <div
+                    style={{
+                      margin: "8px 8px 4px",
+                      paddingTop: 8,
+                      borderTop: "1px solid var(--l2)"
+                    }}
+                    title="Merge a whole cell type with the target: line it up, then Merge"
+                  >
+                    <span className="u" style={{ fontSize: 9, color: "var(--ink3)" }}>
+                      other cell types
+                    </span>
+                  </div>
+                )}
+                <div
+                  className={"trow" + (sel ? " sel" : "")}
+                  style={{ padding: "5px 8px", alignItems: "center", cursor: "pointer", gap: 8 }}
+                  onClick={() => setCandidate(cell.id)}
+                >
+                  <div
+                    style={{
+                      width: 40,
+                      height: 28,
+                      flex: "0 0 auto",
+                      borderRadius: 3,
+                      overflow: "hidden",
+                      position: "relative",
+                      border: "1px dashed var(--l2)",
+                      background: "var(--canvas-bg)"
+                    }}
+                  >
+                    <TypeThumb source={mergeType.source} />
+                  </div>
+                  <div className="col" style={{ minWidth: 0, gap: 1, flex: 1 }}>
+                    <span
+                      className="m"
+                      style={{
+                        fontSize: 10.5,
+                        color: "var(--ink)",
+                        fontWeight: 500,
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
+                        whiteSpace: "nowrap"
+                      }}
+                    >
+                      {cellType.name}
+                    </span>
+                    <span style={{ fontSize: 9.5, color: "var(--ink3)" }}>
+                      {Math.round(cellType.cropRect.width)}×
+                      {Math.round(cellType.cropRect.height)} px
+                    </span>
+                  </div>
+                  {owner ? (
+                    <OtherDieBadge owner={owner} />
+                  ) : (
+                    <span
+                      className="chip"
+                      style={{ fontSize: 9 }}
+                      title="A whole cell type of this die"
+                    >
+                      type
+                    </span>
+                  )}
+                </div>
+              </Fragment>
+            );
+          }
           return (
             <Fragment key={cell.id}>
               {showSep && (
@@ -245,62 +371,98 @@ export function MergeLeftPanel({ dieId, annotations, overlaySourceId, onCandidat
               )}
               <div
                 className={"trow" + (sel ? " sel" : "")}
-              style={{
-                padding: "5px 8px",
-                alignItems: "center",
-                cursor: "pointer",
-                gap: 8
-              }}
-              onClick={() => setCandidate(cell.id)}
-              onContextMenu={(e) => {
-                e.preventDefault();
-                setCandidate(cell.id);
-                onCandidateContextMenu(cell, e.clientX, e.clientY);
-              }}
-            >
-              <CellThumb
-                src={cellCropUrl(dieId, cell, overlaySourceId)}
                 style={{
-                  width: 40,
-                  height: 28,
-                  flex: "0 0 auto",
-                  borderRadius: 3,
-                  border: "1px solid var(--l2)"
+                  padding: "5px 8px",
+                  alignItems: "center",
+                  cursor: "pointer",
+                  gap: 8
+                }}
+                onClick={() => setCandidate(cell.id)}
+                onContextMenu={(e) => {
+                  e.preventDefault();
+                  setCandidate(cell.id);
+                  onCandidateContextMenu(cell, e.clientX, e.clientY);
                 }}
               >
-                {done && (
+                <div
+                  style={{
+                    width: 40,
+                    height: 28,
+                    flex: "0 0 auto",
+                    borderRadius: 3,
+                    overflow: "hidden",
+                    position: "relative",
+                    border: `1px solid ${proposal ? COLOR_ML_CELL : "var(--l2)"}`,
+                    background: "var(--canvas-bg)"
+                  }}
+                >
+                  {proposal ? (
+                    <CellThumb die={die} cell={cell} cellType={cellType} />
+                  ) : (
+                    <CellThumb
+                      src={cellCropUrl(dieId, cell, overlaySourceId)}
+                      style={{ width: "100%", height: "100%" }}
+                    >
+                      {done && (
+                        <span
+                          style={{
+                            position: "absolute",
+                            inset: 0,
+                            display: "flex",
+                            alignItems: "center",
+                            justifyContent: "center",
+                            background: "rgba(20,40,28,0.45)",
+                            color: "var(--ok)"
+                          }}
+                        >
+                          {CHECK}
+                        </span>
+                      )}
+                    </CellThumb>
+                  )}
+                </div>
+                <div className="col" style={{ minWidth: 0, gap: 1, flex: 1 }}>
                   <span
-                    style={{
-                      position: "absolute",
-                      inset: 0,
-                      display: "flex",
-                      alignItems: "center",
-                      justifyContent: "center",
-                      background: "rgba(20,40,28,0.45)",
-                      color: "var(--ok)"
-                    }}
+                    className="m"
+                    style={{ fontSize: 10.5, color: "var(--ink)", fontWeight: 500 }}
                   >
-                    {CHECK}
+                    {proposal
+                      ? `ML · ${proposal.detection.score.toFixed(2)}`
+                      : `cell ${cell.id.slice(0, 6)}`}
+                  </span>
+                  <span style={{ fontSize: 9.5, color: "var(--ink3)" }}>
+                    {Math.round(cellType.cropRect.width)}×
+                    {Math.round(cellType.cropRect.height)} px
+                  </span>
+                </div>
+                {proposal && !done && (
+                  <span
+                    className="chip"
+                    style={{ fontSize: 9, color: COLOR_ML_CELL, borderColor: COLOR_ML_CELL }}
+                    title={`${proposal.detection.matched} template vias matched, ${proposal.detection.extra} unexplained`}
+                  >
+                    ML
                   </span>
                 )}
-              </CellThumb>
-              <div className="col" style={{ minWidth: 0, gap: 1, flex: 1 }}>
-                <span
-                  className="m"
-                  style={{ fontSize: 10.5, color: "var(--ink)", fontWeight: 500 }}
-                >
-                  cell {cell.id.slice(0, 6)}
-                </span>
-                <span style={{ fontSize: 9.5, color: "var(--ink3)" }}>
-                  {Math.round(cellType.cropRect.width)}×
-                  {Math.round(cellType.cropRect.height)} px
-                </span>
-              </div>
-              {done && (
-                <span className="chip ok" style={{ fontSize: 9 }}>
-                  merged
-                </span>
-              )}
+                {done && memberScore && (
+                  <span
+                    className="chip"
+                    style={{
+                      fontSize: 9,
+                      color: memberScore.score < lowScore ? "var(--err, #e36854)" : undefined,
+                      borderColor:
+                        memberScore.score < lowScore ? "var(--err, #e36854)" : undefined
+                    }}
+                    title={`Template match: ${memberScore.matched} vias matched · ${memberScore.extra} unexplained`}
+                  >
+                    {memberScore.score.toFixed(2)}
+                  </span>
+                )}
+                {done && (
+                  <span className="chip ok" style={{ fontSize: 9 }}>
+                    merged
+                  </span>
+                )}
               </div>
             </Fragment>
           );

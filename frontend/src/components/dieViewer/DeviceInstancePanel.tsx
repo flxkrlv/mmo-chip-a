@@ -11,6 +11,9 @@
 import { useCallback, useMemo, useState } from "react";
 import type { AnalogDevice, DeviceGeometry, DeviceKind } from "shared";
 import { TreeRow, TreeSep } from "../tree/TreeRow";
+import { Ic } from "../../icons";
+import { usePreferences } from "../../state/preferences";
+import { effectiveCapacitance } from "../../lib/export/capacitorDefaults";
 
 // ── Color swatches per device kind ─────────────────────────────
 
@@ -40,7 +43,7 @@ const KIND_TITLES: Record<string, string> = {
 
 // ── Helpers ────────────────────────────────────────────────────
 
-function deviceMeta(dev: AnalogDevice): string {
+function deviceMeta(dev: AnalogDevice, capDensity: number): string {
   const g = dev.geometry as any;
   switch (dev.kind) {
     case "mos": {
@@ -70,7 +73,8 @@ function deviceMeta(dev: AnalogDevice): string {
       return type;
     }
     case "capacitor": {
-      if (g.capacitance_fF) return `${g.capacitance_fF.toFixed(2)}fF`;
+      const cFf = effectiveCapacitance(g, capDensity);
+      if (cFf) return `${cFf.toFixed(2)}fF`;
       return "cap";
     }
     case "diode": return "diode";
@@ -98,6 +102,10 @@ export function DeviceInstancePanel({
     for (const kind of Object.keys(KIND_TITLES)) all.add(kind);
     return all;
   });
+  const panelCollapsed = usePreferences((s) => s.analogInstancesCollapsed);
+  // Specific capacitance per unit area [fF/μm²].
+  const capDensity = usePreferences((s) => s.capDensity);
+  const setPanelCollapsed = usePreferences((s) => s.setAnalogInstancesCollapsed);
   const toggle = useCallback((kind: string) => {
     setCollapsed((prev) => {
       const next = new Set(prev);
@@ -130,7 +138,17 @@ export function DeviceInstancePanel({
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
-      <div className="ph" style={{ padding: "2px 10px", flexShrink: 0 }}>
+      <div
+        className="ph"
+        style={{ padding: "2px 10px", flexShrink: 0, cursor: "pointer", gap: 5 }}
+        title={panelCollapsed ? "Expand analog instances" : "Collapse analog instances"}
+        onClick={() => setPanelCollapsed(!panelCollapsed)}
+      >
+        <span
+          style={{ display: "inline-flex", color: "var(--ink3)", width: 10 }}
+        >
+          {panelCollapsed ? Ic.caretR : Ic.caretD}
+        </span>
         <span
           className="m"
           style={{
@@ -138,9 +156,10 @@ export function DeviceInstancePanel({
             color: "var(--ink2)", letterSpacing: 0.6,
           }}
         >
-          INSTANCES · {totalDevices}
+          ANALOG INSTANCES · {totalDevices}
         </span>
       </div>
+      {!panelCollapsed && (
       <div style={{ flex: 1, overflow: "auto" }}>
         {groups.length === 0 ? (
           <div style={{ padding: "12px", fontSize: 11, color: "var(--ink3)", textAlign: "center" }}>
@@ -163,7 +182,7 @@ export function DeviceInstancePanel({
                 {!isCollapsed &&
                   list.map((dev) => {
                     const name = dev.instanceName ?? dev.id;
-                    const meta = deviceMeta(dev);
+                    const meta = deviceMeta(dev, capDensity);
                     const selected = selectedDevice === dev;
                     return (
                       <TreeRow
@@ -184,6 +203,7 @@ export function DeviceInstancePanel({
           })
         )}
       </div>
+      )}
     </div>
   );
 }

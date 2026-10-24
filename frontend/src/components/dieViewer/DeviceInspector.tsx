@@ -12,6 +12,7 @@
 import { useState, useCallback, type ChangeEvent } from "react";
 import type { AnalogDevice, ResistorType } from "shared";
 import { effectiveSheetR } from "../../lib/export/resistorDefaults";
+import { effectiveCapacitance } from "../../lib/export/capacitorDefaults";
 import { usePreferences } from "../../state/preferences";
 import { renameDeviceInstance, validateDeviceName } from "../../api/dieWideAnalog";
 
@@ -57,6 +58,7 @@ function Section({ children }: { children: React.ReactNode }) {
 }
 
 export function DeviceInspector({ device, onClose, cellTypeCounts, cellTypeByCellId }: Props) {
+  const capDensity = usePreferences((s) => s.capDensity);
   const g = device.geometry;
   const instanceId = (device as any)._instanceId as string | undefined;
 
@@ -189,7 +191,7 @@ export function DeviceInspector({ device, onClose, cellTypeCounts, cellTypeByCel
 
         {/* Geometry parameters by kind */}
         <Section>Geometry</Section>
-        {renderGeometry(device)}
+        {renderGeometry(device, capDensity)}
 
         {/* Terminal section removed — was duplicating net info not useful here */}
 
@@ -220,7 +222,7 @@ export function DeviceInspector({ device, onClose, cellTypeCounts, cellTypeByCel
 
 // ── Geometry rendering ───────────────────────────────────────────
 
-function renderGeometry(dev: AnalogDevice): React.ReactNode {
+function renderGeometry(dev: AnalogDevice, capDensity: number): React.ReactNode {
   const g = dev.geometry;
 
   if ("mosType" in g) {
@@ -320,11 +322,15 @@ function renderGeometry(dev: AnalogDevice): React.ReactNode {
       area_um2: number; perimeter_um?: number;
       capacitance_fF?: number; multiplier?: number; capType?: string;
     };
+    // The capacitance comes from the plate area × the specific
+    // capacitance — the same way a resistor's resistance comes
+    // from its squares × the sheet resistance.
+    const cFf = effectiveCapacitance(cg, capDensity);
     return (
       <>
         <Prop label="Area" val={`${cg.area_um2.toFixed(2)} μm²`} />
         {cg.perimeter_um ? <Prop label="Perimeter" val={`${cg.perimeter_um.toFixed(2)} μm`} /> : null}
-        {cg.capacitance_fF ? <Prop label="Capacitance" val={`${cg.capacitance_fF.toFixed(3)} fF`} /> : null}
+        {cFf ? <Prop label="Capacitance" val={`${cFf.toFixed(3)} fF`} /> : null}
         {cg.capType && <Prop label="Type" val={cg.capType} />}
         {cg.multiplier && cg.multiplier > 1 && (
           <Prop label="Multiplier" val={cg.multiplier} />

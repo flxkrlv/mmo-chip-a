@@ -29,6 +29,7 @@ import {
 } from "../export/spice";
 import { collectDieWideAnalogDevices } from "../../api/dieWideAnalog";
 import { matchGeometry } from "../export/matching";
+import { effectiveCapacitance } from "../export/capacitorDefaults";
 
 // ── Default model stubs for @spice-ts ─────────────────────────
 
@@ -119,6 +120,7 @@ function deviceLine(
   vdd: string,
   gnd: string,
   indent: string,
+  capDensity?: number,
 ): string {
   const instName = d.instanceName ?? d.id;
   const ts = terminalString(d.kind, d.terminals, nl, vdd, gnd);
@@ -148,7 +150,7 @@ function deviceLine(
     case "capacitor": {
       const cg = g as DeviceGeometryCapacitor;
       // Farads (spice-ts expects F, not fF)
-      const val = (cg.capacitance_fF ?? 0) * 1e-15;
+      const val = (effectiveCapacitance(cg, capDensity) ?? 0) * 1e-15;
       return `${indent}${instName} ${ts} ${val}`;
     }
     case "diode":
@@ -235,6 +237,7 @@ export function formatDevicesAsSpiceTS(
   moduleName: string,
   vdd: string,
   gnd: string,
+  capDensity?: number,
 ): SpiceTSResult {
   const nl = buildNetNameMap(devices, namedNets);
   const models = neededModels(devices);
@@ -260,7 +263,7 @@ export function formatDevicesAsSpiceTS(
 
   // Device instances
   for (const d of devices) {
-    const line = deviceLine(d, nl, vdd, gnd, "");
+    const line = deviceLine(d, nl, vdd, gnd, "", capDensity);
     lines.push(line);
     byKind[d.kind] = (byKind[d.kind] ?? 0) + 1;
   }
@@ -305,7 +308,9 @@ export function generateSpiceTSViews(
   matchGeometry(named as (AnalogDevice & { instanceName: string })[], config, namedNets);
 
   // Flat netlist
-  const flat = formatDevicesAsSpiceTS(named, namedNets, moduleName, vdd, gnd);
+  const flat = formatDevicesAsSpiceTS(
+    named, namedNets, moduleName, vdd, gnd, config.capDensity_fF_um2,
+  );
 
   // Per-region netlists
   const perRegion = new Map<string, { name: string; result: SpiceTSResult }>();
@@ -325,7 +330,10 @@ export function generateSpiceTSViews(
       }
       if (inside.length > 0) {
         const subName = sanitizeSpiceName(region.name || `Region_${region.id.slice(0, 8)}`);
-        const result = formatDevicesAsSpiceTS(inside, namedNets, `${moduleName}.${subName}`, vdd, gnd);
+        const result = formatDevicesAsSpiceTS(
+          inside, namedNets, `${moduleName}.${subName}`, vdd, gnd,
+          config.capDensity_fF_um2,
+        );
         perRegion.set(region.id, { name: subName, result });
       }
     }

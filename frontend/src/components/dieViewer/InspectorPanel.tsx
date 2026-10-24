@@ -1,10 +1,11 @@
 import { useState, useRef, useEffect, type ReactNode } from "react";
-import { cellWorldRect } from "../../lib/cellFootprint";
+import { cellInstanceScale, cellWorldRect } from "../../lib/cellFootprint";
 import { padCountByPin, renamePinActions } from "../../lib/pinClipboard";
 import { useDialog } from "../Dialog";
 import { useQueryClient } from "@tanstack/react-query";
-import type { AnalogDevice, AnnotationNet, AnnotationNetEdge, AssistantFinding, CellType, DieAnnotations, FloorplanRegion, HumanAnnotation, MLInferenceJob, WireLayer } from "shared";
+import type { AnalogDevice, AnnotationNet, AnnotationNetEdge, AssistantFinding, Cell, CellType, DieAnnotations, DieMetadata, FloorplanRegion, HumanAnnotation, MLInferenceJob, WireLayer } from "shared";
 import type { ActionDispatcher } from "../../api/actions";
+import type { CellLibraryView } from "../../lib/cellLibrary";
 import { uuid } from "../../lib/uuid";
 import {
   exportMlData,
@@ -35,6 +36,11 @@ import { AnnotationClassSelect } from "./AnnotationClassSelect";
 import { CVPanel } from "./CVPanel";
 import { AssistantPanel } from "./AssistantPanel";
 import { McpPanel } from "./McpPanel";
+import { CellDetectionPanel, ProposalInspector } from "./CellDetectionPanel";
+import { DieProperties } from "./DieProperties";
+import { AnalogLibPanel } from "./AnalogLibPanel";
+import type { AnalogCellTool } from "./useAnalogCellTool";
+import { isMlCellId, type Proposal } from "../../lib/cellDetection";
 
 /** A single labelled property row (`.prop` matches the hifi spec). */
 function Prop({
@@ -158,8 +164,15 @@ function resolve(
   ann: DieAnnotations,
   dispatcher: ActionDispatcher,
   mlViasLayer: MLViasLayer | null,
-  cellTypeCounts?: Map<string, number>
+  library: CellLibraryView,
+  cellTypeCounts?: Map<string, number>,
+  onEditAnalogCell?: (cell: Cell, cellType: CellType) => void
 ): Resolved | null {
+  // A type shared from another die of the cell library says whose it is.
+  const ownerRow = (typeId: string): [string, ReactNode][] => {
+    const f = library.foreign.get(typeId);
+    return f ? [["from", `${f.ownerName} · ×${f.ratio.toFixed(3)}`]] : [];
+  };
   // ── ML vias (synthetic position id; no persistent annotation) ──────
   // Checked first because the prefix is unambiguous and the layer lookup
   // is cheap — keeps `parseNetPartId` and the prefix switch focused on
@@ -310,16 +323,18 @@ function resolve(
                   prevCellType: ct
                 })
             },
-            rows: [["color", <CellColorField key="color" cellType={ct} dispatcher={dispatcher} />]]
+            rows: [["color", <CellColorField key="color" cellType={ct} dispatcher={dispatcher} />], ...ownerRow(ct.id)]
           }
         : { typeLabel: "Cell", displayName: `Cell ${short(c.id)}`, uid: c.id };
-      const rows: [string, string][] = [
+      const rows: [string, ReactNode][] = [
         ["position", `(${Math.round(c.x)}, ${Math.round(c.y)})`]
       ];
       if (c.rotation) rows.push(["rotation", `${c.rotation}°`]);
       if (ct) {
+        // The instance may be drawn at its own scale (see `Cell.scale`).
+        const k = cellInstanceScale(c, ct, library.scale);
         // Die footprint (oriented); a resized cell differs from its type's box.
-        const box = cellWorldRect(c, ct.cropRect.width, ct.cropRect.height);
+        const box = cellWorldRect(c, ct.cropRect.width * k, ct.cropRect.height * k);
         rows.push([
           "size",
           c.bounds
@@ -328,6 +343,33 @@ function resolve(
         ]);
         const count = cellTypeCounts?.get(ct.id) ?? 1;
         rows.push(["relationship", count > 1 ? `Linked (×${count})` : "Unique"]);
+        // A device laid out by the analog library: its parameters travel with
+        // the cell type, so the user can see what it was generated from.
+        const pcell = ct.pcell;
+        if (pcell) {
+          const p = pcell.params;
+          rows.push(["device", p.kind === "mos" ? p.mosType.toUpperCase() : p.bjtType.toUpperCase()]);
+          rows.push(["W × L", `${p.W_um} × ${p.L_um} µm`]);
+          rows.push(["fingers", String(p.fingers)]);
+          if (p.kind === "mos") rows.push(["bulk", p.bulk === "tap" ? "well tap" : "none"]);
+          if (onEditAnalogCell) {
+            rows.push([
+              "edit",
+              <button
+                key="edit-device"
+                type="button"
+                className="btn ghost"
+                title="Lay this device out again — change its parameters; hand-made layer edits are lost"
+                onClick={() => onEditAnalogCell(c, ct)}
+              >
+                edit parameters
+              </button>
+            ]);
+          }
+        }
+      }
+      if (c.scale != null) {
+        rows.push(["own scale", `${Number(c.scale.toFixed(4))} px / library unit`]);
       }
       rows.push(["flipped", c.flippedV ? "vertical" : "no"]);
       if (c.mlDetected) {
@@ -475,22 +517,32 @@ export function InspectorPanel({
   annotations,
   dispatcher,
   dieId,
+  die,
+  library,
   mlViasLayer,
   cellTypeCounts,
+  proposals = [],
   devices = [],
   netNames = new Map<number, string>(),
   warnings = [],
   floorplanRegions = [],
   onActivateAssistantFinding,
   onOpenAssistantNetlist,
+  onEditAnalogCell,
+  analogCell,
 }: {
   annotations: DieAnnotations | undefined;
   dispatcher: ActionDispatcher;
   dieId: string;
+  die: DieMetadata | undefined;
+  /** The die's cell library (other dies' types it shares). */
+  library: CellLibraryView;
   /** Live ML via layer — the inspector resolves `ml-via:` selection ids
    *  through it to fetch score / class. May be null while the page is still
    *  bootstrapping. */
   mlViasLayer: MLViasLayer | null;
+  /** Visible ML cell proposals — resolves `ml-cell:` selection ids. */
+  proposals?: Proposal[];
   /** cellTypeId → instance count for relationship display. */
   cellTypeCounts?: Map<string, number>;
   /** Current browser extraction projection; submitted read-only for analysis. */
@@ -500,6 +552,11 @@ export function InspectorPanel({
   floorplanRegions?: FloorplanRegion[];
   onActivateAssistantFinding?: (finding: AssistantFinding | null) => void;
   onOpenAssistantNetlist?: (finding: AssistantFinding, view: "code" | "graph" | "schematic") => void;
+  /** Load a placed analog-library device back into the placement tool, so
+   *  it can be laid out again with other parameters. */
+  onEditAnalogCell?: (cell: Cell, cellType: CellType) => void;
+  /** The analog-library tool — its state and controls live in the "Lib" tab. */
+  analogCell?: AnalogCellTool;
 }) {
   const tab = usePreferences((s) => s.inspectorTab);
   const setTab = usePreferences((s) => s.setInspectorTab);
@@ -511,15 +568,28 @@ export function InspectorPanel({
         className="ph"
         style={{ padding: 0, gap: 0, height: 30 }}
       >
-        {(["inspector", "ml", "cv", "ai", "mcp"] as const).map((k) => (
+        {(["inspector", "ml", "cells", "cv", "ai", "lib", "mcp"] as const).map((k) => (
           <button
             key={k}
             type="button"
             className={"tab" + (tab === k ? " on" : "")}
             style={{ background: "transparent", cursor: "pointer" }}
             onClick={() => setTab(k)}
+            title={k === "lib" ? "Analog library — lay a device out and place it (I)" : undefined}
           >
-            {k === "inspector" ? "Inspector" : k === "ml" ? "ML" : k === "cv" ? "CV" : k === "ai" ? "AI" : "MCP"}
+            {k === "inspector"
+              ? "Inspector"
+              : k === "ml"
+                ? "ML"
+                : k === "cells"
+                  ? "Cells"
+                  : k === "cv"
+                    ? "CV"
+                    : k === "lib"
+                      ? "Lib"
+                      : k === "ai"
+                        ? "AI"
+                        : "MCP"}
           </button>
         ))}
       </div>
@@ -538,6 +608,10 @@ export function InspectorPanel({
           />
         ) : tab === "ml" ? (
           <MLPanel dieId={dieId} annotations={annotations} dispatcher={dispatcher} mlViasLayer={mlViasLayer} />
+        ) : tab === "cells" ? (
+          <CellDetectionPanel dieId={dieId} annotations={annotations} library={library} />
+        ) : tab === "lib" && analogCell ? (
+          <AnalogLibPanel tool={analogCell} />
         ) : tab === "cv" ? (
           <CVPanel dieId={dieId} annotations={annotations} dispatcher={dispatcher} />
         ) : tab === "mcp" ? (
@@ -546,9 +620,14 @@ export function InspectorPanel({
           <InspectorBody
             annotations={annotations}
             dispatcher={dispatcher}
+            dieId={dieId}
+            die={die}
+            library={library}
             ids={selectedIds}
             mlViasLayer={mlViasLayer}
+            proposals={proposals}
             cellTypeCounts={cellTypeCounts}
+            onEditAnalogCell={onEditAnalogCell}
           />
         )}
       </div>
@@ -559,38 +638,82 @@ export function InspectorPanel({
 function InspectorBody({
   annotations,
   dispatcher,
+  dieId,
+  die,
+  library,
   ids,
   mlViasLayer,
+  proposals,
   cellTypeCounts,
+  onEditAnalogCell,
 }: {
   annotations: DieAnnotations | undefined;
   dispatcher: ActionDispatcher;
+  dieId: string;
+  die: DieMetadata | undefined;
+  library: CellLibraryView;
   ids: ReadonlySet<string>;
   mlViasLayer: MLViasLayer | null;
+  proposals: Proposal[];
   cellTypeCounts?: Map<string, number>;
+  onEditAnalogCell?: (cell: Cell, cellType: CellType) => void;
 }) {
+  // Nothing selected: the die itself.
+  if (ids.size === 0)
+    return <DieProperties die={die} library={library} umPerPx={annotations?.umPerPx} />;
   if (!annotations) return <Empty>loading…</Empty>;
-  if (ids.size === 0) return <Empty>Nothing selected</Empty>;
+
+  // A cell type selected from the outline tree comes with all of its placed
+  // instances (so they highlight / delete together). Keep the type's
+  // inspector up in that case and just report how many instances are in.
+  let only: string;
+  let extraRows: [string, ReactNode][] = [];
   if (ids.size > 1) {
-    const vias = selectedVias(annotations, ids);
-    if (vias.length === 0) return <Empty>{ids.size} items selected</Empty>;
-    return (
-      <div>
-        <div style={{ padding: "10px 12px", borderBottom: "1px solid var(--l1)" }}>
-          <div className="u">Selection</div>
-          <div style={{ fontSize: 15, fontWeight: 600, color: "var(--ink)", marginTop: 3, fontFamily: "var(--mono)" }}>
-            {vias.length === ids.size ? `${vias.length} vias` : `${ids.size} items · ${vias.length} vias`}
+    const typeIds = [...ids].filter((id) => id.startsWith("cellType:"));
+    const typeId = typeIds.length === 1 ? typeIds[0] : null;
+    const allOwnCells =
+      typeId !== null &&
+      [...ids].every((id) => {
+        if (id === typeId) return true;
+        if (!id.startsWith("cell:")) return false;
+        const c = annotations.cells.find((x) => x.id === id.slice(5));
+        return !!c && `cellType:${c.cellTypeId}` === typeId;
+      });
+    if (allOwnCells && typeId !== null) {
+      only = typeId;
+      extraRows = [["selected", `${ids.size - 1} instance${ids.size - 1 === 1 ? "" : "s"} — Delete removes them all`]];
+    } else {
+      const vias = selectedVias(annotations, ids);
+      if (vias.length === 0) return <Empty>{ids.size} items selected</Empty>;
+      return (
+        <div>
+          <div style={{ padding: "10px 12px", borderBottom: "1px solid var(--l1)" }}>
+            <div className="u">Selection</div>
+            <div style={{ fontSize: 15, fontWeight: 600, color: "var(--ink)", marginTop: 3, fontFamily: "var(--mono)" }}>
+              {vias.length === ids.size ? `${vias.length} vias` : `${ids.size} items · ${vias.length} vias`}
+            </div>
           </div>
+          <Prop label={vias.length === ids.size ? "color" : "via color"}>
+            <ViaColorField vias={vias} dispatcher={dispatcher} />
+          </Prop>
         </div>
-        <Prop label={vias.length === ids.size ? "color" : "via color"}>
-          <ViaColorField vias={vias} dispatcher={dispatcher} />
-        </Prop>
-      </div>
-    );
+      );
+    }
+  } else {
+    only = ids.values().next().value as string;
   }
 
-  const only = ids.values().next().value as string;
-  const r = resolve(only, annotations, dispatcher, mlViasLayer, cellTypeCounts);
+  if (isMlCellId(only)) {
+    return (
+      <ProposalInspector
+        dieId={dieId}
+        id={only}
+        dispatcher={dispatcher}
+        proposals={proposals}
+      />
+    );
+  }
+  const r = resolve(only, annotations, dispatcher, mlViasLayer, library, cellTypeCounts, onEditAnalogCell);
   if (!r) return <Empty>Selection not found</Empty>;
 
   return (
@@ -630,7 +753,7 @@ function InspectorBody({
         </span>
       </Prop>
 
-      {r.rows?.map(([label, value]) => (
+      {[...(r.rows ?? []), ...extraRows].map(([label, value]) => (
         <Prop key={label} label={label}>
           {value}
         </Prop>

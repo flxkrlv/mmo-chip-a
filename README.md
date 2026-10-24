@@ -5,75 +5,15 @@
 **A fork of [mmo-chip](https://github.com/giulioz/mmo-chip) for reverse engineering analog and mixed-signal ICs.**  
 Extends the original digital CMOS pipeline to **BJTs, BiCMOS, resistors, capacitors, diodes** — transistor-level extraction with SPICE/CDL/Spectre netlist export.
 
-## What's different in this fork ([lytex/mmo-chip](https://github.com/lytex/mmo-chip))
+## About flxkrlv/mmo-chip-a
 
-This fork tracks [flxkrlv/mmo-chip-a](https://github.com/flxkrlv/mmo-chip-a) (itself a fork of [giulioz/mmo-chip](https://github.com/giulioz/mmo-chip)) and adds the following on top. Everything else in this README applies to all three.
-
-### Large images
-
-- **Pyramidal TIFF import** — dies and overlays can be imported as pyramidal / tiled TIFF (libvips `tiffsave --pyramid`, SubIFD/OME-TIFF, SVS). Coarse zoom levels are cut from the matching stored resolution and full-resolution tiles only decode the region they cover, so tiling huge mosaics is far faster than from PNG.
-- **Resumable tiling** — background tile generation resumes after a backend restart, only renders tiles missing on disk, and the progress counter is seeded from the tiles already present (no more "tiling" again for an already-tiled die).
-
-### Process layers (CMOS / bipolar)
-
-- **Per-die process** — *Net settings → Process*: *Metals only*, *CMOS* (P-substrate + N-well, N+ / P+ diffusion, polysilicon) or *Bipolar* (NPN on P-substrate: N+ buried layer, N-epi, P-base, N+ diffusion, P+ isolation). Checkboxes pick which of these layers the die has.
-- **Silicon wire layers** — the die's process layers become wire layers below metal 1 (chips N+, P+, NW, PO… in the wire tool and the Inspector). Metal 1 is always shown; metal 2+ sit behind a `+N` chip. `CT_*` contacts join poly / diffusion / base to metal 1 and `TAP_*` taps join a well / epi / isolation to same-type diffusion, with the usual via snapping and checks; `E` from a silicon layer climbs to metal 1.
-- **Polarity flip** — the `P-sub ⇄` button (wire tool bar or Net settings) turns P-substrate into N-substrate, N-well into P-well, N+ into P+ and so on, relabelling every wire segment, contact and floorplan tag on those layers in one undo step. The link button next to each layer group takes it out of the flip (e.g. keep N+ / P+ that were annotated after spotting the real polarity).
-- **Floorplan layer tag** — a region can carry a canonical layer (P-substrate, N-well, N+ diffusion…), shown under its name, and it flips with the toggle.
-
-### Nets and wires
-
-- **Per-net colors** — assign colors to one or many nets at once from the Outline Tree; a switch flips between custom net colors and per-layer colors without losing the assignments.
-- **Per-net / per-cell visibility** — hide individual nets or cells while keeping the global visibility toggles.
-- **Net width per die** — wire width is stored per die instead of globally.
-- **Multi-wire (`B`) with multiple turning points** — route a bus through several bends; staggered start points end on a common aligned front.
-- **Hold to zoom** — hold the pointer for 2 s on a net (in the tree or on the canvas) to zoom to it.
-- **Double-click windows** — double-clicking a net opens a small non-modal window to rename it and pick its color (duplicate names get an inline warning); double-clicking a cell opens one to change its type and set the type's color. The windows (and the floorplan and comment popovers) can be dragged; their position is remembered and stays anchored to the element as you pan and zoom.
-- Double-click to rename I/O pins directly on the canvas.
-- **Selection rectangle** keeps its start corner on the die while you scroll or zoom mid-drag, and auto-pans when dragged to the canvas edge.
-- Toggleable crosses on net vertices.
-
-### Cells and I/O points
-
-- **Resize handles** — resize cells after placing them; resizing applies to all cells of the same type, with correct transforms.
-- **Cell type colors** and cell type shown on hover.
-- **Rotate / mirror from the die viewer** — right-click a cell → *Rotate 90° clockwise*, *Flip horizontally*, *Flip vertically*. The box and its content turn about the box centre (a tall cell becomes wide in place); applies to the whole selection when the clicked cell is selected; one undo step.
-- **Draggable I/O points** — I/O points are always visible; their names toggle with a switch.
-- **Several pads for one pin** — copy an I/O pad (`Ctrl+C` or right-click → *Copy pad*) and paste it (`Ctrl+V`) to add another pad with the same pin number and name at a different location (e.g. two VDD pads bonded to the same pin). Pads are copied together with selected cells and wires. Renaming any pad renames every pad of that pin; *Apply to Die Viewer* in the IC Package page names them all; the netlists treat them as one port.
-- **Hover info** — the bottom panel shows details of the object under the cursor.
-
-### Merge Cells
-
-- **Multi overlay** — stack every cell of the same type into a single overlaid image to spot outliers.
-- **Rotated cells shown upright** — each instance is cropped from its real (oriented) footprint on the die and shown in its type's frame, so a rotated instance of a tall cell is tall too. Flip H / Flip V / 90° act on what you see; drag-align and auto-align use the same frame, and merging keeps the cell's box centre in place.
-- **Stretch lines** (`S`) — for an exact match, drag across the candidate to draw a vertical or horizontal line, then drag lines (or the box edges) to stretch each band separately — a piecewise-linear stretch in both directions. Each band shows its factor (`×1.023`); double-click a line to remove it; *Reset stretch* clears them. Every change is one undo step (`Ctrl+Z` / `Ctrl+Shift+Z`). Works in the overlay, difference and candidate views.
-- Faster cell thumbnails by reusing the die viewer's tiles.
-- Fixed undo/redo history.
-
-### Floorplans
-
-- **Edit geometry after drawing** — move/reshape rectangle and polygon regions after creation.
-- **Undo/redo** for floorplan regions (and for layout comments).
-- Custom color picker and per-region visibility in the floorplan hierarchy.
-- `Esc` exits the floorplan tool; the first click already places a point; `Space+H` toggles floorplans.
-
-### Comments
-
-- `✕` closes a comment; a trash button deletes it (author only).
-- Comments can be dragged to a new place, and comments and replies can be edited and deleted by their author — all undoable.
-
-### Other
-
-- **Editable code pages** — the generated netlist on the Code / Analog Netlist pages can be edited by hand and re-parsed into the schematic.
-- **Toggleable rulers** — show/hide rulers from the Outline Tree.
-- **High-resolution screenshots** — right-click the screenshot button for a resolution slider, up to the die's full tile resolution (see [Screenshot](#screenshot)).
-- **Shortcut hints** — tooltips of buttons, tools, tabs and layer toggles show their keyboard shortcut.
-- Scrollable popovers.
-- Compatibility with older `data/` formats.
+[flxkrlv/mmo-chip-a](https://github.com/flxkrlv/mmo-chip-a) extends the original [mmo-chip](https://github.com/giulioz/mmo-chip) with analog and mixed-signal reverse-engineering workflows. The project also includes substantial user-experience and image-processing improvements contributed by [lytex](https://github.com/lytex). Feature details are documented alongside the relevant workflows below.
 
 ## Acknowledgments
 
-Many thanks to the developers of the original [mmo-chip](https://github.com/giulioz/mmo-chip) and fork [flxkrlv/mmo-chip-a](https://github.com/flxkrlv/mmo-chip-a) for the clean architecture and clear interfaces that made this analog extension possible.
+Many thanks to the developers of the original [mmo-chip](https://github.com/giulioz/mmo-chip) for the clean architecture and clear interfaces that made this analog extension possible.
+
+Special thanks to [lytex](https://github.com/lytex) for the substantial contribution of features and improvements that have helped move this project forward.
 
 The original CMOS pipeline (standard cells, logic, Verilog) is **untouched** — analog extraction works as an add-on.
 
@@ -90,6 +30,12 @@ npm run dev -w frontend   # http://localhost:5173
 # Tests:
 npm test
 ```
+
+---
+
+## Data and Editing
+
+Wire, bus, ruler and polygon tools support free, orthogonal, horizontal, vertical and diagonal angle modes remembered per die; hold `Shift` to place freely. Via colors and wire/cell colors can be inspected or copied from the Inspector. Tooltips show keyboard shortcuts, and popovers support scrolling.
 
 ---
 
@@ -189,6 +135,13 @@ At zoom ≥ 8×, each via shows its type (VIA12, VIA56…) centred on the circ
 
 ## Die Viewer Features
 
+### Large Images and Overlays
+
+- Import dies and overlays from pyramidal or tiled TIFF files, including SubIFD/OME-TIFF and SVS pyramids. Stored resolution levels are used directly for zoomed-out views, and high-resolution tiles decode only the regions they cover.
+- Background tile generation resumes after a backend restart and skips tiles already present on disk.
+- Overlay layers can be deleted from the server; deletion affects everyone using that project.
+- Export very large, high-resolution screenshots using the resolution panel described in [Screenshot](#screenshot).
+
 ### Wire Tool
 
 - **Layer switching:** `W` activates wire tool; repeat cycles through metal stack (ME1→…→ME6→ME1)  
@@ -197,6 +150,15 @@ At zoom ≥ 8×, each via shows its type (VIA12, VIA56…) centred on the circ
 - **AutoVia (checkbox):** clicking an adjacent-metal vertex auto-places the via annotation  
 - **Via tool (O):** toggles via placement; repeat cycles via types (VIA12→VIA23→…)  
 - Device contacts connect to **ME1 only** — ME2+ requires a via
+- **Multi-wire (`B`)** supports multiple bends and aligns staggered wire starts to a common front.
+- Wire and polygon tools support free, orthogonal, horizontal, vertical and diagonal angle modes. Each tool remembers its mode per die; hold `Shift` to place freely.
+- Net width is stored per die. Individual nets can have custom colors and visibility; individual cell visibility can also be toggled without changing global visibility.
+- Hold over a net in the Outline Tree or canvas to zoom to it. Net vertices can show toggleable crosses.
+- Right-click a cell for rotate and mirror actions. Cell resize handles resize instances of the same type together.
+- I/O points can be dragged, and their labels can be toggled independently. Multiple pads may share one pin number; copy/paste pads, and renaming a pad updates all pads for that pin.
+- Double-click a net to rename it or change its color. Double-click a cell to change its type. These windows are draggable and remain anchored to their objects while panning and zooming.
+- Double-click an I/O pin on the canvas to rename it. The selection rectangle remains anchored to the die while zooming or scrolling and auto-pans at the canvas edge.
+- The bottom information panel shows details about the object under the pointer.
 
 ### ProblemNavigator
 
@@ -260,6 +222,14 @@ Computer vision tools for automated cell instance detection. Available in the ri
 
 ---
 
+## Cells — Clean Specimens, Wire Map & Shared Libraries
+
+With cells recognised, the *Cells* tab can build a **clean specimen** per cell type: every instance is cropped, un-flipped, registered and brightness-matched, and the per-pixel median is kept, so wires routed over the cell and debris drop out. The image shown in the UI is a sharper rendering of the same idea — only the best-focused third of the instances, each registered with a small affine, reconstructed at 2× and sharpened. Merge cells uses it as the reference, and Cell RE shows it when a cell type is selected (selecting one instance shows that instance). Running it in reverse gives the **wire map**: each placed cell minus its type's specimen, keeping long straight residue, is pasted back over the die as a translucent overlay of the wires crossing recognised cells. Both are derived data under `data/dies/<die>/cell-specimens/` and `data/dies/<die>/wire-map/`.
+
+A **cross-die cell library** shares cell types (and their specimens) between dies so the same cell can be reused across a whole project. Instances placed from the library are registered at the target die's scale, and editing a shared type propagates to every die that uses it; remote instances are badged in the Cells panel.
+
+---
+
 ## Schematic Viewer
 
 Transistor-level schematics from SPICE netlists with an **interactive canvas** (default engine).
@@ -288,7 +258,7 @@ Available on the Analog Netlist page (`Alt+4`).
 
 ## Floorplan Regions
 
-Rectangular/polygonal regions for marking analog blocks. Features: color, name, port aliases, reservation, global net rename, boundary port dots.
+Rectangular/polygonal regions for marking analog blocks. Features include color, name, port aliases, reservation, global net rename, boundary port dots, editable geometry, copy/paste, multiline names and per-region visibility. Changes support undo/redo; selected regions appear in the Inspector. `Esc` exits the tool; `Enter` or double-click finishes a polygon. `Space+H` toggles floorplan visibility.
 
 | Key | Action |
 |-----|--------|
@@ -306,6 +276,26 @@ POST /api/dies/:dieId/rename            # Rename die
 ```
 
 Full export preserves original + overlay images. Preferences exported from localStorage.
+
+Projects using older `data/` formats remain supported.
+
+---
+
+## Layout Comments
+
+Comments and replies are synchronized through WebSocket. Drag a comment marker to move it; authors can edit or delete their comments and replies, with undo support. The close button only closes a comment; use the delete action to remove it. `Space+M` toggles comment visibility.
+
+---
+
+## Merge Cells
+
+Compare and align instances of a cell type. Multi overlay shows all instances together; rotated instances are cropped from their real die footprint and displayed upright in the type's frame. Drag alignment and auto-alignment use this same frame, and merging preserves the cell-box centre. Stretch lines (`S`) let you align non-uniform geometry piece by piece in overlay, difference and candidate views; edits are undoable. Thumbnails reuse the die viewer's tiles.
+
+---
+
+## Code Editing
+
+Generated netlists on the Code and Analog Netlist pages can be edited directly and re-parsed into the schematic. Popovers support scrolling, and UI tooltips show available keyboard shortcuts.
 
 ---
 
@@ -327,11 +317,44 @@ Run extracted analog netlists with ngspice directly from the application.
 
 - WASM or server-side ngspice engine
 - Select the full netlist or an extracted subcircuit
-- Custom model cards and editable testbench directives
+- **One model per device type** — NMOS/PMOS Level 1, EKV or BSIM4; NPN/PNP
+  Gummel–Poon or Ebers–Moll; junction, zener or schottky diode. Picking one
+  never selects anything for the other types, and your own card always wins
+  over the library. Each `.MODEL` name is emitted exactly once, so the cards
+  no longer pile up in the netlist
+- **Hand-editable simulation netlist** — what you see is what ngspice runs
+- **Testbench view** — the DUT is always drawn as a block with its pins, with
+  the testbench sources and loads wired to them: a flat DUT (an AI finding, a
+  hand-written fragment) is wrapped into a `.subckt` with inferred pins, and a
+  subcircuit nobody instantiated gets its instance back
+- **"Ask agent" as a collapsible right panel**, with a trace of every run
+  (netlist, measurements, warnings) in the chat
+- **Results that do not need a curve** — an `.op` run shows its `.measure`
+  values and the operating point as tables, instead of an empty chart
 - `.param` and `.step` support with step progress
 - Waveform, schematic, and generated netlist views
 - Interactive waveform inspection and PNG export with a white background
-- Independent LLM chat for generating and refining testbench directives
+
+The testbench directives start empty on purpose: the sources and the analysis
+depend on the selected DUT's pins, so a hard-coded example is always wrong.
+Ask the agent to write the testbench, or type it yourself.
+
+The extracted netlist is Spectre-flavoured, so both engines run it through
+`shared/spiceNetlist` first: parenthesised node lists become positional,
+arithmetic values (`16.8*250`) become numbers, `r=1.9*Rp` becomes `{1.9*Rp}`,
+missing model cards are filled in with generic ones, and a title comment is
+added so that SPICE does not swallow a leading `.model` line as the title.
+A netlist without an analysis directive gets a `.op`, so the run never returns
+ngspice's built-in constants instead of circuit results.
+
+The assistant's SPICE tool follows the same rules and adds a little more: it
+completes a testbench that forgot the supply, renames the ground rail to node
+0, instantiates a subcircuit nobody instantiated, drops device lines the model
+repeated, and returns the `.measure` results. When a run fails, the tool
+reports the ngspice error instead of pretending it succeeded.
+
+`testdata/analog/lm2937_bandgap.cir` is a ready-made bandgap testbench
+(`ngspice -b lm2937_bandgap.cir` → `v(ref) ≈ 0.91 V` with generic models).
 
 | Key | Action |
 |-----|--------|
@@ -372,7 +395,7 @@ During finding discussions, the model can use controlled tool calls when enabled
 
 - **`mmochip_lvs_check`** — compare a candidate subcircuit with the `analog-circuits-sky130` reference LVS library using topology matching. The active library can be selected, and users can add custom reference cells from SPICE/Spectre subcircuits.
 - **`mmochip_vision`** — request rendered die crops and overlay layers for multimodal models to inspect device geometry and terminal connectivity.
-- **`mmochip_spice_sim`** — run a server-side ngspice check of a hypothesis and return simulation measurements. Experimental; requires further testing.
+- **`mmochip_spice_sim`** - run a server-side ngspice check of a hypothesis and return simulation measurements. The model writes only the testbench (the tool adds the extracted circuit itself), the tool normalises the netlist for ngspice, runs every requested analysis, and returns the node voltages plus the `.measure` results; a run that produced no data is reported as a failure instead of an empty success. The run is shown as a card in the discussion thread (netlist, measurements, warnings) with a button that opens it in the SPICE simulator.
 - **`mmochip_card_update`** — propose a structured update to an existing hypothesis card.
 
 Tool access is explicitly controlled by the user. The model proposes hypotheses and evidence; the user reviews and verifies the result.
