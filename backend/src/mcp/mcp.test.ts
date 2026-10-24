@@ -59,6 +59,62 @@ test("speaks the MCP Streamable HTTP handshake", async () => {
   assert.equal((await request(app).post(`/mcp/missing-die`).send({ jsonrpc: "2.0", id: 1, method: "ping" })).status, 404);
 });
 
+test("global endpoint serves every die after a user approves it", async () => {
+  const { app, dieId } = await createHarness({ approve: false });
+  const global = async (method: string, params: unknown, session?: string) => {
+    const req = request(app).post("/mcp");
+    if (session) req.set("Mcp-Session-Id", session);
+    const response = await req.send({ jsonrpc: "2.0", id: ++rpcId, method, params });
+    assert.equal(response.status, 200);
+    return response.body;
+  };
+  const init = await request(app)
+    .post("/mcp")
+    .send({ jsonrpc: "2.0", id: 0, method: "initialize", params: { clientInfo: { name: "global-client" } } });
+  assert.match(init.body.result.instructions, /list_dies/);
+  const session = init.headers["mcp-session-id"] as string;
+  const callTool = async (name: string, args: Record<string, unknown>) =>
+    (await global("tools/call", { name, arguments: args }, session)).result;
+
+  const tools = (await global("tools/list", {}, session)).result.tools as {
+    name: string;
+    inputSchema: { required?: string[] };
+  }[];
+  assert.ok(tools.some((t) => t.name === "list_dies"));
+  assert.deepEqual(tools.find((t) => t.name === "get_die_info")?.inputSchema.required, ["dieId"]);
+
+  const listed = JSON.parse((await callTool("list_dies", {})).content[0].text);
+  assert.deepEqual(listed.dies.map((d: { dieId: string; access: string }) => [d.dieId, d.access]), [[dieId, "not_requested"]]);
+
+  assert.match((await callTool("get_die_info", {})).content[0].text, /dieId/);
+  assert.match((await callTool("get_die_info", { dieId: "missing" })).content[0].text, /Unknown die/);
+
+  // First call on an unapproved die waits, then reports it pending.
+  const pending = await callTool("get_die_info", { dieId });
+  assert.equal(pending.isError, true);
+  assert.match(pending.content[0].text, /waiting for a user's approval/);
+  const access = (await request(app).get("/api/mcp/access")).body;
+  assert.equal(access.endpointPath, "/mcp");
+  assert.equal(access.dies[0].state, "pending");
+  assert.equal(access.dies[0].clientName, "global-client");
+  assert.equal((await request(app).get(`/api/dies/${dieId}/mcp`)).body.access.state, "pending");
+
+  // A call waiting for the decision goes through once a user approves.
+  const waiting = callTool("get_die_info", { dieId });
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal((await request(app).put(`/api/mcp/access/${dieId}`).send({ state: "approved" })).status, 200);
+  const info = await waiting;
+  assert.equal(info.isError, undefined);
+  assert.equal(JSON.parse(info.content[0].text).dieId, dieId);
+
+  // Denied: refused right away, on the per-die endpoint too.
+  assert.equal((await request(app).put(`/api/mcp/access/${dieId}`).send({ state: "denied" })).status, 200);
+  assert.match((await callTool("get_die_info", { dieId })).content[0].text, /denied/);
+  const legacy = await rpc(app, dieId, "tools/call", { name: "get_die_info", arguments: {} });
+  assert.equal(legacy.result.isError, true);
+  assert.equal((await request(app).put(`/api/mcp/access/${dieId}`).send({ state: "maybe" })).status, 400);
+});
+
 test("reads die info, annotations and image", async () => {
   const { app, dieId } = await createHarness();
 
@@ -372,7 +428,7 @@ async function call(app: Server, dieId: string, name: string, args: Record<strin
   return body.result;
 }
 
-async function createHarness() {
+async function createHarness(options: { approve?: boolean } = {}) {
   const dataRoot = await fs.mkdtemp(path.join(os.tmpdir(), "chiptool-mcp-test-"));
   tempRoots.push(dataRoot);
   await ensureDataStore(dataRoot);
@@ -383,7 +439,8 @@ async function createHarness() {
       limitInputPixels: false,
       tileConcurrency: 2,
       mlSidecarUrl: "http://127.0.0.1:1",
-      mlPredictPad: 0
+      mlPredictPad: 0,
+      mcpApprovalWaitMs: 300
     })
   );
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
@@ -398,7 +455,13 @@ async function createHarness() {
   assert.equal(imported.status, 202);
   for (let attempt = 0; attempt < 200; attempt += 1) {
     const job = (await request(server).get(`/api/import-jobs/${imported.body.id}`)).body;
-    if (job.status === "completed") return { app: server, dataRoot, dieId: job.dieId as string };
+    if (job.status === "completed") {
+      const dieId = job.dieId as string;
+      if (options.approve !== false) {
+        assert.equal((await request(server).put(`/api/mcp/access/${dieId}`).send({ state: "approved" })).status, 200);
+      }
+      return { app: server, dataRoot, dieId };
+    }
     if (job.status === "failed") throw new Error(`import failed: ${job.error}`);
     await new Promise((resolve) => setTimeout(resolve, 20));
   }

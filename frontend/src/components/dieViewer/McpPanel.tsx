@@ -1,12 +1,13 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import type { McpHistoryItem, McpWriteMode } from "shared";
-import { setMcpSettings, stepMcpHistory, useInvalidateMcp, useMcpStatus } from "../../api/mcp";
+import { setMcpAccess, setMcpSettings, stepMcpHistory, useInvalidateMcp, useMcpStatus } from "../../api/mcp";
 import { Ic } from "../../icons";
 import { useAuth } from "../../state/auth";
 
 /**
- * Right-panel "MCP" tab: how to connect an MCP client to this die, what it
- * may write here, and the MCP-only undo / redo history. MCP changes never
+ * Right-panel "MCP" tab: how to connect an MCP client (one endpoint for all
+ * dies), whether clients may use this die at all, what they may write here,
+ * and the MCP-only undo / redo history. MCP changes never
  * enter the die viewer's Ctrl+Z stack; they are undone here (server-side, so
  * the history survives reloads and is shared by everyone on the die).
  */
@@ -72,7 +73,7 @@ export function McpPanel({ dieId }: { dieId: string }) {
     <div>
       <SectionHeader>Connect</SectionHeader>
       <div style={{ padding: "8px 12px" }}>
-        <CopyRow label="Endpoint (Streamable HTTP)" value={url} />
+        <CopyRow label="Endpoint (Streamable HTTP, all dies)" value={url} />
         <CopyRow label="Claude Code" value={cli} />
         <CopyRow label="Client config JSON" value={json} multiline />
         <Note>
@@ -84,6 +85,41 @@ export function McpPanel({ dieId }: { dieId: string }) {
             Includes your login token (valid 7 days from login). Anyone with it can act as you on this server.
           </Note>
         )}
+      </div>
+
+      <SectionHeader>MCP access to this die</SectionHeader>
+      <div style={{ padding: "8px 12px" }}>
+        <div className="m" style={{ fontSize: 10.5, color: "var(--ink3)", marginBottom: 6 }}>
+          {status.access === null
+            ? "No MCP client has asked for this die yet. The first one to try waits until someone approves it."
+            : status.access.state === "pending"
+              ? `${status.access.clientName ?? "An MCP client"} is asking to use this die.`
+              : status.access.state === "approved"
+                ? "Approved: MCP clients may read this die and write what the settings below allow."
+                : "Denied: MCP clients cannot read or change this die."}
+        </div>
+        <div className="row" style={{ gap: 4, flexWrap: "wrap" }}>
+          {status.access?.state !== "approved" && (
+            <button
+              type="button"
+              className="btn accent"
+              disabled={busy}
+              onClick={() => void run(() => setMcpAccess(dieId, "approved"))}
+            >
+              {status.access === null ? "Approve in advance" : "Approve"}
+            </button>
+          )}
+          {status.access !== null && status.access.state !== "denied" && (
+            <button
+              type="button"
+              className="btn"
+              disabled={busy}
+              onClick={() => void run(() => setMcpAccess(dieId, "denied"))}
+            >
+              {status.access.state === "approved" ? "Revoke" : "Deny"}
+            </button>
+          )}
+        </div>
       </div>
 
       <SectionHeader>Write access on this die</SectionHeader>

@@ -34,6 +34,8 @@ export function createApp(config: {
   mlSidecarUrl: string;
   mlPredictPad: number;
   broadcaster?: AnnotationBroadcaster;
+  /** How long an MCP call on a die awaiting approval waits (default 50 s). */
+  mcpApprovalWaitMs?: number;
 }) {
   const app = express();
   const tileScheduler = createTileScheduler({
@@ -109,7 +111,9 @@ export function createApp(config: {
     createMcpRouter({
       dataRoot: config.dataRoot,
       onAnnotationsChanged: (dieId, rev) =>
-        config.broadcaster?.emitAnnotationChange(dieId, rev)
+        config.broadcaster?.emitAnnotationChange(dieId, rev),
+      onAccessChanged: () => config.broadcaster?.emitMcpAccess(),
+      approvalWaitMs: config.mcpApprovalWaitMs
     })
   );
   app.use(createDebugRouter({ dataRoot: config.dataRoot }));

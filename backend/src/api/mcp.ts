@@ -1,10 +1,17 @@
 import { randomUUID } from "node:crypto";
 import { Router, type Request, type Response } from "express";
-import type { McpStatus, McpWriteMode } from "shared";
+import type { McpAccessEntry, McpStatus, McpWriteMode } from "shared";
 import { requireAuth } from "../auth/middleware.js";
-import { readDieRecord } from "../store.js";
+import { listDieRecords, readDieRecord } from "../store.js";
 import { commentImagePath } from "../mcp/commentImages.js";
-import { callMcpTool, listMcpTools } from "../mcp/mcpTools.js";
+import {
+  getDieAccess,
+  listDieAccess,
+  requestDieAccess,
+  setDieAccess,
+  waitForDecision
+} from "../mcp/mcpAccess.js";
+import { callMcpTool, listMcpTools, type McpToolResult } from "../mcp/mcpTools.js";
 import {
   historyItem,
   McpEditError,
@@ -14,10 +21,14 @@ import {
 } from "../mcp/mcpState.js";
 
 /**
- * MCP (Model Context Protocol) access to one die.
+ * MCP (Model Context Protocol) access to the dies.
  *
- *   POST /mcp/:dieId                 Streamable HTTP transport (JSON responses
- *                                    only, no server-initiated SSE stream)
+ *   POST /mcp                        Streamable HTTP transport (JSON responses
+ *                                    only, no server-initiated SSE stream) for
+ *                                    every die: each tool takes a `dieId`
+ *   POST /mcp/:dieId                 older per-die endpoint (tools without dieId)
+ *   GET  /api/mcp/access             access entries of all dies (GUI prompt)
+ *   PUT  /api/mcp/access/:dieId      { state: "approved" | "denied" }
  *   GET  /api/dies/:dieId/mcp        status for the GUI's MCP panel
  *   PUT  /api/dies/:dieId/mcp/settings { mode?: "off" | "create" | "edit", wires?: boolean, full?: boolean }
  *   GET  /api/dies/:dieId/comment-images/:file   images attached to comments
@@ -29,12 +40,29 @@ import {
  * The MCP endpoint sits outside /api (so it isn't caught by the public
  * GET /api/dies/* exemption) and requires the same Bearer JWT as the API when
  * auth is enabled.
+ *
+ * Either endpoint only touches a die a user approved (mcpAccess.ts): the first
+ * call on a die nobody decided on yet marks it pending, the GUI shows a prompt
+ * and the call waits up to `approvalWaitMs` for the answer.
  */
 
 const SERVER_NAME = "mmo-chip";
 const SERVER_VERSION = "0.1.0";
 const PROTOCOL_VERSIONS = ["2025-06-18", "2025-03-26", "2024-11-05"];
 const MCP_MODES: McpWriteMode[] = ["off", "create", "edit"];
+
+const GLOBAL_INSTRUCTIONS =
+  "This server exposes the chip dies of mmo-chip, a tool for reverse engineering integrated circuits " +
+  "from die photos. Call list_dies first; every other tool takes the `dieId` of the die to work on. " +
+  "A user must approve MCP access to each die once: the first call on a new die waits for that " +
+  "approval in the mmo-chip GUI, and a die marked denied stays off limits — ask the user if you need it. " +
+  "Coordinates are full-resolution die image pixels (origin top-left). Per die, start with " +
+  "get_die_info, look at the die with get_die_image (zoom in with a region), and read the extracted " +
+  "circuit with get_annotations (find_wires_near gives exact wire ids around a point). Everything is " +
+  "read-only except, when a user enabled it for that die: markup (comments, floorplan regions, rulers) " +
+  "and, behind a separate switch, wires and vias — or everything with full edits. get_die_info says " +
+  "what is currently allowed. render_annotated_image draws the layout with annotations, highlights and " +
+  "your own marks; attach such a render to a comment with add_comment's `image` to show people what you mean.";
 
 const INSTRUCTIONS =
   "This server exposes one chip die from mmo-chip, a tool for reverse engineering integrated circuits " +
@@ -57,13 +85,47 @@ interface JsonRpcMessage {
 const sessionClients = new Map<string, string | null>();
 const MAX_SESSIONS = 500;
 
-export function createMcpRouter(config: {
+const DEFAULT_APPROVAL_WAIT_MS = 50_000;
+
+const DIE_ID_PROPERTY = {
+  type: "string",
+  description: "Id of the die to work on (see list_dies)."
+};
+
+const LIST_DIES_TOOL = {
+  name: "list_dies",
+  title: "List dies",
+  description:
+    "All dies in this mmo-chip instance: id, name, image size and whether MCP may use it " +
+    "(access: approved, pending, denied, or not_requested — the first call on such a die asks the user).",
+  inputSchema: { type: "object", properties: {}, additionalProperties: false },
+  annotations: { readOnlyHint: true }
+};
+
+interface RouterConfig {
   dataRoot: string;
   onAnnotationsChanged?: (dieId: string, rev: number) => void;
-}) {
+  /** A die's MCP access entry was created or changed. */
+  onAccessChanged?: () => void;
+  /** How long a call on a pending die waits for the user's decision. */
+  approvalWaitMs?: number;
+}
+
+interface CallContext {
+  config: RouterConfig;
+  /** Die of the per-die endpoint; null on the global one. */
+  boundDieId: string | null;
+  clientName: string | null;
+}
+
+export function createMcpRouter(config: RouterConfig) {
   const router = Router();
 
   // ─── MCP endpoint ────────────────────────────────────────────────
+
+  router.post("/mcp", rejectForeignOrigin, requireAuth, (request, response) =>
+    serveRpc(request, response, null)
+  );
 
   router.post("/mcp/:dieId", rejectForeignOrigin, requireAuth, async (request, response) => {
     const dieId = request.params.dieId as string;
@@ -73,7 +135,10 @@ export function createMcpRouter(config: {
       response.status(404).json(rpcError(null, -32001, `Unknown die ${dieId}`));
       return;
     }
+    await serveRpc(request, response, dieId);
+  });
 
+  async function serveRpc(request: Request, response: Response, boundDieId: string | null) {
     const body = request.body as JsonRpcMessage | JsonRpcMessage[] | undefined;
     const messages = Array.isArray(body) ? body : body ? [body] : [];
     if (messages.length === 0 || messages.some((m) => !m || typeof m !== "object" || m.jsonrpc !== "2.0")) {
@@ -93,10 +158,9 @@ export function createMcpRouter(config: {
       }
       replies.push(
         await handle(message, {
-          dataRoot: config.dataRoot,
-          dieId,
-          clientName: sessionId ? sessionClients.get(sessionId) ?? null : null,
-          onAnnotationsChanged: config.onAnnotationsChanged
+          config,
+          boundDieId,
+          clientName: sessionId ? sessionClients.get(sessionId) ?? null : null
         })
       );
     }
@@ -107,14 +171,48 @@ export function createMcpRouter(config: {
       return;
     }
     response.json(Array.isArray(body) ? replies : replies[0]);
-  });
+  }
 
   // No server-initiated stream and no session teardown to do.
-  router.get("/mcp/:dieId", (_request, response) => {
-    response.status(405).set("Allow", "POST").end();
+  for (const path of ["/mcp", "/mcp/:dieId"]) {
+    router.get(path, (_request, response) => {
+      response.status(405).set("Allow", "POST").end();
+    });
+    router.delete(path, (_request, response) => {
+      response.status(405).set("Allow", "POST").end();
+    });
+  }
+
+  // ─── GUI: per-die access approval ────────────────────────────────
+
+  router.get("/api/mcp/access", async (_request, response, next) => {
+    try {
+      const access = await listDieAccess(config.dataRoot);
+      const records = await listDieRecords(config.dataRoot);
+      const dies: McpAccessEntry[] = records
+        .filter((record) => access[record.id])
+        .map((record) => ({ dieId: record.id, dieName: record.name, ...access[record.id] }));
+      response.json({ endpointPath: "/mcp", dies });
+    } catch (error) {
+      next(error);
+    }
   });
-  router.delete("/mcp/:dieId", (_request, response) => {
-    response.status(405).set("Allow", "POST").end();
+
+  router.put("/api/mcp/access/:dieId", async (request, response, next) => {
+    try {
+      const { dieId } = request.params;
+      const { state } = (request.body ?? {}) as { state?: unknown };
+      if (state !== "approved" && state !== "denied") {
+        response.status(400).json({ error: "state must be approved or denied" });
+        return;
+      }
+      await readDieRecord(config.dataRoot, dieId);
+      const access = await setDieAccess(config.dataRoot, dieId, state);
+      config.onAccessChanged?.();
+      response.json({ ok: true, access });
+    } catch (error) {
+      next(error);
+    }
   });
 
   // ─── GUI: status, mode, undo / redo ──────────────────────────────
@@ -128,7 +226,8 @@ export function createMcpRouter(config: {
         mode: state.mode,
         wires: state.wires,
         full: state.full,
-        endpointPath: `/mcp/${encodeURIComponent(dieId)}`,
+        endpointPath: "/mcp",
+        access: await getDieAccess(config.dataRoot, dieId),
         undo: state.undo.map(historyItem),
         redo: state.redo.map(historyItem)
       };
@@ -194,10 +293,7 @@ export function createMcpRouter(config: {
   return router;
 }
 
-async function handle(
-  message: JsonRpcMessage,
-  ctx: Parameters<typeof callMcpTool>[0]
-): Promise<unknown> {
+async function handle(message: JsonRpcMessage, ctx: CallContext): Promise<unknown> {
   const id = message.id ?? null;
   const params = message.params ?? {};
   switch (message.method) {
@@ -208,14 +304,20 @@ async function handle(
       return rpcResult(id, {
         protocolVersion,
         capabilities: { tools: { listChanged: false } },
-        serverInfo: { name: SERVER_NAME, title: "mmo-chip die", version: SERVER_VERSION },
-        instructions: INSTRUCTIONS
+        serverInfo: {
+          name: SERVER_NAME,
+          title: ctx.boundDieId ? "mmo-chip die" : "mmo-chip",
+          version: SERVER_VERSION
+        },
+        instructions: ctx.boundDieId ? INSTRUCTIONS : GLOBAL_INSTRUCTIONS
       });
     }
     case "ping":
       return rpcResult(id, {});
     case "tools/list":
-      return rpcResult(id, { tools: listMcpTools() });
+      return rpcResult(id, {
+        tools: ctx.boundDieId ? listMcpTools() : [LIST_DIES_TOOL, ...listMcpTools().map(withDieIdArgument)]
+      });
     case "tools/call": {
       const name = params.name;
       const args = params.arguments ?? {};
@@ -223,11 +325,11 @@ async function handle(
         return rpcError(id, -32602, "tools/call needs a tool name and an arguments object");
       }
       try {
-        const result = await callMcpTool(ctx, name, args as Record<string, unknown>);
+        const result = await callTool(ctx, name, args as Record<string, unknown>);
         return result ? rpcResult(id, result) : rpcError(id, -32602, `Unknown tool: ${name}`);
       } catch (error) {
         // Unexpected failures are still tool results, so the model can see them.
-        console.error(`[mcp] ${name} failed for ${ctx.dieId}:`, error);
+        console.error(`[mcp] ${name} failed:`, error);
         const reason = error instanceof Error ? error.message : String(error);
         return rpcResult(id, { content: [{ type: "text", text: `Tool failed: ${reason}` }], isError: true });
       }
@@ -235,6 +337,96 @@ async function handle(
     default:
       return rpcError(id, -32601, `Method not found: ${message.method}`);
   }
+}
+
+/** Resolve the die (bound, or the `dieId` argument), check access, run the tool. */
+async function callTool(
+  ctx: CallContext,
+  name: string,
+  args: Record<string, unknown>
+): Promise<McpToolResult | null> {
+  const { config } = ctx;
+  if (!ctx.boundDieId && name === "list_dies") return listDies(config.dataRoot);
+  if (!listMcpTools().some((tool) => tool.name === name)) return null;
+
+  let dieId = ctx.boundDieId;
+  let toolArgs = args;
+  if (!dieId) {
+    const { dieId: requested, ...rest } = args;
+    if (typeof requested !== "string" || !requested) {
+      return toolError(`"dieId" is required: the id of the die to work on (see list_dies).`);
+    }
+    try {
+      await readDieRecord(config.dataRoot, requested);
+    } catch {
+      return toolError(`Unknown die ${requested}. list_dies shows the available dies.`);
+    }
+    dieId = requested;
+    toolArgs = rest;
+  }
+
+  const denied = await checkAccess(ctx, dieId);
+  if (denied) return toolError(denied);
+  return callMcpTool(
+    {
+      dataRoot: config.dataRoot,
+      dieId,
+      clientName: ctx.clientName,
+      onAnnotationsChanged: config.onAnnotationsChanged
+    },
+    name,
+    toolArgs
+  );
+}
+
+/** null when MCP may use the die, else why not (asking the user first if needed). */
+async function checkAccess(ctx: CallContext, dieId: string): Promise<string | null> {
+  const { config } = ctx;
+  const { access, created } = await requestDieAccess(config.dataRoot, dieId, ctx.clientName);
+  if (created) config.onAccessChanged?.();
+  let state = access.state;
+  if (state === "pending") {
+    const decided = await waitForDecision(config.dataRoot, dieId, config.approvalWaitMs ?? DEFAULT_APPROVAL_WAIT_MS);
+    state = decided?.state ?? "pending";
+  }
+  if (state === "approved") return null;
+  const name = await readDieRecord(config.dataRoot, dieId).then((r) => r.name, () => dieId);
+  if (state === "denied") {
+    return `A user denied MCP access to die "${name}" (${dieId}). Only they can change that, in the die's MCP tab.`;
+  }
+  return (
+    `MCP access to die "${name}" (${dieId}) is waiting for a user's approval in the mmo-chip GUI. ` +
+    `Ask the user to approve it (prompt in the app, or the die viewer's MCP tab), then call again.`
+  );
+}
+
+async function listDies(dataRoot: string): Promise<McpToolResult> {
+  const records = await listDieRecords(dataRoot);
+  const access = await listDieAccess(dataRoot);
+  const dies = records.map((record) => ({
+    dieId: record.id,
+    name: record.name,
+    width: record.width,
+    height: record.height,
+    access: access[record.id]?.state ?? "not_requested"
+  }));
+  return { content: [{ type: "text", text: JSON.stringify({ dies }) }] };
+}
+
+function withDieIdArgument<T extends { inputSchema: Record<string, unknown> }>(tool: T): T {
+  const schema = tool.inputSchema as { properties?: Record<string, unknown>; required?: string[] };
+  return {
+    ...tool,
+    inputSchema: {
+      ...schema,
+      properties: { dieId: DIE_ID_PROPERTY, ...(schema.properties ?? {}) },
+      required: ["dieId", ...(schema.required ?? [])]
+    }
+  };
+}
+
+function toolError(text: string): McpToolResult {
+  return { content: [{ type: "text", text }], isError: true };
 }
 
 function rpcResult(id: string | number | null, result: unknown) {

@@ -18,6 +18,7 @@ export type DieSocketMessage =
   | { type: "user/online"; userId: string; username: string; dieId: string | null; tool: string | null }
   | { type: "user/offline"; userId: string }
   | { type: "user/status"; userId: string; dieId: string | null; tool: string | null }
+  | { type: "mcp/access" }
   | { type: "pong" };
 
 type MessageHandler = (msg: DieSocketMessage) => void;

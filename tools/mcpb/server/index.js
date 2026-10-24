@@ -3,12 +3,12 @@
  * stdio ↔ Streamable HTTP bridge for the mmo-chip MCP endpoint.
  *
  * Claude Desktop extensions (.mcpb) launch a local stdio server; mmo-chip
- * serves MCP over HTTP at /mcp/<dieId> (backend/src/api/mcp.ts). This relays
+ * serves MCP over HTTP at /mcp (all dies) or /mcp/<dieId> (backend/src/api/mcp.ts). This relays
  * each newline-delimited JSON-RPC message from stdin as a POST and writes the
  * JSON reply to stdout. No dependencies: Node >= 18 (global fetch).
  *
  * Env:
- *   MMO_CHIP_MCP_URL  endpoint, e.g. http://localhost:3001/mcp/<dieId>
+ *   MMO_CHIP_MCP_URL  endpoint, e.g. http://localhost:3001/mcp (or …/mcp/<dieId>)
  *   MMO_CHIP_TOKEN    optional login token (when the backend has JWT_SECRET)
  */
 "use strict";
@@ -22,10 +22,12 @@ const token = rawToken.startsWith("${") ? "" : rawToken;
 
 const log = (...args) => console.error("[mmo-chip-mcp]", ...args);
 
-if (!/^https?:\/\/.+\/mcp\/[^/]+\/?$/.test(endpoint)) {
-  log(`MMO_CHIP_MCP_URL must look like http://localhost:3001/mcp/<dieId>, got "${endpoint}"`);
-  process.exit(1);
-}
+// A bad URL is reported on every request instead of exiting, so the client
+// shows the reason rather than "server disconnected".
+const configError = /^https?:\/\/.+\/mcp(\/[^/]+)?\/?$/.test(endpoint)
+  ? null
+  : `MMO_CHIP_MCP_URL must look like http://localhost:3001/mcp, got "${endpoint}" — fix the endpoint in the extension settings`;
+if (configError) log(configError);
 
 let sessionId = null;
 
@@ -45,6 +47,11 @@ async function relay(line) {
     message = JSON.parse(line);
   } catch {
     send({ jsonrpc: "2.0", id: null, error: { code: -32700, message: "Parse error" } });
+    return;
+  }
+
+  if (configError) {
+    replyError(message, -32000, `mmo-chip: ${configError}`);
     return;
   }
 

@@ -1930,6 +1930,25 @@ export interface McpHistoryItem {
   clientName: string | null;
 }
 
+/** MCP access to one die. The global endpoint serves every die, but the first
+ *  MCP call on a die nobody approved yet leaves it "pending" until a user
+ *  approves or denies it in the GUI. */
+export type McpAccessState = "pending" | "approved" | "denied";
+
+export interface McpDieAccess {
+  state: McpAccessState;
+  /** ISO timestamp of the request / decision. */
+  at: string;
+  /** clientInfo.name of the client that asked first, if any. */
+  clientName: string | null;
+}
+
+/** GET /api/mcp/access — one row per die with an access entry. */
+export interface McpAccessEntry extends McpDieAccess {
+  dieId: string;
+  dieName: string;
+}
+
 /** GET /api/dies/:dieId/mcp */
 export interface McpStatus {
   mode: McpWriteMode;
@@ -1940,8 +1959,10 @@ export interface McpStatus {
   /** Full edits: overrides `mode` and `wires` — any annotation kind, including
    *  human-made items, may be created, changed or deleted. */
   full: boolean;
-  /** Path of the Streamable HTTP endpoint for this die, e.g. "/mcp/<dieId>". */
+  /** Path of the global Streamable HTTP endpoint, "/mcp" (tools take a dieId). */
   endpointPath: string;
+  /** Whether MCP clients may use this die; null = no client asked yet. */
+  access: McpDieAccess | null;
   /** Oldest first; the last entry is what Undo reverts. */
   undo: McpHistoryItem[];
   /** Oldest first; the last entry is what Redo re-applies. */

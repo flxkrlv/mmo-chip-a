@@ -169,7 +169,7 @@ const getDieInfo: ToolDef = {
   name: "get_die_info",
   title: "Die info",
   description:
-    "Overview of the die this MCP endpoint is bound to: image size in pixels, scale (µm per pixel, if set), " +
+    "Overview of the die: image size in pixels, scale (µm per pixel, if set), " +
     "overlay images, annotation counts per section, and what this MCP client may write. Call this first.",
   inputSchema: { type: "object", properties: {}, additionalProperties: false },
   annotations: { readOnlyHint: true },
