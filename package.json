@@ -5,8 +5,7 @@
   "workspaces": [
     "shared",
     "frontend",
-    "backend",
-    "mcp"
+    "backend"
   ],
   "scripts": {
     "sidecar": "node scripts/run_sidecar.js",

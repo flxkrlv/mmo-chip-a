@@ -103,6 +103,8 @@ interface RouterConfig {
 interface CallContext {
   config: RouterConfig;
   clientName: string | null;
+  baseUrl: string;
+  authToken: string | null;
 }
 
 export function createMcpRouter(config: RouterConfig) {
@@ -110,6 +112,8 @@ export function createMcpRouter(config: RouterConfig) {
 
   // ─── MCP endpoint ────────────────────────────────────────────────
 
+  // Internal tools may call this server's own HTTP routes (export project,
+  // ML jobs) with the caller's token.
   router.post("/mcp", rejectForeignOrigin, requireAuth, async (request, response) => {
     const body = request.body as JsonRpcMessage | JsonRpcMessage[] | undefined;
     const messages = Array.isArray(body) ? body : body ? [body] : [];
@@ -131,7 +135,9 @@ export function createMcpRouter(config: RouterConfig) {
       replies.push(
         await handle(message, {
           config,
-          clientName: sessionId ? sessionClients.get(sessionId) ?? null : null
+          clientName: sessionId ? sessionClients.get(sessionId) ?? null : null,
+          baseUrl: `${request.protocol}://${request.get("host")}`,
+          authToken: request.header("authorization") ?? null
         })
       );
     }
@@ -335,6 +341,8 @@ async function callTool(
       dataRoot: config.dataRoot,
       dieId,
       clientName: ctx.clientName,
+      baseUrl: ctx.baseUrl,
+      authToken: ctx.authToken,
       onAnnotationsChanged: config.onAnnotationsChanged
     },
     name,
