@@ -14,6 +14,7 @@ import { useAuth } from "./state/auth";
 import { useSession } from "./state/session";
 import { verify, checkAuthStatus } from "./api/auth";
 import { subscribePresence } from "./api/annotationsWebSocket";
+import { McpAccessPrompt } from "./components/McpAccessPrompt";
 
 /**
  * Tab navigation routes for the number hotkeys (1–5).
@@ -156,7 +157,12 @@ function AuthGate({ children }: { children: React.ReactNode }) {
     return <Navigate to="/login" replace />;
   }
 
-  return <>{children}</>;
+  return (
+    <>
+      {children}
+      <McpAccessPrompt />
+    </>
+  );
 }
 
 function PublicRoute({ children }: { children: React.ReactNode }) {

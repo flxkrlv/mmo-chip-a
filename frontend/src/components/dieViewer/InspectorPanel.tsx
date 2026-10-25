@@ -19,7 +19,7 @@ import {
 } from "../../api/ml";
 import { parseNetPartId } from "../../lib/netGraph";
 import { selectedVias, viaBaseColor, viaColorAction } from "../../lib/viaColor";
-import { floorplanNameInline, normalizeFloorplanName } from "../../lib/floorplanName";
+import { floorplanDisplayName, floorplanNameInline, normalizeFloorplanName } from "../../lib/floorplanName";
 import { cellTypeColor, edgeColor, netColors, toHex, type NetColorPrefs } from "../../lib/colorHex";
 import { WIRE_LAYER_COLOR } from "../../renderer/annotations/style";
 import { Ic } from "../../icons";
@@ -35,6 +35,7 @@ import { WireLayerSelect } from "./WireLayerSelect";
 import { AnnotationClassSelect } from "./AnnotationClassSelect";
 import { CVPanel } from "./CVPanel";
 import { AssistantPanel } from "./AssistantPanel";
+import { McpPanel } from "./McpPanel";
 import { CellDetectionPanel, ProposalInspector } from "./CellDetectionPanel";
 import { DieProperties } from "./DieProperties";
 import { AnalogLibPanel } from "./AnalogLibPanel";
@@ -210,7 +211,7 @@ function resolve(
       typeLabel: "Net",
       displayName: n.name || `Net ${short(n.id)}`,
       uid: n.id,
-      rows: [["color", <NetColorValue key="color" net={n} />]],
+      rows: [["color", <NetColorField key="color" net={n} />]],
       name: {
         value: n.name ?? "",
         onCommit: (name) =>
@@ -254,6 +255,7 @@ function resolve(
               <WireLayerSelect
                 key="layer"
                 metals={stack.metals}
+                wrap
                 value={e.layer ?? null}
                 onChange={setLayer}
               />
@@ -298,7 +300,7 @@ function resolve(
               prevCellType: ct
             })
         },
-        rows: [["color", <CellColorValue key="color" cellType={ct} />]]
+        rows: [["color", <CellColorField key="color" cellType={ct} dispatcher={dispatcher} />]]
       };
     }
     case "cell": {
@@ -321,7 +323,7 @@ function resolve(
                   prevCellType: ct
                 })
             },
-            rows: [["color", <CellColorValue key="color" cellType={ct} />], ...ownerRow(ct.id)]
+            rows: [["color", <CellColorField key="color" cellType={ct} dispatcher={dispatcher} />], ...ownerRow(ct.id)]
           }
         : { typeLabel: "Cell", displayName: `Cell ${short(c.id)}`, uid: c.id };
       const rows: [string, ReactNode][] = [
@@ -408,14 +410,14 @@ function resolve(
         ["size", `${w}×${h}`],
         [
           "color",
-          <ColorValue key="color" color={f.color || "#4dabf7"} />
+          <FloorplanColorField key="color" region={f} dispatcher={dispatcher} />
         ]
       ];
       if (f.createdByName) rows.push(["created by", f.createdByName]);
       if (f.reservedByName) rows.push(["reserved by", f.reservedByName]);
       return {
         typeLabel: "Floorplan",
-        displayName: floorplanNameInline(f.name ?? "") || `Floorplan ${short(f.id)}`,
+        displayName: floorplanNameInline(floorplanDisplayName(f)) || `Floorplan ${short(f.id)}`,
         uid: f.id,
         name: {
           value: f.name ?? "",
@@ -566,7 +568,7 @@ export function InspectorPanel({
         className="ph"
         style={{ padding: 0, gap: 0, height: 30 }}
       >
-        {(["inspector", "ml", "cells", "cv", "ai", "lib"] as const).map((k) => (
+        {(["inspector", "ml", "cells", "cv", "ai", "lib", "mcp"] as const).map((k) => (
           <button
             key={k}
             type="button"
@@ -585,7 +587,9 @@ export function InspectorPanel({
                     ? "CV"
                     : k === "lib"
                       ? "Lib"
-                      : "AI"}
+                      : k === "ai"
+                        ? "AI"
+                        : "MCP"}
           </button>
         ))}
       </div>
@@ -610,6 +614,8 @@ export function InspectorPanel({
           <AnalogLibPanel tool={analogCell} />
         ) : tab === "cv" ? (
           <CVPanel dieId={dieId} annotations={annotations} dispatcher={dispatcher} />
+        ) : tab === "mcp" ? (
+          <McpPanel dieId={dieId} />
         ) : (
           <InspectorBody
             annotations={annotations}
@@ -1350,15 +1356,35 @@ function useNetColorPrefs(): NetColorPrefs {
   return { netColor, netColors: netColorsPref, customNetColorsEnabled, wireLayerColors };
 }
 
-/** Colors a net is drawn with (one per distinct segment color, e.g. by layer). */
-function NetColorValue({ net }: { net: AnnotationNet }) {
+/**
+ * Colors a net is drawn with (one per distinct segment color, e.g. by layer);
+ * the first one is editable and sets the net's own color (a per-user
+ * preference, so not an undo step).
+ */
+function NetColorField({ net }: { net: AnnotationNet }) {
   const prefs = useNetColorPrefs();
+  const setNetColorOverride = usePreferences((s) => s.setNetColorOverride);
+  const setCustomNetColorsEnabled = usePreferences((s) => s.setCustomNetColorsEnabled);
+  const key = `net:${net.id}`;
   const colors = netColors(net, prefs, WIRE_LAYER_COLOR);
-  const own = prefs.customNetColorsEnabled && prefs.netColors[`net:${net.id}`];
+  const own = prefs.customNetColorsEnabled && prefs.netColors[key];
+  const note = own ? "own" : colors.length > 1 ? "by layer" : undefined;
   return (
     <span style={{ display: "inline-flex", flexDirection: "column", gap: 2, minWidth: 0 }}>
-      {colors.map((c) => (
-        <ColorValue key={c} color={c} note={own ? "own" : colors.length > 1 ? "by layer" : undefined} />
+      <ColorField
+        color={colors[0]}
+        title="Net color"
+        note={note}
+        onPick={(c) => {
+          setNetColorOverride(key, c);
+          // A picked color would stay invisible in the by-layer view.
+          if (!prefs.customNetColorsEnabled) setCustomNetColorsEnabled(true);
+        }}
+        onReset={prefs.netColors[key] ? () => setNetColorOverride(key, null) : undefined}
+        resetTitle="Back to the layer / global net color"
+      />
+      {colors.slice(1).map((c) => (
+        <ColorValue key={c} color={c} note={note} />
       ))}
     </span>
   );
@@ -1370,10 +1396,45 @@ function EdgeColorValue({ netId, edge }: { netId: string; edge: AnnotationNetEdg
   return <ColorValue color={edgeColor(netId, edge, prefs, WIRE_LAYER_COLOR)} />;
 }
 
-/** Color cells of a type are drawn with (the type's own, else the global cell color). */
-function CellColorValue({ cellType }: { cellType: CellType }) {
+/** Color cells of a type are drawn with (the type's own, else the global
+ *  cell color); editable as one undoable step. */
+function CellColorField({ cellType, dispatcher }: { cellType: CellType; dispatcher: ActionDispatcher }) {
   const globalCellColor = usePreferences((s) => s.cellColor);
-  return <ColorValue color={cellTypeColor(cellType, globalCellColor)} note={cellType.color ? undefined : "default"} />;
+  const apply = (color: string | null) => {
+    if ((cellType.color ?? null) === color) return;
+    let next: CellType;
+    if (color === null) {
+      const { color: _drop, ...rest } = cellType;
+      next = rest;
+    } else {
+      next = { ...cellType, color };
+    }
+    void dispatcher.dispatch({ kind: "upsertCellType", cellType: next, prevCellType: cellType });
+  };
+  return (
+    <ColorField
+      color={cellTypeColor(cellType, globalCellColor)}
+      title="Cell type color"
+      note={cellType.color ? undefined : "default"}
+      onPick={apply}
+      onReset={cellType.color ? () => apply(null) : undefined}
+      resetTitle="Back to the global cell color"
+    />
+  );
+}
+
+/** Color of a floorplan region; editable as one undoable step. */
+function FloorplanColorField({ region, dispatcher }: { region: FloorplanRegion; dispatcher: ActionDispatcher }) {
+  return (
+    <ColorField
+      color={region.color || "#4dabf7"}
+      title="Floorplan color"
+      onPick={(color) => {
+        if (color === region.color) return;
+        void dispatcher.dispatch({ kind: "upsertFloorplan", region: { ...region, color }, prevRegion: region });
+      }}
+    />
+  );
 }
 
 /**
@@ -1387,24 +1448,56 @@ function ViaColorField({ vias, dispatcher }: { vias: HumanAnnotation[]; dispatch
   const shown = vias.map((a) => a.color ?? viaBaseColor(a, viaLayerColors, stackVias, globalViaColor));
   const mixed = shown.some((c) => c !== shown[0]);
   const overridden = vias.some((a) => a.color);
-  const hex = !mixed && /^#[0-9a-f]{6}$/i.test(shown[0] ?? "") ? shown[0] : "#2e97ff";
   const apply = (color: string | null) => {
     const action = viaColorAction(vias, color);
     if (action) void dispatcher.dispatch(action);
   };
+  return (
+    <ColorField
+      color={mixed ? null : shown[0]}
+      title={vias.length > 1 ? `Color of ${vias.length} vias` : "Via color"}
+      onPick={apply}
+      onReset={overridden ? () => apply(null) : undefined}
+      resetTitle="Back to the via layer color"
+    />
+  );
+}
+
+/**
+ * Editable color: native color input + hex + copy button, and a ↺ reset
+ * when `onReset` is given. `color` null = several differing colors ("mixed").
+ */
+function ColorField({
+  color,
+  title,
+  note,
+  onPick,
+  onReset,
+  resetTitle
+}: {
+  color: string | null;
+  title: string;
+  note?: string;
+  onPick: (color: string) => void;
+  onReset?: () => void;
+  resetTitle?: string;
+}) {
+  // <input type="color"> only takes #rrggbb (translucent colors drop alpha).
+  const hex6 = color && toHex(color).slice(0, 7);
+  const hex = hex6 && /^#[0-9a-f]{6}$/.test(hex6) ? hex6 : "#2e97ff";
   // Live value while the native picker is open; committed once on its
   // "change" (picker closed), not per drag step (each would be an undo step
   // and a server write).
   const [draft, setDraft] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
-  const applyRef = useRef(apply);
-  applyRef.current = apply;
+  const pickRef = useRef(onPick);
+  pickRef.current = onPick;
   useEffect(() => {
     const el = inputRef.current;
     if (!el) return;
     const onCommit = () => {
       setDraft(null);
-      applyRef.current(el.value);
+      pickRef.current(el.value);
     };
     el.addEventListener("change", onCommit);
     return () => el.removeEventListener("change", onCommit);
@@ -1416,24 +1509,20 @@ function ViaColorField({ vias, dispatcher }: { vias: HumanAnnotation[]; dispatch
         type="color"
         value={draft ?? hex}
         onChange={(e) => setDraft(e.target.value)}
-        title={vias.length > 1 ? `Color of ${vias.length} vias` : "Via color"}
+        title={title}
         style={{ width: 28, height: 20, padding: 0, cursor: "pointer", border: "1px solid var(--l2)", borderRadius: 3, background: "none" }}
       />
-      {mixed ? (
+      {color === null ? (
         <span style={{ color: "var(--ink2)", fontFamily: "var(--mono)", fontSize: 11 }}>mixed</span>
       ) : (
         <>
-          <HexText color={shown[0]} />
-          <CopyHexButton color={shown[0]} />
+          <HexText color={color} />
+          <CopyHexButton color={color} />
         </>
       )}
-      {overridden && (
-        <button
-          type="button"
-          className="btn sm plain"
-          title="Back to the via layer color"
-          onClick={() => apply(null)}
-        >
+      {note && <span style={{ color: "var(--ink3)", fontSize: 10 }}>{note}</span>}
+      {onReset && (
+        <button type="button" className="btn sm plain" title={resetTitle} onClick={onReset}>
           ↺
         </button>
       )}

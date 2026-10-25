@@ -1,0 +1,156 @@
+{
+  "manifest_version": "0.3",
+  "name": "mmo-chip",
+  "display_name": "mmo-chip",
+  "version": "0.5.0",
+  "description": "Give Claude the mmo-chip dies (each approved once in the app): photo, all annotations and annotated renders; plus markup, wire or full edits when allowed per die.",
+  "long_description": "Connects Claude to the dies of a running mmo-chip instance (IC reverse engineering from die photos). Claude can view the die image at any zoom and read every annotation: nets, cells, pins, analog layers, comments, floorplan regions and rulers. Claude can render annotated images of the layout (highlights, arrows, boxes) and attach them to comments. Writes are off by default; the die's MCP tab in mmo-chip can allow markup (comments, floorplan regions, rulers), wires and vias, or full edits of every annotation. Those changes have their own undo/redo stack in that tab.\n\nThe first time Claude uses a die, mmo-chip asks you to approve it.\n\nCopy the endpoint URL from the die viewer's MCP tab (right panel).",
+  "author": {
+    "name": "lytex",
+    "url": "https://github.com/lytex/mmo-chip"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/lytex/mmo-chip"
+  },
+  "server": {
+    "type": "node",
+    "entry_point": "server/index.js",
+    "mcp_config": {
+      "command": "node",
+      "args": [
+        "${__dirname}/server/index.js"
+      ],
+      "env": {
+        "MMO_CHIP_MCP_URL": "${user_config.endpoint}",
+        "MMO_CHIP_TOKEN": "${user_config.token}"
+      }
+    }
+  },
+  "tools": [
+    {
+      "name": "list_dies",
+      "description": "List the dies and whether MCP may use each"
+    },
+    {
+      "name": "get_die_info",
+      "description": "Die size, scale, overlays, annotation counts and MCP write mode"
+    },
+    {
+      "name": "get_annotations",
+      "description": "Read annotation sections as JSON (paginated, optional bbox filter)"
+    },
+    {
+      "name": "get_die_image",
+      "description": "Die photo or a zoomed region as JPEG, optionally with an overlay"
+    },
+    {
+      "name": "render_annotated_image",
+      "description": "Die region with annotations, highlights and marks drawn on top"
+    },
+    {
+      "name": "add_comment",
+      "description": "Pin a comment on the die"
+    },
+    {
+      "name": "reply_to_comment",
+      "description": "Reply to a comment"
+    },
+    {
+      "name": "add_floorplan_region",
+      "description": "Outline a functional block"
+    },
+    {
+      "name": "add_ruler",
+      "description": "Add a measurement line"
+    },
+    {
+      "name": "update_comment",
+      "description": "Edit an MCP-created comment or reply"
+    },
+    {
+      "name": "delete_comment",
+      "description": "Delete an MCP-created comment or reply"
+    },
+    {
+      "name": "update_floorplan_region",
+      "description": "Edit an MCP-created floorplan region"
+    },
+    {
+      "name": "delete_floorplan_region",
+      "description": "Delete an MCP-created floorplan region"
+    },
+    {
+      "name": "update_ruler",
+      "description": "Edit an MCP-created ruler"
+    },
+    {
+      "name": "delete_ruler",
+      "description": "Delete an MCP-created ruler"
+    },
+    {
+      "name": "find_wires_near",
+      "description": "Net vertices, segments and vias near a point, with ids"
+    },
+    {
+      "name": "add_wire",
+      "description": "Draw a wire: new net, extend a net, or connect / merge nets"
+    },
+    {
+      "name": "update_wire",
+      "description": "Rename own net, move own vertices, relayer own segments"
+    },
+    {
+      "name": "delete_wire",
+      "description": "Delete own net or own vertices / segments"
+    },
+    {
+      "name": "add_via",
+      "description": "Place a via"
+    },
+    {
+      "name": "update_via",
+      "description": "Move or retype an MCP-placed via"
+    },
+    {
+      "name": "delete_via",
+      "description": "Delete an MCP-placed via"
+    },
+    {
+      "name": "edit_annotations",
+      "description": "Full edits: batch upsert / delete / set of any annotation"
+    }
+  ],
+  "tools_generated": true,
+  "user_config": {
+    "endpoint": {
+      "type": "string",
+      "title": "MCP endpoint",
+      "description": "From the die viewer's MCP tab, e.g. http://localhost:3001/mcp",
+      "required": true
+    },
+    "token": {
+      "type": "string",
+      "title": "Login token",
+      "description": "Only if the backend runs with JWT_SECRET (login enabled). Copy it from the MCP tab. Expires 7 days after login.",
+      "sensitive": true,
+      "required": false
+    }
+  },
+  "keywords": [
+    "chip",
+    "reverse-engineering",
+    "die",
+    "ic"
+  ],
+  "compatibility": {
+    "platforms": [
+      "darwin",
+      "win32",
+      "linux"
+    ],
+    "runtimes": {
+      "node": ">=18.0.0"
+    }
+  }
+}

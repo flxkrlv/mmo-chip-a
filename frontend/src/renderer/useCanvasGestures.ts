@@ -296,10 +296,18 @@ export function useCanvasGestures({
   );
 
   // Native wheel handler bound non-passively so we can preventDefault.
+  // Bound on the canvas's parent so wheels that land on overlay elements
+  // sitting on top of the canvas (floorplan outlines, comment pins, …) still
+  // pan/zoom instead of stalling a two-finger scroll mid-gesture. Overlays opt
+  // in with a `data-canvas-wheel` attribute on themselves or an ancestor;
+  // anything else in the parent (panels, popovers) keeps its own scrolling.
   useEffect(() => {
     const el = canvasRef.current;
-    if (!el) return;
+    const host = el?.parentElement;
+    if (!el || !host) return;
     const handler = (e: WheelEvent) => {
+      const target = e.target as Element | null;
+      if (target !== el && !target?.closest?.("[data-canvas-wheel]")) return;
       e.preventDefault();
       const rect = el.getBoundingClientRect();
       const cssX = e.clientX - rect.left;
@@ -325,12 +333,12 @@ export function useCanvasGestures({
       }
     };
     const preventGesture = (e: Event) => e.preventDefault();
-    el.addEventListener("wheel", handler, { passive: false });
+    host.addEventListener("wheel", handler, { passive: false });
     el.addEventListener("gesturestart", preventGesture, { passive: false });
     el.addEventListener("gesturechange", preventGesture, { passive: false });
     el.addEventListener("gestureend", preventGesture, { passive: false });
     return () => {
-      el.removeEventListener("wheel", handler);
+      host.removeEventListener("wheel", handler);
       el.removeEventListener("gesturestart", preventGesture);
       el.removeEventListener("gesturechange", preventGesture);
       el.removeEventListener("gestureend", preventGesture);

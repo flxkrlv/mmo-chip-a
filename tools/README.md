@@ -75,3 +75,25 @@ cd frontend; npx tsc --noEmit          # frontend
 New files written via shell redirection / editor helpers come out as **LF**.
 Normalise them to CRLF (or run them through `crlf-patch.mjs`) before committing
 so the whole tree stays consistent.
+
+## `mcpb/` — Claude Desktop extension for the MCP endpoint
+
+Claude Desktop installs local MCP servers as `.mcpb` bundles, while mmo-chip
+serves MCP over HTTP at `/mcp` for all dies (see the die viewer's **MCP**
+tab); every tool takes a `dieId`, and the first call on a die waits until
+someone approves it in the app.
+`mcpb/server/index.js` is a dependency-free stdio ↔ HTTP bridge, and
+`mcpb/manifest.json` asks for the endpoint (and the login token when the
+backend runs with `JWT_SECRET`) at install time.
+
+```sh
+npm run mcpb        # → dist/mmo-chip.mcpb
+```
+
+Open `dist/mmo-chip.mcpb` with Claude Desktop (or drag it onto
+Settings → Extensions), then paste the endpoint from the MCP tab. The
+backend must be running.
+
+After adding or renaming MCP tools, bump `version` in `mcpb/manifest.json`,
+rebuild and reinstall the extension: Claude Desktop goes by the installed
+manifest (which sets `tools_generated: true` so runtime tools are allowed).

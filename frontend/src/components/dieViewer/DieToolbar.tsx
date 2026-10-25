@@ -10,6 +10,7 @@ import { useSession, DEFAULT_METAL_STACK } from "../../state/session";
 import { ToolDivider } from "../shell/SubBar";
 import { AnnotationClassSelect } from "./AnnotationClassSelect";
 import { BigToolDivider, Tool } from "./DieViewerUI";
+import { ProcessFlipChip } from "./ProcessControls";
 import { WireLayerSelect } from "./WireLayerSelect";
 import { ANGLE_MODES, type AngleTool } from "../../lib/angleConstraint";
 import { useAngleMode } from "../../state/angleMode";
@@ -146,12 +147,16 @@ export function DieToolbar({
       {options && (
         <>
           <BigToolDivider />
-          <div
-            className="row"
-            style={{ alignItems: "center", gap: 10, minWidth: 0 }}
-          >
-            {options}
-          </div>
+          {/* Takes the leftover width; overflow scrolls instead of pushing
+              the bar wider than the window. The wire tool keeps its layer
+              picker fixed and scrolls only the checkboxes after it. */}
+          {activeTool === "wire" ? (
+            <div className="row" style={{ alignItems: "center", gap: 10, flex: "1 1 auto", minWidth: 0, whiteSpace: "nowrap" }}>
+              {options}
+            </div>
+          ) : (
+            <ScrollRow>{options}</ScrollRow>
+          )}
         </>
       )}
     </>
@@ -443,6 +448,8 @@ function WireOptions({ hint }: { hint?: string }) {
         Layer
       </span>
       <WireLayerSelect metals={metals} showHotkeys value={activeMetalId != null ? metals.find(m => m.id === activeMetalId)?.layer ?? null : null} onChange={(layer) => { const m = metals.find(m => m.layer === layer); setActiveMetalId(m?.id ?? null); }} />
+      <ProcessFlipChip />
+      <ScrollRow>
       <label
         className="check"
         title="Snap click positions to the nearest via (ML or manually placed)"
@@ -506,7 +513,37 @@ function WireOptions({ hint }: { hint?: string }) {
           {hint}
         </span>
       )}
+      </ScrollRow>
     </>
+  );
+}
+
+/**
+ * Horizontally scrolling strip of tool options: shrinks to the space left in
+ * the bar and scrolls (thin scrollbar, or the mouse wheel) when its controls
+ * don't fit, e.g. the wire options on a 1920 px wide window.
+ */
+function ScrollRow({ children }: { children: ReactNode }) {
+  return (
+    <div
+      className="row"
+      style={{
+        alignItems: "center",
+        gap: 10,
+        flex: "1 1 auto",
+        minWidth: 0,
+        overflowX: "auto",
+        overflowY: "hidden",
+        whiteSpace: "nowrap",
+        scrollbarWidth: "thin"
+      }}
+      onWheel={(e) => {
+        // The bar never scrolls vertically: let the wheel move it sideways.
+        if (e.deltaY !== 0 && e.deltaX === 0) e.currentTarget.scrollLeft += e.deltaY;
+      }}
+    >
+      {children}
+    </div>
   );
 }
 
