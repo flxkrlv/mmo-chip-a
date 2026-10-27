@@ -31,6 +31,20 @@ npm run dev -w frontend   # http://localhost:5173
 npm test
 ```
 
+## Desktop app (binary build)
+
+The whole app ships as an Electron desktop binary with the backend, ML-ready
+frontend, MCP endpoint, bundled ngspice and vyges-lvs — no installs required
+on the target machine:
+
+```sh
+npm run desktop:build:win    # → desktop/build/dist/ (zip + win-unpacked)
+npm run desktop:build:linux  # → AppImage + deb
+```
+
+Frameless in-app title bar, MCP via `http://127.0.0.1:3101/mcp` + the Claude
+Desktop `.mcpb`. Details: [docs/DESKTOP_BUILD.md](docs/DESKTOP_BUILD.md).
+
 ---
 
 ## Data and Editing

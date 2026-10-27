@@ -1,0 +1,47 @@
+# electron-builder config for the mmo-chip desktop shell.
+# Run from the repo root: scripts/build-desktop.mjs stages build/staging/resources,
+# then `electron-builder` here packages app.asar + extraResources.
+appId: dev.flxkrlv.mmo-chip
+productName: mmo-chip
+copyright: BSD-3-Clause
+
+directories:
+  output: build/dist
+
+# The asar only carries the shell; everything that runs lives in extraResources.
+files:
+  - main.cjs
+  - preload.cjs
+  - package.json
+
+asar: true
+
+extraResources:
+  - from: build/staging/resources/app
+    to: app
+  - from: build/staging/resources/bin
+    to: bin
+    # bin/ is optional in dev staging; missing source dirs are skipped.
+
+# Windows: plain zip of the unpacked app (no installer). NSIS portable/nsis
+# targets hit makensis mmap failures with 100 MB+ payloads on some machines —
+# add `nsis` back explicitly (npx electron-builder --win nsis) when needed.
+win:
+  target:
+    - zip
+  signAndEditExecutable: false
+
+linux:
+  target:
+    - AppImage
+    - deb
+  category: Science
+  maintainer: flxkrlv
+  artifactName: ${productName}-${version}-${arch}.${ext}
+
+deb:
+  artifactName: mmo-chip-${version}-${arch}.deb
+  depends:
+    - libgtk-3-0
+    - libnss3
+    - libasound2

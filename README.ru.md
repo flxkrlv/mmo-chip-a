@@ -31,6 +31,20 @@ npm run dev -w frontend   # http://localhost:5173
 npm test
 ```
 
+## Десктоп-приложение (бинарная сборка)
+
+Приложение целиком упаковывается в Electron-бинарь: бэкенд, фронт, MCP,
+забандленный ngspice и vyges-lvs — ничего ставить не нужно:
+
+```sh
+npm run desktop:build:win    # → desktop/build/dist/ (zip + win-unpacked)
+npm run desktop:build:linux  # → AppImage + deb
+```
+
+Без системной рамки — тайтл-зона с кнопками окна рисуется самим приложением;
+MCP доступен на `http://127.0.0.1:3101/mcp` (+ `.mcpb` для Claude Desktop).
+Подробности: [docs/DESKTOP_BUILD.md](docs/DESKTOP_BUILD.md).
+
 ---
 
 ## Данные и редактирование

@@ -1118,3 +1118,28 @@ input.switch[type="checkbox"]:focus-visible {
     animation: none;
   }
 }
+
+/* -- Electron frameless window (desktop build only) --*/
+.titlebar-drag {
+  -webkit-app-region: drag;
+  user-select: none;
+}
+.desktop-window-control {
+  width: 30px;
+  height: 20px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--ink3);
+  border-radius: 3px;
+  background: transparent;
+}
+.desktop-window-control:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--ink);
+}
+.desktop-window-control:hover[aria-label='Close'] {
+  background: rgba(232, 72, 72, 0.75);
+  color: #fff;
+}
+

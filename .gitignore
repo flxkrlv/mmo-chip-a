@@ -14,3 +14,6 @@ memory/.dreams/
 docs/lvs_rules_examples/
 LV2_16.png
 docs/debug/
+desktop/node_modules/
+desktop/build/
+dist/
