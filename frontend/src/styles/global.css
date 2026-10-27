@@ -56,9 +56,15 @@ select {
   font: inherit;
   color: inherit;
   background: var(--card);
+  color-scheme: dark;
   border: 1px solid var(--l2);
   border-radius: 3px;
   padding: 2px 6px;
+}
+
+select option {
+  color: var(--ink);
+  background: var(--card);
 }
 
 input:focus,
