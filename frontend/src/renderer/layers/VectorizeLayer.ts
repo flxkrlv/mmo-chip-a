@@ -1,15 +1,17 @@
 import type { DieMetadata, MLTracePolyline, VectorizeParams } from "shared";
 import { rectsIntersect, type Point, type Rect } from "../../lib/geometry";
 import { vectorizeRegion } from "../../api/ml";
-import type { Layer, TileBounds } from "../types";
+import type { Layer, RenderFrame, TileBounds } from "../types";
 
 /**
  * Classical (no-model) metal vectorization overlay. Unlike `MLViasLayer`
  * (tile-block fetches of server-cached predictions), vectorize runs live on
- * the *viewport*: every draw checks whether the visible source-px bbox +
- * param set were already decoded, and otherwise schedules one debounced
- * region request. The backend keeps its own small LRU, and this layer keeps
- * recently decoded regions so panning back is instant.
+ * the *viewport*: `beginFrame` sees the full visible world rect and schedules
+ * ONE debounced region request per (viewport, params) change — scheduling in
+ * `draw` doesn't work, because draw only sees per-tile rects (and canvas
+ * tiles outside the die produce degenerate bboxes). The backend keeps its
+ * own small LRU, and this layer keeps recently decoded regions so panning
+ * back is instant.
  *
  * Drawing: amber mask outlines (what the threshold captured — the tuning
  * feedback) + solid centreline traces whose endpoints snap to device
@@ -75,6 +77,8 @@ export class VectorizeLayer implements Layer {
    *  completion handler immediately refetches the newer target (coalescing:
    *  slider drags never pile up requests). */
   private queuedFetch: { bbox: [number, number, number, number]; params: VectorizeParams; key: string } | null = null;
+  /** Viewport hint state, so the "zoom in" notice fires on change only. */
+  private lastSkipHint: boolean = false;
 
   constructor(dieId: string, metadata: DieMetadata, display: VectorizeDisplay = {}) {
     this.dieId = dieId;
@@ -136,38 +140,73 @@ export class VectorizeLayer implements Layer {
     return out;
   }
 
+  /**
+   * One per frame, before any tile draw: schedule a viewport-sized region
+   * fetch. `frame.world` is the FULL visible world rect (draw() below only
+   * sees per-tile rects — scheduling there produced per-tile requests, and
+   * canvas tiles outside the die produced degenerate bboxes the backend
+   * rightly rejected). Clamped to the die, guarded against degenerate /
+   * oversized viewports.
+   */
+  beginFrame(frame: RenderFrame): void {
+    const params = this.display.getParams?.();
+    if (!params || (this.display.getHidden?.() ?? false)) return;
+
+    const w = frame.world;
+    const x0 = Math.max(0, Math.floor(w.x));
+    const y0 = Math.max(0, Math.floor(w.y));
+    const x1 = Math.min(this.metadata.width, Math.ceil(w.x + w.width));
+    const y1 = Math.min(this.metadata.height, Math.ceil(w.y + w.height));
+    // The viewport (or the part of it over the die) can be empty — never
+    // fetch then, and drop any stale "zoom in" hint.
+    if (!(x1 > x0 && y1 > y0) || !Number.isFinite(x0 + y0 + x1 + y1)) {
+      if (this.lastSkipHint) {
+        this.lastSkipHint = false;
+        this.notifyStatus(false);
+      }
+      return;
+    }
+    const bbox: [number, number, number, number] = [x0, y0, x1, y1];
+    const area = (x1 - x0) * (y1 - y0);
+    if (area > MAX_AREA_PX) {
+      // Too zoomed out for live decoding — hint once, don't hammer.
+      if (!this.lastSkipHint) {
+        this.lastSkipHint = true;
+        this.lastError = "viewport too large — zoom in to vectorize (≤ 5 Mpx)";
+        this.notifyStatus(false);
+      }
+      return;
+    }
+    if (this.lastSkipHint) {
+      this.lastSkipHint = false;
+      this.lastError = null;
+      this.notifyStatus(false);
+    }
+
+    const overlaySource = this.display.getOverlaySource?.() ?? undefined;
+    const key = `${bbox.join(",")}|${overlaySource ?? ""}|${JSON.stringify(params)}`;
+    // Already decoded (or decoded at these exact params) → nothing to do.
+    if (this.cache.has(key) || key === this.inflightKey || key === this.pendingKey) return;
+
+    this.pendingKey = key;
+    if (this.pendingTimer) clearTimeout(this.pendingTimer);
+    this.pendingTimer = setTimeout(() => {
+      this.pendingTimer = null;
+      this.pendingKey = null;
+      const target = { bbox, params, key };
+      if (this.inflightKey) {
+        this.queuedFetch = target; // finish current, then fetch this
+      } else {
+        void this.fetch(target);
+      }
+    }, FETCH_DEBOUNCE_MS);
+  }
+
   draw(ctx: CanvasRenderingContext2D, bounds: TileBounds): void {
     const params = this.display.getParams?.();
     const hidden = this.display.getHidden?.() ?? false;
     if (!params || hidden) return;
     const { world, zoom } = bounds;
-
-    const x0 = Math.max(0, Math.floor(world.x));
-    const y0 = Math.max(0, Math.floor(world.y));
-    const x1 = Math.min(this.metadata.width, Math.ceil(world.x + world.width));
-    const y1 = Math.min(this.metadata.height, Math.ceil(world.y + world.height));
-    const bbox: [number, number, number, number] = [x0, y0, x1, y1];
-    const overlaySource = this.display.getOverlaySource?.() ?? undefined;
-    const paramsKey = `${overlaySource ?? ""}|${JSON.stringify(params)}`;
-    const key = `${bbox.join(",")}|${paramsKey}`;
-
-    // Kick a (debounced, coalesced) fetch when the target changed.
-    if (key !== this.inflightKey && key !== this.pendingKey) {
-      const area = (x1 - x0) * (y1 - y0);
-      if (area <= MAX_AREA_PX) {
-        this.pendingKey = key;
-        if (this.pendingTimer) clearTimeout(this.pendingTimer);
-        this.pendingTimer = setTimeout(() => {
-          this.pendingTimer = null;
-          const target = { bbox, params, key };
-          if (this.inflightKey) {
-            this.queuedFetch = target; // finish current, then fetch this
-          } else {
-            void this.fetch(target);
-          }
-        }, FETCH_DEBOUNCE_MS);
-      }
-    }
 
     // ── Paint every cached region overlapping the view ───────────────
     const strokeW = 1 / zoom;
@@ -269,7 +308,9 @@ export class VectorizeLayer implements Layer {
       if ((e as Error)?.name === "AbortError") return;
       this.lastError = e instanceof Error ? e.message : "vectorize failed";
       this.notifyStatus(false);
-      this.invalidateCb?.();
+      // NB: no invalidate here — a persistent error (sidecar down, bad
+      // params) would otherwise reschedule itself every frame. The user's
+      // next interaction redraws and retries naturally.
     } finally {
       this.inflightKey = null;
       this.abort = null;
