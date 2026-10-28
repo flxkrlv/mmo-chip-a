@@ -129,6 +129,13 @@ the port. Removing the plugin = deleting `resources/app/ml/.venv`.
 Without the plugin the app works exactly as before: ML endpoints answer
 `sidecar unreachable`, everything else (ngspice, vyges-lvs, MCP) is unaffected.
 
+Installer notes: when `uv` is on PATH the installs go through it (Rust HTTP
+stack — survives flaky networks where pip's Python TLS wedges at 100% CPU on
+a dropped socket; observed on real machines); pip with long timeouts and
+`--resume-retries` is the fallback. torch ≥ 2.6 ships native `torch.xpu`, so
+the Intel route needs no IPEX. If even uv stalls, `PIP_INDEX_URL` (mirror) or
+`HTTPS_PROXY` (a local proxy, if one runs) still work as overrides.
+
 ## Verify checklist (what was actually run when this landed)
 
 - `desktop/build/dist/win-unpacked` boots: `/api/health` 200, `/` serves the

@@ -139,8 +139,29 @@ function Invoke-PipResumable {
   }
 }
 
-Write-Host "Upgrading pip..."
-Invoke-Pip install --upgrade pip
+# uv (Rust installer) beats pip when present: on machines with flaky networks
+# pip's Python TLS can wedge at 100% CPU on a dropped socket while uv's Rust
+# HTTP stack survives. All package installs go through uv when it exists;
+# pip (with timeouts + resume) is the fallback. uv installs into any venv
+# via --python, so the venv itself is still created with python -m venv.
+$uvExe = (Get-Command uv -ErrorAction SilentlyContinue).Source
+
+function Invoke-Install([string[]]$installArgs) {
+  if ($uvExe) {
+    Write-Host "uv pip install $($installArgs -join ' ')" -ForegroundColor DarkGray
+    & $uvExe pip install --python $venvPython @installArgs
+    if ($LASTEXITCODE -ne 0) { throw "uv pip install failed (args: $installArgs)" }
+    return
+  }
+  Invoke-PipResumable @installArgs
+}
+if ($uvExe) {
+  Write-Host "Package installer: uv ($uvExe)" -ForegroundColor Green
+} else {
+  Write-Host "Package installer: pip (uv not found)" -ForegroundColor DarkGray
+  Write-Host "Upgrading pip..."
+  Invoke-Pip install --upgrade pip
+}
 
 # ── GPU detection ──────────────────────────────────────────────────
 $gpuNames = ""
@@ -158,34 +179,35 @@ Write-Host "Install variant: $mode" -ForegroundColor Green
 # Non-torch packages (the non-torch subset of ml/requirements.txt) — installed
 # first so a torch-variant failure never blocks the base stack.
 Write-Host "Installing base ML packages..." -ForegroundColor Green
-Invoke-PipResumable install opencv-contrib-python-headless numpy scipy pillow tqdm fastapi "uvicorn[standard]" python-multipart
+Invoke-Install @("opencv-contrib-python-headless", "numpy", "scipy", "pillow", "tqdm", "fastapi", "uvicorn[standard]", "python-multipart")
 
 # segmentation-models-pytorch pins torch indirectly; install it after torch.
 function Install-TorchExtras {
   Write-Host "Installing segmentation-models-pytorch + albumentations..." -ForegroundColor Green
-  Invoke-PipResumable install segmentation-models-pytorch albumentations
+  Invoke-Install @("segmentation-models-pytorch", "albumentations")
 }
 
 switch ($mode) {
   "nvidia" {
     Write-Host "NVIDIA GPU — installing CUDA PyTorch from PyPI (large download, ~2.5 GB)..." -ForegroundColor Green
-    Invoke-PipResumable install -r (Join-Path $mlDir "requirements.txt")
+    Invoke-Install @("-r", (Join-Path $mlDir "requirements.txt"))
   }
   "intel" {
-    Write-Host "Intel Arc — installing XPU PyTorch 2.6 + IPEX..." -ForegroundColor Green
+    # torch >= 2.6 ships native torch.xpu — no intel-extension-for-pytorch
+    # needed (verified live: sidecar reports device=xpu without IPEX).
+    Write-Host "Intel Arc — installing XPU PyTorch 2.6 (native torch.xpu)..." -ForegroundColor Green
     try {
-      Invoke-PipResumable install torch==2.6.0+xpu torchvision==0.21.0+xpu --index-url https://download.pytorch.org/whl/xpu
-      Invoke-PipResumable install intel-extension-for-pytorch==2.6.0
+      Invoke-Install @("torch==2.6.0+xpu", "torchvision==0.21.0+xpu", "--index-url", "https://download.pytorch.org/whl/xpu")
       Install-TorchExtras
     } catch {
       Write-Host "XPU install failed — falling back to CPU PyTorch." -ForegroundColor Yellow
-      Invoke-PipResumable install torch torchvision --index-url https://download.pytorch.org/whl/cpu --force-reinstall
+      Invoke-Install @("torch", "torchvision", "--index-url", "https://download.pytorch.org/whl/cpu", "--force-reinstall")
       Install-TorchExtras
     }
   }
   default {
     Write-Host "No supported GPU — installing CPU-only PyTorch..." -ForegroundColor Green
-    Invoke-PipResumable install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+    Invoke-Install @("torch", "torchvision", "--index-url", "https://download.pytorch.org/whl/cpu")
     Install-TorchExtras
   }
 }

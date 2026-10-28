@@ -98,8 +98,28 @@ PIP_RESUMABLE() {
     }
 }
 
-echo "Upgrading pip..."
-PIP install --upgrade pip --quiet
+# uv (Rust installer) beats pip when present: pip's Python TLS can wedge on
+# flaky networks while uv's Rust HTTP stack survives. uv installs into any
+# venv via --python, so the venv itself is still created with python -m venv.
+UV_EXE=""
+if command -v uv &>/dev/null; then UV_EXE="uv"; fi
+
+install_pkgs() {
+    if [ -n "$UV_EXE" ]; then
+        echo "uv pip install $*"
+        uv pip install --python "$VENV_PY" "$@" || { echo "ERROR: uv pip install failed"; exit 1; }
+        return
+    fi
+    PIP_RESUMABLE install "$@"
+}
+
+if [ -n "$UV_EXE" ]; then
+    echo "Package installer: uv"
+else
+    echo "Package installer: pip (uv not found)"
+    echo "Upgrading pip..."
+    PIP install --upgrade pip
+fi
 
 # ── GPU detection ──────────────────────────────────────────────────
 MODE="${GPU:-auto}"
@@ -119,11 +139,11 @@ echo "Install variant: $MODE"
 # Non-torch packages (the non-torch subset of ml/requirements.txt) — installed
 # first so a torch-variant failure never blocks the base stack.
 echo "Installing base ML packages..."
-PIP_RESUMABLE install opencv-contrib-python-headless numpy scipy pillow tqdm fastapi "uvicorn[standard]" python-multipart
+install_pkgs opencv-contrib-python-headless numpy scipy pillow tqdm fastapi "uvicorn[standard]" python-multipart
 
 install_torch_extras() {
     echo "Installing segmentation-models-pytorch + albumentations..."
-    PIP_RESUMABLE install segmentation-models-pytorch albumentations
+    install_pkgs segmentation-models-pytorch albumentations
 }
 
 # ── optional: Intel Arc compute drivers (Ubuntu) ───────────────────
@@ -143,23 +163,24 @@ install_intel_drivers() {
 case "$MODE" in
     nvidia)
         echo "NVIDIA GPU — installing CUDA PyTorch from PyPI (large download, ~2.5 GB)..."
-        PIP_RESUMABLE install -r "$ML_DIR/requirements.txt"
+        install_pkgs -r "$ML_DIR/requirements.txt"
         ;;
     intel)
-        echo "Intel Arc — installing XPU PyTorch 2.6 + IPEX..."
+        # torch >= 2.6 ships native torch.xpu — no intel-extension-for-pytorch
+        # needed (verified live: sidecar reports device=xpu without IPEX).
+        echo "Intel Arc — installing XPU PyTorch 2.6 (native torch.xpu)..."
         install_intel_drivers
-        if PIP_RESUMABLE install torch==2.6.0+xpu torchvision==0.21.0+xpu --index-url https://download.pytorch.org/whl/xpu &&
-            PIP_RESUMABLE install intel-extension-for-pytorch==2.6.0; then
+        if install_pkgs torch==2.6.0+xpu torchvision==0.21.0+xpu --index-url https://download.pytorch.org/whl/xpu; then
             install_torch_extras
         else
             echo "XPU install failed — falling back to CPU PyTorch."
-            PIP_RESUMABLE install torch torchvision --index-url https://download.pytorch.org/whl/cpu --force-reinstall
+            install_pkgs torch torchvision --index-url https://download.pytorch.org/whl/cpu --force-reinstall
             install_torch_extras
         fi
         ;;
     *)
         echo "No supported GPU — installing CPU-only PyTorch..."
-        PIP_RESUMABLE install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+        install_pkgs torch torchvision --index-url https://download.pytorch.org/whl/cpu
         install_torch_extras
         ;;
 esac
