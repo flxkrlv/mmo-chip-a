@@ -139,6 +139,30 @@ export async function vectorizeRegion(
   );
 }
 
+/** Pipette readout: mean RGB of a small source region (the same image the
+ *  vectorize endpoint decodes — base or overlay). */
+export interface DiePixelSample {
+  r: number;
+  g: number;
+  b: number;
+  /** How many source pixels the mean covers. */
+  samples: number;
+}
+
+/** Mean colour of a die region in source-image (px) coords. Tiny regions
+ *  only (backend caps at 4096 px) — this is the vector pipette's eyedrop. */
+export async function sampleDieRegion(
+  dieId: string,
+  bbox: readonly [number, number, number, number],
+  overlaySource?: string,
+  signal?: AbortSignal
+): Promise<DiePixelSample> {
+  const q = new URLSearchParams();
+  q.set("bbox", bbox.join(","));
+  if (overlaySource) q.set("overlaySource", overlaySource);
+  return apiGet<DiePixelSample>(`/api/dies/${dieId}/sample?${q.toString()}`, signal);
+}
+
 /** Sidecar health — checkpoint name, device, training flag. */
 export function useMLStatus(): UseQueryResult<MLServiceStatus, ApiError> {
   return useQuery<MLServiceStatus, ApiError>({

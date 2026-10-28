@@ -89,7 +89,7 @@ import { useDieExtraction } from "../hooks/useDieExtraction";
 import { setActiveProject, flushProjectDeviceNames } from "../state/analogDeviceNames";
 import { useExtractionProgress } from "../state/extractionProgress";
 import { loadClipper } from "../lib/extraction";
-import { useMLJob, useMLStatus } from "../api/ml";
+import { sampleDieRegion, useMLJob, useMLStatus } from "../api/ml";
 import { WireDraftOverlay } from "../components/dieViewer/WireDraftOverlay";
 import { RectDraftOverlay } from "../components/dieViewer/RectDraftOverlay";
 import { PolyDraftOverlay } from "../components/dieViewer/PolyDraftOverlay";
@@ -379,6 +379,9 @@ function DieViewer({ dieId }: { dieId: string }) {
 
   const activeTool = useDieViewerStore((s) => s.activeTool);
   const setActiveTool = useDieViewerStore((s) => s.setActiveTool);
+  // Vector pipette (armed from the ML tab's Vector section): canvas clicks
+  // sample the metal colour instead of driving the active tool.
+  const vectorPipetteArmed = useDieViewerStore((s) => s.vectorPipetteArmed);
 
   // Broadcast status to other users
   useUserStatus(dieId, activeTool);
@@ -4233,8 +4236,42 @@ function DieViewer({ dieId }: { dieId: string }) {
     () => createLiveValue<{ x: number; y: number; key: number } | null>(null),
     []
   );
+  // Vector pipette sample: mean RGB of a 7×7 source patch under the click,
+  // from the SAME image the vectorize overlay decodes (base or overlay).
+  const sampleVectorPixel = useCallback(
+    (worldPoint: { x: number; y: number }) => {
+      if (!die) return;
+      const layers = useOverlayLayers.getState().layers;
+      const visible = layers.find((l) => !l.hidden && l.loaded);
+      const overlaySource = visible?.serverFilename ?? visible?.name ?? undefined;
+      const x = Math.round(worldPoint.x);
+      const y = Math.round(worldPoint.y);
+      const half = 3;
+      const bbox = [
+        Math.max(0, x - half),
+        Math.max(0, y - half),
+        Math.min(die.width, x + half + 1),
+        Math.min(die.height, y + half + 1)
+      ] as const;
+      sampleDieRegion(die.id, bbox, overlaySource)
+        .then((s) => useDieViewerStore.getState().addVectorSample([s.r, s.g, s.b]))
+        .catch((e) =>
+          useDieViewerStore.getState().setVectorStatus({
+            loading: false,
+            error: e instanceof Error ? e.message : "sample failed",
+            traces: 0
+          })
+        );
+    },
+    [die]
+  );
   const onCanvasPointerDown = useCallback(
     (e: PointerEventData): Interaction => {
+      // Vector pipette consumes the click before any tool sees it.
+      if (e.button === 0 && useDieViewerStore.getState().vectorPipetteArmed) {
+        sampleVectorPixel(e.worldPoint);
+        return "ignore";
+      }
       const result = routeCanvasPointerDown(e);
       if (typeof result !== "object" || e.button !== 0 || !annotationLayer) return result;
       if (useDieViewerStore.getState().activeTool !== "select") return result;
@@ -4282,7 +4319,7 @@ function DieViewer({ dieId }: { dieId: string }) {
         }
       };
     },
-    [routeCanvasPointerDown, annotationLayer, viewportLive, netHoldLive, focusOnIds]
+    [routeCanvasPointerDown, annotationLayer, viewportLive, netHoldLive, focusOnIds, sampleVectorPixel]
   );
 
   // ── Cross-tab focus: analog netlist → frame cell on die ──
@@ -4540,11 +4577,13 @@ function DieViewer({ dieId }: { dieId: string }) {
               minZoom={minZoom}
               maxZoom={32}
               cursor={
-                spacePan || activeTool === "pan"
-                  ? "grab"
-                  : activeTool === "select"
-                    ? (cellResizeCursor ?? "default")
-                    : "crosshair"
+                vectorPipetteArmed
+                  ? "crosshair"
+                  : spacePan || activeTool === "pan"
+                    ? "grab"
+                    : activeTool === "select"
+                      ? (cellResizeCursor ?? "default")
+                      : "crosshair"
               }
               handleRef={canvasHandle}
               onViewportChange={onViewportChange}

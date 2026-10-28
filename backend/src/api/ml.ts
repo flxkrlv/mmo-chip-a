@@ -633,6 +633,67 @@ export function createMLRouter(config: {
     }
   });
 
+  // ── GET /api/dies/:dieId/sample?bbox=… — pipette colour readout ──────
+  // Mean RGB of a small source region (the vector pipette samples the SAME
+  // image the vectorize endpoint decodes — base or overlay). Tiny crops
+  // only: this is an eyedropper, not a region statistic tool.
+  router.get("/api/dies/:dieId/sample", async (request, response, next) => {
+    try {
+      const { dieId } = request.params;
+      const parts = String(request.query.bbox ?? "")
+        .split(",")
+        .map(Number);
+      if (parts.length !== 4 || parts.some((n) => !Number.isFinite(n))) {
+        response.status(400).json({ error: "bbox must be x0,y0,x1,y1" });
+        return;
+      }
+      const record = await readDieRecord(config.dataRoot, dieId);
+      const x0 = Math.max(0, Math.min(Math.floor(parts[0]), Math.floor(parts[2])));
+      const y0 = Math.max(0, Math.min(Math.floor(parts[1]), Math.floor(parts[3])));
+      const x1 = Math.min(record.width, Math.ceil(Math.max(parts[0], parts[2])));
+      const y1 = Math.min(record.height, Math.ceil(Math.max(parts[1], parts[3])));
+      const w = x1 - x0;
+      const h = y1 - y0;
+      if (w <= 0 || h <= 0) {
+        response.status(400).json({ error: "Empty or out-of-bounds bbox" });
+        return;
+      }
+      if (w * h > 4096) {
+        response.status(400).json({ error: "sample region too large (≤ 4096 px)" });
+        return;
+      }
+      const overlaySource = typeof request.query.overlaySource === "string"
+        ? request.query.overlaySource
+        : undefined;
+      const overlayPath = await resolveRequestedOverlayPath({
+        request,
+        dataRoot: config.dataRoot,
+        dieId,
+        sourceId: overlaySource
+      });
+      if (overlaySource && !overlayPath) {
+        response.status(404).json({ error: "Visible image source not found" });
+        return;
+      }
+      const buf = await sharp(
+        overlayPath ?? record.originalPath,
+        { limitInputPixels: false }
+      )
+        .extract({ left: x0, top: y0, width: w, height: h })
+        .png()
+        .toBuffer();
+      const stats = await sharp(buf).stats();
+      response.json({
+        r: Math.round(stats.channels[0]?.mean ?? 0),
+        g: Math.round(stats.channels[1]?.mean ?? 0),
+        b: Math.round(stats.channels[2]?.mean ?? 0),
+        samples: w * h
+      });
+    } catch (error) {
+      next(error);
+    }
+  });
+
   // ── GET /api/dies/:dieId/heatmap/tile/:z/:x/:y (cached PNG) ──────────
   router.get(
     "/api/dies/:dieId/heatmap/tile/:z/:x/:y",

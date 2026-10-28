@@ -116,6 +116,10 @@ interface DieViewerState {
    *  flag, last error, decoded-trace count across cached regions. Written by
    *  the `VectorizeLayer`'s display callback. */
   vectorStatus: { loading: boolean; error: string | null; traces: number };
+  /** Vector pipette (VectorSection): armed → canvas clicks sample the metal
+   *  colour instead of the active tool. Samples accumulate for averaging. */
+  vectorPipetteArmed: boolean;
+  vectorSamples: [number, number, number][];
   /** Cell type picked in the Cells (detection) tab — from the dropdown or by
    *  selecting a placed cell on the canvas while the tab is open. */
   cellDetectionTypeId: string | null;
@@ -158,6 +162,9 @@ interface DieViewerActions {
   /** Set the live ML-via cardinality — called by the layer when tiles load. */
   setMlViasCount: (count: number) => void;
 setVectorStatus: (status: { loading: boolean; error: string | null; traces: number }) => void;
+setVectorPipetteArmed: (armed: boolean) => void;
+addVectorSample: (rgb: [number, number, number]) => void;
+clearVectorSamples: () => void;
   setCellDetectionTypeId: (id: string | null) => void;
   setCellDetectionsCount: (count: number) => void;
   setWireMapAvailable: (available: boolean) => void;
@@ -194,6 +201,8 @@ const INITIAL_STATE: DieViewerState = {
   mlConfig: { ...DEFAULT_ML_CONFIG },
   mlViasCount: 0,
   vectorStatus: { loading: false, error: null, traces: 0 },
+  vectorPipetteArmed: false,
+  vectorSamples: [],
   cellDetectionTypeId: null,
   cellDetectionsCount: 0,
   wireMapAvailable: false,
@@ -297,6 +306,10 @@ export const useDieViewerStore = create<DieViewerState & DieViewerActions>()((se
       return;
     set({ vectorStatus: status });
   },
+  setVectorPipetteArmed: (armed) => set({ vectorPipetteArmed: armed }),
+  addVectorSample: (rgb) =>
+    set((state) => ({ vectorSamples: [...state.vectorSamples, rgb] })),
+  clearVectorSamples: () => set({ vectorSamples: [] }),
   setCellDetectionTypeId: (id) => set({ cellDetectionTypeId: id }),
   setCellDetectionsCount: (count) => {
     if (get().cellDetectionsCount === count) return;

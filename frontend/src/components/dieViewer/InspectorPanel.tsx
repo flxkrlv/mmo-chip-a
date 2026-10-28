@@ -1366,9 +1366,35 @@ function VectorSection({
   const hidden = usePreferences((s) => s.vectorOverlayHidden);
   const setHidden = usePreferences((s) => s.setVectorOverlayHidden);
   const status = useDieViewerStore((s) => s.vectorStatus);
+  const pipetteArmed = useDieViewerStore((s) => s.vectorPipetteArmed);
+  const setPipetteArmed = useDieViewerStore((s) => s.setVectorPipetteArmed);
+  const samples = useDieViewerStore((s) => s.vectorSamples);
+  const clearSamples = useDieViewerStore((s) => s.clearVectorSamples);
   const [busy, setBusy] = useState<null | "nets">(null);
   const [err, setErr] = useState<string | null>(null);
+  const [tol, setTol] = useState(25);
   const presetNames = Object.keys(presets).sort();
+
+  // Pipette maths: channel value of the accumulated mean. Gray matches the
+  // decoder's Rec.601 luma; a raw channel reads its own plane.
+  const vOfMean = (() => {
+    if (samples.length === 0) return -1;
+    let r = 0;
+    let g = 0;
+    let b = 0;
+    for (const s of samples) {
+      r += s[0];
+      g += s[1];
+      b += s[2];
+    }
+    r /= samples.length;
+    g /= samples.length;
+    b /= samples.length;
+    if (params.channel === "r") return r;
+    if (params.channel === "g") return g;
+    if (params.channel === "b") return b;
+    return 0.299 * r + 0.587 * g + 0.114 * b;
+  })();
 
   const saveAsPreset = async () => {
     const name = await dialog.prompt(
@@ -1627,6 +1653,92 @@ function VectorSection({
           Reset params
         </button>
       </div>
+
+      {/* Pipette: sample the metal colour on the canvas, average, apply */}
+      <div style={{ borderTop: "1px solid var(--l1)", margin: "12px 0 10px" }} />
+      <button
+        type="button"
+        className="btn"
+        style={{
+          width: "100%",
+          cursor: "pointer",
+          ...(pipetteArmed
+            ? { background: "var(--accent, #7fb2ff)", color: "#101418" }
+            : {})
+        }}
+        title="Arm the pipette, then click the metal on the canvas — each click samples a 7×7 px patch of the source image (base or overlay). Apply sets the threshold from the mean."
+        onClick={() => {
+          const next = !pipetteArmed;
+          setPipetteArmed(next);
+          if (next) clearSamples();
+        }}
+      >
+        {pipetteArmed ? "Pipette: ON — click the metal" : "Pipette"}
+      </button>
+      {pipetteArmed && (
+        <>
+          <div
+            className="m"
+            style={{ fontSize: 10.5, color: "var(--ink2)", margin: "8px 0 4px" }}
+          >
+            {samples.length === 0
+              ? "click the metal on the canvas…"
+              : `${samples.length} sample(s) · mean ${
+                  vOfMean >= 0 ? Math.round(vOfMean) : "—"
+                }/255`}
+          </div>
+          <div className="row" style={{ gap: 6, alignItems: "center" }}>
+            <span className="u" style={{ fontSize: 10 }}>
+              Tol ±
+            </span>
+            <input
+              type="number"
+              min={0}
+              max={100}
+              step={5}
+              value={tol}
+              style={{ width: 56 }}
+              onChange={(e) => setTol(Math.max(0, Math.min(100, Number(e.target.value) || 0)))}
+            />
+            <button
+              type="button"
+              className="btn"
+              style={{ flex: 1, cursor: "pointer" }}
+              disabled={samples.length === 0}
+              title={
+                params.invert
+                  ? "Set Thresh high = mean + tolerance (selects this colour and darker)"
+                  : "Set Thresh low = mean − tolerance (selects this colour and brighter)"
+              }
+              onClick={() => {
+                if (samples.length === 0) return;
+                const v = Math.round(
+                  Math.max(0, Math.min(255, vOfMean))
+                );
+                if (params.invert) {
+                  patch({ threshHigh: Math.min(255, v + tol) });
+                } else {
+                  patch({ threshLow: Math.max(0, v - tol) });
+                }
+                clearSamples();
+                setPipetteArmed(false);
+              }}
+            >
+              {params.invert ? "Apply → thresh high" : "Apply → thresh low"}
+            </button>
+            <button
+              type="button"
+              className="btn"
+              style={{ cursor: "pointer" }}
+              disabled={samples.length === 0}
+              title="Drop the accumulated samples"
+              onClick={() => clearSamples()}
+            >
+              Clear
+            </button>
+          </div>
+        </>
+      )}
 
       {err && (
         <div
