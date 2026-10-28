@@ -157,6 +157,10 @@ interface PreferencesState {
    *  fetched per tile). One global toggle — the user usually wants to flip
    *  it the same way across dies. */
   mlResultsHidden: boolean;
+  /** Die-viewer: hide the ML trace overlay (v1 contour polylines of the
+   *  model's trace channel). Separate from `mlResultsHidden` so the
+   *  experimental trace decode can be toggled without hiding the vias. */
+  mlTracesHidden: boolean;
   /** Wire / multi-wire: snap the click position to the nearest via (ML or
    *  manually placed) when within tolerance. Helps stitch nets onto via
    *  centres without eyeballing. */
@@ -469,6 +473,7 @@ interface PreferencesActions {
    */
   soloReLayerSelectable: (key: string, allKeys: ReadonlyArray<string>) => void;
   setMlResultsHidden: (hidden: boolean) => void;
+  setMlTracesHidden: (hidden: boolean) => void;
   setSnapToVias: (snap: boolean) => void;
   setWireAutoEndOnVia: (enabled: boolean) => void;
   setAutoEndOnContact: (enabled: boolean) => void;
@@ -562,6 +567,7 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
           collector: false, bulk: false,
         },
         mlResultsHidden: true,
+        mlTracesHidden: false,
         snapToVias: false,
         wireAutoEndOnVia: false,
         autoEndOnContact: true,
@@ -875,6 +881,7 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
             return { reLayerSelectable: next };
           }),
         setMlResultsHidden: (hidden) => set({ mlResultsHidden: hidden }),
+        setMlTracesHidden: (hidden) => set({ mlTracesHidden: hidden }),
         setSnapToVias: (snap) => set({ snapToVias: snap }),
         setWireAutoEndOnVia: (enabled) => set({ wireAutoEndOnVia: enabled }),
         setAutoEndOnContact: (enabled) => set({ autoEndOnContact: enabled }),
@@ -1005,6 +1012,7 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
           rulerVisibilityOverrides: state.rulerVisibilityOverrides,
           customNetColorsEnabled: state.customNetColorsEnabled,
           mlResultsHidden: state.mlResultsHidden,
+          mlTracesHidden: state.mlTracesHidden,
           snapToVias: state.snapToVias,
           wireAutoEndOnVia: state.wireAutoEndOnVia,
           autoEndOnContact: state.autoEndOnContact,

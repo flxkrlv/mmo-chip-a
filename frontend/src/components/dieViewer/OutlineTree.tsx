@@ -106,6 +106,8 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
 
   const mlResultsHidden = usePreferences((s) => s.mlResultsHidden);
   const setMlResultsHidden = usePreferences((s) => s.setMlResultsHidden);
+  const mlTracesHidden = usePreferences((s) => s.mlTracesHidden);
+  const setMlTracesHidden = usePreferences((s) => s.setMlTracesHidden);
   const wireMapHidden = usePreferences((s) => s.wireMapHidden);
   const setWireMapHidden = usePreferences((s) => s.setWireMapHidden);
   const cellDetectionsHidden = usePreferences((s) => s.cellDetectionsHidden);
@@ -787,11 +789,14 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
         meta={mlViasCount + cellDetectionsCount}
         visibility={{
           visible:
-            !mlResultsHidden || !cellDetectionsHidden || (wireMapAvailable && !wireMapHidden),
+            !mlResultsHidden || !mlTracesHidden || !cellDetectionsHidden ||
+            (wireMapAvailable && !wireMapHidden),
           onToggle: () => {
             const hide =
-              !mlResultsHidden || !cellDetectionsHidden || (wireMapAvailable && !wireMapHidden);
+              !mlResultsHidden || !mlTracesHidden || !cellDetectionsHidden ||
+              (wireMapAvailable && !wireMapHidden);
             setMlResultsHidden(hide);
+            setMlTracesHidden(hide);
             setCellDetectionsHidden(hide);
             if (wireMapAvailable) setWireMapHidden(hide);
           }
@@ -809,6 +814,15 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
             visibility={{
               visible: !mlResultsHidden,
               onToggle: () => setMlResultsHidden(!mlResultsHidden)
+            }}
+          />
+          <TreeRow
+            depth={1}
+            swatch="rgba(103, 232, 249, 0.9)"
+            label="traces (v1 contours)"
+            visibility={{
+              visible: !mlTracesHidden,
+              onToggle: () => setMlTracesHidden(!mlTracesHidden)
             }}
           />
           <TreeRow

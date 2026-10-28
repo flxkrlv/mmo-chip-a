@@ -103,6 +103,10 @@ const MAX_VIEWPORT_FETCH = 4096;
 // actually heavy. Pending fetches queue and dispatch as slots free.
 const MAX_INFLIGHT_FETCHES = 4;
 const IRREGULAR_STROKE_PX = 1;
+// ML trace overlay (v1 contour decode of the model's trace channel): cyan,
+// to read as "model's metal" — distinct from the green vias and user nets.
+const ML_TRACE_STROKE = "rgba(103, 232, 249, 0.9)";
+const ML_TRACE_FILL = "rgba(103, 232, 249, 0.16)";
 
 /** Block key (`${bx}/${by}`) a native tile belongs to. */
 function blockKey(tx: number, ty: number): string {
@@ -122,6 +126,9 @@ interface CachedViasTile {
 export interface MLViasDisplay {
   /** True → don't paint anything at all. */
   getHidden?: () => boolean;
+  /** True → don't paint the trace overlay (the vias stay visible). Absent
+   *  ⇒ traces are drawn whenever the layer itself is visible. */
+  getTracesHidden?: () => boolean;
   /** Point-via render radius (world / source-pixel units). Same value is
    *  used by the snap-to-via tolerance via `findNearestPointVia(world,
    *  radius)`. Absent ⇒ default. */
@@ -533,7 +540,7 @@ export class MLViasLayer implements Layer {
       };
       if (!rectsIntersect(tileRect, world)) continue;
       if (!tile.loaded || !tile.data) continue;
-      const { pointVias, irregularVias } = tile.data;
+      const { pointVias, irregularVias, traces } = tile.data;
       const sel = this.selectedViaIds;
       const hasSel = sel.size > 0;
       const selectR = pointR * SELECT_NODE_MULT;
@@ -582,6 +589,26 @@ export class MLViasLayer implements Layer {
         ctx.lineWidth = selected ? selectStroke : stroke;
         ctx.fillRect(x, y, w, h);
         ctx.strokeRect(x, y, w, h);
+      }
+      // ML traces (v1 decode): closed contour polylines of the model's
+      // trace channel — each polygon outlines a region the model thinks is
+      // metal. Translucent fill + stroke; no score to filter on yet
+      // (MLTracePolyline carries points only). Toggleable independently of
+      // the vias via `getTracesHidden`.
+      if (!this.display.getTracesHidden?.()) {
+        ctx.lineWidth = stroke;
+        for (const t of traces) {
+          const pts = t.points;
+          if (pts.length < 3) continue;
+          ctx.beginPath();
+          ctx.moveTo(pts[0][0], pts[0][1]);
+          for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1]);
+          ctx.closePath();
+          ctx.fillStyle = ML_TRACE_FILL;
+          ctx.fill();
+          ctx.strokeStyle = ML_TRACE_STROKE;
+          ctx.stroke();
+        }
       }
     }
   }
