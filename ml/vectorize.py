@@ -95,13 +95,11 @@ def vectorize_region(rgb: np.ndarray, p: VectorParams) -> dict:
     # ── Decode ───────────────────────────────────────────────────────
     # Width map: distance transform of the mask ×2 — every pixel's value is
     # then the local wire width (distance-to-edge ≈ half width). The skeleton
-    # decoder takes the per-branch median and optionally filters on it: wires
+    # decoder reports each branch's median width; THIS function applies the
+    # [width_min, width_max] filter so it can also report drop stats: wires
     # have a narrow, known width, so this kills fat blobs (pads, text,
     # charging halos) and the wide bridges where parallel wires bleed.
     dist = cv2.distanceTransform(bin_u8, cv2.DIST_L2, 3) * 2.0
-    width_range: tuple[float, float] | None = None
-    if p.width_min > 0 or p.width_max > 0:
-        width_range = (p.width_min, p.width_max)
 
     traces = extract_trace_skeleton(
         binary.astype(np.float32),
@@ -110,8 +108,19 @@ def vectorize_region(rgb: np.ndarray, p: VectorParams) -> dict:
         min_len=max(2, int(p.min_len)),
         score_map=strength,
         width_map=dist,
-        width_range=width_range,
+        width_range=None,  # filtered HERE so we can report drop stats
     )
+
+    # Width filter with drop accounting: outlines show the metal but traces
+    # vanish → this is the usual suspect (fat buses, pads, charging halos).
+    kept: list[dict] = []
+    dropped_width = 0
+    for t in traces:
+        w = float(t.get("width", 0.0))
+        if (p.width_min > 0 and w < p.width_min) or (p.width_max > 0 and w > p.width_max):
+            dropped_width += 1
+            continue
+        kept.append(t)
 
     # Outlines: v1 contour polylines of the cleaned mask — the "what did my
     # threshold capture" preview the user tunes against.
@@ -123,8 +132,9 @@ def vectorize_region(rgb: np.ndarray, p: VectorParams) -> dict:
         max_polylines=max(1, int(p.max_outlines)),
     )
     return {
-        "traces": traces,
+        "traces": kept,
         "outlines": [o["points"] for o in outlines],
+        "stats": {"kept": len(kept), "dropped_width": dropped_width},
         "width": int(w),
         "height": int(h),
     }

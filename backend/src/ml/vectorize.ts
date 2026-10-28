@@ -12,6 +12,8 @@ const MEM_CACHE_MAX = 64;
 export interface RunVectorizeResult {
   traces: VectorizeResponse["traces"];
   outlines: VectorizeResponse["outlines"];
+  /** Width-filter drop stats from the sidecar (kept / droppedWidth). */
+  stats?: { kept: number; droppedWidth: number };
 }
 
 /**
@@ -120,6 +122,7 @@ export function createVectorizer(config: { mlSidecarUrl: string }) {
     const body = (await res.json()) as {
       traces: { points: number[][]; score?: number; width?: number }[];
       outlines: number[][][];
+      stats?: { kept: number; dropped_width?: number };
     };
 
     const inKeep = (x: number, y: number) =>
@@ -154,7 +157,18 @@ export function createVectorizer(config: { mlSidecarUrl: string }) {
       .map((raw) => (raw ?? []).map(([x, y]) => [x + px0, y + py0] as [number, number]))
       .filter((pts) => pts.length >= 3);
 
-    const result: RunVectorizeResult = { traces, outlines };
+    const result: RunVectorizeResult = {
+      traces,
+      outlines,
+      ...(body.stats
+        ? {
+            stats: {
+              kept: body.stats.kept,
+              droppedWidth: body.stats.dropped_width ?? 0
+            }
+          }
+        : {})
+    };
     memSet(key, result);
     return result;
   }

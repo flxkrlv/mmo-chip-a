@@ -1,6 +1,6 @@
 import type { DieMetadata, MLTracePolyline, VectorizeParams } from "shared";
 import { rectsIntersect, type Point, type Rect } from "../../lib/geometry";
-import { vectorizeRegion } from "../../api/ml";
+import { fetchVectorBlocks, vectorizeRegion } from "../../api/ml";
 import type { Layer, RenderFrame, TileBounds } from "../types";
 
 /**
@@ -46,8 +46,24 @@ export interface VectorizeDisplay {
   /** Minimum score (0..1) for a trace to draw — the vectorize score is a
    *  brightness margin, so this filters weak-threshold noise. */
   getTraceConfidenceThreshold?: () => number;
-  /** Status for the inspector: loading flag, last error, region trace count. */
-  onStatusChange?: (status: { loading: boolean; error: string | null; traces: number }) => void;
+  /** Pipette samples to mark on the canvas (world coords + sampled rgb). */
+  getSamples?: () => VectorPipetteSample[];
+  /** Status for the inspector: loading flag, last error, region trace count,
+   *  and the last decode's width-filter drop stats. */
+  onStatusChange?: (status: {
+    loading: boolean;
+    error: string | null;
+    traces: number;
+    droppedWidth?: number;
+  }) => void;
+}
+
+/** One pipette measurement: the sampled 7×7 mean colour + where it was
+ *  taken (markers stay on the canvas while tuning). */
+export interface VectorPipetteSample {
+  rgb: [number, number, number];
+  x: number;
+  y: number;
 }
 
 interface CachedRegion {
@@ -55,6 +71,8 @@ interface CachedRegion {
   paramsKey: string;
   traces: MLTracePolyline[];
   outlines: [number, number][][];
+  /** Width-filter drop stats of the decode that filled this region. */
+  stats?: { kept: number; droppedWidth: number };
 }
 
 export class VectorizeLayer implements Layer {
@@ -79,6 +97,12 @@ export class VectorizeLayer implements Layer {
   private queuedFetch: { bbox: [number, number, number, number]; params: VectorizeParams; key: string } | null = null;
   /** Viewport hint state, so the "zoom in" notice fires on change only. */
   private lastSkipHint: boolean = false;
+  /** Whole-die sweep block coverage: keys where the disk cache answered
+   *  incompletely → those fall back to live viewport decode until the sweep
+   *  finishes (cleared on clearCache, e.g. when a sweep completes). */
+  private readonly blockMiss = new Set<string>();
+  /** Keys with a blocks lookup in flight (don't re-ask every frame). */
+  private readonly blocksInflight = new Set<string>();
 
   constructor(dieId: string, metadata: DieMetadata, display: VectorizeDisplay = {}) {
     this.dieId = dieId;
@@ -110,17 +134,21 @@ export class VectorizeLayer implements Layer {
   clearCache(): void {
     this.cache.clear();
     this.snapCache.clear();
+    this.blockMiss.clear();
     this.invalidateCb?.();
   }
 
   /** Latest error string (panel display), cleared on a successful fetch. */
   private lastError: string | null = null;
+  /** Width-filter drop stats of the latest decode (panel diagnostics). */
+  private lastStats: { kept: number; droppedWidth: number } | null = null;
 
   private notifyStatus(loading: boolean): void {
     this.display.onStatusChange?.({
       loading,
       error: this.lastError,
-      traces: this.collectTraces().length
+      traces: this.collectTraces().length,
+      ...(this.lastStats ? { droppedWidth: this.lastStats.droppedWidth } : {})
     });
   }
 
@@ -188,8 +216,63 @@ export class VectorizeLayer implements Layer {
     // Already decoded (or decoded at these exact params) → nothing to do.
     if (this.cache.has(key) || key === this.inflightKey || key === this.pendingKey) return;
 
-    this.pendingKey = key;
+    // Whole-die sweep cache first: if every block intersecting the viewport
+    // is decoded for THESE params, draw from disk — no sidecar round-trip.
+    // Any missing block (sweep not run / params changed mid-sweep) → mark
+    // the key and fall back to the live viewport decode.
+    if (!this.blockMiss.has(key) && !this.blocksInflight.has(key)) {
+      this.blocksInflight.add(key);
+      fetchVectorBlocks(this.dieId, bbox, params, overlaySource)
+        .then((resp) => {
+          this.blocksInflight.delete(key);
+          if (this.destroyed) return;
+          if (resp.blocks.length > 0 && resp.missing === 0) {
+            this.lastError = null;
+            this.cache.set(key, {
+              bbox,
+              paramsKey: "",
+              traces: resp.blocks.flatMap((b) => b.traces),
+              outlines: resp.blocks.flatMap((b) => b.outlines)
+            });
+            while (this.cache.size > MAX_REGIONS) {
+              const oldest = this.cache.keys().next().value;
+              if (oldest === undefined) break;
+              this.cache.delete(oldest);
+            }
+            this.notifyStatus(false);
+            this.invalidateCb?.({
+              x: bbox[0],
+              y: bbox[1],
+              width: bbox[2] - bbox[0],
+              height: bbox[3] - bbox[1]
+            });
+          } else {
+            this.blockMiss.add(key);
+            this.scheduleLiveFetch(bbox, params, key, overlaySource);
+          }
+        })
+        .catch(() => {
+          this.blocksInflight.delete(key);
+          if (this.destroyed) return;
+          this.blockMiss.add(key);
+          this.scheduleLiveFetch(bbox, params, key, overlaySource);
+        });
+      return;
+    }
+    if (this.blockMiss.has(key)) {
+      this.scheduleLiveFetch(bbox, params, key, overlaySource);
+    }
+  }
+
+  /** Debounced + coalesced live viewport decode (the tuning path). */
+  private scheduleLiveFetch(
+    bbox: [number, number, number, number],
+    params: VectorizeParams,
+    key: string,
+    overlaySource: string | undefined
+  ): void {
     if (this.pendingTimer) clearTimeout(this.pendingTimer);
+    this.pendingKey = key;
     this.pendingTimer = setTimeout(() => {
       this.pendingTimer = null;
       this.pendingKey = null;
@@ -203,10 +286,32 @@ export class VectorizeLayer implements Layer {
   }
 
   draw(ctx: CanvasRenderingContext2D, bounds: TileBounds): void {
+    const { zoom } = bounds;
+
+    // Pipette markers: one amber cross per accumulated sample — drawn even
+    // while the overlay itself is hidden, so sampling stays visible.
+    const samples = this.display.getSamples?.() ?? [];
+    if (samples.length > 0) {
+      const r = Math.max(4 / zoom, 3);
+      ctx.strokeStyle = "rgba(253, 224, 71, 0.9)";
+      ctx.lineWidth = Math.max(1 / zoom, 1.2 / zoom);
+      for (const s of samples) {
+        ctx.beginPath();
+        ctx.moveTo(s.x - r, s.y);
+        ctx.lineTo(s.x + r, s.y);
+        ctx.moveTo(s.x, s.y - r);
+        ctx.lineTo(s.x, s.y + r);
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.arc(s.x, s.y, r * 0.4, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+    }
+
     const params = this.display.getParams?.();
     const hidden = this.display.getHidden?.() ?? false;
     if (!params || hidden) return;
-    const { world, zoom } = bounds;
+    const world = bounds.world;
 
     // ── Paint every cached region overlapping the view ───────────────
     const strokeW = 1 / zoom;
@@ -284,11 +389,13 @@ export class VectorizeLayer implements Layer {
       );
       if (this.destroyed) return;
       this.lastError = null;
+      this.lastStats = resp.stats ?? null;
       this.cache.set(target.key, {
         bbox: target.bbox,
         paramsKey: target.key.slice(target.bbox.join(",").length + 1),
         traces: resp.traces,
-        outlines: resp.outlines
+        outlines: resp.outlines,
+        stats: resp.stats
       });
       // Evict the oldest region beyond the cap (Map = insertion order).
       while (this.cache.size > MAX_REGIONS) {

@@ -18,8 +18,10 @@ import type {
   MLPrediction,
   MLSelectModelRequest,
   MLServiceStatus,
+  VectorBlocksResponse,
   VectorizeParams,
-  VectorizeResponse
+  VectorizeResponse,
+  VectorSweepStatus
 } from "shared";
 import { subscribeToDie } from "./annotationsWebSocket";
 import { ApiError, apiGet, apiPost } from "./client";
@@ -161,6 +163,59 @@ export async function sampleDieRegion(
   q.set("bbox", bbox.join(","));
   if (overlaySource) q.set("overlaySource", overlaySource);
   return apiGet<DiePixelSample>(`/api/dies/${dieId}/sample?${q.toString()}`, signal);
+}
+
+// ── Whole-die vectorize sweep (block jobs + disk cache) ──────────────
+
+/** Start a whole-die vectorize sweep (decodes every 2048-px block, caches
+ *  each under dataRoot/vectorize/<dieId>/<paramsHash>/). */
+export function startVectorSweep(
+  dieId: string,
+  params: VectorizeParams,
+  overlaySource?: string
+): Promise<VectorSweepStatus> {
+  return apiPost<VectorSweepStatus>(`/api/dies/${dieId}/vectorize/job/start`, {
+    params,
+    overlaySource
+  });
+}
+
+export function getVectorSweep(dieId: string): Promise<VectorSweepStatus> {
+  return apiGet<VectorSweepStatus>(`/api/dies/${dieId}/vectorize/job`);
+}
+
+export function stopVectorSweep(dieId: string): Promise<VectorSweepStatus> {
+  return apiPost<VectorSweepStatus>(`/api/dies/${dieId}/vectorize/job/stop`, {});
+}
+
+/** Cached sweep blocks for a bbox + params. `missing > 0` → the sweep hasn't
+ *  covered the region (or params differ) — caller falls back to live decode. */
+export async function fetchVectorBlocks(
+  dieId: string,
+  bbox: readonly [number, number, number, number],
+  params: VectorizeParams,
+  overlaySource?: string,
+  signal?: AbortSignal
+): Promise<VectorBlocksResponse> {
+  const q = new URLSearchParams();
+  q.set("bbox", bbox.join(","));
+  q.set("channel", params.channel);
+  q.set("invert", params.invert ? "1" : "0");
+  q.set("threshLow", String(params.threshLow));
+  q.set("threshHigh", String(params.threshHigh));
+  q.set("adaptive", params.adaptive ? "1" : "0");
+  q.set("adaptiveBlock", String(params.adaptiveBlock));
+  q.set("adaptiveC", String(params.adaptiveC));
+  q.set("openPx", String(params.openPx));
+  q.set("bridgePx", String(params.bridgePx));
+  q.set("minLength", String(params.minLength));
+  q.set("widthMin", String(params.widthMin));
+  q.set("widthMax", String(params.widthMax));
+  if (overlaySource) q.set("overlaySource", overlaySource);
+  return apiGet<VectorBlocksResponse>(
+    `/api/dies/${dieId}/vectorize/blocks?${q.toString()}`,
+    signal
+  );
 }
 
 /** Sidecar health — checkpoint name, device, training flag. */

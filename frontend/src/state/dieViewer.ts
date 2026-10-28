@@ -113,13 +113,19 @@ interface DieViewerState {
  *  fetched so far this session, not a die-wide ground truth. */
   mlViasCount: number;
   /** Live status of the classical vectorize overlay (VectorSection): loading
-   *  flag, last error, decoded-trace count across cached regions. Written by
-   *  the `VectorizeLayer`'s display callback. */
-  vectorStatus: { loading: boolean; error: string | null; traces: number };
+   *  flag, last error, decoded-trace count across cached regions, and the
+   *  last decode's width-filter drop stats. Written by the VectorizeLayer. */
+  vectorStatus: {
+    loading: boolean;
+    error: string | null;
+    traces: number;
+    droppedWidth?: number;
+  };
   /** Vector pipette (VectorSection): armed → canvas clicks sample the metal
-   *  colour instead of the active tool. Samples accumulate for averaging. */
+   *  colour instead of the active tool. Samples accumulate for averaging;
+   *  each keeps where it was taken (the layer draws markers). */
   vectorPipetteArmed: boolean;
-  vectorSamples: [number, number, number][];
+  vectorSamples: { rgb: [number, number, number]; x: number; y: number }[];
   /** Cell type picked in the Cells (detection) tab — from the dropdown or by
    *  selecting a placed cell on the canvas while the tab is open. */
   cellDetectionTypeId: string | null;
@@ -161,9 +167,14 @@ interface DieViewerActions {
   setMlConfig: (patch: Partial<DieMLConfig>) => void;
   /** Set the live ML-via cardinality — called by the layer when tiles load. */
   setMlViasCount: (count: number) => void;
-setVectorStatus: (status: { loading: boolean; error: string | null; traces: number }) => void;
+setVectorStatus: (status: {
+  loading: boolean;
+  error: string | null;
+  traces: number;
+  droppedWidth?: number;
+}) => void;
 setVectorPipetteArmed: (armed: boolean) => void;
-addVectorSample: (rgb: [number, number, number]) => void;
+addVectorSample: (sample: { rgb: [number, number, number]; x: number; y: number }) => void;
 clearVectorSamples: () => void;
   setCellDetectionTypeId: (id: string | null) => void;
   setCellDetectionsCount: (count: number) => void;
@@ -301,14 +312,15 @@ export const useDieViewerStore = create<DieViewerState & DieViewerActions>()((se
     if (
       cur.loading === status.loading &&
       cur.error === status.error &&
-      cur.traces === status.traces
+      cur.traces === status.traces &&
+      cur.droppedWidth === status.droppedWidth
     )
       return;
     set({ vectorStatus: status });
   },
   setVectorPipetteArmed: (armed) => set({ vectorPipetteArmed: armed }),
-  addVectorSample: (rgb) =>
-    set((state) => ({ vectorSamples: [...state.vectorSamples, rgb] })),
+  addVectorSample: (sample) =>
+    set((state) => ({ vectorSamples: [...state.vectorSamples, sample] })),
   clearVectorSamples: () => set({ vectorSamples: [] }),
   setCellDetectionTypeId: (id) => set({ cellDetectionTypeId: id }),
   setCellDetectionsCount: (count) => {

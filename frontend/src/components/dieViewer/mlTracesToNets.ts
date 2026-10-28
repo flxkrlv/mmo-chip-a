@@ -50,6 +50,9 @@ export interface TracesToNetsResult {
   snappedEnds: number;
   /** Traces dropped for having fewer than 2 vertices. */
   droppedDegenerate: number;
+  /** Traces dropped by the score filter (`minScore`) — distinct from
+   *  degenerate drops so the UI can say WHY nothing was materialized. */
+  filteredByScore: number;
   /** How many fragment pairs were stitched into shared points. */
   stitchedPairs: number;
 }
@@ -67,9 +70,14 @@ export function buildNetsFromTraces(input: TracesToNetsInput): TracesToNetsResul
   //    distance, matching the wire tool's nearest-candidate behaviour).
   let snappedEnds = 0;
   let droppedDegenerate = 0;
+  let filteredByScore = 0;
   const snapped: { points: [number, number][]; score: number; onContact: [boolean, boolean] }[] = [];
   for (const t of traces) {
-    if ((t.score ?? 1) < minScore || t.points.length < 2) {
+    if ((t.score ?? 1) < minScore) {
+      filteredByScore += 1;
+      continue;
+    }
+    if (t.points.length < 2) {
       droppedDegenerate += 1;
       continue;
     }
@@ -208,5 +216,5 @@ export function buildNetsFromTraces(input: TracesToNetsInput): TracesToNetsResul
     });
   }
 
-  return { nets, snappedEnds, droppedDegenerate, stitchedPairs };
+  return { nets, snappedEnds, droppedDegenerate, filteredByScore, stitchedPairs };
 }

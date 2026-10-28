@@ -975,6 +975,7 @@ function DieViewer({ dieId }: { dieId: string }) {
             getSnapTol: () => Math.max(8, usePreferences.getState().viaSize * 2),
             getTraceConfidenceThreshold: () =>
               usePreferences.getState().traceConfidenceThreshold,
+            getSamples: () => useDieViewerStore.getState().vectorSamples,
             onStatusChange: (status) =>
               useDieViewerStore.getState().setVectorStatus(status)
           })
@@ -4254,7 +4255,11 @@ function DieViewer({ dieId }: { dieId: string }) {
         Math.min(die.height, y + half + 1)
       ] as const;
       sampleDieRegion(die.id, bbox, overlaySource)
-        .then((s) => useDieViewerStore.getState().addVectorSample([s.r, s.g, s.b]))
+        .then((s) =>
+          useDieViewerStore
+            .getState()
+            .addVectorSample({ rgb: [s.r, s.g, s.b], x: worldPoint.x, y: worldPoint.y })
+        )
         .catch((e) =>
           useDieViewerStore.getState().setVectorStatus({
             loading: false,

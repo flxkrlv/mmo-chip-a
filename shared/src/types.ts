@@ -949,6 +949,39 @@ export interface VectorizeResponse {
   outlines: [number, number][][];
   /** [x0, y0, x1, y1] in source-image pixels - the region this covers. */
   bbox: [number, number, number, number];
+  /** Why traces were dropped (width filter). Helps tuning: outlines show
+   *  metal but traces vanish → droppedWidth is the usual suspect. */
+  stats?: { kept: number; droppedWidth: number };
+}
+
+/** Whole-die vectorize sweep (block-by-block, results cached on disk). */
+export interface VectorSweepStatus {
+  dieId: string;
+  status: "idle" | "running" | "completed" | "stopped" | "failed";
+  done: number;
+  total: number;
+  error?: string | null;
+  /** Cache key of the sweep's params — the block cache is keyed by it. */
+  paramsHash?: string;
+  overlayFilename?: string | null;
+}
+
+/** One decoded 2048-px block of a whole-die sweep, from the disk cache. */
+export interface VectorBlockPayload {
+  col: number;
+  row: number;
+  /** Clamped source-px bbox of the block. */
+  bbox: [number, number, number, number];
+  traces: MLTracePolyline[];
+  outlines: [number, number][][];
+}
+
+/** Cached blocks for a bbox + params. `missing` > 0 → the sweep hasn't
+ *  covered everything yet (client falls back to live viewport decode). */
+export interface VectorBlocksResponse {
+  hash: string;
+  blocks: VectorBlockPayload[];
+  missing: number;
 }
 
 export interface MLPrediction {

@@ -44,12 +44,15 @@ def test_invert_selects_dark_metal() -> None:
 
 def test_width_filter_drops_fat_blobs() -> None:
     img = _blank()
-    img[30:34, 10:180] = 200                       # 4 px wire
-    cv2.rectangle(img, (40, 80), (55, 95), 210, -1)  # 16×16 pad blob
+    img[30:34, 10:180] = 200                          # 4 px wire
+    img[70:92, 10:120] = 210                          # 22 px wide, long bus
+    cv2.rectangle(img, (40, 100), (55, 115), 210, -1)  # 16×16 pad blob
     p = VectorParams(thresh_low=150, min_len=8, width_min=1.5, width_max=12)
     r = vectorize_region(img, p)
-    assert len(r["traces"]) == 1, f"pad survived: {[(len(t['points']), t.get('width')) for t in r['traces']]}"
+    assert len(r["traces"]) == 1, f"fat bar survived: {[(len(t['points']), t.get('width')) for t in r['traces']]}"
     assert r["traces"][0]["width"] <= 12
+    assert r["stats"]["dropped_width"] == 1, f"drop stats off: {r['stats']}"
+    assert r["stats"]["kept"] == 1
 
 
 def test_min_len_drops_specks() -> None:

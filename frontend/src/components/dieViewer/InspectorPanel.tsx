@@ -3,16 +3,19 @@ import { cellInstanceScale, cellWorldRect } from "../../lib/cellFootprint";
 import { padCountByPin, renamePinActions } from "../../lib/pinClipboard";
 import { useDialog } from "../Dialog";
 import { useQueryClient } from "@tanstack/react-query";
-import type { AnalogDevice, AnnotationNet, AnnotationNetEdge, AssistantFinding, Cell, CellType, DieAnnotations, DieMetadata, FloorplanRegion, HumanAnnotation, MLInferenceJob, MLTracePolyline, VectorizeParams, WireLayer } from "shared";
+import type { AnalogDevice, AnnotationNet, AnnotationNetEdge, AssistantFinding, Cell, CellType, DieAnnotations, DieMetadata, FloorplanRegion, HumanAnnotation, MLInferenceJob, MLTracePolyline, VectorizeParams, VectorSweepStatus, WireLayer } from "shared";
 import type { ActionDispatcher } from "../../api/actions";
 import type { CellLibraryView } from "../../lib/cellLibrary";
 import { uuid } from "../../lib/uuid";
 import {
   exportMlData,
+  getVectorSweep,
   mlJobKey,
   selectMLModel,
   startMLJob,
+  startVectorSweep,
   stopMLJob,
+  stopVectorSweep,
   useMLJob,
   useMLModels,
   useMLStatus
@@ -824,6 +827,7 @@ function MLPanel({
       />
       <MLSectionHeader>Vector traces (no model)</MLSectionHeader>
       <VectorSection
+        dieId={dieId}
         dispatcher={dispatcher}
         vectorLayer={vectorLayer}
         getTraceSnapTargets={getTraceSnapTargets}
@@ -1017,15 +1021,21 @@ async function materializeTraces(
     layer: "metal1"
   });
   if (!result.nets.length) {
+    const score = usePreferences.getState().traceConfidenceThreshold;
     return {
-      error: "нет трасс для материализации — прогоните декод и проверьте Trace confidence"
+      error:
+        result.filteredByScore > 0
+          ? `нет трасс: собрано ${traces.length}, score-фильтром (Trace confidence = ${score.toFixed(2)}) отброшено ${result.filteredByScore} — опустите слайдер или перекачайте декод`
+          : `нет трасс для материализации (собрано ${traces.length}) — проверьте width/min length и что вьюпорт декодирован`
     };
   }
   if (
     !await dialog.confirm(
       `Создать ${result.nets.length} net(ей) из ${traces.length} трасс?\n` +
         `Концов со снапом: ${result.snappedEnds}, сшито разрывов: ${result.stitchedPairs}, ` +
-        `отброшено вырожденных: ${result.droppedDegenerate}.\nДействие уйдёт в Undo.`
+        `отброшено вырожденных: ${result.droppedDegenerate}` +
+        (result.filteredByScore > 0 ? `, score-фильтром: ${result.filteredByScore}` : "") +
+        `.\nДействие уйдёт в Undo.`
     )
   )
     return null;
@@ -1348,10 +1358,12 @@ function VSlider({
  * user-tunable (live refetch, debounced) and persist as named presets.
  */
 function VectorSection({
+  dieId,
   dispatcher,
   vectorLayer,
   getTraceSnapTargets
 }: {
+  dieId: string;
   dispatcher: ActionDispatcher;
   vectorLayer: VectorizeLayer | null;
   getTraceSnapTargets?: () => TraceSnapTarget[];
@@ -1373,7 +1385,52 @@ function VectorSection({
   const [busy, setBusy] = useState<null | "nets">(null);
   const [err, setErr] = useState<string | null>(null);
   const [tol, setTol] = useState(25);
+  const scoreFilter = usePreferences((s) => s.traceConfidenceThreshold);
+  const [sweep, setSweep] = useState<VectorSweepStatus>({
+    dieId: "",
+    status: "idle",
+    done: 0,
+    total: 0
+  });
   const presetNames = Object.keys(presets).sort();
+
+  // Poll the sweep while it runs; refresh the layer's cache when it ends.
+  useEffect(() => {
+    if (sweep.status !== "running") return;
+    const t = setInterval(() => {
+      getVectorSweep(dieId)
+        .then((s) => {
+          setSweep(s);
+          if (s.status !== "running") {
+            vectorLayer?.clearCache();
+          }
+        })
+        .catch(() => {});
+    }, 1000);
+    return () => clearInterval(t);
+  }, [sweep.status, dieId, vectorLayer]);
+
+  const startSweep = async () => {
+    setErr(null);
+    try {
+      const layers = useOverlayLayers.getState().layers;
+      const visible = layers.find((l) => !l.hidden && l.loaded);
+      const overlaySource = visible?.serverFilename ?? visible?.name ?? undefined;
+      const s = await startVectorSweep(dieId, params, overlaySource);
+      setSweep(s);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "sweep start failed");
+    }
+  };
+
+  const stopSweep = async () => {
+    try {
+      const s = await stopVectorSweep(dieId);
+      setSweep(s);
+    } catch {
+      /* poll will settle the state */
+    }
+  };
 
   // Pipette maths: channel value of the accumulated mean. Gray matches the
   // decoder's Rec.601 luma; a raw channel reads its own plane.
@@ -1383,9 +1440,9 @@ function VectorSection({
     let g = 0;
     let b = 0;
     for (const s of samples) {
-      r += s[0];
-      g += s[1];
-      b += s[2];
+      r += s.rgb[0];
+      g += s.rgb[1];
+      b += s.rgb[2];
     }
     r /= samples.length;
     g /= samples.length;
@@ -1457,8 +1514,15 @@ function VectorSection({
             ? "decoding…"
             : status.error
               ? `error: ${status.error}`
-              : `${status.traces} trace(s) decoded`}
+              : `${status.traces} trace(s) decoded` +
+                (status.droppedWidth ? ` · width-filtered: ${status.droppedWidth}` : "")}
       </div>
+      {scoreFilter > 0 && (
+        <div className="m" style={{ fontSize: 10, color: "var(--warn, #d9a441)", marginBottom: 4 }}>
+          Trace confidence = {scoreFilter.toFixed(2)} also filters these
+          traces (brightness margin) — outlines show everything, traces don't.
+        </div>
+      )}
 
       {/* Channel + polarity */}
       <div
@@ -1474,10 +1538,10 @@ function VectorSection({
           onChange={(e) => patch({ channel: e.target.value as VectorizeParams["channel"] })}
           style={{ flex: 1, minWidth: 0 }}
         >
-          <option value="gray">brightness</option>
-          <option value="r">R</option>
-          <option value="g">G</option>
-          <option value="b">B</option>
+          <option value="gray">brightness (luma)</option>
+          <option value="r">R plane</option>
+          <option value="g">G plane</option>
+          <option value="b">B plane</option>
         </select>
         <label
           className="row"
@@ -1491,6 +1555,12 @@ function VectorSection({
           />
           dark metal
         </label>
+      </div>
+      <div className="m" style={{ fontSize: 10, color: "var(--ink3)", marginBottom: 4 }}>
+        brightness = luminance (luma) of the pixel — the usual choice for SEM
+        and monochrome die photos. R/G/B = raw colour planes (optical shots).
+        Pipette samples keep RGB: after switching the channel just press
+        Apply again — no re-sampling needed.
       </div>
 
       {params.adaptive ? (
@@ -1653,6 +1723,66 @@ function VectorSection({
           Reset params
         </button>
       </div>
+
+      {/* Whole-die sweep: decode every block, cache, overlay reads blocks */}
+      <div style={{ borderTop: "1px solid var(--l1)", margin: "12px 0 10px" }} />
+      <div className="m" style={{ fontSize: 10.5, color: "var(--ink3)", marginBottom: 6 }}>
+        Live mode decodes the visible viewport only. Run a whole-die decode to
+        cover the entire crystal with the current parameters — then panning is
+        instant (blocks come from cache).
+      </div>
+      {sweep.status === "running" ? (
+        <>
+          <button
+            type="button"
+            className="btn"
+            style={{ width: "100%", cursor: "pointer" }}
+            onClick={() => void stopSweep()}
+          >
+            Stop whole-die decode ({sweep.done}/{sweep.total})
+          </button>
+          <div
+            style={{
+              height: 5,
+              borderRadius: 3,
+              background: "var(--l1)",
+              overflow: "hidden",
+              marginTop: 6
+            }}
+          >
+            <div
+              style={{
+                height: "100%",
+                width: `${sweep.total ? Math.round((sweep.done / sweep.total) * 100) : 0}%`,
+                background: "var(--accent, #7fb2ff)",
+                transition: "width 0.2s"
+              }}
+            />
+          </div>
+        </>
+      ) : (
+        <button
+          type="button"
+          className="btn"
+          style={{ width: "100%", cursor: "pointer" }}
+          disabled={!vectorLayer}
+          title="Decode the whole die with the current parameters (block-by-block, ~4 s per Mpx). Results are cached on disk; the overlay then reads them everywhere."
+          onClick={() => void startSweep()}
+        >
+          Decode whole die
+        </button>
+      )}
+      {sweep.status === "completed" && (
+        <div className="m" style={{ fontSize: 10, color: "var(--ink3)", marginTop: 4 }}>
+          cached · {sweep.done} block(s) · changing any parameter switches the
+          overlay back to live mode (re-run to re-cache)
+        </div>
+      )}
+      {sweep.error && (
+        <div className="m" style={{ fontSize: 10, color: "var(--danger, #e36854)", marginTop: 4 }}>
+          {sweep.error}
+        </div>
+      )}
 
       {/* Pipette: sample the metal colour on the canvas, average, apply */}
       <div style={{ borderTop: "1px solid var(--l1)", margin: "12px 0 10px" }} />
