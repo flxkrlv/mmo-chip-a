@@ -80,12 +80,21 @@ else
 fi
 
 PIP() {
-    # Retry once: CDNs (files.pythonhosted.org, download.pytorch.org) sometimes
-    # drop mid-download and pip spins on the dead socket. Fetched wheels stay
-    # cached. pip honours PIP_INDEX_URL env — mirrors work without changes.
-    "$VENV_PY" -m pip "$@" || {
+    # Retry once + long timeout: flaky CDNs (files.pythonhosted.org,
+    # download.pytorch.org) drop mid-download and pip spins on the dead
+    # socket. Fetched wheels stay cached. pip honours PIP_INDEX_URL env.
+    "$VENV_PY" -m pip --timeout 60 --retries 5 "$@" || {
         echo "pip failed — retrying once..."
-        "$VENV_PY" -m pip "$@"
+        "$VENV_PY" -m pip --timeout 60 --retries 5 "$@"
+    }
+}
+
+# Same as PIP plus resumable downloads for the multi-GB torch/IPEX wheels
+# (requires pip >= 25.1 — only used after the pip upgrade step).
+PIP_RESUMABLE() {
+    "$VENV_PY" -m pip --timeout 60 --retries 5 --resume-retries 5 "$@" || {
+        echo "pip failed — retrying once..."
+        "$VENV_PY" -m pip --timeout 60 --retries 5 --resume-retries 5 "$@"
     }
 }
 
@@ -110,11 +119,11 @@ echo "Install variant: $MODE"
 # Non-torch packages (the non-torch subset of ml/requirements.txt) — installed
 # first so a torch-variant failure never blocks the base stack.
 echo "Installing base ML packages..."
-PIP install opencv-contrib-python-headless numpy scipy pillow tqdm fastapi "uvicorn[standard]" python-multipart
+PIP_RESUMABLE install opencv-contrib-python-headless numpy scipy pillow tqdm fastapi "uvicorn[standard]" python-multipart
 
 install_torch_extras() {
     echo "Installing segmentation-models-pytorch + albumentations..."
-    PIP install segmentation-models-pytorch albumentations
+    PIP_RESUMABLE install segmentation-models-pytorch albumentations
 }
 
 # ── optional: Intel Arc compute drivers (Ubuntu) ───────────────────
@@ -134,23 +143,23 @@ install_intel_drivers() {
 case "$MODE" in
     nvidia)
         echo "NVIDIA GPU — installing CUDA PyTorch from PyPI (large download, ~2.5 GB)..."
-        PIP install -r "$ML_DIR/requirements.txt"
+        PIP_RESUMABLE install -r "$ML_DIR/requirements.txt"
         ;;
     intel)
         echo "Intel Arc — installing XPU PyTorch 2.6 + IPEX..."
         install_intel_drivers
-        if PIP install torch==2.6.0+xpu torchvision==0.21.0+xpu --index-url https://download.pytorch.org/whl/xpu &&
-            PIP install intel-extension-for-pytorch==2.6.0; then
+        if PIP_RESUMABLE install torch==2.6.0+xpu torchvision==0.21.0+xpu --index-url https://download.pytorch.org/whl/xpu &&
+            PIP_RESUMABLE install intel-extension-for-pytorch==2.6.0; then
             install_torch_extras
         else
             echo "XPU install failed — falling back to CPU PyTorch."
-            PIP install torch torchvision --index-url https://download.pytorch.org/whl/cpu --force-reinstall
+            PIP_RESUMABLE install torch torchvision --index-url https://download.pytorch.org/whl/cpu --force-reinstall
             install_torch_extras
         fi
         ;;
     *)
         echo "No supported GPU — installing CPU-only PyTorch..."
-        PIP install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+        PIP_RESUMABLE install torch torchvision --index-url https://download.pytorch.org/whl/cpu
         install_torch_extras
         ;;
 esac

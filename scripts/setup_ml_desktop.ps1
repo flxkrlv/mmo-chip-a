@@ -113,14 +113,28 @@ if (Test-Path $venvPython) {
 function Invoke-Pip {
   # pip natively honours PIP_INDEX_URL / PIP_EXTRA_INDEX_URL from the
   # environment — locked-down networks can point it at a mirror that way.
+  # Long timeout + retries: flaky networks drop connections that pip's
+  # 15 s default can't survive.
   Write-Host "pip $($args -join ' ')" -ForegroundColor DarkGray
-  & $venvPython -m pip @args
+  & $venvPython -m pip --timeout 60 --retries 5 @args
   if ($LASTEXITCODE -ne 0) {
     # CDN connections (files.pythonhosted.org, download.pytorch.org) sometimes
     # die mid-download and pip spins at 100% CPU on the dead socket — retry
     # once before giving up (the wheels already fetched stay cached).
     Write-Host "pip failed (exit $LASTEXITCODE) — retrying once..." -ForegroundColor Yellow
-    & $venvPython -m pip @args
+    & $venvPython -m pip --timeout 60 --retries 5 @args
+    if ($LASTEXITCODE -ne 0) { throw "pip install failed (args: $args)" }
+  }
+}
+
+# Same as Invoke-Pip plus resumable downloads — for the multi-GB torch/IPEX
+# wheels. Requires pip >= 25.1, so only used after the pip upgrade step.
+function Invoke-PipResumable {
+  Write-Host "pip $($args -join ' ')" -ForegroundColor DarkGray
+  & $venvPython -m pip --timeout 60 --retries 5 --resume-retries 5 @args
+  if ($LASTEXITCODE -ne 0) {
+    Write-Host "pip failed (exit $LASTEXITCODE) — retrying once..." -ForegroundColor Yellow
+    & $venvPython -m pip --timeout 60 --retries 5 --resume-retries 5 @args
     if ($LASTEXITCODE -ne 0) { throw "pip install failed (args: $args)" }
   }
 }
@@ -144,34 +158,34 @@ Write-Host "Install variant: $mode" -ForegroundColor Green
 # Non-torch packages (the non-torch subset of ml/requirements.txt) — installed
 # first so a torch-variant failure never blocks the base stack.
 Write-Host "Installing base ML packages..." -ForegroundColor Green
-Invoke-Pip install opencv-contrib-python-headless numpy scipy pillow tqdm fastapi "uvicorn[standard]" python-multipart
+Invoke-PipResumable install opencv-contrib-python-headless numpy scipy pillow tqdm fastapi "uvicorn[standard]" python-multipart
 
 # segmentation-models-pytorch pins torch indirectly; install it after torch.
 function Install-TorchExtras {
   Write-Host "Installing segmentation-models-pytorch + albumentations..." -ForegroundColor Green
-  Invoke-Pip install segmentation-models-pytorch albumentations
+  Invoke-PipResumable install segmentation-models-pytorch albumentations
 }
 
 switch ($mode) {
   "nvidia" {
     Write-Host "NVIDIA GPU — installing CUDA PyTorch from PyPI (large download, ~2.5 GB)..." -ForegroundColor Green
-    Invoke-Pip install -r (Join-Path $mlDir "requirements.txt")
+    Invoke-PipResumable install -r (Join-Path $mlDir "requirements.txt")
   }
   "intel" {
     Write-Host "Intel Arc — installing XPU PyTorch 2.6 + IPEX..." -ForegroundColor Green
     try {
-      Invoke-Pip install torch==2.6.0+xpu torchvision==0.21.0+xpu --index-url https://download.pytorch.org/whl/xpu
-      Invoke-Pip install intel-extension-for-pytorch==2.6.0
+      Invoke-PipResumable install torch==2.6.0+xpu torchvision==0.21.0+xpu --index-url https://download.pytorch.org/whl/xpu
+      Invoke-PipResumable install intel-extension-for-pytorch==2.6.0
       Install-TorchExtras
     } catch {
       Write-Host "XPU install failed — falling back to CPU PyTorch." -ForegroundColor Yellow
-      Invoke-Pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu --force-reinstall
+      Invoke-PipResumable install torch torchvision --index-url https://download.pytorch.org/whl/cpu --force-reinstall
       Install-TorchExtras
     }
   }
   default {
     Write-Host "No supported GPU — installing CPU-only PyTorch..." -ForegroundColor Green
-    Invoke-Pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+    Invoke-PipResumable install torch torchvision --index-url https://download.pytorch.org/whl/cpu
     Install-TorchExtras
   }
 }
