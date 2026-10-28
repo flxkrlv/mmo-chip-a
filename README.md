@@ -68,6 +68,11 @@ npm run desktop:build:linux  # → AppImage + deb
 Optional auth: set `JWT_SECRET` on the server to require login (the app ships
 a login/register page); without it anyone on the LAN has full access.
 
+ML is optional: run `setup_ml.bat` / `setup_ml.ps1` (Linux: `setup_ml.sh`) in
+the app folder to install the Python sidecar as a plugin (GPU auto-detected);
+the app starts it automatically on the next launch. Without it everything
+else works out of the box.
+
 Frameless in-app title bar, MCP via `http://127.0.0.1:3101/mcp` + the Claude
 Desktop `.mcpb`. Details: [docs/DESKTOP_BUILD.md](docs/DESKTOP_BUILD.md).
 

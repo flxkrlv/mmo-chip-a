@@ -8,7 +8,14 @@ export interface ChipDesktopBridge {
   platform: string;
   frameless: boolean;
   isDesktop: boolean;
-  info: () => Promise<{ platform: string; version: string; backendUrl: string; frameless: boolean }>;
+  info: () => Promise<{
+    platform: string;
+    version: string;
+    backendUrl: string;
+    frameless: boolean;
+    /** ML sidecar plugin installed into this app dir (setup_ml.ps1/.sh). */
+    mlSidecar: boolean;
+  }>;
   window: (action: "minimize" | "toggle-maximize" | "close") => void;
   /** State pushes from the main process (maximize toggles). */
   onState: (listener: (state: { maximized: boolean }) => void) => () => void;

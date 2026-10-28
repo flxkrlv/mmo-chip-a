@@ -9,6 +9,20 @@ npm run desktop:build:win    # Windows: stages payload + bundles sims + zip arti
 npm run desktop:build:linux  # Linux (needs 7z only for the Windows ngspice path)
 ```
 
+### Downloads and caches (universal build)
+
+`pkg:win` / `pkg:linux` run through [desktop/pkg.cjs](../desktop/pkg.cjs),
+which points electron-builder's caches into the repo
+(`desktop/.electron-cache`, `desktop/.electron-builder-cache` — both
+gitignored) instead of the default `%LOCALAPPDATA%`. On machines where the
+user profile is not fully writable the default location fails mid-download
+(`open …zip.part5: Access is denied`); with the repo cache the first build
+fills it once and every later build is an offline cache hit — no proxy env
+and no per-machine setup. If GitHub itself is unreachable, the last-resort
+escape hatch is still `ELECTRON_GET_USE_PROXY=1` +
+`GLOBAL_AGENT_HTTPS_PROXY=http://<proxy:port>` (caller-set env beats the
+repo default).
+
 Artifacts land in `desktop/build/dist/` — `mmo-chip-<version>[-win].zip` /
 unpacked `win-unpacked/` (testable as-is), AppImage + `.deb` for Linux.
 
@@ -26,8 +40,10 @@ mmo-chip.exe (Electron main, desktop/main.cjs)
  │         └─ re-spawns node --import tsx scripts/netlist-export.ts (unchanged)
  ├─ resources/app/     repo-mirror: backend/dist, shared/, frontend/{src,dist},
  │                     scripts/netlist-export.ts, node_modules (prod deps + tsx)
+ │                     ml/*.py — ML sidecar sources (optional plugin, see below)
  ├─ resources/bin/     Spice64/{bin,lib,share} (ngspice_con.exe), vyges-lvs
  │   → env NGSPICE_BIN / LVS_CLI_PATH, so the system installs are never probed
+ ├─ setup_ml.ps1/.bat/.sh  optional ML plugin installers (at the app root)
  └─ frameless window → http://127.0.0.1:3101/ (TopBar doubles as the title bar)
 ```
 
@@ -74,6 +90,45 @@ shown in a dialog instead of exiting silently.
 `npm run dev` (Vite 5173 + backend 3001 + ML sidecar) and, from `desktop/`,
 `npm run dev:vite` — the shell loads Vite and spawns no backend of its own.
 
+## ML sidecar as an optional plugin
+
+ML is not bundled (torch is a ~2.5 GB dependency), but every package ships the
+sidecar sources (`resources/app/ml/*.py`) and the installers at the app root.
+The plugin is deliberately the **same layout as the dev repo**: a Python venv
+at `resources/app/ml/.venv` plus `checkpoints/` — nothing new to learn.
+
+Windows (in the extracted app folder):
+
+```powershell
+# double-click setup_ml.bat, or:
+powershell -ExecutionPolicy Bypass -File setup_ml.ps1
+# from a repo checkout against a built dist:
+powershell -File scripts\setup_ml_desktop.ps1 -AppDir desktop\build\dist\win-unpacked
+```
+
+Linux:
+
+```sh
+bash setup_ml.sh                             # in-bundle copy (app root)
+bash scripts/setup_ml_desktop.sh <appdir>    # from a repo checkout
+```
+
+What the installer does: finds Python ≥ 3.10, creates the venv, detects the
+GPU (NVIDIA → CUDA wheels from PyPI; Intel Arc → XPU wheels + IPEX with a
+CPU fallback; otherwise CPU-only torch; `-Gpu nvidia|intel|cpu` overrides),
+installs the ML dependencies and creates `ml/checkpoints/` for `*.pt` models.
+It is idempotent — re-run it to repair or after an app update (updating the
+app folder wipes the plugin).
+
+On the next launch the shell picks the plugin up automatically: the log shows
+`ml sidecar: плагин найден — запускаю на 127.0.0.1:8001`, the sidecar starts
+next to the backend (local and `--serve` modes; a `--connect` client never
+spawns one — ML runs on the server machine). `CHIPTOOL_ML_SIDECAR_URL` moves
+the port. Removing the plugin = deleting `resources/app/ml/.venv`.
+
+Without the plugin the app works exactly as before: ML endpoints answer
+`sidecar unreachable`, everything else (ngspice, vyges-lvs, MCP) is unaffected.
+
 ## Verify checklist (what was actually run when this landed)
 
 - `desktop/build/dist/win-unpacked` boots: `/api/health` 200, `/` serves the
@@ -94,9 +149,10 @@ shown in a dialog instead of exiting silently.
 - Windows artifact is a zip (choose a signed NSIS build later; NSIS mmap bug
   hits 100 MB+ payloads on some hosts: `npx electron-builder --win nsis`).
 - No code signing / notarization yet.
-- ML sidecar is not bundled: the desktop app starts without it and ML paths
-  fail until the pack downloader lands (follow-up phase). ngspice/vyges/MCP
-  all work out of the box.
+- ML sidecar is not bundled (torch is huge): it installs as an optional
+  plugin via `setup_ml.ps1` / `setup_ml.sh` at the app root — see
+  "ML sidecar as an optional plugin" above. ngspice/vyges/MCP all work out
+  of the box. (A UI "download ML pack" button remains a follow-up.)
 - No auto-update plumbing yet (electron-updater wants signed builds first).
 - Chromium sandbox is disabled for the packaged app (launcher env) because of
   the machine-specific early-init crash; revisit when the root cause is known

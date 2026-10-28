@@ -278,11 +278,11 @@ function discoverLanUrls() {
   return urls;
 }
 
-function waitForBackend(timeoutMs) {
+function waitForUrl(url, timeoutMs) {
   const started = Date.now();
   return new Promise((resolve, reject) => {
     const probe = () => {
-      const request = http.get(`${BACKEND_URL}/api/health/`, (response) => {
+      const request = http.get(url, (response) => {
         response.resume();
         if (response.statusCode && response.statusCode < 500) resolve();
         else retry();
@@ -291,13 +291,17 @@ function waitForBackend(timeoutMs) {
     };
     const retry = () => {
       if (Date.now() - started > timeoutMs) {
-        reject(new Error(`backend did not start within ${timeoutMs / 1000}s`));
+        reject(new Error(`did not come up within ${timeoutMs / 1000}s: ${url}`));
         return;
       }
-      setTimeout(probe, 250);
+      setTimeout(probe, 500);
     };
     probe();
   });
+}
+
+function waitForBackend(timeoutMs) {
+  return waitForUrl(`${BACKEND_URL}/api/health/`, timeoutMs);
 }
 
 // ── backend child ─────────────────────────────────────────────────
@@ -372,6 +376,104 @@ function stopBackend() {
   backend = null;
   if (process.platform === "win32") {
     // Node kills only the direct child; the backend may have spawned helpers.
+    execFile("taskkill", ["/pid", String(child.pid), "/T", "/F"], () => {
+      try {
+        child.kill();
+      } catch {}
+    });
+  } else {
+    child.kill("SIGTERM");
+    setTimeout(() => child.kill("SIGKILL"), 3000).unref();
+  }
+}
+
+// ── ML sidecar plugin (optional) ──────────────────────────────────
+//
+// The ML sidecar ships as an optional plugin: scripts/setup_ml_desktop.ps1
+// / setup_ml_desktop.sh (staged next to the exe as setup_ml.*) create a
+// Python venv inside resources/app/ml — exactly the dev repo layout. When
+// the venv is present the shell starts the sidecar next to the backend
+// (local and serve modes); without it the app runs as before and ML
+// features answer "sidecar unreachable". In --connect mode ML is the
+// server's business, so the client never starts one.
+
+const ML_DIR = path.join(appRoot, "ml");
+let sidecar = null;
+
+function findSidecarPlugin() {
+  const script = path.join(ML_DIR, "sidecar.py");
+  const python = path.join(
+    ML_DIR,
+    ".venv",
+    ...(process.platform === "win32" ? ["Scripts", "python.exe"] : ["bin", "python"])
+  );
+  if (fs.existsSync(python) && fs.existsSync(script)) return { python, script };
+  return null;
+}
+
+/** Port the sidecar should listen on; follows CHIPTOOL_ML_SIDECAR_URL. */
+function mlSidecarPort() {
+  const url = process.env.CHIPTOOL_ML_SIDECAR_URL;
+  if (url) {
+    try {
+      const port = Number(new URL(url).port);
+      if (port > 0) return port;
+    } catch {}
+  }
+  return 8001;
+}
+
+function startSidecar() {
+  const plugin = findSidecarPlugin();
+  if (!plugin) {
+    log("ml sidecar: плагин не установлен (опционально) — запустите setup_ml.ps1 / setup_ml.sh рядом с mmo-chip.exe");
+    return;
+  }
+  const port = mlSidecarPort();
+  log(`ml sidecar: плагин найден — запускаю на 127.0.0.1:${port}`);
+  sidecar = spawn(
+    plugin.python,
+    [
+      plugin.script,
+      "--host",
+      "127.0.0.1",
+      "--port",
+      String(port),
+      // Keep training data / cv dumps in the profile, not inside the app dir.
+      "--data-root",
+      path.join(app.getPath("userData"), "data")
+    ],
+    {
+      cwd: ML_DIR,
+      env: {
+        ...process.env,
+        // Stream log lines instead of buffering them in the pipe.
+        PYTHONUNBUFFERED: "1",
+        PYTHONIOENCODING: "utf-8"
+      },
+      windowsHide: true,
+      stdio: ["ignore", "pipe", "pipe"]
+    }
+  );
+  sidecar.stdout.on("data", (chunk) => log(`[sidecar] ${String(chunk).trimEnd()}`));
+  sidecar.stderr.on("data", (chunk) => log(`[sidecar:err] ${String(chunk).trimEnd()}`));
+  sidecar.on("error", (error) => log(`sidecar spawn failed: ${error.message}`));
+  sidecar.on("exit", (code) => {
+    sidecar = null;
+    if (code && !quitting) log(`sidecar exited with code ${code}`);
+  });
+  // First start imports torch (slow, sometimes minutes) — probe in the
+  // background and just record the outcome, the window must not wait.
+  waitForUrl(`http://127.0.0.1:${port}/health`, 10 * 60_000)
+    .then(() => log(`sidecar up on http://127.0.0.1:${port}`))
+    .catch(() => log("sidecar: /health не ответил за 10 минут — ML может быть недоступен (см. [sidecar] логи)"));
+}
+
+function stopSidecar() {
+  if (!sidecar) return;
+  const child = sidecar;
+  sidecar = null;
+  if (process.platform === "win32") {
     execFile("taskkill", ["/pid", String(child.pid), "/T", "/F"], () => {
       try {
         child.kill();
@@ -542,7 +644,10 @@ ipcMain.handle("desktop:info", () => ({
   version: app.getVersion(),
   // In --connect mode this is the remote server the window actually talks to.
   backendUrl: targetUrl,
-  frameless: true
+  frameless: true,
+  // ML plugin installed into this app dir (setup_ml.ps1/.sh)? The frontend
+  // can use it to point users at the installer instead of dead ML tabs.
+  mlSidecar: findSidecarPlugin() !== null
 }));
 
 // ── lifecycle ─────────────────────────────────────────────────────
@@ -579,6 +684,9 @@ if (!app.requestSingleInstanceLock()) {
         startBackend();
         await waitForBackend(30_000);
         log(`backend up on ${BACKEND_URL}`);
+        // Optional ML plugin: start after the backend, don't block the window
+        // on torch import — health is probed in the background.
+        startSidecar();
       }
 
       if (launch.mode === "serve") {
@@ -608,12 +716,14 @@ if (!app.requestSingleInstanceLock()) {
     }
     quitting = true;
     stopBackend();
+    stopSidecar();
     app.quit();
   });
 
   app.on("before-quit", () => {
     quitting = true;
     stopBackend();
+    stopSidecar();
   });
 
   process.on("uncaughtException", (error) => {
