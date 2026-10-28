@@ -1227,6 +1227,7 @@ function InferenceSection({
             minScore,
             snapTargets: getTraceSnapTargets(),
             snapTol: Math.max(8, usePreferences.getState().viaSize * 2),
+            stitchTol: 12,
             layer: "metal1"
           });
           if (!result.nets.length) {
@@ -1236,8 +1237,8 @@ function InferenceSection({
           if (
             !await dialog.confirm(
               `Создать ${result.nets.length} net(ей) из ${traces.length} трасс?\n` +
-                `Концов со снапом: ${result.snappedEnds}, отброшено вырожденных: ${result.droppedDegenerate}.\n` +
-                `Действие уйдёт в Undo.`
+                `Концов со снапом: ${result.snappedEnds}, сшито разрывов: ${result.stitchedPairs}, ` +
+                `отброшено вырожденных: ${result.droppedDegenerate}.\nДействие уйдёт в Undo.`
             )
           )
             return;

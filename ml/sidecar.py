@@ -90,6 +90,10 @@ class ModelState:
     model: torch.nn.Module | None = None
     model_loaded: bool = False
     training_active: bool = False
+    # Trace-channel decode: binarize lower than the via peak threshold — an
+    # under-trained trace mask dips along wires, and a 0.5 cut fragments the
+    # skeleton into disjoint segments.
+    trace_threshold: float = 0.35
     # Serializes GPU work. Step 1 doesn't use it yet; later steps (predict /
     # train) acquire this so concurrent tile requests don't race the device.
     lock: threading.Lock = field(default_factory=threading.Lock)
@@ -332,7 +336,9 @@ def predict_region(
     resp: dict = {
         "point_vias": [{"x": int(x), "y": int(y), "score": float(s)} for (x, y, s) in peaks],
         "irregular_vias": extract_components(ch1, threshold=threshold) if ch1 is not None else [],
-        "traces": extract_trace_skeleton(ch2, threshold=threshold) if ch2 is not None else [],
+        "traces": extract_trace_skeleton(
+            ch2, threshold=STATE.trace_threshold, bridge_px=2
+        ) if ch2 is not None else [],
         "width": w,
         "height": h,
         "num_classes": n_ch,
@@ -904,9 +910,14 @@ def main() -> None:
     parser.add_argument("--data-root", default=os.environ.get("ML_DATA_ROOT", str(ML_DIR.parent / "data")))
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=int(os.environ.get("ML_SIDECAR_PORT", 8001)))
+    parser.add_argument("--trace-threshold", type=float,
+                        default=float(os.environ.get("ML_TRACE_THRESHOLD", 0.35)),
+                        help="trace-channel binarization threshold (lower = fewer "
+                             "gaps in the decoded wires; vias keep using --threshold)")
     args = parser.parse_args()
 
     STATE.data_root = Path(args.data_root)
+    STATE.trace_threshold = args.trace_threshold
     if args.checkpoint:
         ckpt = Path(args.checkpoint)
         if not ckpt.is_absolute():

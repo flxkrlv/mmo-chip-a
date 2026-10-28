@@ -89,7 +89,8 @@ def extract_trace_skeleton(mask_prob: np.ndarray,
                            threshold: float = 0.5,
                            epsilon: float = 2.0,
                            min_len: int = 14,
-                           max_polylines: int = 100_000) -> list[dict]:
+                           max_polylines: int = 100_000,
+                           bridge_px: int = 2) -> list[dict]:
     """trace decode (v2): skeleton → branch graph → centreline polylines.
 
     Thin the thresholded mask to 1-px centrelines (scikit-image), group
@@ -97,6 +98,11 @@ def extract_trace_skeleton(mask_prob: np.ndarray,
     corridors between them: one polyline per branch, ends snapped to node
     centroids. Unlike v1's fat contour outlines, these centrelines carry
     meaningful END coordinates — the snap targets for vias / device contacts.
+
+    `bridge_px` closes small mask gaps first (morphological close with a
+    (2·bridge+1)² kernel): an under-trained mask dips below the threshold
+    along a wire for a few pixels, which would otherwise cut the skeleton —
+    and the wire — into fragments.
 
     Returns [{"points": [[x, y], …], "score": mean prob along branch}].
     """
@@ -106,6 +112,14 @@ def extract_trace_skeleton(mask_prob: np.ndarray,
     binary = mask_prob > threshold
     if not binary.any():
         return []
+    if bridge_px > 0:
+        # Morphological close bridges sub-threshold dips so the skeleton
+        # stays connected along a wire instead of fragmenting.
+        k = 2 * bridge_px + 1
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (k, k))
+        binary = cv2.morphologyEx(binary.astype(np.uint8), cv2.MORPH_CLOSE, kernel).astype(bool)
+        if not binary.any():
+            return []
     skel = skeletonize(binary).astype(np.uint8)
     h, w = skel.shape
 

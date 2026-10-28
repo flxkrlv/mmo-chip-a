@@ -34,6 +34,10 @@ export interface TracesToNetsInput {
   snapTargets: TraceSnapTarget[];
   /** Snap tolerance in world (source-px) units. */
   snapTol: number;
+  /** Gap-bridging tolerance: decode fragments whose ends nearly touch are
+   *  stitched into one connected wire (both ends pulled to the shared
+   *  point). In world (source-px) units. */
+  stitchTol: number;
   /** Conductor layer stamped on every created edge. */
   layer: WireLayer;
   /** Net naming: `<prefix>1`, `<prefix>2`, … */
@@ -46,6 +50,8 @@ export interface TracesToNetsResult {
   snappedEnds: number;
   /** Traces dropped for having fewer than 2 vertices. */
   droppedDegenerate: number;
+  /** How many fragment pairs were stitched into shared points. */
+  stitchedPairs: number;
 }
 
 /** Endpoint merge key: snapped ends land on identical coordinates; decoded
@@ -55,19 +61,20 @@ function endpointKey(x: number, y: number): string {
 }
 
 export function buildNetsFromTraces(input: TracesToNetsInput): TracesToNetsResult {
-  const { traces, minScore, snapTargets, snapTol, layer, namePrefix = "ML-" } = input;
+  const { traces, minScore, snapTargets, snapTol, stitchTol, layer, namePrefix = "ML-" } = input;
 
   // 1. Snap every polyline end to the nearest target (first hit wins by
   //    distance, matching the wire tool's nearest-candidate behaviour).
   let snappedEnds = 0;
   let droppedDegenerate = 0;
-  const snapped: { points: [number, number][]; score: number }[] = [];
+  const snapped: { points: [number, number][]; score: number; onContact: [boolean, boolean] }[] = [];
   for (const t of traces) {
     if ((t.score ?? 1) < minScore || t.points.length < 2) {
       droppedDegenerate += 1;
       continue;
     }
     const pts = t.points.map((p) => [p[0], p[1]] as [number, number]);
+    const onContact: [boolean, boolean] = [false, false];
     for (const end of [0, pts.length - 1] as const) {
       let best: TraceSnapTarget | null = null;
       let bestD = snapTol;
@@ -80,10 +87,46 @@ export function buildNetsFromTraces(input: TracesToNetsInput): TracesToNetsResul
       }
       if (best) {
         pts[end] = [best.x, best.y];
+        onContact[end] = true;
         snappedEnds += 1;
       }
     }
-    snapped.push({ points: pts, score: t.score ?? 1 });
+    snapped.push({ points: pts, score: t.score ?? 1, onContact });
+  }
+
+  // 1.5 Stitch decode fragments: endpoints that nearly touch are merged and
+  //     pulled to a shared point (the contact end wins — it preserves the
+  //     real connection — otherwise the midpoint), so the wire is physically
+  //     continuous instead of "segments with gaps".
+  let stitchedPairs = 0;
+  interface EndRef { trace: number; end: 0 | 1; x: number; y: number; onContact: boolean }
+  const ends: EndRef[] = [];
+  snapped.forEach((t, i) => {
+    ends.push({ trace: i, end: 0, x: t.points[0][0], y: t.points[0][1], onContact: t.onContact[0] });
+    ends.push({ trace: i, end: 1, x: t.points[t.points.length - 1][0], y: t.points[t.points.length - 1][1], onContact: t.onContact[1] });
+  });
+  for (let a = 0; a < ends.length; a++) {
+    for (let b = a + 1; b < ends.length; b++) {
+      const ea = ends[a];
+      const eb = ends[b];
+      if (ea.trace === eb.trace) continue;
+      const d = Math.hypot(ea.x - eb.x, ea.y - eb.y);
+      if (d > stitchTol) continue;
+      const shared: [number, number] = ea.onContact
+        ? [ea.x, ea.y]
+        : eb.onContact
+          ? [eb.x, eb.y]
+          : [(ea.x + eb.x) / 2, (ea.y + eb.y) / 2];
+      snapped[ea.trace].points[ea.end === 0 ? 0 : snapped[ea.trace].points.length - 1] = shared;
+      snapped[eb.trace].points[eb.end === 0 ? 0 : snapped[eb.trace].points.length - 1] = shared;
+      ea.x = shared[0];
+      ea.y = shared[1];
+      eb.x = shared[0];
+      eb.y = shared[1];
+      ea.onContact = ea.onContact || eb.onContact;
+      eb.onContact = ea.onContact;
+      stitchedPairs += 1;
+    }
   }
 
   // 2. Union branches whose endpoints coincide (same contact / junction).
@@ -165,5 +208,5 @@ export function buildNetsFromTraces(input: TracesToNetsInput): TracesToNetsResul
     });
   }
 
-  return { nets, snappedEnds, droppedDegenerate };
+  return { nets, snappedEnds, droppedDegenerate, stitchedPairs };
 }

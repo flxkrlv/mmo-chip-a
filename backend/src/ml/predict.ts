@@ -282,10 +282,10 @@ export function createMLPredictor(config: {
   }
 
   function cacheDirFor(dieId: string, hash: string | null): string {
-    // "v2-" prefix: decode-version tag. v2 switched the trace decode from
-    // fat contour outlines to skeleton centrelines with snap endpoints —
-    // tiles cached by v1 must not be served against the new geometry.
-    return path.join(config.dataRoot, "predictions", dieId, `v2-${hash ?? "nohash"}`);
+    // "v3-" prefix: decode-version tag. v3 lowered the trace binarization
+    // threshold and bridges small mask gaps before skeletonizing — tiles
+    // cached by older decodes carry fragmentary geometry.
+    return path.join(config.dataRoot, "predictions", dieId, `v3-${hash ?? "nohash"}`);
   }
 
   function tileCachePath(
