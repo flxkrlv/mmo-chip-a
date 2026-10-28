@@ -57,6 +57,7 @@ export function TopBar({ breadcrumb, meta, savedAgo, onUndo, onRedo, canUndo, ca
 
   return (
     <div
+      className="titlebar-host"
       style={{
         height: 38,
         borderBottom: "1px solid var(--l2)",

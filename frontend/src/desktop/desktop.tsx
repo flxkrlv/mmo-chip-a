@@ -27,11 +27,19 @@ export function isDesktopApp(): boolean {
   return chipDesktop?.isDesktop === true;
 }
 
+// Frameless mode: the TopBar doubles as the title bar. Chromium keeps drag
+// regions "sticky" — elements painted above a drag strip must explicitly opt
+// out, so the shell flags the document and global.css carves the exceptions.
+if (isDesktopApp() && typeof document !== "undefined") {
+  document.body.classList.add("desktop-frameless");
+}
+
 /** Controls rendered into the frameless title bar (TopBar / page chrome). */
 export function WindowControls(): ReactNode {
   if (!chipDesktop) return null;
   return (
     <div
+      className="desktop-window-controls"
       style={
         {
           display: "flex",
@@ -117,7 +125,7 @@ export function DesktopPageChrome(): ReactNode {
   return (
     <>
       <div
-        className="titlebar-drag"
+        className="desktop-page-chrome-strip"
         style={{ position: "fixed", inset: "0 0 auto 0", height: 38, zIndex: 900 }}
       />
       <div style={{ position: "fixed", top: 9, right: 6, zIndex: 901 }}>
