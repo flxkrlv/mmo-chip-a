@@ -103,6 +103,7 @@ import {
   type WireSnap,
   type WireTool
 } from "../components/dieViewer/useWireTool";
+import type { TraceSnapTarget } from "../components/dieViewer/mlTracesToNets";
 import { buildInstanceTerminalMap } from "../lib/extraction/terminalDetect";
 import { useCellTool } from "../components/dieViewer/useCellTool";
 import { useLibraryCellTool } from "../components/dieViewer/useLibraryCellTool";
@@ -1747,6 +1748,17 @@ function DieViewer({ dieId }: { dieId: string }) {
     }
     deviceTerminalsRef.current = out;
   }, [analogDevices]);
+
+  // Trace-endpoint snap candidates for the ML traces→nets materialization:
+  // the same set the wire tool snaps to (device electrodes, cell-instance
+  // terminals, IO pins).
+  const getTraceSnapTargets = useCallback(() => {
+    const out: TraceSnapTarget[] = [];
+    for (const t of deviceTerminalsRef.current) out.push({ x: t.x, y: t.y, label: t.terminalId });
+    for (const t of cellTerminals) out.push({ x: t.worldX, y: t.worldY, label: t.id });
+    for (const pin of annotationsRef.current?.pins ?? []) out.push({ x: pin.x, y: pin.y, label: `pin:${pin.id}` });
+    return out;
+  }, [cellTerminals]);
 
   // Rebuild the per-net device-electrode connection grid from the extracted
   // devices. Only terminals whose resolved netId maps to a real annotation net
@@ -4682,6 +4694,7 @@ function DieViewer({ dieId }: { dieId: string }) {
             die={die}
             library={library}
             mlViasLayer={mlViasLayer}
+            getTraceSnapTargets={getTraceSnapTargets}
             proposals={proposals}
             cellTypeCounts={cellTypeCounts}
             devices={analogDevices}

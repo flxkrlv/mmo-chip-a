@@ -1,4 +1,4 @@
-import type { DieMetadata, MLPrediction, MLViasTilesResponse } from "shared";
+import type { DieMetadata, MLTracePolyline, MLPrediction, MLViasTilesResponse } from "shared";
 import {
   pointInRect,
   rectsIntersect,
@@ -164,6 +164,11 @@ export class MLViasLayer implements Layer {
   private readonly dieId: string;
   private readonly metadata: DieMetadata;
   private readonly cache = new Map<string, CachedViasTile>();
+  /** Memoized trace-endpoint snap lookups (`"x:y"` → target or null). The
+   *  lookup scans every cached via; without the memo it ran per endpoint
+   *  per frame and lagged the canvas with thousands of cached detections.
+   *  Cleared whenever tile data changes (loads, retry, clear). */
+  private readonly snapCache = new Map<string, { x: number; y: number } | null>();
   /** Block keys (`${bx}/${by}`) already fetched — prevents re-requesting a
    *  block every frame. Cleared on `retryFailed()` (job-progress drives a
    *  refetch of unloaded tiles) and on `clearCache()` (model switch). */
@@ -438,9 +443,32 @@ export class MLViasLayer implements Layer {
   clearCache(): void {
     this.cache.clear();
     this.requestedBlocks.clear();
+    this.snapCache.clear();
     this.fetchQueue.length = 0;
     this.notifyCountChange();
     this.invalidateCb?.();
+  }
+
+  /**
+   * Every decoded trace polyline held in the cache, deduplicated. A trace
+   * crossing tile borders overlaps several keep-boxes, so the backend
+   * repeats the full polyline in each — dedupe by the rounded point
+   * sequence (decodes emit integer coordinates, identical across repeats).
+   * Used by the traces→nets materialization.
+   */
+  collectTraces(): MLTracePolyline[] {
+    const seen = new Set<string>();
+    const out: MLTracePolyline[] = [];
+    for (const tile of this.cache.values()) {
+      if (!tile.loaded || !tile.data) continue;
+      for (const t of tile.data.traces) {
+        const key = t.points.map((p) => `${Math.round(p[0])},${Math.round(p[1])}`).join(";");
+        if (seen.has(key)) continue;
+        seen.add(key);
+        out.push(t);
+      }
+    }
+    return out;
   }
 
   /**
@@ -622,22 +650,29 @@ export class MLViasLayer implements Layer {
           for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1]);
           ctx.strokeStyle = ML_TRACE_STROKE;
           ctx.stroke();
-          // Endpoint snapping: ML via first (this layer's cache), then the
-          // wire tool's contact/terminal/pin candidates.
-          for (const end of [pts[0], pts[pts.length - 1]]) {
-            const viaHit = this.findNearestPointVia({ x: end[0], y: end[1] }, snapTol);
-            const target = viaHit ?? this.display.findSnapTarget?.({ x: end[0], y: end[1] }, snapTol) ?? null;
-            if (!target) continue;
-            ctx.beginPath();
-            ctx.moveTo(end[0], end[1]);
-            ctx.lineTo(target.x, target.y);
-            ctx.strokeStyle = ML_TRACE_SNAP_STROKE;
-            ctx.stroke();
-            ctx.beginPath();
-            ctx.arc(target.x, target.y, Math.max(pointR, 3 / zoom), 0, Math.PI * 2);
-            ctx.strokeStyle = ML_TRACE_SNAP_STROKE;
-            ctx.stroke();
-          }
+      // Endpoint snapping: ML via first (this layer's cache), then the
+      // wire tool's contact/terminal/pin candidates. Results are memoized
+      // per endpoint coordinate — the lookup scans every cached via, and
+      // doing that per frame was the trace-overlay lag.
+      for (const end of [pts[0], pts[pts.length - 1]]) {
+        const key = `${end[0]}:${end[1]}`;
+        let target = this.snapCache.get(key);
+        if (target === undefined) {
+          const viaHit = this.findNearestPointVia({ x: end[0], y: end[1] }, snapTol);
+          target = viaHit ?? this.display.findSnapTarget?.({ x: end[0], y: end[1] }, snapTol) ?? null;
+          this.snapCache.set(key, target);
+        }
+        if (!target) continue;
+        ctx.beginPath();
+        ctx.moveTo(end[0], end[1]);
+        ctx.lineTo(target.x, target.y);
+        ctx.strokeStyle = ML_TRACE_SNAP_STROKE;
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.arc(target.x, target.y, Math.max(pointR, 3 / zoom), 0, Math.PI * 2);
+        ctx.strokeStyle = ML_TRACE_SNAP_STROKE;
+        ctx.stroke();
+      }
         }
       }
     }
@@ -715,6 +750,7 @@ export class MLViasLayer implements Layer {
             entry.failed = false;
             returned.add(key);
           }
+          this.snapCache.clear(); // new geometry → re-resolve trace snaps
           // Block tiles with no cached prediction → failed, so a later
           // `retryFailed` (fired as the inference job advances) re-fetches.
           for (let tx = tx0; tx <= tx1; tx++) {

@@ -27,6 +27,7 @@ import {
   isMlViaId,
   type MLViasLayer
 } from "../../renderer/layers/MLViasLayer";
+import { buildNetsFromTraces, type TraceSnapTarget } from "./mlTracesToNets";
 import { useDieViewerStore } from "../../state/dieViewer";
 import { usePreferences } from "../../state/preferences";
 import { useSession, DEFAULT_METAL_STACK } from "../../state/session";
@@ -520,6 +521,7 @@ export function InspectorPanel({
   die,
   library,
   mlViasLayer,
+  getTraceSnapTargets,
   cellTypeCounts,
   proposals = [],
   devices = [],
@@ -541,6 +543,9 @@ export function InspectorPanel({
    *  through it to fetch score / class. May be null while the page is still
    *  bootstrapping. */
   mlViasLayer: MLViasLayer | null;
+  /** Wire-tool snap candidates (device contacts / cell terminals / IO pins)
+   *  for the traces→nets materialization. Absent ⇒ the button is disabled. */
+  getTraceSnapTargets?: () => TraceSnapTarget[];
   /** Visible ML cell proposals — resolves `ml-cell:` selection ids. */
   proposals?: Proposal[];
   /** cellTypeId → instance count for relationship display. */
@@ -607,7 +612,13 @@ export function InspectorPanel({
             onOpenNetlist={onOpenAssistantNetlist ?? (() => {})}
           />
         ) : tab === "ml" ? (
-          <MLPanel dieId={dieId} annotations={annotations} dispatcher={dispatcher} mlViasLayer={mlViasLayer} />
+          <MLPanel
+            dieId={dieId}
+            annotations={annotations}
+            dispatcher={dispatcher}
+            mlViasLayer={mlViasLayer}
+            getTraceSnapTargets={getTraceSnapTargets}
+          />
         ) : tab === "cells" ? (
           <CellDetectionPanel dieId={dieId} annotations={annotations} library={library} />
         ) : tab === "lib" && analogCell ? (
@@ -785,17 +796,24 @@ function MLPanel({
   dieId,
   annotations,
   dispatcher,
-  mlViasLayer
+  mlViasLayer,
+  getTraceSnapTargets
 }: {
   dieId: string;
   annotations: DieAnnotations | undefined;
   dispatcher: ActionDispatcher;
   mlViasLayer: MLViasLayer | null;
+  getTraceSnapTargets?: () => TraceSnapTarget[];
 }) {
   return (
     <div>
       <MLSectionHeader>Inference</MLSectionHeader>
-      <InferenceSection dieId={dieId} />
+      <InferenceSection
+        dieId={dieId}
+        dispatcher={dispatcher}
+        mlViasLayer={mlViasLayer}
+        getTraceSnapTargets={getTraceSnapTargets}
+      />
       <MLSectionHeader>ML Vias</MLSectionHeader>
       <ApproveSection dieId={dieId} annotations={annotations} dispatcher={dispatcher} mlViasLayer={mlViasLayer} />
       <MLSectionHeader>Training</MLSectionHeader>
@@ -964,7 +982,17 @@ function jobStatusLine(job: MLInferenceJob | null | undefined): string {
 }
 
 /** Model dropdown, start/stop, live job progress, confidence threshold. */
-function InferenceSection({ dieId }: { dieId: string }) {
+function InferenceSection({
+  dieId,
+  dispatcher,
+  mlViasLayer,
+  getTraceSnapTargets
+}: {
+  dieId: string;
+  dispatcher: ActionDispatcher;
+  mlViasLayer: MLViasLayer | null;
+  getTraceSnapTargets?: () => TraceSnapTarget[];
+}) {
   const qc = useQueryClient();
   const dialog = useDialog();
   const models = useMLModels();
@@ -974,7 +1002,7 @@ function InferenceSection({ dieId }: { dieId: string }) {
   const setConfidence = usePreferences((s) => s.setViaConfidenceThreshold);
   const traceConfidence = usePreferences((s) => s.traceConfidenceThreshold);
   const setTraceConfidence = usePreferences((s) => s.setTraceConfidenceThreshold);
-  const [busy, setBusy] = useState<null | "model" | "job">(null);
+  const [busy, setBusy] = useState<null | "model" | "job" | "traces">(null);
   const [err, setErr] = useState<string | null>(null);
 
   const modelList = models.data?.models ?? [];
@@ -1181,6 +1209,53 @@ function InferenceSection({ dieId }: { dieId: string }) {
         Hides ML trace contours whose mean model probability is below this.
         Run a fresh inference after raising it — cached tiles predate scoring.
       </div>
+
+      {/* Traces → nets materialization */}
+      <button
+        type="button"
+        className="btn"
+        style={{ width: "100%", marginTop: 12 }}
+        disabled={busy !== null || !mlViasLayer || !getTraceSnapTargets}
+        title="Materialize decoded trace centrelines into real annotation nets (ends snapped to device contacts / terminals / pins). Undoable."
+        onClick={async () => {
+          if (!mlViasLayer || !getTraceSnapTargets) return;
+          setErr(null);
+          const minScore = usePreferences.getState().traceConfidenceThreshold;
+          const traces = mlViasLayer.collectTraces();
+          const result = buildNetsFromTraces({
+            traces,
+            minScore,
+            snapTargets: getTraceSnapTargets(),
+            snapTol: Math.max(8, usePreferences.getState().viaSize * 2),
+            layer: "metal1"
+          });
+          if (!result.nets.length) {
+            setErr("нет трасс для материализации — прогоните инференс и проверьте Trace confidence");
+            return;
+          }
+          if (
+            !await dialog.confirm(
+              `Создать ${result.nets.length} net(ей) из ${traces.length} трасс?\n` +
+                `Концов со снапом: ${result.snappedEnds}, отброшено вырожденных: ${result.droppedDegenerate}.\n` +
+                `Действие уйдёт в Undo.`
+            )
+          )
+            return;
+          setBusy("traces");
+          try {
+            await dispatcher.dispatch({
+              kind: "batch",
+              actions: result.nets.map((net) => ({ kind: "upsertNet", net, prevNet: null }))
+            });
+          } catch (e) {
+            setErr(e instanceof Error ? e.message : "traces → nets failed");
+          } finally {
+            setBusy(null);
+          }
+        }}
+      >
+        {busy === "traces" ? "Создаю nets…" : "Traces → nets"}
+      </button>
     </div>
   );
 }
