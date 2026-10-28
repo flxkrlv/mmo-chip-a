@@ -407,7 +407,16 @@ def vectorize_region_endpoint(
         width_max=width_max,
         max_outlines=max_outlines,
     )
-    return vectorize_region(rgb, params)
+    try:
+        return vectorize_region(rgb, params)
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001 — surface the cause, not a bare 500
+        import traceback
+        tail = traceback.format_exc().strip().splitlines()[-1]
+        raise HTTPException(
+            status_code=500, detail=f"vectorize failed: {exc} | {tail}"
+        ) from exc
 
 
 def _train_worker(job: JobRecord, params: TrainParams, out: str) -> None:

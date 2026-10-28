@@ -550,7 +550,9 @@ interface PreferencesActions {
 const DEFAULT_EXPANDED_SECTIONS: AnnotationKind[] = ["net", "via", "roi"];
 
 /** Defaults for the classical vectorize overlay: a mid brightness band that
- *  suits bright-metal-on-dark SEM crops — the user tunes from here. */
+ *  suits bright-metal-on-dark SEM crops — the user tunes from here. widthMax
+ *  starts at 30 px: without an upper bound fat blobs (pads, text, charging
+ *  halos) explode the trace count into noise. */
 export const DEFAULT_VECTOR_PARAMS: VectorizeParams = {
   channel: "gray",
   invert: false,
@@ -563,7 +565,7 @@ export const DEFAULT_VECTOR_PARAMS: VectorizeParams = {
   bridgePx: 2,
   minLength: 14,
   widthMin: 1.5,
-  widthMax: 0
+  widthMax: 30
 };
 
 export const usePreferences = create<PreferencesState & PreferencesActions>()(
