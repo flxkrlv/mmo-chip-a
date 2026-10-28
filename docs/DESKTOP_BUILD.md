@@ -52,6 +52,23 @@ per-process temp writes (shared agent sandboxes do); that also kills crashpad.
 Users on normal machines are unaffected; for tests set `TMP/TEMP` to a
 writable location.
 
+## Frameless window and the launcher
+
+`mmo-chip.exe` inside the package is a ~300 KB Rust launcher
+([desktop/launcher](../desktop/launcher)): it sets `ELECTRON_DISABLE_SANDBOX`
+and spawns `mmo-chip-app.exe` (the real Electron binary). On several target
+machines Chromium's sandbox initialization crashes Electron before main.js
+runs (silent exit, `0xc0000005` in the crash dump) — the launcher sidesteps
+that. Electron-builder's `afterPack` hook
+([scripts/desktop-after-pack.cjs](../scripts/desktop-after-pack.cjs)) does the
+rename/swap; without a built launcher the plain exe is kept.
+
+Every session logs to `<userData>/logs/mmo-chip.log` (backend stdout/stderr
+included) and user data lives in `%APPDATA%/mmo-chip`; if the user profile is
+not writable (locked-down machines), everything falls back to a
+`portable-data/` directory next to the resources and the backend failure is
+shown in a dialog instead of exiting silently.
+
 ## Development attach
 
 `npm run dev` (Vite 5173 + backend 3001 + ML sidecar) and, from `desktop/`,
@@ -67,6 +84,10 @@ writable location.
 - Bundled `ngspice_con.exe -b t.cir` writes analysis output with the Spice64
   layout intact (bin/lib/share).
 - vyges-lvs.exe bundled from `~/.cargo/bin`.
+- Launcher swap: `mmo-chip.exe` (300 KB) → `mmo-chip-app.exe` (Electron) via
+  afterPack; `ELECTRON_DISABLE_SANDBOX=1` makes the Electron binary survive
+  its early init on sandbox-crashing machines (verified for 33.4.11 and
+  45.1.0 with `--version`).
 
 ## Known trade-offs
 
@@ -77,3 +98,6 @@ writable location.
   fail until the pack downloader lands (follow-up phase). ngspice/vyges/MCP
   all work out of the box.
 - No auto-update plumbing yet (electron-updater wants signed builds first).
+- Chromium sandbox is disabled for the packaged app (launcher env) because of
+  the machine-specific early-init crash; revisit when the root cause is known
+  or Electron ships a fix.

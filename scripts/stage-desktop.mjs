@@ -19,7 +19,7 @@
  * Usage: node scripts/stage-desktop.mjs [--skip-install]
  */
 import { spawnSync } from "node:child_process";
-import { cpSync, existsSync, mkdirSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, cpSync, existsSync, mkdirSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -43,6 +43,29 @@ function copy(from, to) {
 rmSync(staging, { recursive: true, force: true });
 mkdirSync(appRoot, { recursive: true });
 mkdirSync(binRoot, { recursive: true });
+
+// Windows launcher (tiny Rust exe that sets ELECTRON_DISABLE_SANDBOX and
+// spawns the app): needed because Chromium's sandbox init crashes Electron
+// before main.js on some machines. Best-effort — cargo may be absent.
+{
+  const launcherDir = path.join(repoRoot, "desktop", "launcher");
+  if (existsSync(path.join(launcherDir, "Cargo.toml"))) {
+    const env = { ...process.env, CARGO_TARGET_DIR: path.join(repoRoot, "desktop", "build", "launcher-target") };
+    const result = spawnSync("cargo", ["build", "--release"], {
+      cwd: launcherDir,
+      stdio: "inherit",
+      env,
+      shell: process.platform === "win32"
+    });
+    const built = path.join(env.CARGO_TARGET_DIR, "release", "mmo-chip-launcher.exe");
+    if (result.status === 0 && existsSync(built)) {
+      copyFileSync(built, path.join(repoRoot, "desktop", "build", "staging", "launcher.exe"));
+      console.log("stage: launcher.exe built");
+    } else {
+      console.warn("stage: launcher build failed — the package keeps the plain Electron exe");
+    }
+  }
+}
 
 console.log("stage: backend…");
 if (!copy(path.join(repoRoot, "backend", "package.json"), path.join(appRoot, "backend", "package.json")))

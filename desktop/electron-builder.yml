@@ -16,6 +16,8 @@ files:
 
 asar: true
 
+afterPack: ../scripts/desktop-after-pack.cjs
+
 extraResources:
   - from: build/staging/resources/app
     to: app

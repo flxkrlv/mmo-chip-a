@@ -30,9 +30,7 @@ jobs:
       - name: Install desktop tooling
         run: npm install --prefix desktop
 
-      - name: vyges-lvs via cargo (Linux, optional)
-        if: runner.os == 'Linux'
-        continue-on-error: true
+      - name: Rust toolchain (launcher + vyges-lvs)
         uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           toolchain: stable

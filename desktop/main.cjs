@@ -11,12 +11,17 @@
  *     app/            backend/dist + frontend/dist + shared + node_modules
  *     bin/            bundled ngspice / vyges-lvs (optional)
  *
+ * The launcher (desktop/launcher) sets ELECTRON_DISABLE_SANDBOX and spawns
+ * this exe as mmo-chip-app.exe: on some machines Chromium's sandbox
+ * initialization crashes before main.js even runs, so "mmo-chip.exe" is a
+ * tiny launcher and the Electron binary sits next to it.
+ *
  * Dev shortcut: `electron . --dev-vite` attaches to an already running
  * `npm run dev` stack (Vite on :5173, backend on :3001) without spawning one.
  */
 "use strict";
 
-const { app, BrowserWindow, ipcMain, shell } = require("electron");
+const { app, BrowserWindow, dialog, ipcMain, shell } = require("electron");
 const { spawn, execFile } = require("node:child_process");
 const http = require("node:http");
 const path = require("node:path");
@@ -29,13 +34,96 @@ const VITE_URL = "http://localhost:5173";
 
 const resourcesRoot = path.isAbsolute(process.env.MMOCHECK_RESOURCES ?? "")
   ? path.resolve(process.env.MMOCHECK_RESOURCES)
-  : path.join(__dirname, "build", "staging", "resources");
+  : path.join(__dirname, "..", "resources");
 const appRoot = path.join(resourcesRoot, "app");
 const binDir = path.join(resourcesRoot, "bin");
 
 let backend = null;
 let mainWindow = null;
 let quitting = false;
+
+// ── logging (double-click launches have no console) ───────────────
+
+let logDir = null;
+let logFile = null;
+
+function initLogging() {
+  try {
+    logDir = app.getPath("logs");
+  } catch {
+    logDir = path.join(resourcesRoot, "logs");
+  }
+  if (!ensureWritable(logDir)) {
+    logDir = path.join(resourcesRoot, "logs");
+  }
+  try {
+    fs.mkdirSync(logDir, { recursive: true });
+    logFile = path.join(logDir, "mmo-chip.log");
+    log(`— session start (argv=${JSON.stringify(process.argv)})`);
+  } catch {
+    logFile = null;
+  }
+}
+
+function log(message) {
+  const line = `[${new Date().toISOString()}] ${message}`;
+  if (logFile) {
+    try {
+      // Keep the file bounded; the newest session matters most.
+      if (fs.existsSync(logFile) && fs.statSync(logFile).size > 2_000_000) {
+        fs.renameSync(logFile, logFile + ".old");
+      }
+      fs.appendFileSync(logFile, line + "\n");
+    } catch {}
+  }
+  console.log(line);
+}
+
+function ensureWritable(dir) {
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+    fs.accessSync(dir, fs.constants.W_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function showError(title, detail) {
+  log(`ERROR: ${title} — ${detail}`);
+  try {
+    dialog.showMessageBoxSync({
+      type: "error",
+      title: "mmo-chip",
+      message: title,
+      detail: `${detail}\n\nLog: ${logFile ?? "(log unavailable)"}`
+    });
+  } catch {}
+}
+
+// ── user data location ────────────────────────────────────────────
+
+let dataDirChoice = null;
+
+function initDataDir() {
+  // Pin the profile dir to the product name: after the launcher rename the
+  // Electron exe is "mmo-chip-app.exe", which would otherwise become the
+  // profile folder name.
+  const preferred = path.join(app.getPath("appData"), "mmo-chip");
+  if (ensureWritable(preferred)) {
+    app.setPath("userData", preferred);
+    app.setPath("logs", path.join(preferred, "logs"));
+    dataDirChoice = preferred;
+    return;
+  }
+  // Locked-down machines that deny writes to the user profile: keep all
+  // state next to the resources (portable mode) instead of failing silently.
+  const portable = path.join(resourcesRoot, "portable-data");
+  fs.mkdirSync(portable, { recursive: true });
+  app.setPath("userData", portable);
+  app.setPath("logs", path.join(portable, "logs"));
+  dataDirChoice = `${portable} (portable fallback — user profile not writable)`;
+}
 
 // ── small helpers ─────────────────────────────────────────────────
 
@@ -75,7 +163,7 @@ function waitForBackend(timeoutMs) {
 function startBackend() {
   const entry = path.join(appRoot, "backend", "dist", "index.js");
   if (!fs.existsSync(entry)) {
-    throw new Error(`backend bundle missing: ${entry} — run scripts/build-desktop.mjs first`);
+    throw new Error(`backend bundle missing: ${entry} — run npm run desktop:build:win first`);
   }
 
   const env = {
@@ -85,9 +173,8 @@ function startBackend() {
     // behaves exactly like the dev setup.
     ELECTRON_RUN_AS_NODE: "1",
     PORT: String(BACKEND_PORT),
-    // User data lives outside the (read-only) install directory. MMOCHECK_
-    // overrides exist for tests / portable runs.
-    CHIPTOOL_DATA_ROOT: process.env.MMOCHECK_DATA_ROOT ?? path.join(app.getPath("userData"), "data"),
+    // Follow the pinned user-data dir (the backend writes dies/overlays here).
+    CHIPTOOL_DATA_ROOT: path.join(app.getPath("userData"), "data"),
     CHIPTOOL_FRONTEND_DIST: path.join(appRoot, "frontend", "dist"),
     CHIPTOOL_APP_ROOT: appRoot,
     NO_COLOR: "1"
@@ -122,15 +209,17 @@ function startBackend() {
       cwd: appRoot,
       env,
       windowsHide: true,
-      stdio: ["ignore", "inherit", "inherit"]
+      // The backend log lands next to the shell log: double-click launches
+      // have no console, so this file is the only visible trace otherwise.
+      stdio: ["ignore", "pipe", "pipe"]
     }
   );
-  backend.on("error", (error) => console.error("[desktop] backend spawn failed:", error));
+  backend.stdout.on("data", (chunk) => log(`[backend] ${String(chunk).trimEnd()}`));
+  backend.stderr.on("data", (chunk) => log(`[backend:err] ${String(chunk).trimEnd()}`));
+  backend.on("error", (error) => log(`backend spawn failed: ${error.message}`));
   backend.on("exit", (code) => {
     backend = null;
-    if (code && !quitting && mainWindow) {
-      console.error(`[desktop] backend exited with code ${code}`);
-    }
+    if (code && !quitting) log(`backend exited with code ${code}`);
   });
   return backend;
 }
@@ -180,6 +269,9 @@ function createWindow() {
   mainWindow.on("resize", saveWindowBoundsSoon);
   mainWindow.on("maximize", () => mainWindow?.webContents.send("desktop:state", maximizedState()));
   mainWindow.on("unmaximize", () => mainWindow?.webContents.send("desktop:state", maximizedState()));
+  mainWindow.webContents.on("render-process-gone", (_event, details) => {
+    showError("Окно приложения закрылось", `renderer: ${details.reason} (exit code ${details.exitCode})`);
+  });
 
   // Open external links (docs, sourceforge …) in the real browser.
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
@@ -209,7 +301,6 @@ function saveWindowBoundsSoon() {
   boundsTimer = setTimeout(() => {
     if (!mainWindow || mainWindow.isDestroyed()) return;
     try {
-      fs.mkdirSync(app.getPath("userData"), { recursive: true });
       fs.writeFileSync(
         path.join(app.getPath("userData"), "window.json"),
         JSON.stringify({
@@ -261,16 +352,22 @@ if (!app.requestSingleInstanceLock()) {
   });
 
   app.whenReady().then(async () => {
+    initDataDir();
+    initLogging();
+    log(`userData: ${dataDirChoice}`);
     try {
       if (!DEV_VITE) {
-        info("starting backend…");
+        log("starting backend…");
         startBackend();
         await waitForBackend(30_000);
-        info(`backend up on ${BACKEND_URL}`);
+        log(`backend up on ${BACKEND_URL}`);
       }
       createWindow();
     } catch (error) {
-      console.error("[desktop] failed to start:", error);
+      showError(
+        "Не удалось запустить приложение",
+        error instanceof Error ? `${error.message}\n${error.stack ?? ""}` : String(error)
+      );
       app.exit(1);
     }
   });
@@ -285,8 +382,8 @@ if (!app.requestSingleInstanceLock()) {
     quitting = true;
     stopBackend();
   });
-}
 
-function info(...args) {
-  console.log("[desktop]", ...args);
+  process.on("uncaughtException", (error) => {
+    showError("Внутренняя ошибка приложения", error.stack ?? error.message);
+  });
 }
