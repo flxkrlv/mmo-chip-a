@@ -1120,17 +1120,16 @@ input.switch[type="checkbox"]:focus-visible {
 }
 
 /* ── Electron frameless window (desktop build only) ───────────────────
-   The TopBar doubles as the title bar: a full-width strip carries the drag
-   region, everything painted above it must explicitly opt out — otherwise
-   Chromium keeps the whole bar draggable and swallows clicks (nav tabs and
-   menu buttons stop working). */
-.desktop-frameless .titlebar-host,
-.desktop-frameless .titlebar-host * {
-  -webkit-app-region: no-drag;
-}
-.desktop-frameless .titlebar-host .titlebar-drag {
+   The TopBar container itself is the drag region; every descendant opts
+   out explicitly. (An absolutely-positioned strip UNDER the content does
+   NOT work: positioned layers paint after flow content, so the drag
+   region lands on top and swallows clicks from nav tabs / menus.) */
+.desktop-frameless .titlebar-host {
   -webkit-app-region: drag;
   user-select: none;
+}
+.desktop-frameless .titlebar-host * {
+  -webkit-app-region: no-drag;
 }
 /* Login page chrome: the fixed strip drags, the window controls opt out. */
 .desktop-frameless .desktop-page-chrome-strip {

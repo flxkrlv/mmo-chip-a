@@ -66,13 +66,11 @@ export function TopBar({ breadcrumb, meta, savedAgo, onUndo, onRedo, canUndo, ca
         alignItems: "center",
         padding: "0 12px",
         gap: 14,
-        flex: "0 0 auto",
-        position: "relative"
+        flex: "0 0 auto"
       }}
     >
-      {/* Frameless window: the bar doubles as the title bar (drag + buttons).
-          The strip sits under every real element, so hit-testing is intact. */}
-      {isDesktopApp() && <div className="titlebar-drag" style={{ position: "absolute", inset: 0 }} />}
+      {/* Frameless: the container itself is the drag region (see global.css);
+          every child opts out via CSS, so tabs and menus stay clickable. */}
       <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
         <BrandMark style={{ flex: "0 0 auto" }} />
         <div
