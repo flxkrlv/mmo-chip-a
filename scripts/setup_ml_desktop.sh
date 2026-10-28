@@ -80,7 +80,13 @@ else
 fi
 
 PIP() {
-    "$VENV_PY" -m pip "$@"
+    # Retry once: CDNs (files.pythonhosted.org, download.pytorch.org) sometimes
+    # drop mid-download and pip spins on the dead socket. Fetched wheels stay
+    # cached. pip honours PIP_INDEX_URL env — mirrors work without changes.
+    "$VENV_PY" -m pip "$@" || {
+        echo "pip failed — retrying once..."
+        "$VENV_PY" -m pip "$@"
+    }
 }
 
 echo "Upgrading pip..."

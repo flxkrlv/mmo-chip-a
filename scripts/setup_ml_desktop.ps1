@@ -111,11 +111,22 @@ if (Test-Path $venvPython) {
 }
 
 function Invoke-Pip {
+  # pip natively honours PIP_INDEX_URL / PIP_EXTRA_INDEX_URL from the
+  # environment — locked-down networks can point it at a mirror that way.
+  Write-Host "pip $($args -join ' ')" -ForegroundColor DarkGray
   & $venvPython -m pip @args
-  if ($LASTEXITCODE -ne 0) { throw "pip install failed (args: $args)" }
+  if ($LASTEXITCODE -ne 0) {
+    # CDN connections (files.pythonhosted.org, download.pytorch.org) sometimes
+    # die mid-download and pip spins at 100% CPU on the dead socket — retry
+    # once before giving up (the wheels already fetched stay cached).
+    Write-Host "pip failed (exit $LASTEXITCODE) — retrying once..." -ForegroundColor Yellow
+    & $venvPython -m pip @args
+    if ($LASTEXITCODE -ne 0) { throw "pip install failed (args: $args)" }
+  }
 }
 
-Invoke-Pip install --upgrade pip --quiet
+Write-Host "Upgrading pip..."
+Invoke-Pip install --upgrade pip
 
 # ── GPU detection ──────────────────────────────────────────────────
 $gpuNames = ""
