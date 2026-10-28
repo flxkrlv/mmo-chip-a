@@ -896,6 +896,24 @@ function DieViewer({ dieId }: { dieId: string }) {
             getTracesHidden: () => usePreferences.getState().mlTracesHidden,
             getTraceConfidenceThreshold: () =>
               usePreferences.getState().traceConfidenceThreshold,
+            // Trace endpoints snap to the same candidates the wire tool
+            // offers: extracted device electrodes, cell-instance terminals
+            // and IO pins (closures run at draw time, after these exist).
+            findSnapTarget: (world, tolWorld) => {
+              let best: { x: number; y: number; label: string } | null = null;
+              let bestD = tolWorld;
+              const consider = (x: number, y: number, label: string) => {
+                const d = Math.hypot(x - world.x, y - world.y);
+                if (d <= bestD) {
+                  bestD = d;
+                  best = { x, y, label };
+                }
+              };
+              for (const t of deviceTerminalsRef.current) consider(t.x, t.y, t.terminalId);
+              for (const t of cellTerminals) consider(t.worldX, t.worldY, t.id);
+              for (const pin of annotationsRef.current?.pins ?? []) consider(pin.x, pin.y, `pin:${pin.id}`);
+              return best;
+            },
             getViaColor: () => usePreferences.getState().viaColor,
             getViaWorldRadius: () => usePreferences.getState().viaSize,
             getConfidenceThreshold: () =>

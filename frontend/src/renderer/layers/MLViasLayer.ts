@@ -103,10 +103,10 @@ const MAX_VIEWPORT_FETCH = 4096;
 // actually heavy. Pending fetches queue and dispatch as slots free.
 const MAX_INFLIGHT_FETCHES = 4;
 const IRREGULAR_STROKE_PX = 1;
-// ML trace overlay (v1 contour decode of the model's trace channel): cyan,
+// ML trace overlay (v2 skeleton decode of the model's trace channel): cyan,
 // to read as "model's metal" — distinct from the green vias and user nets.
 const ML_TRACE_STROKE = "rgba(103, 232, 249, 0.9)";
-const ML_TRACE_FILL = "rgba(103, 232, 249, 0.16)";
+const ML_TRACE_SNAP_STROKE = "rgba(103, 232, 249, 0.65)";
 
 /** Block key (`${bx}/${by}`) a native tile belongs to. */
 function blockKey(tx: number, ty: number): string {
@@ -133,6 +133,10 @@ export interface MLViasDisplay {
    *  polyline to be drawn. Traces without a score (old caches) always pass.
    *  Absent ⇒ 0 (show everything). */
   getTraceConfidenceThreshold?: () => number;
+  /** Device contacts / cell terminals / IO pins as trace-endpoint snap
+   *  targets (the same candidates the wire tool offers). Return the snapped
+   *  point when one is within `tolWorld`, else null. Absent ⇒ no snap. */
+  findSnapTarget?: (world: Point, tolWorld: number) => { x: number; y: number; label: string } | null;
   /** Point-via render radius (world / source-pixel units). Same value is
    *  used by the snap-to-via tolerance via `findNearestPointVia(world,
    *  radius)`. Absent ⇒ default. */
@@ -598,27 +602,42 @@ export class MLViasLayer implements Layer {
         ctx.fillRect(x, y, w, h);
         ctx.strokeRect(x, y, w, h);
       }
-      // ML traces (v1 decode): closed contour polylines of the model's
-      // trace channel — each polygon outlines a region the model thinks is
-      // metal. Translucent fill + stroke. `score` (mean probability inside
-      // the contour) filters noise client-side; scoreless traces (caches
-      // written before scoring) always pass. Toggleable independently of
+      // ML traces (v2 decode): skeleton centreline polylines of the model's
+      // trace channel — thin lines whose ENDS are meaningful coordinates.
+      // Each end snaps to the nearest ML via (layer's own cache) or device
+      // contact / cell terminal / IO pin (via `findSnapTarget`); the snap
+      // draws a short connector + ring so the user sees the proposed
+      // connection without mutating any data. Toggleable independently of
       // the vias via `getTracesHidden`.
       if (!this.display.getTracesHidden?.()) {
         const minTraceScore = this.display.getTraceConfidenceThreshold?.() ?? 0;
+        const snapTol = Math.max(8, worldR * 2);
         ctx.lineWidth = stroke;
         for (const t of traces) {
           if ((t.score ?? 1) < minTraceScore) continue;
           const pts = t.points;
-          if (pts.length < 3) continue;
+          if (pts.length < 2) continue;
           ctx.beginPath();
           ctx.moveTo(pts[0][0], pts[0][1]);
           for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1]);
-          ctx.closePath();
-          ctx.fillStyle = ML_TRACE_FILL;
-          ctx.fill();
           ctx.strokeStyle = ML_TRACE_STROKE;
           ctx.stroke();
+          // Endpoint snapping: ML via first (this layer's cache), then the
+          // wire tool's contact/terminal/pin candidates.
+          for (const end of [pts[0], pts[pts.length - 1]]) {
+            const viaHit = this.findNearestPointVia({ x: end[0], y: end[1] }, snapTol);
+            const target = viaHit ?? this.display.findSnapTarget?.({ x: end[0], y: end[1] }, snapTol) ?? null;
+            if (!target) continue;
+            ctx.beginPath();
+            ctx.moveTo(end[0], end[1]);
+            ctx.lineTo(target.x, target.y);
+            ctx.strokeStyle = ML_TRACE_SNAP_STROKE;
+            ctx.stroke();
+            ctx.beginPath();
+            ctx.arc(target.x, target.y, Math.max(pointR, 3 / zoom), 0, Math.PI * 2);
+            ctx.strokeStyle = ML_TRACE_SNAP_STROKE;
+            ctx.stroke();
+          }
         }
       }
     }

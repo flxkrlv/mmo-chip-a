@@ -37,7 +37,7 @@ from pydantic import BaseModel
 
 from augment import normalize_only
 from cv_match import akaze_verify_matches, akaze_debug_matches, match_contour_pipeline, match_template_pipeline
-from heatmap import extract_components, extract_peaks, extract_trace_polylines
+from heatmap import extract_components, extract_peaks, extract_trace_skeleton
 from model import build_model, infer_num_classes
 from tiling import tile_predict
 from trainer import TrainParams, run_training
@@ -332,7 +332,7 @@ def predict_region(
     resp: dict = {
         "point_vias": [{"x": int(x), "y": int(y), "score": float(s)} for (x, y, s) in peaks],
         "irregular_vias": extract_components(ch1, threshold=threshold) if ch1 is not None else [],
-        "traces": extract_trace_polylines(ch2, threshold=threshold) if ch2 is not None else [],
+        "traces": extract_trace_skeleton(ch2, threshold=threshold) if ch2 is not None else [],
         "width": w,
         "height": h,
         "num_classes": n_ch,

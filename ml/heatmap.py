@@ -85,6 +85,145 @@ def extract_components(mask_prob: np.ndarray,
     return out
 
 
+def extract_trace_skeleton(mask_prob: np.ndarray,
+                           threshold: float = 0.5,
+                           epsilon: float = 2.0,
+                           min_len: int = 14,
+                           max_polylines: int = 100_000) -> list[dict]:
+    """trace decode (v2): skeleton → branch graph → centreline polylines.
+
+    Thin the thresholded mask to 1-px centrelines (scikit-image), group
+    junction/endpoint pixels into node clusters, and walk the degree-2
+    corridors between them: one polyline per branch, ends snapped to node
+    centroids. Unlike v1's fat contour outlines, these centrelines carry
+    meaningful END coordinates — the snap targets for vias / device contacts.
+
+    Returns [{"points": [[x, y], …], "score": mean prob along branch}].
+    """
+    from scipy.ndimage import center_of_mass, label as scipy_label
+    from skimage.morphology import skeletonize
+
+    binary = mask_prob > threshold
+    if not binary.any():
+        return []
+    skel = skeletonize(binary).astype(np.uint8)
+    h, w = skel.shape
+
+    # 8-neighbour count per skeleton pixel (padded shifts).
+    padded = np.pad(skel, 1, mode="constant")
+    neighbours = np.zeros((h, w), dtype=np.uint8)
+    for dy in (-1, 0, 1):
+        for dx in (-1, 0, 1):
+            if dy != 0 or dx != 0:
+                neighbours += padded[1 + dy:1 + dy + h, 1 + dx:1 + dx + w]
+
+    # Nodes: junctions (≥3 neighbours) and free endpoints (1). Adjacent node
+    # pixels collapse into one node cluster; the cluster centroid is the
+    # polyline endpoint coordinates.
+    node_mask = skel.astype(bool) & ((neighbours >= 3) | (neighbours == 1))
+    node_labels, n_nodes = scipy_label(node_mask)
+    centroids: dict[int, tuple[int, int]] = {}
+    if n_nodes:
+        coms = center_of_mass(node_mask, node_labels, range(1, n_nodes + 1))
+        for lab, (cy, cx) in enumerate(coms, start=1):
+            centroids[lab] = (int(round(cy)), int(round(cx)))
+
+    def neighbours_of(py: int, px: int) -> list[tuple[int, int]]:
+        out = []
+        for dy in (-1, 0, 1):
+            for dx in (-1, 0, 1):
+                if dy == 0 and dx == 0:
+                    continue
+                ny, nx_ = py + dy, px + dx
+                if 0 <= ny < h and 0 <= nx_ < w and skel[ny, nx_]:
+                    out.append((ny, nx_))
+        return out
+
+    # Corridor pixels (degree-2 skeleton pixels between node clusters) form
+    # disjoint paths and cycles: every corridor pixel has ≤2 corridor
+    # neighbours, so walk each connected component from an endpoint (or
+    # anywhere, for cycles) — deterministic, no mid-corridor splits.
+    corridors = skel.astype(bool) & ~node_mask
+    cor_set = set(zip(*np.nonzero(corridors)))
+    cor_n: dict[tuple[int, int], list[tuple[int, int]]] = {
+        p: [q for q in neighbours_of(*p) if q in cor_set] for p in cor_set
+    }
+    visited_cor: set[tuple[int, int]] = set()
+    paths: list[list[tuple[int, int]]] = []
+
+    def follow(start: tuple[int, int], nxt: tuple[int, int]) -> list[tuple[int, int]]:
+        path = [start, nxt]
+        visited_cor.update((start, nxt))
+        prev, cur = start, nxt
+        while True:
+            cands = [q for q in cor_n[cur] if q != prev]
+            if not cands:
+                break
+            q = cands[0]
+            if q == start or q in visited_cor:
+                break  # cycle closed / component fully consumed
+            prev, cur = cur, q
+            path.append(cur)
+            visited_cor.add(cur)
+            if len(path) > 4_000_000:  # runaway guard
+                break
+        return path
+
+    # Seed path components from their END pixels first (exactly one corridor
+    # neighbour) so a component is walked whole; cycles (no ends) follow in a
+    # second pass from any pixel.
+    for p in cor_set:
+        if p in visited_cor:
+            continue
+        if len(cor_n[p]) == 1:
+            paths.append(follow(p, cor_n[p][0]))
+    for p in cor_set:
+        if p in visited_cor:
+            continue
+        nb = cor_n[p]
+        if len(nb) >= 1:
+            paths.append(follow(p, nb[0]))
+        else:
+            paths.append([p])
+            visited_cor.add(p)
+
+    # Attach node-cluster centroids at both path ends (a corridor component
+    # terminates on a node cluster at each end, or is a detached cycle).
+    def attach(path: list[tuple[int, int]]) -> list[tuple[int, int]]:
+        pts = list(path)
+        for q in neighbours_of(*path[0]):
+            lab = int(node_labels[q]) if node_mask[q] else 0
+            if lab:
+                pts.insert(0, centroids[lab])
+                break
+        for q in neighbours_of(*path[-1]):
+            lab = int(node_labels[q]) if node_mask[q] else 0
+            if lab:
+                pts.append(centroids[lab])
+                break
+        return pts
+
+    traces: list[dict] = []
+    for path in paths:
+        if len(path) < 2 or len(path) < min_len:
+            continue
+        pts_src = attach(path)
+        arr = np.array([[px, py] for (py, px) in pts_src], dtype=np.int32)
+        approx = (cv2.approxPolyDP(arr.reshape(-1, 1, 2), epsilon, closed=False).reshape(-1, 2)
+                  if len(arr) >= 3 else arr)
+        polyline = [[int(px), int(py)] for px, py in approx]
+        if len(polyline) < 2:
+            continue
+        sel = mask_prob[np.array([py for (py, _) in path]),
+                        np.array([px for (_, px) in path])]
+        score = float(sel.mean()) if sel.size else 0.0
+        traces.append({"points": polyline, "score": round(score, 4)})
+        if len(traces) >= max_polylines:
+            print(f"[warn] trace decode v2: hit cap {max_polylines} — mask is noisy")
+            break
+    return traces
+
+
 def extract_trace_polylines(mask_prob: np.ndarray,
                             threshold: float = 0.5,
                             epsilon: float = 1.5,

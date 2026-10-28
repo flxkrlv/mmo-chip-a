@@ -282,7 +282,10 @@ export function createMLPredictor(config: {
   }
 
   function cacheDirFor(dieId: string, hash: string | null): string {
-    return path.join(config.dataRoot, "predictions", dieId, hash ?? "nohash");
+    // "v2-" prefix: decode-version tag. v2 switched the trace decode from
+    // fat contour outlines to skeleton centrelines with snap endpoints —
+    // tiles cached by v1 must not be served against the new geometry.
+    return path.join(config.dataRoot, "predictions", dieId, `v2-${hash ?? "nohash"}`);
   }
 
   function tileCachePath(
