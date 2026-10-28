@@ -19,12 +19,13 @@
  * Usage: node scripts/stage-desktop.mjs [--skip-install]
  */
 import { spawnSync } from "node:child_process";
-import { copyFileSync, cpSync, existsSync, mkdirSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, cpSync, existsSync, mkdirSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const staging = path.join(repoRoot, "desktop", "build", "staging", "resources");
+const stagingRoot = path.join(repoRoot, "desktop", "build", "staging");
+const staging = path.join(stagingRoot, "resources");
 const appRoot = path.join(staging, "app");
 const binRoot = path.join(staging, "bin");
 
@@ -91,6 +92,33 @@ console.log("stage: scripts/netlist-export.ts…");
   if (!copy(path.join(repoRoot, "scripts", "netlist-export.ts"), path.join(scriptsDir, "netlist-export.ts")))
     process.exit(1);
 }
+
+// ML sidecar sources: shipped in every bundle so the optional plugin
+// (scripts/setup_ml_desktop.*) has something to install into. Only the
+// .py sources + requirements.txt — the venv and checkpoints are created
+// on the user's machine by the plugin installer.
+console.log("stage: ml sidecar sources…");
+{
+  const mlSrc = path.join(repoRoot, "ml");
+  const mlDst = path.join(appRoot, "ml");
+  mkdirSync(mlDst, { recursive: true });
+  for (const entry of readdirSync(mlSrc)) {
+    const full = path.join(mlSrc, entry);
+    if (!statSync(full).isFile()) continue;
+    if (entry.endsWith(".py") || entry === "requirements.txt") {
+      copyFileSync(full, path.join(mlDst, entry));
+    }
+  }
+}
+
+// The plugin installers land at the packaged app root (extraFiles in
+// electron-builder.yml), next to mmo-chip.exe — a zip user can install ML
+// without a repo checkout. Windows users get a .bat shim because Explorer
+// blocks .ps1 double-clicks by default.
+console.log("stage: ml plugin installers…");
+copyFileSync(path.join(repoRoot, "scripts", "setup_ml_desktop.ps1"), path.join(stagingRoot, "setup_ml.ps1"));
+copyFileSync(path.join(repoRoot, "scripts", "setup_ml_desktop.sh"), path.join(stagingRoot, "setup_ml.sh"));
+copyFileSync(path.join(repoRoot, "scripts", "setup_ml_desktop.bat"), path.join(stagingRoot, "setup_ml.bat"));
 
 // Node runtime packages: backend prod deps + tsx (netlist child) + clipper2-wasm.
 if (!skipInstall) {

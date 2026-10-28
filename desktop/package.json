@@ -8,8 +8,8 @@
   "scripts": {
     "start": "electron .",
     "dev:vite": "electron . --dev-vite",
-    "pkg:win": "electron-builder --win",
-    "pkg:linux": "electron-builder --linux"
+    "pkg:win": "node pkg.cjs --win",
+    "pkg:linux": "node pkg.cjs --linux"
   },
   "devDependencies": {
     "electron": "^33.2.0",
