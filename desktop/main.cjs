@@ -1,9 +1,9 @@
 /**
  * mmo-chip desktop shell (Electron main).
  *
- * The app is a UI over the Node backend: this process spawns the backend as a
- * plain Node child (`ELECTRON_RUN_AS_NODE=1` turns the Electron binary into a
- * Node runtime) and opens a frameless window on the URL Express serves. The
+ * The app is a UI over the Node backend: the local mode spawns the backend as
+ * a plain Node child (`ELECTRON_RUN_AS_NODE=1` turns the Electron binary into
+ * a Node runtime) and opens a frameless window on the URL Express serves. The
  * resources root mirrors the repo layout (resources/app = repo root), so the
  * backend's own netlist-export re-spawn keeps working unchanged:
  *
@@ -16,18 +16,39 @@
  * initialization crashes before main.js even runs, so "mmo-chip.exe" is a
  * tiny launcher and the Electron binary sits next to it.
  *
- * Dev shortcut: `electron . --dev-vite` attaches to an already running
- * `npm run dev` stack (Vite on :5173, backend on :3001) without spawning one.
+ * Launch modes:
+ *   (default)       spawn a local backend, window on http://127.0.0.1:<port>
+ *   --serve         spawn a local backend, no window: a tray icon offers the
+ *                   LAN URLs — teammates open http://<ip>:<port> in a browser
+ *                   (MMOCHECK_ROLE=server env does the same)
+ *   --connect <url> no backend; the window loads a remote server. Bare
+ *                   "host:port" works (http:// is implied, port defaults to
+ *                   3101). The URL is persisted to userData/connection.json,
+ *                   so plain launches reconnect to it afterwards.
+ *   --local         forget the saved remote connection, back to local backend
+ *   --dev-vite      attach to an already running `npm run dev` stack (Vite on
+ *                   :5173, backend on :3001) without spawning one.
  */
 "use strict";
 
-const { app, BrowserWindow, dialog, ipcMain, shell } = require("electron");
-const { spawn, execFile } = require("node:child_process");
+const { app, BrowserWindow, Tray, Menu, dialog, ipcMain, shell, clipboard, nativeImage } = require("electron");
+const { spawn, spawnSync, execFile } = require("node:child_process");
 const http = require("node:http");
+const os = require("node:os");
 const path = require("node:path");
 const fs = require("node:fs");
 
-const DEV_VITE = process.argv.includes("--dev-vite");
+// Windows shells often pass single-dash flags (`-connect`); canonicalize to
+// "--flag" before matching. Values (URLs, paths) never start with "-", so
+// they pass through untouched.
+const argvCanon = process.argv.map((a) =>
+  a.startsWith("-") && a !== "-" ? `--${a.replace(/^-+/, "")}` : a
+);
+
+const DEV_VITE = argvCanon.includes("--dev-vite");
+const SERVE = argvCanon.includes("--serve") || process.env.MMOCHECK_ROLE === "server";
+const LOCAL = argvCanon.includes("--local");
+const CONNECT_ARG = parseConnectArg(argvCanon);
 const BACKEND_PORT = Number(process.env.MMOCHECK_PORT ?? process.env.PORT ?? 3101);
 const BACKEND_URL = `http://127.0.0.1:${BACKEND_PORT}`;
 const VITE_URL = "http://localhost:5173";
@@ -45,12 +66,106 @@ const binDir = path.join(resourcesRoot, "bin");
 
 let backend = null;
 let mainWindow = null;
+let tray = null;
 let quitting = false;
+
+// Resolved in whenReady: the URL every window loads (local backend, remote
+// server in --connect mode, or the Vite dev server).
+let targetUrl = BACKEND_URL;
+let launchMode = "local";
+let lanUrls = [];
+
+// ── launch mode ───────────────────────────────────────────────────
+
+function parseConnectArg(argv) {
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i];
+    // "" = flag present without a usable value; null = flag absent.
+    if (arg === "--connect") return argv[i + 1] && !argv[i + 1].startsWith("--") ? argv[i + 1] : "";
+    if (arg.startsWith("--connect=")) return arg.slice("--connect=".length);
+  }
+  return null;
+}
+
+/** Advertised default when the user omits the port (`--connect 10.0.0.5`). */
+const DEFAULT_SERVER_PORT = 3101;
+
+/**
+ * Accept what humans actually type: "10.0.0.5:3101", "host:3101", full
+ * "http(s)://..." URLs. Scheme-less input gets http://; an http URL without
+ * an explicit port gets the default one. Returns normalized href or null.
+ */
+function normalizeServerUrl(raw) {
+  let value = String(raw).trim();
+  if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(value)) value = `http://${value}`;
+  try {
+    const url = new URL(value);
+    if (url.protocol !== "http:" && url.protocol !== "https:") return null;
+    if (url.protocol === "http:" && !url.port) url.port = String(DEFAULT_SERVER_PORT);
+    return url.href;
+  } catch {
+    return null;
+  }
+}
+
+function loadConnection() {
+  try {
+    const file = path.join(app.getPath("userData"), "connection.json");
+    const parsed = JSON.parse(fs.readFileSync(file, "utf8"));
+    if (parsed?.mode === "remote" && typeof parsed.url === "string" && normalizeServerUrl(parsed.url)) return parsed;
+    if (parsed?.mode === "local") return parsed;
+  } catch {}
+  return null;
+}
+
+function saveConnection(entry) {
+  try {
+    fs.mkdirSync(app.getPath("userData"), { recursive: true });
+    fs.writeFileSync(path.join(app.getPath("userData"), "connection.json"), JSON.stringify(entry, null, 2) + "\n");
+  } catch (error) {
+    log(`connection.json save failed: ${error.message}`);
+  }
+}
+
+function resolveLaunchMode() {
+  if (SERVE) return { mode: "serve" };
+  if (DEV_VITE) return { mode: "dev" };
+  if (LOCAL) {
+    saveConnection({ mode: "local" });
+    return { mode: "local" };
+  }
+  if (CONNECT_ARG !== null) {
+    if (!CONNECT_ARG) throw new Error("--connect: не указан адрес сервера (пример: --connect 10.0.0.5:3101)");
+    const url = normalizeServerUrl(CONNECT_ARG);
+    if (!url) throw new Error(`--connect: не удалось разобрать адрес «${CONNECT_ARG}»`);
+    saveConnection({ mode: "remote", url });
+    return { mode: "connect", url };
+  }
+  const saved = loadConnection();
+  if (saved?.mode === "remote") return { mode: "connect", url: normalizeServerUrl(saved.url) };
+  return { mode: "local" };
+}
 
 // ── logging (double-click launches have no console) ───────────────
 
 let logDir = null;
 let logFile = null;
+
+/**
+ * Windows consoles default to the OEM codepage (cp866 on Russian systems),
+ * while our log lines are UTF-8 → mojibake. Flip the attached console to
+ * UTF-8 before the first output. The codepage is a property of the console
+ * itself, so the child cmd call affects the parent's console too. Lines
+ * printed before this point stay garbled; that's just the shell banner.
+ */
+function initConsoleCodepage() {
+  if (process.platform !== "win32" || !process.stdout?.isTTY) return;
+  try {
+    // /d: skip cmd autorun scripts; stdio ignore hides the "Active code page"
+    // banner. Harmless no-op when there is no console (double-click launch).
+    spawnSync("cmd.exe", ["/d", "/c", "chcp", "65001"], { stdio: "ignore", windowsHide: true, timeout: 2000 });
+  } catch {}
+}
 
 function initLogging() {
   try {
@@ -149,6 +264,18 @@ function bundledBinary(names) {
     if (fs.existsSync(p)) return p;
   }
   return null;
+}
+
+/** LAN IPv4 addresses to advertise in serve mode (localhost excluded). */
+function discoverLanUrls() {
+  const urls = [];
+  for (const list of Object.values(os.networkInterfaces())) {
+    for (const net of list ?? []) {
+      if (net.family !== "IPv4" || net.internal) continue;
+      urls.push(`http://${net.address}:${BACKEND_PORT}`);
+    }
+  }
+  return urls;
 }
 
 function waitForBackend(timeoutMs) {
@@ -259,6 +386,12 @@ function stopBackend() {
 // ── window ────────────────────────────────────────────────────────
 
 function createWindow() {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    if (mainWindow.isMinimized()) mainWindow.restore();
+    mainWindow.show();
+    mainWindow.focus();
+    return mainWindow;
+  }
   const { width = 1600, height = 960, maximized = true } = loadWindowBounds();
   mainWindow = new BrowserWindow({
     // Frameless in the app's own style: drag + controls live in the TopBar.
@@ -288,13 +421,36 @@ function createWindow() {
     showError("Окно приложения закрылось", `renderer: ${details.reason} (exit code ${details.exitCode})`);
   });
 
+  // --connect: the server may be down/unreachable — offer a retry instead of
+  // leaving a blank frameless window (main frame loads only).
+  if (launchMode === "connect") {
+    mainWindow.webContents.on("did-fail-load", async (_event, code, desc, url, isMain) => {
+      if (!isMain) return;
+      log(`connect failed: [${code}] ${desc} ${url}`);
+      try {
+        const { response } = await dialog.showMessageBox(mainWindow, {
+          type: "warning",
+          title: "mmo-chip",
+          message: "Не удалось подключиться к серверу",
+          detail: `${url}\n[${code}] ${desc}\n\nПроверьте, что сервер запущен (--serve) и доступен по сети.`,
+          buttons: ["Повторить", "Закрыть окно"],
+          defaultId: 0,
+          cancelId: 1
+        });
+        if (response === 0) mainWindow?.loadURL(targetUrl);
+        else mainWindow?.close();
+      } catch {}
+    });
+  }
+
   // Open external links (docs, sourceforge …) in the real browser.
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     if (/^https?:/i.test(url)) void shell.openExternal(url);
     return { action: "deny" };
   });
 
-  mainWindow.loadURL(DEV_VITE ? VITE_URL : BACKEND_URL);
+  mainWindow.loadURL(targetUrl);
+  return mainWindow;
 }
 
 function maximizedState() {
@@ -327,6 +483,40 @@ function saveWindowBoundsSoon() {
   }, 400);
 }
 
+// ── tray (serve mode) ─────────────────────────────────────────────
+
+// 16×16 green dot: "server running". Embedded so the tray works in every
+// context (dev staging, asar) without shipping an icon file.
+const TRAY_ICON_DATA_URL =
+  "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAJcEhZcwAADsMAAA7DAcdvqGQAAADbSURBVDhPtVIhEgIxDDyJRCKRSCQOHNeDGZBIJJIfpI4n8ASegETyBAS9i0QikZCUzMG04QqCnVnT7m6SSbK/YorQmyCMCoS+PKUxRGiZym6K0t6Kyt4D7iisI9IYXMmU9qQYa9L/hbsSywtcmaqiZgpJIdeoE/rYhsIm0ph7sdbVtZkbOUbo+gCeXROkaM4w9wHGwUoTpGhKsD7A71oRJOlg6QNmCG1VkOL7gdHDIRI0kVYu1if4bH/ZhHpMuYPFNyGkW4slhnRy1Iwfz1hDjjDg9fKquKJuzLIHHze2bBzzNfEAAAAASUVORK5CYII=";
+
+function createTray() {
+  tray = new Tray(nativeImage.createFromDataURL(TRAY_ICON_DATA_URL));
+  tray.setToolTip(`mmo-chip — сервер на :${BACKEND_PORT}`);
+  tray.setContextMenu(
+    Menu.buildFromTemplate([
+      { label: "mmo-chip: сервер запущен", enabled: false },
+      { label: BACKEND_URL, enabled: false },
+      // Read-only URLs: teammates can read them straight off the menu.
+      ...lanUrls.map((url) => ({ label: url, enabled: false })),
+      { type: "separator" },
+      {
+        label: "Копировать ссылку",
+        click: () => clipboard.writeText(lanUrls[0] ?? BACKEND_URL)
+      },
+      { label: "Открыть окно", click: () => createWindow() },
+      { type: "separator" },
+      {
+        label: "Выход",
+        click: () => {
+          quitting = true;
+          app.quit();
+        }
+      }
+    ])
+  );
+}
+
 // ── IPC from the frameless title bar ──────────────────────────────
 
 ipcMain.on("desktop:window", (_event, action) => {
@@ -350,7 +540,8 @@ ipcMain.on("desktop:window", (_event, action) => {
 ipcMain.handle("desktop:info", () => ({
   platform: process.platform,
   version: app.getVersion(),
-  backendUrl: BACKEND_URL,
+  // In --connect mode this is the remote server the window actually talks to.
+  backendUrl: targetUrl,
   frameless: true
 }));
 
@@ -360,24 +551,46 @@ if (!app.requestSingleInstanceLock()) {
   app.quit();
 } else {
   app.on("second-instance", () => {
-    if (mainWindow) {
+    if (mainWindow && !mainWindow.isDestroyed()) {
       if (mainWindow.isMinimized()) mainWindow.restore();
+      mainWindow.show();
       mainWindow.focus();
+    } else if (SERVE) {
+      // A second --serve launch doubles as "reveal the window".
+      createWindow();
     }
   });
 
   app.whenReady().then(async () => {
+    initConsoleCodepage();
     initDataDir();
     initLogging();
     log(`userData: ${dataDirChoice}`);
     try {
-      if (!DEV_VITE) {
+      const launch = resolveLaunchMode();
+      launchMode = launch.mode;
+      if (launch.mode === "connect") targetUrl = launch.url;
+      else if (launch.mode === "dev") targetUrl = VITE_URL;
+      else targetUrl = BACKEND_URL;
+      log(`mode: ${launch.mode} → ${targetUrl}`);
+
+      if (launch.mode === "serve" || launch.mode === "local") {
         log("starting backend…");
         startBackend();
         await waitForBackend(30_000);
         log(`backend up on ${BACKEND_URL}`);
       }
-      createWindow();
+
+      if (launch.mode === "serve") {
+        // No window: the process lives in the tray and serves the LAN.
+        lanUrls = discoverLanUrls();
+        for (const url of lanUrls) log(`serve: ${url}`);
+        log(`serve: коллеги открывают ${lanUrls[0] ?? BACKEND_URL} в браузере`);
+        createTray();
+        log("serve mode: окно не открывается автоматически — см. трей");
+      } else {
+        createWindow();
+      }
     } catch (error) {
       showError(
         "Не удалось запустить приложение",
@@ -388,6 +601,11 @@ if (!app.requestSingleInstanceLock()) {
   });
 
   app.on("window-all-closed", () => {
+    // Serve mode: closing the window keeps the server alive in the tray.
+    if (SERVE) {
+      log("окно закрыто — сервер продолжает работать (трей)");
+      return;
+    }
     quitting = true;
     stopBackend();
     app.quit();
