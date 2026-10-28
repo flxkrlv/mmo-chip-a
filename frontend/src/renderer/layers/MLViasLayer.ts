@@ -129,6 +129,10 @@ export interface MLViasDisplay {
   /** True → don't paint the trace overlay (the vias stay visible). Absent
    *  ⇒ traces are drawn whenever the layer itself is visible. */
   getTracesHidden?: () => boolean;
+  /** Minimum mean probability inside the contour (0..1) for a trace
+   *  polyline to be drawn. Traces without a score (old caches) always pass.
+   *  Absent ⇒ 0 (show everything). */
+  getTraceConfidenceThreshold?: () => number;
   /** Point-via render radius (world / source-pixel units). Same value is
    *  used by the snap-to-via tolerance via `findNearestPointVia(world,
    *  radius)`. Absent ⇒ default. */
@@ -468,7 +472,11 @@ export class MLViasLayer implements Layer {
   }
 
   draw(ctx: CanvasRenderingContext2D, bounds: TileBounds): void {
-    if (this.display.getHidden?.()) return;
+    // Vias and traces hide independently: bail out only when BOTH overlays
+    // are off (fetches below run for whichever is still visible).
+    const viasHidden = this.display.getHidden?.() ?? false;
+    const tracesHidden = this.display.getTracesHidden?.() ?? false;
+    if (viasHidden && tracesHidden) return;
     const { world, zoom } = bounds;
 
     // ── Kick off any missing tile fetches ─────────────────────────────
@@ -551,7 +559,7 @@ export class MLViasLayer implements Layer {
       // (same as the human via annotation style). Selected ones use the
       // shared SELECT_COLOR + white ring for parity with the manual via
       // annotation drawing path (see dieAnnotations.ts).
-      for (const v of pointVias) {
+      for (const v of viasHidden ? [] : pointVias) {
         if (v.score < minScore) continue;
         const selected = hasSel && sel.has(mlViaId(v.x, v.y));
         // Determine colour: via layer override > default via color
@@ -577,7 +585,7 @@ export class MLViasLayer implements Layer {
         }
       }
       // Irregular vias: bbox outline + translucent fill (selected: orange).
-      for (const reg of irregularVias) {
+      for (const reg of viasHidden ? [] : irregularVias) {
         if (reg.score < minScore) continue;
         const [x, y, w, h] = reg.bbox;
         const cx = reg.centroid[0];
@@ -592,12 +600,15 @@ export class MLViasLayer implements Layer {
       }
       // ML traces (v1 decode): closed contour polylines of the model's
       // trace channel — each polygon outlines a region the model thinks is
-      // metal. Translucent fill + stroke; no score to filter on yet
-      // (MLTracePolyline carries points only). Toggleable independently of
+      // metal. Translucent fill + stroke. `score` (mean probability inside
+      // the contour) filters noise client-side; scoreless traces (caches
+      // written before scoring) always pass. Toggleable independently of
       // the vias via `getTracesHidden`.
       if (!this.display.getTracesHidden?.()) {
+        const minTraceScore = this.display.getTraceConfidenceThreshold?.() ?? 0;
         ctx.lineWidth = stroke;
         for (const t of traces) {
+          if ((t.score ?? 1) < minTraceScore) continue;
           const pts = t.points;
           if (pts.length < 3) continue;
           ctx.beginPath();

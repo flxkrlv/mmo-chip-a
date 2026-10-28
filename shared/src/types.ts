@@ -899,9 +899,12 @@ export interface MLRegion {
 }
 
 /** trace decode (ch2). Source-image coords. v1 = contour polyline; a true
- *  skeleton→graph is the later assisted-tracing phase. */
+ *  skeleton→graph is the later assisted-tracing phase. `score` = mean model
+ *  probability inside the contour (absent in caches written before scoring
+ *  existed — treat as 1 = always visible). */
 export interface MLTracePolyline {
   points: [number, number][];
+  score?: number;
 }
 
 export interface MLPrediction {

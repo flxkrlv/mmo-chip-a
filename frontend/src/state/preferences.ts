@@ -185,6 +185,11 @@ interface PreferencesState {
    *  Inference caches every detection with its score; this slider filters
    *  the cached results client-side — no re-inference on change. */
   viaConfidenceThreshold: number;
+  /** Minimum mean probability inside the contour (0..1) for an ML trace
+   *  polyline to be drawn — the trace-noise filter. Scored traces come from
+   *  the sidecar decode; caches written before scoring keep no score and are
+   *  always shown. */
+  traceConfidenceThreshold: number;
   /** Minimum score (0..1) for an ML cell proposal to be shown / offered in
    *  merge-cells. Separate from the via threshold so the two overlays can be
    *  tuned independently. */
@@ -479,6 +484,7 @@ interface PreferencesActions {
   setAutoEndOnContact: (enabled: boolean) => void;
   setViaSize: (size: number) => void;
   setViaConfidenceThreshold: (threshold: number) => void;
+  setTraceConfidenceThreshold: (threshold: number) => void;
   setCellDetectionThreshold: (threshold: number) => void;
   setCellDetectionsHidden: (hidden: boolean) => void;
   setCellDetectAllowFlipX: (allow: boolean) => void;
@@ -574,6 +580,7 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
         viaColor: VIA_DEFAULT_COLOR,
         viaSize: VIA_DEFAULT_SIZE,
         viaConfidenceThreshold: 0.5,
+        traceConfidenceThreshold: 0,
         cellDetectionThreshold: 0.5,
         cellDetectionsHidden: false,
         cellDetectAllowFlipX: true,
@@ -890,6 +897,10 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
           set({
             viaConfidenceThreshold: Math.min(1, Math.max(0, threshold))
           }),
+        setTraceConfidenceThreshold: (threshold) =>
+          set({
+            traceConfidenceThreshold: Math.min(1, Math.max(0, threshold))
+          }),
         setCellDetectionThreshold: (threshold) =>
           set({
             cellDetectionThreshold: Math.min(1, Math.max(0, threshold))
@@ -1019,6 +1030,7 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
           viaColor: state.viaColor,
           viaSize: state.viaSize,
           viaConfidenceThreshold: state.viaConfidenceThreshold,
+          traceConfidenceThreshold: state.traceConfidenceThreshold,
           cellDetectionThreshold: state.cellDetectionThreshold,
           cellDetectionsHidden: state.cellDetectionsHidden,
           cellDetectAllowFlipX: state.cellDetectAllowFlipX,

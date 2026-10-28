@@ -894,6 +894,8 @@ function DieViewer({ dieId }: { dieId: string }) {
         ? new MLViasLayer(die.id, die, {
             getHidden: () => usePreferences.getState().mlResultsHidden,
             getTracesHidden: () => usePreferences.getState().mlTracesHidden,
+            getTraceConfidenceThreshold: () =>
+              usePreferences.getState().traceConfidenceThreshold,
             getViaColor: () => usePreferences.getState().viaColor,
             getViaWorldRadius: () => usePreferences.getState().viaSize,
             getConfidenceThreshold: () =>
@@ -1082,7 +1084,7 @@ function DieViewer({ dieId }: { dieId: string }) {
   // need the redraw to kick.
   useEffect(() => {
     const unsubs = (
-      ["baseImageHidden", "baseImageOpacity", "mlResultsHidden", "mlTracesHidden", "wireMapHidden", "wireMapOpacity"] as const
+      ["baseImageHidden", "baseImageOpacity", "mlResultsHidden", "mlTracesHidden", "traceConfidenceThreshold", "wireMapHidden", "wireMapOpacity"] as const
     ).map((key) =>
       usePreferences.subscribe(
         (s) => s[key],

@@ -89,12 +89,14 @@ def extract_trace_polylines(mask_prob: np.ndarray,
                             threshold: float = 0.5,
                             epsilon: float = 1.5,
                             min_len: int = 8,
-                            max_polylines: int = 100_000) -> list[list[list[int]]]:
+                            max_polylines: int = 100_000) -> list[dict]:
     """trace decode (v1): contour polylines of the thresholded mask.
 
-    Returns a list of polylines, each a list of [x, y]. A true skeleton→graph
-    is the later assisted-tracing phase; contours are enough for the UI to
-    overlay proposed conductor paths.
+    Returns a list of {"points": [[x, y], …], "score": mean-prob-inside}.
+    The score is the mean sigmoid probability of the contour's own pixels —
+    a cheap per-trace confidence the client can threshold noise with. A true
+    skeleton→graph is the later assisted-tracing phase; contours are enough
+    for the UI to overlay proposed conductor paths.
 
     Guarded against an under-trained / low-threshold mask exploding into
     millions of speckle contours: contours are sorted by length and only the
@@ -110,8 +112,19 @@ def extract_trace_polylines(mask_prob: np.ndarray,
               f"keeping the {max_polylines} longest")
         kept.sort(key=lambda c: cv2.arcLength(c, closed=False), reverse=True)
         kept = kept[:max_polylines]
-    polylines: list[list[list[int]]] = []
+    traces: list[dict] = []
     for c in kept:
         approx = cv2.approxPolyDP(c, epsilon, closed=False)
-        polylines.append([[int(p[0][0]), int(p[0][1])] for p in approx])
-    return polylines
+        points = [[int(p[0][0]), int(p[0][1])] for p in approx]
+        # Mean probability inside the filled contour (patch-local for speed).
+        score = 0.0
+        x, y, w, h = cv2.boundingRect(c)
+        if w > 0 and h > 0:
+            patch = mask_prob[y:y + h, x:x + w]
+            inside = np.zeros((h, w), dtype=np.uint8)
+            cv2.drawContours(inside, [c - [x, y]], -1, 1, thickness=-1)
+            sel = patch[inside > 0]
+            if sel.size:
+                score = float(sel.mean())
+        traces.append({"points": points, "score": round(score, 4)})
+    return traces

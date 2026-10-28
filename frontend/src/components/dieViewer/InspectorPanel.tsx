@@ -972,6 +972,8 @@ function InferenceSection({ dieId }: { dieId: string }) {
   const job = useMLJob(dieId);
   const confidence = usePreferences((s) => s.viaConfidenceThreshold);
   const setConfidence = usePreferences((s) => s.setViaConfidenceThreshold);
+  const traceConfidence = usePreferences((s) => s.traceConfidenceThreshold);
+  const setTraceConfidence = usePreferences((s) => s.setTraceConfidenceThreshold);
   const [busy, setBusy] = useState<null | "model" | "job">(null);
   const [err, setErr] = useState<string | null>(null);
 
@@ -1149,6 +1151,35 @@ function InferenceSection({ dieId }: { dieId: string }) {
         style={{ fontSize: 10, color: "var(--ink3)", marginTop: 4 }}
       >
         Filters ML vias below this model confidence.
+      </div>
+
+      {/* Trace confidence threshold (noise filter) */}
+      <div
+        className="row"
+        style={{ justifyContent: "space-between", marginBottom: 4, marginTop: 12 }}
+      >
+        <span className="u" style={{ fontSize: 10 }}>
+          Trace confidence
+        </span>
+        <span className="m" style={{ fontSize: 11, color: "var(--ink2)" }}>
+          {traceConfidence.toFixed(2)}
+        </span>
+      </div>
+      <input
+        type="range"
+        min={0}
+        max={1}
+        step={0.01}
+        value={traceConfidence}
+        style={{ width: "100%" }}
+        onChange={(e) => setTraceConfidence(Number(e.target.value))}
+      />
+      <div
+        className="m"
+        style={{ fontSize: 10, color: "var(--ink3)", marginTop: 4 }}
+      >
+        Hides ML trace contours whose mean model probability is below this.
+        Run a fresh inference after raising it — cached tiles predate scoring.
       </div>
     </div>
   );
