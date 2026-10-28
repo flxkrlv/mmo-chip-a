@@ -32,9 +32,14 @@ const BACKEND_PORT = Number(process.env.MMOCHECK_PORT ?? process.env.PORT ?? 310
 const BACKEND_URL = `http://127.0.0.1:${BACKEND_PORT}`;
 const VITE_URL = "http://localhost:5173";
 
-const resourcesRoot = path.isAbsolute(process.env.MMOCHECK_RESOURCES ?? "")
+const resourcesRoot = process.env.MMOCHECK_RESOURCES
   ? path.resolve(process.env.MMOCHECK_RESOURCES)
-  : path.join(__dirname, "..", "resources");
+  : app.isPackaged
+    // Packaged: main.cjs lives in <root>/resources/app.asar → resources is its
+    // parent directory.
+    ? path.dirname(__dirname)
+    // Dev: this file lives in desktop/ → staging sits next to it.
+    : path.join(__dirname, "build", "staging", "resources");
 const appRoot = path.join(resourcesRoot, "app");
 const binDir = path.join(resourcesRoot, "bin");
 
@@ -106,6 +111,16 @@ function showError(title, detail) {
 let dataDirChoice = null;
 
 function initDataDir() {
+  // The launcher may pass --user-data-dir (portable fallback when the user
+  // profile is not writable) — honour it instead of second-guessing.
+  const fromArg = process.argv.find((a) => a.startsWith("--user-data-dir="));
+  if (fromArg) {
+    const portable = path.resolve(fromArg.slice("--user-data-dir=".length));
+    app.setPath("userData", portable);
+    app.setPath("logs", path.join(portable, "logs"));
+    dataDirChoice = `${portable} (from launcher --user-data-dir)`;
+    return;
+  }
   // Pin the profile dir to the product name: after the launcher rename the
   // Electron exe is "mmo-chip-app.exe", which would otherwise become the
   // profile folder name.
