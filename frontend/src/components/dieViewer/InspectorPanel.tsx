@@ -828,6 +828,7 @@ function MLPanel({
       <MLSectionHeader>Vector traces (no model)</MLSectionHeader>
       <VectorSection
         dieId={dieId}
+        annotations={annotations}
         dispatcher={dispatcher}
         vectorLayer={vectorLayer}
         getTraceSnapTargets={getTraceSnapTargets}
@@ -1359,15 +1360,25 @@ function VSlider({
  */
 function VectorSection({
   dieId,
+  annotations,
   dispatcher,
   vectorLayer,
   getTraceSnapTargets
 }: {
   dieId: string;
+  annotations: DieAnnotations | undefined;
   dispatcher: ActionDispatcher;
   vectorLayer: VectorizeLayer | null;
   getTraceSnapTargets?: () => TraceSnapTarget[];
 }) {
+  // µm calibration: when the die has umPerPx, physical sliders (min wire
+  // gap, length, width) are shown in µm and converted to source px for the
+  // params — the decoder and presets stay px-based.
+  const umPerPx = annotations?.umPerPx ?? 0;
+  const fmtUm = (um: number) =>
+    um >= Math.max(0.1, umPerPx / 2)
+      ? `${(Math.round(um * 100) / 100).toFixed(2)} µm`
+      : "off";
   const dialog = useDialog();
   const params = usePreferences((s) => s.vectorParams);
   const patch = usePreferences((s) => s.patchVectorParams);
@@ -1619,39 +1630,92 @@ function VectorSection({
         max={6}
         onChange={(v) => patch({ openPx: v })}
       />
-      <VSlider
-        label="Bridge gaps"
-        value={params.bridgePx}
-        min={0}
-        max={8}
-        onChange={(v) => patch({ bridgePx: v })}
-      />
-      <VSlider
-        label="Min length"
-        value={params.minLength}
-        min={2}
-        max={120}
-        format={(v) => `${v} px`}
-        onChange={(v) => patch({ minLength: v })}
-      />
-      <VSlider
-        label="Width min"
-        value={params.widthMin}
-        min={0}
-        max={30}
-        step={0.5}
-        format={(v) => (v === 0 ? "off" : `${v} px`)}
-        onChange={(v) => patch({ widthMin: v })}
-      />
-      <VSlider
-        label="Width max"
-        value={params.widthMax}
-        min={0}
-        max={60}
-        step={0.5}
-        format={(v) => (v === 0 ? "off" : `${v} px`)}
-        onChange={(v) => patch({ widthMax: v })}
-      />
+
+      {umPerPx > 0 ? (
+        <>
+          <VSlider
+            label="Min gap (merges breaks)"
+            value={umPerPx * params.bridgePx * 2}
+            min={0}
+            max={umPerPx * 16}
+            step={umPerPx}
+            format={fmtUm}
+            onChange={(um) => patch({ bridgePx: Math.round(um / umPerPx / 2) })}
+          />
+          <div className="m" style={{ fontSize: 10, color: "var(--ink3)", marginTop: 2 }}>
+            Process minimum wire spacing — gaps smaller than this can't be two
+            separate wires, they are relief breaks in ONE wire and get merged.
+            0 = off.
+          </div>
+          <VSlider
+            label="Min length"
+            value={umPerPx * params.minLength}
+            min={0}
+            max={umPerPx * 120}
+            step={umPerPx}
+            format={fmtUm}
+            onChange={(um) => patch({ minLength: Math.round(um / umPerPx) })}
+          />
+          <VSlider
+            label="Wire width min"
+            value={umPerPx * params.widthMin}
+            min={0}
+            max={umPerPx * 60}
+            step={umPerPx * 0.5}
+            format={fmtUm}
+            onChange={(um) => patch({ widthMin: Math.round((um / umPerPx) * 2) / 2 })}
+          />
+          <VSlider
+            label="Wire width max"
+            value={umPerPx * params.widthMax}
+            min={0}
+            max={umPerPx * 120}
+            step={umPerPx * 0.5}
+            format={fmtUm}
+            onChange={(um) => patch({ widthMax: Math.round((um / umPerPx) * 2) / 2 })}
+          />
+        </>
+      ) : (
+        <>
+          <VSlider
+            label="Bridge gaps (px)"
+            value={params.bridgePx}
+            min={0}
+            max={8}
+            onChange={(v) => patch({ bridgePx: v })}
+          />
+          <VSlider
+            label="Min length (px)"
+            value={params.minLength}
+            min={2}
+            max={120}
+            format={(v) => `${v} px`}
+            onChange={(v) => patch({ minLength: v })}
+          />
+          <VSlider
+            label="Width min (px)"
+            value={params.widthMin}
+            min={0}
+            max={30}
+            step={0.5}
+            format={(v) => (v === 0 ? "off" : `${v} px`)}
+            onChange={(v) => patch({ widthMin: v })}
+          />
+          <VSlider
+            label="Width max (px)"
+            value={params.widthMax}
+            min={0}
+            max={60}
+            step={0.5}
+            format={(v) => (v === 0 ? "off" : `${v} px`)}
+            onChange={(v) => patch({ widthMax: v })}
+          />
+          <div className="m" style={{ fontSize: 10, color: "var(--ink3)", marginTop: 4 }}>
+            No µm/px calibration on this die (set umPerPx in the ruler tool) —
+            sliders are in source pixels.
+          </div>
+        </>
+      )}
       <div className="m" style={{ fontSize: 10, color: "var(--ink3)", marginTop: 4 }}>
         Width filters fat blobs (pads, text, halos) out of the traces. Trace
         confidence slider above also applies (brightness margin).
