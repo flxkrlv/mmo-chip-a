@@ -1,9 +1,22 @@
 import { randomUUID } from "node:crypto";
 import { Router, type Request, type Response } from "express";
-import type { McpAccessEntry, McpStatus, McpWriteMode } from "shared";
+import type {
+  McpAccessEntry,
+  McpPromptAnswerInput,
+  McpStatus,
+  McpUserPromptEntry,
+  McpWriteMode
+} from "shared";
 import { requireAuth } from "../auth/middleware.js";
 import { listDieRecords, readDieRecord } from "../store.js";
 import { commentImagePath } from "../mcp/commentImages.js";
+import {
+  answerPrompt,
+  cancelPrompt,
+  listPendingPrompts,
+  PromptAnswerError,
+  setPromptChangeHandler
+} from "../mcp/userPrompt.js";
 import {
   getDieAccess,
   listDieAccess,
@@ -28,6 +41,9 @@ import {
  *                                    every die: each tool takes a `dieId`
  *   GET  /api/mcp/access             access entries of all dies (GUI prompt)
  *   PUT  /api/mcp/access/:dieId      { state: "approved" | "denied" }
+ *   GET  /api/mcp/prompts            pending ask_user prompts (GUI modal)
+ *   POST /api/mcp/prompts/:id/answer { optionId/Ids?, text?, fields? }
+ *   POST /api/mcp/prompts/:id/cancel dismiss a prompt
  *   GET  /api/dies/:dieId/mcp        status for the GUI's MCP panel
  *   PUT  /api/dies/:dieId/mcp/settings { mode?: "off" | "create" | "edit", wires?: boolean, full?: boolean }
  *   GET  /api/dies/:dieId/comment-images/:file   images attached to comments
@@ -96,6 +112,8 @@ interface RouterConfig {
   onAnnotationsChanged?: (dieId: string, rev: number) => void;
   /** A die's MCP access entry was created or changed. */
   onAccessChanged?: () => void;
+  /** The ask_user prompt queue changed (asking, answered, dismissed, timeout). */
+  onPromptsChanged?: () => void;
   /** How long a call on a pending die waits for the user's decision. */
   approvalWaitMs?: number;
 }
@@ -185,6 +203,54 @@ export function createMcpRouter(config: RouterConfig) {
       const access = await setDieAccess(config.dataRoot, dieId, state);
       config.onAccessChanged?.();
       response.json({ ok: true, access });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // ─── GUI: ask_user prompt queue ──────────────────────────────────
+
+  setPromptChangeHandler(() => config.onPromptsChanged?.());
+
+  router.get("/api/mcp/prompts", async (_request, response, next) => {
+    try {
+      const prompts: McpUserPromptEntry[] = listPendingPrompts();
+      response.json({ prompts });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.post("/api/mcp/prompts/:id/answer", async (request, response, next) => {
+    try {
+      const { id } = request.params;
+      const input = request.body as McpPromptAnswerInput;
+      const by = (request as Request & { user?: { username?: string } }).user?.username ?? null;
+      const result = answerPrompt(id, input, by);
+      if (!result) {
+        response.status(404).json({ error: "No such prompt (already answered, dismissed or timed out)" });
+        return;
+      }
+      response.json({ result });
+    } catch (error) {
+      if (error instanceof PromptAnswerError) {
+        response.status(400).json({ error: error.message });
+        return;
+      }
+      next(error);
+    }
+  });
+
+  router.post("/api/mcp/prompts/:id/cancel", async (request, response, next) => {
+    try {
+      const { id } = request.params;
+      const by = (request as Request & { user?: { username?: string } }).user?.username ?? null;
+      const result = cancelPrompt(id, by);
+      if (!result) {
+        response.status(404).json({ error: "No such prompt (already answered, dismissed or timed out)" });
+        return;
+      }
+      response.json({ ok: true });
     } catch (error) {
       next(error);
     }

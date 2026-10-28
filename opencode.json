@@ -3,9 +3,12 @@
   "mcp": {
     "mmo-chip": {
       "type": "remote",
-      "url": "http://127.0.0.1:3001/mcp",
+      "url": "http://127.0.0.1:3101/mcp",
       "enabled": true,
-      "timeout": 20000
+      "timeout": 20000,
+      "headers": {
+        "Authorization": "Bearer {env:MMOCHIP_TOKEN}"
+      }
     }
   }
 }
