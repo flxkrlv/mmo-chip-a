@@ -7,7 +7,8 @@ import type {
   AssistantClarificationMode,
   AssistantDataFlags,
   AssistantLlmConfig,
-  LayerType
+  LayerType,
+  VectorizeParams
 } from "shared";
 import {
   CELL_COLOR,
@@ -190,6 +191,14 @@ interface PreferencesState {
    *  the sidecar decode; caches written before scoring keep no score and are
    *  always shown. */
   traceConfidenceThreshold: number;
+  /** Live parameters of the classical (no-model) metal vectorize overlay.
+   *  Kept in preferences so the tuning survives reloads; presets below
+   *  capture named snapshots per image kind (SEM / optic / die). */
+  vectorParams: VectorizeParams;
+  /** Named vectorize param snapshots ("LM2937 SEM", "optic gold", …). */
+  vectorPresets: Record<string, VectorizeParams>;
+  /** Die-viewer: hide the vectorize overlay entirely (traces + outlines). */
+  vectorOverlayHidden: boolean;
   /** Minimum score (0..1) for an ML cell proposal to be shown / offered in
    *  merge-cells. Separate from the via threshold so the two overlays can be
    *  tuned independently. */
@@ -485,6 +494,14 @@ interface PreferencesActions {
   setViaSize: (size: number) => void;
   setViaConfidenceThreshold: (threshold: number) => void;
   setTraceConfidenceThreshold: (threshold: number) => void;
+  /** Merge a patch into the live vectorize params (shallow). */
+  patchVectorParams: (patch: Partial<VectorizeParams>) => void;
+  /** Reset vectorize params to the shipped defaults. */
+  resetVectorParams: () => void;
+  /** Persist a named vectorize params snapshot. */
+  saveVectorPreset: (name: string, params: VectorizeParams) => void;
+  deleteVectorPreset: (name: string) => void;
+  setVectorOverlayHidden: (hidden: boolean) => void;
   setCellDetectionThreshold: (threshold: number) => void;
   setCellDetectionsHidden: (hidden: boolean) => void;
   setCellDetectAllowFlipX: (allow: boolean) => void;
@@ -531,6 +548,23 @@ interface PreferencesActions {
 }
 
 const DEFAULT_EXPANDED_SECTIONS: AnnotationKind[] = ["net", "via", "roi"];
+
+/** Defaults for the classical vectorize overlay: a mid brightness band that
+ *  suits bright-metal-on-dark SEM crops — the user tunes from here. */
+export const DEFAULT_VECTOR_PARAMS: VectorizeParams = {
+  channel: "gray",
+  invert: false,
+  threshLow: 120,
+  threshHigh: 255,
+  adaptive: false,
+  adaptiveBlock: 51,
+  adaptiveC: 8,
+  openPx: 1,
+  bridgePx: 2,
+  minLength: 14,
+  widthMin: 1.5,
+  widthMax: 0
+};
 
 export const usePreferences = create<PreferencesState & PreferencesActions>()(
   subscribeWithSelector(
@@ -581,6 +615,9 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
         viaSize: VIA_DEFAULT_SIZE,
         viaConfidenceThreshold: 0.5,
         traceConfidenceThreshold: 0,
+        vectorParams: { ...DEFAULT_VECTOR_PARAMS },
+        vectorPresets: {},
+        vectorOverlayHidden: true,
         cellDetectionThreshold: 0.5,
         cellDetectionsHidden: false,
         cellDetectAllowFlipX: true,
@@ -901,6 +938,21 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
           set({
             traceConfidenceThreshold: Math.min(1, Math.max(0, threshold))
           }),
+        patchVectorParams: (patch) =>
+          set((state) => ({ vectorParams: { ...state.vectorParams, ...patch } })),
+        resetVectorParams: () => set({ vectorParams: { ...DEFAULT_VECTOR_PARAMS } }),
+        saveVectorPreset: (name, params) =>
+          set((state) => ({
+            vectorPresets: { ...state.vectorPresets, [name]: { ...params } }
+          })),
+        deleteVectorPreset: (name) =>
+          set((state) => {
+            if (!(name in state.vectorPresets)) return state;
+            const next = { ...state.vectorPresets };
+            delete next[name];
+            return { vectorPresets: next };
+          }),
+        setVectorOverlayHidden: (hidden) => set({ vectorOverlayHidden: hidden }),
         setCellDetectionThreshold: (threshold) =>
           set({
             cellDetectionThreshold: Math.min(1, Math.max(0, threshold))
@@ -1031,6 +1083,9 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
           viaSize: state.viaSize,
           viaConfidenceThreshold: state.viaConfidenceThreshold,
           traceConfidenceThreshold: state.traceConfidenceThreshold,
+          vectorParams: state.vectorParams,
+          vectorPresets: state.vectorPresets,
+          vectorOverlayHidden: state.vectorOverlayHidden,
           cellDetectionThreshold: state.cellDetectionThreshold,
           cellDetectionsHidden: state.cellDetectionsHidden,
           cellDetectAllowFlipX: state.cellDetectAllowFlipX,

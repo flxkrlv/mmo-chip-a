@@ -90,7 +90,10 @@ def extract_trace_skeleton(mask_prob: np.ndarray,
                            epsilon: float = 2.0,
                            min_len: int = 14,
                            max_polylines: int = 100_000,
-                           bridge_px: int = 2) -> list[dict]:
+                           bridge_px: int = 2,
+                           score_map: np.ndarray | None = None,
+                           width_map: np.ndarray | None = None,
+                           width_range: tuple[float, float] | None = None) -> list[dict]:
     """trace decode (v2): skeleton → branch graph → centreline polylines.
 
     Thin the thresholded mask to 1-px centrelines (scikit-image), group
@@ -104,7 +107,18 @@ def extract_trace_skeleton(mask_prob: np.ndarray,
     along a wire for a few pixels, which would otherwise cut the skeleton —
     and the wire — into fragments.
 
-    Returns [{"points": [[x, y], …], "score": mean prob along branch}].
+    `score_map` — what the per-branch "score" averages (defaults to
+    `mask_prob`; the vectorize decoder passes the normalized channel image
+    so score becomes a brightness margin instead of a model probability).
+
+    `width_map` + `width_range` — when a distance-transform map is given,
+    each branch reports its median corridor width ("width") and branches
+    whose median falls outside `width_range` are dropped: wires have a
+    narrow, known width, so this kills fat blobs (pads, text, charging
+    halos) and the wide bridges where parallel wires bleed together.
+
+    Returns [{"points": [[x, y], …], "score": mean prob along branch,
+              "width": median corridor width?}].
     """
     from scipy.ndimage import center_of_mass, label as scipy_label
     from skimage.morphology import skeletonize
@@ -221,6 +235,19 @@ def extract_trace_skeleton(mask_prob: np.ndarray,
     for path in paths:
         if len(path) < 2 or len(path) < min_len:
             continue
+        ys_arr = np.array([py for (py, _) in path])
+        xs_arr = np.array([px for (_, px) in path])
+        sel = mask_prob[ys_arr, xs_arr]
+        score_map_ref = mask_prob if score_map is None else score_map
+        sel_score = score_map_ref[ys_arr, xs_arr]
+        score = float(sel_score.mean()) if sel_score.size else 0.0
+        # Median corridor width from the distance transform (if provided):
+        # the cheap discriminator between wires and fat mask blobs.
+        median_w = float(np.median(width_map[ys_arr, xs_arr])) if width_map is not None else None
+        if width_range is not None and median_w is not None:
+            w_lo, w_hi = width_range
+            if median_w < w_lo or (w_hi > 0 and median_w > w_hi):
+                continue
         pts_src = attach(path)
         arr = np.array([[px, py] for (py, px) in pts_src], dtype=np.int32)
         approx = (cv2.approxPolyDP(arr.reshape(-1, 1, 2), epsilon, closed=False).reshape(-1, 2)
@@ -228,10 +255,10 @@ def extract_trace_skeleton(mask_prob: np.ndarray,
         polyline = [[int(px), int(py)] for px, py in approx]
         if len(polyline) < 2:
             continue
-        sel = mask_prob[np.array([py for (py, _) in path]),
-                        np.array([px for (_, px) in path])]
-        score = float(sel.mean()) if sel.size else 0.0
-        traces.append({"points": polyline, "score": round(score, 4)})
+        trace = {"points": polyline, "score": round(score, 4)}
+        if median_w is not None:
+            trace["width"] = round(median_w, 2)
+        traces.append(trace)
         if len(traces) >= max_polylines:
             print(f"[warn] trace decode v2: hit cap {max_polylines} — mask is noisy")
             break

@@ -17,7 +17,9 @@ import type {
   MLModelsResponse,
   MLPrediction,
   MLSelectModelRequest,
-  MLServiceStatus
+  MLServiceStatus,
+  VectorizeParams,
+  VectorizeResponse
 } from "shared";
 import { subscribeToDie } from "./annotationsWebSocket";
 import { ApiError, apiGet, apiPost } from "./client";
@@ -101,6 +103,41 @@ export function useDieVias(
 }
 
 // ── ML service status & models ───────────────────────────────────────
+
+/**
+ * Classical (no-model) metal vectorization of a die bbox in source-image
+ * (px) coords: `GET /api/dies/:dieId/vectorize`. The backend memory-caches
+ * per (source, bbox, params), so panning back with unchanged sliders is
+ * free. Plain function (no react-query) — the overlay layer drives fetching
+ * with its own viewport debounce.
+ */
+export async function vectorizeRegion(
+  dieId: string,
+  bbox: readonly [number, number, number, number],
+  params: VectorizeParams,
+  overlaySource?: string,
+  signal?: AbortSignal
+): Promise<VectorizeResponse> {
+  const q = new URLSearchParams();
+  q.set("bbox", bbox.join(","));
+  q.set("channel", params.channel);
+  q.set("invert", params.invert ? "1" : "0");
+  q.set("threshLow", String(params.threshLow));
+  q.set("threshHigh", String(params.threshHigh));
+  q.set("adaptive", params.adaptive ? "1" : "0");
+  q.set("adaptiveBlock", String(params.adaptiveBlock));
+  q.set("adaptiveC", String(params.adaptiveC));
+  q.set("openPx", String(params.openPx));
+  q.set("bridgePx", String(params.bridgePx));
+  q.set("minLength", String(params.minLength));
+  q.set("widthMin", String(params.widthMin));
+  q.set("widthMax", String(params.widthMax));
+  if (overlaySource) q.set("overlaySource", overlaySource);
+  return apiGet<VectorizeResponse>(
+    `/api/dies/${dieId}/vectorize?${q.toString()}`,
+    signal
+  );
+}
 
 /** Sidecar health — checkpoint name, device, training flag. */
 export function useMLStatus(): UseQueryResult<MLServiceStatus, ApiError> {

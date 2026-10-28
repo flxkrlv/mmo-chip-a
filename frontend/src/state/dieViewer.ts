@@ -112,6 +112,10 @@ interface DieViewerState {
  *  having to walk the cache itself. Partial: it's the count for tiles
  *  fetched so far this session, not a die-wide ground truth. */
   mlViasCount: number;
+  /** Live status of the classical vectorize overlay (VectorSection): loading
+   *  flag, last error, decoded-trace count across cached regions. Written by
+   *  the `VectorizeLayer`'s display callback. */
+  vectorStatus: { loading: boolean; error: string | null; traces: number };
   /** Cell type picked in the Cells (detection) tab — from the dropdown or by
    *  selecting a placed cell on the canvas while the tab is open. */
   cellDetectionTypeId: string | null;
@@ -153,6 +157,7 @@ interface DieViewerActions {
   setMlConfig: (patch: Partial<DieMLConfig>) => void;
   /** Set the live ML-via cardinality — called by the layer when tiles load. */
   setMlViasCount: (count: number) => void;
+setVectorStatus: (status: { loading: boolean; error: string | null; traces: number }) => void;
   setCellDetectionTypeId: (id: string | null) => void;
   setCellDetectionsCount: (count: number) => void;
   setWireMapAvailable: (available: boolean) => void;
@@ -188,6 +193,7 @@ const INITIAL_STATE: DieViewerState = {
   showRulerNm: false,
   mlConfig: { ...DEFAULT_ML_CONFIG },
   mlViasCount: 0,
+  vectorStatus: { loading: false, error: null, traces: 0 },
   cellDetectionTypeId: null,
   cellDetectionsCount: 0,
   wireMapAvailable: false,
@@ -280,6 +286,16 @@ export const useDieViewerStore = create<DieViewerState & DieViewerActions>()((se
   setMlViasCount: (count) => {
     if (get().mlViasCount === count) return;
     set({ mlViasCount: count });
+  },
+  setVectorStatus: (status) => {
+    const cur = get().vectorStatus;
+    if (
+      cur.loading === status.loading &&
+      cur.error === status.error &&
+      cur.traces === status.traces
+    )
+      return;
+    set({ vectorStatus: status });
   },
   setCellDetectionTypeId: (id) => set({ cellDetectionTypeId: id }),
   setCellDetectionsCount: (count) => {

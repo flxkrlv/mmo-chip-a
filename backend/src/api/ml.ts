@@ -14,7 +14,9 @@ import type {
   MLServiceStatus,
   MLTrainRequest,
   MLViasTileResult,
-  MLViasTilesResponse
+  MLViasTilesResponse,
+  VectorizeParams,
+  VectorizeResponse
 } from "shared";
 import { createMLJobManager } from "../ml/jobs.js";
 import { resolveOverlayOriginalPath } from "./overlayImages.js";
@@ -27,6 +29,7 @@ import {
   toPrediction,
   type MLPredictor
 } from "../ml/predict.js";
+import { createVectorizer } from "../ml/vectorize.js";
 import { readAnnotations, readDieRecord } from "../store.js";
 import type { AnnotationBroadcaster } from "../ws.js";
 
@@ -35,6 +38,10 @@ const SIDECAR_RW_TIMEOUT_MS = 10000;
 /** Hard cap on a single batched range request (the frontend fetches in
  *  blocks well under this; the cap just guards against a pathological URL). */
 const MAX_RANGE_TILES = 4096;
+/** Crop-pixel cap for a live vectorize request — the endpoint runs while the
+ *  user drags sliders, so a gigapixel whole-die crop would pin the sidecar.
+ *  The frontend skips fetching below the native detail level anyway. */
+const MAX_VECT_AREA = 6_000_000;
 
 async function fetchSidecar(
   url: string,
@@ -530,6 +537,97 @@ export function createMLRouter(config: {
       response.json(
         toPrediction(result, [x0, y0, x1, y1], checkpointHash, overlaySource)
       );
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // ── GET /api/dies/:dieId/vectorize?bbox=… (live, no disk cache) ──────
+  // Classical (no-model) metal vectorization of a region: threshold a
+  // brightness/colour channel → skeleton traces + mask outlines. Runs while
+  // the user drags sliders, so results are memory-cached per (source, bbox,
+  // params) in the vectorizer and never written to disk. No checkpoint needs
+  // to be loaded — this works on a bare sidecar.
+  const vectorizer = createVectorizer({ mlSidecarUrl: config.mlSidecarUrl });
+  router.get("/api/dies/:dieId/vectorize", async (request, response, next) => {
+    try {
+      const { dieId } = request.params;
+      const parts = String(request.query.bbox ?? "")
+        .split(",")
+        .map(Number);
+      if (parts.length !== 4 || parts.some((n) => !Number.isFinite(n))) {
+        response.status(400).json({ error: "bbox must be x0,y0,x1,y1" });
+        return;
+      }
+      const record = await readDieRecord(config.dataRoot, dieId);
+      const x0 = Math.max(0, Math.min(parts[0], parts[2]));
+      const y0 = Math.max(0, Math.min(parts[1], parts[3]));
+      const x1 = Math.min(record.width, Math.max(parts[0], parts[2]));
+      const y1 = Math.min(record.height, Math.max(parts[1], parts[3]));
+      if (x1 <= x0 || y1 <= y0) {
+        response.status(400).json({ error: "Empty or out-of-bounds bbox" });
+        return;
+      }
+      if ((x1 - x0) * (y1 - y0) > MAX_VECT_AREA) {
+        response.status(400).json({
+          error: `bbox too large for live vectorize (> ${MAX_VECT_AREA} px) — zoom in`
+        });
+        return;
+      }
+      const overlaySource = typeof request.query.overlaySource === "string"
+        ? request.query.overlaySource
+        : undefined;
+      const overlayPath = await resolveRequestedOverlayPath({
+        request,
+        dataRoot: config.dataRoot,
+        dieId,
+        sourceId: overlaySource
+      });
+      if (overlaySource && !overlayPath) {
+        response.status(404).json({ error: "Visible image source not found" });
+        return;
+      }
+
+      const num = (key: string, fallback: number) => {
+        const raw = request.query[key];
+        const n = typeof raw === "string" ? Number(raw) : NaN;
+        return Number.isFinite(n) ? n : fallback;
+      };
+      const channel = String(request.query.channel ?? "gray");
+      const vecParams: VectorizeParams = {
+        channel: channel === "r" || channel === "g" || channel === "b" ? channel : "gray",
+        invert: num("invert", 0) !== 0,
+        threshLow: num("threshLow", 120),
+        threshHigh: num("threshHigh", 255),
+        adaptive: num("adaptive", 0) !== 0,
+        adaptiveBlock: num("adaptiveBlock", 51),
+        adaptiveC: num("adaptiveC", 8),
+        openPx: num("openPx", 1),
+        bridgePx: num("bridgePx", 2),
+        minLength: num("minLength", 14),
+        widthMin: num("widthMin", 1.5),
+        widthMax: num("widthMax", 0)
+      };
+
+      try {
+        const result = await vectorizer.runVectorize({
+          originalPath: record.originalPath,
+          dieWidth: record.width,
+          dieHeight: record.height,
+          keep: [x0, y0, x1, y1],
+          vecParams,
+          overlayPath
+        });
+        response.json({
+          traces: result.traces,
+          outlines: result.outlines,
+          bbox: [x0, y0, x1, y1]
+        } satisfies VectorizeResponse);
+      } catch (error) {
+        response.status(503).json({
+          error: error instanceof Error ? error.message : "vectorize failed"
+        });
+      }
     } catch (error) {
       next(error);
     }

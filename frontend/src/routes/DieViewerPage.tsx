@@ -33,6 +33,7 @@ import {
   isMlViaId,
   parseMlViaId
 } from "../renderer/layers/MLViasLayer";
+import { VectorizeLayer } from "../renderer/layers/VectorizeLayer";
 import { OverlayImageLayer, type OverlayViewportStats } from "../renderer/layers/OverlayImageLayer";
 import { DIE_VIEWER_HOTKEYS, DIE_VIEWER_MOD_HOTKEYS, GLOBAL_HOTKEYS, METAL_HOTKEYS, VIA_HOTKEYS } from "../lib/hotkeys";
 import { useToast } from "../components/Toast";
@@ -938,6 +939,51 @@ function DieViewer({ dieId }: { dieId: string }) {
     };
   }, [mlViasLayer]);
 
+  // Classical (no-model) vectorize overlay. Lives beside the ML layer but
+  // decodes the visible viewport on demand: params come live from
+  // preferences, the fetch is debounced + coalesced inside the layer.
+  const vectorLayer = useMemo(
+    () =>
+      die
+        ? new VectorizeLayer(die.id, die, {
+            getHidden: () => usePreferences.getState().vectorOverlayHidden,
+            getParams: () => usePreferences.getState().vectorParams,
+            getOverlaySource: () => {
+              const layers = useOverlayLayers.getState().layers;
+              const visible = layers.find((l) => !l.hidden && l.loaded);
+              return visible?.serverFilename ?? visible?.name ?? undefined;
+            },
+            // Same endpoint snap candidates the ML trace overlay uses.
+            findSnapTarget: (world, tolWorld) => {
+              let best: { x: number; y: number; label: string } | null = null;
+              let bestD = tolWorld;
+              const consider = (x: number, y: number, label: string) => {
+                const d = Math.hypot(x - world.x, y - world.y);
+                if (d <= bestD) {
+                  bestD = d;
+                  best = { x, y, label };
+                }
+              };
+              for (const t of deviceTerminalsRef.current) consider(t.x, t.y, t.terminalId);
+              for (const t of cellTerminals) consider(t.worldX, t.worldY, t.id);
+              for (const pin of annotationsRef.current?.pins ?? []) consider(pin.x, pin.y, `pin:${pin.id}`);
+              return best;
+            },
+            getSnapTol: () => Math.max(8, usePreferences.getState().viaSize * 2),
+            getTraceConfidenceThreshold: () =>
+              usePreferences.getState().traceConfidenceThreshold,
+            onStatusChange: (status) =>
+              useDieViewerStore.getState().setVectorStatus(status)
+          })
+        : null,
+    [die]
+  );
+  useEffect(() => {
+    return () => {
+      vectorLayer?.destroy();
+    };
+  }, [vectorLayer]);
+
   // Confidence-threshold pref change → re-filter the cached ML vias (recount
   // for the items list + redraw the overlay). No re-fetch: tile data already
   // carries every detection's score.
@@ -1376,6 +1422,7 @@ function DieViewer({ dieId }: { dieId: string }) {
     for (const ol of overlayLayerInstances) out.push(ol);
     if (wireMapLayer) out.push(wireMapLayer);
     if (mlViasLayer) out.push(mlViasLayer);
+    if (vectorLayer) out.push(vectorLayer);
     if (proposalLayer) out.push(proposalLayer);
     if (annotationLayer) out.push(annotationLayer);
     return out;
@@ -1384,6 +1431,7 @@ function DieViewer({ dieId }: { dieId: string }) {
     wireMapLayer,
     overlayLayerInstances,
     mlViasLayer,
+    vectorLayer,
     proposalLayer,
     annotationLayer
   ]);
@@ -4694,6 +4742,7 @@ function DieViewer({ dieId }: { dieId: string }) {
             die={die}
             library={library}
             mlViasLayer={mlViasLayer}
+            vectorLayer={vectorLayer}
             getTraceSnapTargets={getTraceSnapTargets}
             proposals={proposals}
             cellTypeCounts={cellTypeCounts}

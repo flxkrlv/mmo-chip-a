@@ -3,7 +3,7 @@ import { cellInstanceScale, cellWorldRect } from "../../lib/cellFootprint";
 import { padCountByPin, renamePinActions } from "../../lib/pinClipboard";
 import { useDialog } from "../Dialog";
 import { useQueryClient } from "@tanstack/react-query";
-import type { AnalogDevice, AnnotationNet, AnnotationNetEdge, AssistantFinding, Cell, CellType, DieAnnotations, DieMetadata, FloorplanRegion, HumanAnnotation, MLInferenceJob, WireLayer } from "shared";
+import type { AnalogDevice, AnnotationNet, AnnotationNetEdge, AssistantFinding, Cell, CellType, DieAnnotations, DieMetadata, FloorplanRegion, HumanAnnotation, MLInferenceJob, MLTracePolyline, VectorizeParams, WireLayer } from "shared";
 import type { ActionDispatcher } from "../../api/actions";
 import type { CellLibraryView } from "../../lib/cellLibrary";
 import { uuid } from "../../lib/uuid";
@@ -27,6 +27,7 @@ import {
   isMlViaId,
   type MLViasLayer
 } from "../../renderer/layers/MLViasLayer";
+import type { VectorizeLayer } from "../../renderer/layers/VectorizeLayer";
 import { buildNetsFromTraces, type TraceSnapTarget } from "./mlTracesToNets";
 import { useDieViewerStore } from "../../state/dieViewer";
 import { usePreferences } from "../../state/preferences";
@@ -521,6 +522,7 @@ export function InspectorPanel({
   die,
   library,
   mlViasLayer,
+  vectorLayer,
   getTraceSnapTargets,
   cellTypeCounts,
   proposals = [],
@@ -543,6 +545,9 @@ export function InspectorPanel({
    *  through it to fetch score / class. May be null while the page is still
    *  bootstrapping. */
   mlViasLayer: MLViasLayer | null;
+  /** Live classical-vectorize overlay layer — the Vector section drives its
+   *  params and materializes its traces. May be null while bootstrapping. */
+  vectorLayer: VectorizeLayer | null;
   /** Wire-tool snap candidates (device contacts / cell terminals / IO pins)
    *  for the traces→nets materialization. Absent ⇒ the button is disabled. */
   getTraceSnapTargets?: () => TraceSnapTarget[];
@@ -617,6 +622,7 @@ export function InspectorPanel({
             annotations={annotations}
             dispatcher={dispatcher}
             mlViasLayer={mlViasLayer}
+            vectorLayer={vectorLayer}
             getTraceSnapTargets={getTraceSnapTargets}
           />
         ) : tab === "cells" ? (
@@ -797,12 +803,14 @@ function MLPanel({
   annotations,
   dispatcher,
   mlViasLayer,
+  vectorLayer,
   getTraceSnapTargets
 }: {
   dieId: string;
   annotations: DieAnnotations | undefined;
   dispatcher: ActionDispatcher;
   mlViasLayer: MLViasLayer | null;
+  vectorLayer: VectorizeLayer | null;
   getTraceSnapTargets?: () => TraceSnapTarget[];
 }) {
   return (
@@ -812,6 +820,12 @@ function MLPanel({
         dieId={dieId}
         dispatcher={dispatcher}
         mlViasLayer={mlViasLayer}
+        getTraceSnapTargets={getTraceSnapTargets}
+      />
+      <MLSectionHeader>Vector traces (no model)</MLSectionHeader>
+      <VectorSection
+        dispatcher={dispatcher}
+        vectorLayer={vectorLayer}
         getTraceSnapTargets={getTraceSnapTargets}
       />
       <MLSectionHeader>ML Vias</MLSectionHeader>
@@ -982,6 +996,46 @@ function jobStatusLine(job: MLInferenceJob | null | undefined): string {
 }
 
 /** Model dropdown, start/stop, live job progress, confidence threshold. */
+/**
+ * Shared traces→nets materialization for both overlays (ML and vector):
+ * snap → stitch → union → an undoable `batch` of `upsertNet`s. Returns
+ * `null` when the user cancelled, `{ error }` when there's nothing to make.
+ */
+async function materializeTraces(
+  traces: MLTracePolyline[],
+  dispatcher: ActionDispatcher,
+  snapTargets: TraceSnapTarget[],
+  dialog: { confirm(message: string, title?: string): Promise<boolean> }
+): Promise<{ created: number } | { error: string } | null> {
+  const minScore = usePreferences.getState().traceConfidenceThreshold;
+  const result = buildNetsFromTraces({
+    traces,
+    minScore,
+    snapTargets,
+    snapTol: Math.max(8, usePreferences.getState().viaSize * 2),
+    stitchTol: 12,
+    layer: "metal1"
+  });
+  if (!result.nets.length) {
+    return {
+      error: "нет трасс для материализации — прогоните декод и проверьте Trace confidence"
+    };
+  }
+  if (
+    !await dialog.confirm(
+      `Создать ${result.nets.length} net(ей) из ${traces.length} трасс?\n` +
+        `Концов со снапом: ${result.snappedEnds}, сшито разрывов: ${result.stitchedPairs}, ` +
+        `отброшено вырожденных: ${result.droppedDegenerate}.\nДействие уйдёт в Undo.`
+    )
+  )
+    return null;
+  await dispatcher.dispatch({
+    kind: "batch",
+    actions: result.nets.map((net) => ({ kind: "upsertNet", net, prevNet: null }))
+  });
+  return { created: result.nets.length };
+}
+
 function InferenceSection({
   dieId,
   dispatcher,
@@ -1220,34 +1274,16 @@ function InferenceSection({
         onClick={async () => {
           if (!mlViasLayer || !getTraceSnapTargets) return;
           setErr(null);
-          const minScore = usePreferences.getState().traceConfidenceThreshold;
-          const traces = mlViasLayer.collectTraces();
-          const result = buildNetsFromTraces({
-            traces,
-            minScore,
-            snapTargets: getTraceSnapTargets(),
-            snapTol: Math.max(8, usePreferences.getState().viaSize * 2),
-            stitchTol: 12,
-            layer: "metal1"
-          });
-          if (!result.nets.length) {
-            setErr("нет трасс для материализации — прогоните инференс и проверьте Trace confidence");
-            return;
-          }
-          if (
-            !await dialog.confirm(
-              `Создать ${result.nets.length} net(ей) из ${traces.length} трасс?\n` +
-                `Концов со снапом: ${result.snappedEnds}, сшито разрывов: ${result.stitchedPairs}, ` +
-                `отброшено вырожденных: ${result.droppedDegenerate}.\nДействие уйдёт в Undo.`
-            )
-          )
-            return;
           setBusy("traces");
           try {
-            await dispatcher.dispatch({
-              kind: "batch",
-              actions: result.nets.map((net) => ({ kind: "upsertNet", net, prevNet: null }))
-            });
+            const traces = mlViasLayer.collectTraces();
+            const outcome = await materializeTraces(
+              traces,
+              dispatcher,
+              getTraceSnapTargets(),
+              dialog
+            );
+            if (outcome && "error" in outcome) setErr(outcome.error);
           } catch (e) {
             setErr(e instanceof Error ? e.message : "traces → nets failed");
           } finally {
@@ -1261,9 +1297,368 @@ function InferenceSection({
   );
 }
 
+/** One labelled range slider row for the vectorize param panel. */
+function VSlider({
+  label,
+  value,
+  min,
+  max,
+  step = 1,
+  format,
+  onChange
+}: {
+  label: string;
+  value: number;
+  min: number;
+  max: number;
+  step?: number;
+  format?: (v: number) => string;
+  onChange: (v: number) => void;
+}) {
+  return (
+    <>
+      <div
+        className="row"
+        style={{ justifyContent: "space-between", marginBottom: 2, marginTop: 8 }}
+      >
+        <span className="u" style={{ fontSize: 10 }}>
+          {label}
+        </span>
+        <span className="m" style={{ fontSize: 11, color: "var(--ink2)" }}>
+          {format ? format(value) : value}
+        </span>
+      </div>
+      <input
+        type="range"
+        min={min}
+        max={max}
+        step={step}
+        value={value}
+        style={{ width: "100%" }}
+        onChange={(e) => onChange(Number(e.target.value))}
+      />
+    </>
+  );
+}
+
+/**
+ * Classical (no-model) metal vectorization: threshold a brightness/colour
+ * channel of the visible image, decode skeleton traces + mask outlines, and
+ * materialize them into nets — no training, no checkpoint. Params are
+ * user-tunable (live refetch, debounced) and persist as named presets.
+ */
+function VectorSection({
+  dispatcher,
+  vectorLayer,
+  getTraceSnapTargets
+}: {
+  dispatcher: ActionDispatcher;
+  vectorLayer: VectorizeLayer | null;
+  getTraceSnapTargets?: () => TraceSnapTarget[];
+}) {
+  const dialog = useDialog();
+  const params = usePreferences((s) => s.vectorParams);
+  const patch = usePreferences((s) => s.patchVectorParams);
+  const resetParams = usePreferences((s) => s.resetVectorParams);
+  const presets = usePreferences((s) => s.vectorPresets);
+  const savePreset = usePreferences((s) => s.saveVectorPreset);
+  const deletePreset = usePreferences((s) => s.deleteVectorPreset);
+  const hidden = usePreferences((s) => s.vectorOverlayHidden);
+  const setHidden = usePreferences((s) => s.setVectorOverlayHidden);
+  const status = useDieViewerStore((s) => s.vectorStatus);
+  const [busy, setBusy] = useState<null | "nets">(null);
+  const [err, setErr] = useState<string | null>(null);
+  const presetNames = Object.keys(presets).sort();
+
+  const saveAsPreset = async () => {
+    const name = await dialog.prompt(
+      "Preset name (e.g. “LM2937 SEM”, “optical metal”):",
+      "",
+      "Save vector preset"
+    );
+    if (!name?.trim()) return;
+    savePreset(name.trim(), params);
+  };
+
+  const vectorToNets = async () => {
+    if (!vectorLayer || !getTraceSnapTargets) return;
+    setErr(null);
+    setBusy("nets");
+    try {
+      const traces = vectorLayer.collectTraces();
+      const outcome = await materializeTraces(
+        traces,
+        dispatcher,
+        getTraceSnapTargets(),
+        dialog
+      );
+      if (outcome && "error" in outcome) setErr(outcome.error);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "vector → nets failed");
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  return (
+    <div style={{ padding: "12px" }}>
+      <div
+        className="m"
+        style={{ fontSize: 10.5, color: "var(--ink3)", marginBottom: 8 }}
+      >
+        Live threshold vectorization of the visible image — no model needed.
+        Tune until metal is solid and noise minimal, then materialize.
+      </div>
+
+      {/* Overlay visibility */}
+      <button
+        type="button"
+        className="btn"
+        style={{ width: "100%", cursor: "pointer" }}
+        onClick={() => setHidden(!hidden)}
+      >
+        {hidden ? "Show vector overlay" : "Hide vector overlay"}
+      </button>
+
+      {/* Live status */}
+      <div
+        className="m"
+        style={{ fontSize: 10.5, color: "var(--ink2)", margin: "8px 0 4px" }}
+      >
+        {hidden
+          ? "overlay hidden"
+          : status.loading
+            ? "decoding…"
+            : status.error
+              ? `error: ${status.error}`
+              : `${status.traces} trace(s) decoded`}
+      </div>
+
+      {/* Channel + polarity */}
+      <div
+        className="row"
+        style={{ gap: 8, alignItems: "center", marginBottom: 6, marginTop: 4 }}
+      >
+        <span className="u" style={{ fontSize: 10, minWidth: 44 }}>
+          Channel
+        </span>
+        <select
+          value={params.channel}
+          disabled={hidden}
+          onChange={(e) => patch({ channel: e.target.value as VectorizeParams["channel"] })}
+          style={{ flex: 1, minWidth: 0 }}
+        >
+          <option value="gray">brightness</option>
+          <option value="r">R</option>
+          <option value="g">G</option>
+          <option value="b">B</option>
+        </select>
+        <label
+          className="row"
+          style={{ gap: 4, alignItems: "center", fontSize: 10, cursor: "pointer" }}
+        >
+          <input
+            type="checkbox"
+            checked={params.invert}
+            disabled={hidden}
+            onChange={(e) => patch({ invert: e.target.checked })}
+          />
+          dark metal
+        </label>
+      </div>
+
+      {params.adaptive ? (
+        <>
+          <VSlider
+            label="Adapt. block"
+            value={params.adaptiveBlock}
+            min={3}
+            max={201}
+            step={2}
+            onChange={(v) => patch({ adaptiveBlock: v })}
+          />
+          <VSlider
+            label="Adapt. C"
+            value={params.adaptiveC}
+            min={0}
+            max={64}
+            onChange={(v) => patch({ adaptiveC: v })}
+          />
+        </>
+      ) : (
+        <>
+          <VSlider
+            label="Thresh low"
+            value={params.threshLow}
+            min={0}
+            max={255}
+            onChange={(v) => patch({ threshLow: v })}
+          />
+          <VSlider
+            label="Thresh high"
+            value={params.threshHigh}
+            min={0}
+            max={255}
+            onChange={(v) => patch({ threshHigh: v })}
+          />
+        </>
+      )}
+      <label
+        className="row"
+        style={{ gap: 4, alignItems: "center", fontSize: 10, marginTop: 6, cursor: "pointer" }}
+      >
+        <input
+          type="checkbox"
+          checked={params.adaptive}
+          disabled={hidden}
+          onChange={(e) => patch({ adaptive: e.target.checked })}
+        />
+        adaptive (uneven lighting)
+      </label>
+
+      <VSlider
+        label="Open (denoise)"
+        value={params.openPx}
+        min={0}
+        max={6}
+        onChange={(v) => patch({ openPx: v })}
+      />
+      <VSlider
+        label="Bridge gaps"
+        value={params.bridgePx}
+        min={0}
+        max={8}
+        onChange={(v) => patch({ bridgePx: v })}
+      />
+      <VSlider
+        label="Min length"
+        value={params.minLength}
+        min={2}
+        max={120}
+        format={(v) => `${v} px`}
+        onChange={(v) => patch({ minLength: v })}
+      />
+      <VSlider
+        label="Width min"
+        value={params.widthMin}
+        min={0}
+        max={30}
+        step={0.5}
+        format={(v) => (v === 0 ? "off" : `${v} px`)}
+        onChange={(v) => patch({ widthMin: v })}
+      />
+      <VSlider
+        label="Width max"
+        value={params.widthMax}
+        min={0}
+        max={60}
+        step={0.5}
+        format={(v) => (v === 0 ? "off" : `${v} px`)}
+        onChange={(v) => patch({ widthMax: v })}
+      />
+      <div className="m" style={{ fontSize: 10, color: "var(--ink3)", marginTop: 4 }}>
+        Width filters fat blobs (pads, text, halos) out of the traces. Trace
+        confidence slider above also applies (brightness margin).
+      </div>
+
+      {/* Presets */}
+      <div
+        className="row"
+        style={{ gap: 6, alignItems: "center", marginTop: 12 }}
+      >
+        <select
+          value=""
+          disabled={presetNames.length === 0}
+          onChange={(e) => {
+            const name = e.target.value;
+            const p = presets[name];
+            if (p) patch(p);
+          }}
+          style={{ flex: 1, minWidth: 0 }}
+          title="Apply a saved parameter preset"
+        >
+          <option value="">{presetNames.length ? "apply preset…" : "no presets"}</option>
+          {presetNames.map((n) => (
+            <option key={n} value={n}>
+              {n}
+            </option>
+          ))}
+        </select>
+        <button
+          type="button"
+          className="btn"
+          style={{ cursor: "pointer" }}
+          disabled={hidden}
+          title="Save the current parameters as a named preset"
+          onClick={() => void saveAsPreset()}
+        >
+          Save
+        </button>
+        <button
+          type="button"
+          className="btn"
+          style={{ cursor: "pointer" }}
+          disabled={presetNames.length === 0}
+          title="Delete a preset"
+          onClick={async () => {
+            const name = await dialog.prompt(
+              `Preset to delete (${presetNames.join(", ")}):`,
+              "",
+              "Delete vector preset"
+            );
+            if (name?.trim()) deletePreset(name.trim());
+          }}
+        >
+          Del
+        </button>
+      </div>
+
+      <div
+        className="row"
+        style={{ gap: 6, marginTop: 8 }}
+      >
+        <button
+          type="button"
+          className="btn"
+          style={{ flex: 1, cursor: "pointer" }}
+          onClick={() => resetParams()}
+          title="Reset parameters to the defaults"
+        >
+          Reset params
+        </button>
+      </div>
+
+      {err && (
+        <div
+          className="m"
+          style={{
+            marginTop: 8,
+            fontSize: 10.5,
+            color: "var(--danger, #e36854)",
+            wordBreak: "break-word"
+          }}
+        >
+          {err}
+        </div>
+      )}
+
+      {/* Vector traces → nets materialization */}
+      <button
+        type="button"
+        className="btn"
+        style={{ width: "100%", marginTop: 12 }}
+        disabled={busy !== null || !vectorLayer || !getTraceSnapTargets || hidden}
+        title="Materialize decoded vector traces into real annotation nets (ends snapped to device contacts / terminals / pins). Undoable."
+        onClick={() => void vectorToNets()}
+      >
+        {busy === "nets" ? "Создаю nets…" : "Vector → nets"}
+      </button>
+    </div>
+  );
+}
+
 /** Mask sizing (source-px) + dataset export. */
-function TrainingSection({ dieId }: { dieId: string }) {
-  const mlConfig = useDieViewerStore((s) => s.mlConfig);
+function TrainingSection({ dieId }: { dieId: string }) {  const mlConfig = useDieViewerStore((s) => s.mlConfig);
   const setMlConfig = useDieViewerStore((s) => s.setMlConfig);
   const [exporting, setExporting] = useState(false);
   const [result, setResult] = useState<

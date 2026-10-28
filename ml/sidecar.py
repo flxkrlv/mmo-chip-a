@@ -41,6 +41,7 @@ from heatmap import extract_components, extract_peaks, extract_trace_skeleton
 from model import build_model, infer_num_classes
 from tiling import tile_predict
 from trainer import TrainParams, run_training
+from vectorize import VectorParams, vectorize_region
 
 
 def _now() -> str:
@@ -359,6 +360,54 @@ def predict_region(
             raise HTTPException(status_code=500, detail="heatmap encode failed")
         resp["heatmap_png_b64"] = base64.b64encode(png.tobytes()).decode("ascii")
     return resp
+
+
+@app.post("/vectorize/region")
+@cv_resource_guard
+def vectorize_region_endpoint(
+    image: UploadFile = File(...),
+    channel: str = Form("gray"),
+    invert: bool = Form(False),
+    thresh_low: int = Form(120),
+    thresh_high: int = Form(255),
+    adaptive: bool = Form(False),
+    adaptive_block: int = Form(51),
+    adaptive_c: int = Form(8),
+    open_px: int = Form(1),
+    bridge_px: int = Form(2),
+    min_len: int = Form(14),
+    width_min: float = Form(1.5),
+    width_max: float = Form(0.0),
+    max_outlines: int = Form(4000),
+) -> dict:
+    """Classical (no-model) metal vectorization of the posted crop: threshold
+    a brightness/colour channel into a mask, clean it, decode skeleton traces
+    + mask outlines in *crop-local* pixel coords. Works without any checkpoint
+    — the ML path and this path share only the decode stage. Serialized by
+    the CV gate like the other heavy CV endpoints."""
+    raw = image.file.read()
+    arr = np.frombuffer(raw, dtype=np.uint8)
+    bgr = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+    if bgr is None:
+        raise HTTPException(status_code=400, detail="could not decode image")
+    rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+
+    params = VectorParams(
+        channel=channel if channel in ("gray", "r", "g", "b") else "gray",
+        invert=invert,
+        thresh_low=thresh_low,
+        thresh_high=thresh_high,
+        adaptive=adaptive,
+        adaptive_block=adaptive_block,
+        adaptive_c=adaptive_c,
+        open_px=open_px,
+        bridge_px=bridge_px,
+        min_len=min_len,
+        width_min=width_min,
+        width_max=width_max,
+        max_outlines=max_outlines,
+    )
+    return vectorize_region(rgb, params)
 
 
 def _train_worker(job: JobRecord, params: TrainParams, out: str) -> None:

@@ -905,6 +905,50 @@ export interface MLRegion {
 export interface MLTracePolyline {
   points: [number, number][];
   score?: number;
+  /** Median wire width in source px (distance-transform estimate). Set by
+   *  the vectorize decoder; absent for ML traces. */
+  widthPx?: number;
+}
+
+/** Classical (no-model) metal vectorization: threshold a brightness/colour
+ *  channel of the source crop, clean the mask, then decode skeleton traces +
+ *  outline contours. All params are user-tunable live in the inspector. */
+export interface VectorizeParams {
+  /** Which channel to threshold: luma or a raw R/G/B plane. */
+  channel: "gray" | "r" | "g" | "b";
+  /** True → select DARK pixels (dark metal on bright die); else bright. */
+  invert: boolean;
+  /** Band-pass on the channel value (0..255): pixels accepted when
+   *  `low <= v <= high` (or outside when invert). high=255 ⇒ no upper cut. */
+  threshLow: number;
+  threshHigh: number;
+  /** Local (adaptive gaussian) threshold instead of the global band. */
+  adaptive: boolean;
+  /** Neighbourhood size (odd px) for the adaptive threshold. */
+  adaptiveBlock: number;
+  /** Adaptive offset C: pixel passes when value > localMean - C (bright). */
+  adaptiveC: number;
+  /** Morphological open radius — removes speckle before decoding. */
+  openPx: number;
+  /** Morphological close radius — bridges sub-threshold gaps in a wire. */
+  bridgePx: number;
+  /** Drop skeleton branches shorter than this (px). */
+  minLength: number;
+  /** Keep branches whose median corridor width (distance transform) is in
+   *  [widthMin, widthMax] px. 0 disables the respective bound. */
+  widthMin: number;
+  widthMax: number;
+}
+
+/** Response of the vectorize endpoint: skeleton traces + mask outlines in
+ *  source-image coords. Not persisted — computed live while tuning. */
+export interface VectorizeResponse {
+  traces: MLTracePolyline[];
+  /** Outline polylines of the thresholded mask (the "what did the threshold
+   *  capture" preview). Same coords as traces; drawn as a light fill. */
+  outlines: [number, number][][];
+  /** [x0, y0, x1, y1] in source-image pixels - the region this covers. */
+  bbox: [number, number, number, number];
 }
 
 export interface MLPrediction {
