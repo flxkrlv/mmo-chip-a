@@ -1033,6 +1033,7 @@ async function materializeTraces(
     stitchTol: Math.max(6, 2 * Math.round(prefs.vectorParams.bridgePx) + 2),
     minDeviceContacts: prefs.vectorMinContacts,
     dropIrregular: prefs.vectorDropIrregular,
+    maxBranchLen: prefs.vectorMaxBranchLen,
     layer: "metal1"
   });
   if (!result.nets.length) {
@@ -1436,6 +1437,8 @@ function VectorSection({
   const setMinContacts = usePreferences((s) => s.setVectorMinContacts);
   const dropIrregular = usePreferences((s) => s.vectorDropIrregular);
   const setDropIrregular = usePreferences((s) => s.setVectorDropIrregular);
+  const maxBranchLen = usePreferences((s) => s.vectorMaxBranchLen);
+  const setMaxBranchLen = usePreferences((s) => s.setVectorMaxBranchLen);
   // Where the Vector → nets traces come from: the cached whole-die sweep
   // payload (default — the point of the sweep) or the live viewport decodes.
   const [netsSource, setNetsSource] = useState<"whole-die" | "preview">("whole-die");
@@ -1763,7 +1766,7 @@ function VectorSection({
             label="Min gap (merges breaks)"
             value={umPerPx * params.bridgePx * 2}
             min={0}
-            max={umPerPx * 16}
+            max={10}
             step={umPerPx}
             format={fmtUm}
             onChange={(um) => patch({ bridgePx: Math.round(um / umPerPx / 2) })}
@@ -1786,7 +1789,7 @@ function VectorSection({
             label="Wire width min"
             value={umPerPx * params.widthMin}
             min={0}
-            max={umPerPx * 60}
+            max={50}
             step={umPerPx * 0.5}
             format={fmtUm}
             onChange={(um) => patch({ widthMin: Math.round((um / umPerPx) * 2) / 2 })}
@@ -1795,7 +1798,7 @@ function VectorSection({
             label="Wire width max"
             value={umPerPx * params.widthMax}
             min={0}
-            max={umPerPx * 120}
+            max={50}
             step={umPerPx * 0.5}
             format={fmtUm}
             onChange={(um) => patch({ widthMax: Math.round((um / umPerPx) * 2) / 2 })}
@@ -2186,6 +2189,21 @@ function VectorSection({
           />
           drop irregular
         </label>
+      </div>
+      <VSlider
+        label={umPerPx > 0 ? "Max branch len (contact → wire)" : "Max branch len (px)"}
+        value={umPerPx > 0 ? umPerPx * maxBranchLen : maxBranchLen}
+        min={0}
+        max={umPerPx > 0 ? 50 : 200}
+        step={umPerPx > 0 ? umPerPx * 0.5 : 1}
+        format={umPerPx > 0 ? fmtUm : (v) => (v === 0 ? "off" : `${v} px`)}
+        onChange={(v) => setMaxBranchLen(umPerPx > 0 ? Math.round((v / umPerPx) * 2) / 2 : Math.round(v))}
+      />
+      <div className="m" style={{ fontSize: 10, color: "var(--ink3)", marginTop: 2 }}>
+        Cap on the contact → wire branch (0 = off). A contact inside a big
+        pad whose centreline was width-filtered away otherwise ties to a far
+        wire with a long straight line — raise Wire width max instead if the
+        fat buses lose their centreline.
       </div>
       <button
         type="button"

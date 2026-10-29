@@ -55,6 +55,10 @@ export interface TracesToNetsInput {
    *  (the raw axis could not be snapped within delta) instead of
    *  materializing their non-octilinear geometry. */
   dropIrregular?: boolean;
+  /** Max length (source px) of a contact→wire branch edge. 0 = off. Caps
+   *  the outline-membership connections (a contact inside a big pad with
+   *  no nearby centreline would otherwise tie to a far wire). */
+  maxBranchLen?: number;
 }
 
 export interface TracesToNetsResult {
@@ -117,7 +121,8 @@ export function buildNetsFromTraces(input: TracesToNetsInput): TracesToNetsResul
     layer,
     namePrefix = "ML-",
     minDeviceContacts = 0,
-    dropIrregular = false
+    dropIrregular = false,
+    maxBranchLen = 0
   } = input;
 
   // 1. Snap every polyline end to the nearest target (first hit wins by
@@ -166,6 +171,14 @@ export function buildNetsFromTraces(input: TracesToNetsInput): TracesToNetsResul
   /** Every target label that gets a connection in phases 1a/1b/1c — 1c only
    *  rescues contacts nothing else connected. */
   const snappedLabels = new Set<string>();
+  // Branch-length cap (the "contact → nearest wire" отросток length). The
+  // proximity phases (1a/1b) already reach only effTol, so the cap shrinks
+  // them only if set smaller; the outline-membership phase (1c) is where it
+  // really bites — a contact inside a big pad whose own centreline was
+  // width-filtered away would otherwise tie to a far wire with a long
+  // straight line. 0 = off.
+  const branchLenOk = (d: number, base: number): boolean =>
+    d <= base && (maxBranchLen <= 0 || d <= maxBranchLen);
   interface PendingTrace {
     points: [number, number][];
     score: number;
@@ -201,6 +214,7 @@ export function buildNetsFromTraces(input: TracesToNetsInput): TracesToNetsResul
     // contacts on wide wires/pads visibly intersecting the metal did not
     // connect (fixed 8..12 px lost to half the wire width).
     const effTol = snapTol + (t.widthPx ?? 0) / 2;
+    const effCap = maxBranchLen > 0 ? Math.min(effTol, maxBranchLen) : effTol;
     const insertions: { at: number; target: TraceSnapTarget }[] = [];
     const endBranches: { end: 0 | 1; target: TraceSnapTarget }[] = [];
     // 1a. Endpoints: the contact nearest a polyline END becomes a BRANCH
@@ -210,7 +224,7 @@ export function buildNetsFromTraces(input: TracesToNetsInput): TracesToNetsResul
     //     отросток edge carries the connection instead.
     for (const end of [0, pts.length - 1] as const) {
       let best: TraceSnapTarget | null = null;
-      let bestD = effTol;
+      let bestD = effCap;
       for (const s of snapTargets) {
         const d = Math.hypot(s.x - pts[end][0], s.y - pts[end][1]);
         if (d <= bestD) {
@@ -229,7 +243,7 @@ export function buildNetsFromTraces(input: TracesToNetsInput): TracesToNetsResul
     //     edge runs from that wire point to the contact (отросток).
     for (const s of snapTargets) {
       if (snappedLabels.has(s.label)) continue;
-      let bestD = effTol;
+      let bestD = effCap;
       let bestAt = -1;
       for (let i = 0; i < pts.length - 1; i++) {
         const ax = pts[i][0];
@@ -356,7 +370,7 @@ export function buildNetsFromTraces(input: TracesToNetsInput): TracesToNetsResul
           }
         }
       }
-      if (bestTrace >= 0) {
+      if (bestTrace >= 0 && (maxBranchLen <= 0 || bestD <= maxBranchLen)) {
         // Branch off an end vertex when the projection lands there;
         // otherwise a collinear split + branch from the wire point.
         const ptsLen = pending[bestTrace].points.length;

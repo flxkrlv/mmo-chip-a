@@ -205,6 +205,11 @@ interface PreferencesState {
   /** Materialization filter: skip octilinear traces kept raw with
    *  `irregular: true` instead of materializing non-octilinear geometry. */
   vectorDropIrregular: boolean;
+  /** Max length (source px) of a contact→wire branch edge (0 = off). Caps
+   *  the outline-membership connections: without it a contact inside a big
+   *  pad whose centreline was width-filtered away ties to a far wire with
+   *  a long straight line. */
+  vectorMaxBranchLen: number;
   /** Minimum score (0..1) for an ML cell proposal to be shown / offered in
    *  merge-cells. Separate from the via threshold so the two overlays can be
    *  tuned independently. */
@@ -510,6 +515,7 @@ interface PreferencesActions {
   setVectorOverlayHidden: (hidden: boolean) => void;
   setVectorMinContacts: (n: 0 | 1 | 2) => void;
   setVectorDropIrregular: (drop: boolean) => void;
+  setVectorMaxBranchLen: (px: number) => void;
   setCellDetectionThreshold: (threshold: number) => void;
   setCellDetectionsHidden: (hidden: boolean) => void;
   setCellDetectAllowFlipX: (allow: boolean) => void;
@@ -633,6 +639,7 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
         vectorOverlayHidden: true,
         vectorMinContacts: 0,
         vectorDropIrregular: false,
+        vectorMaxBranchLen: 0,
         cellDetectionThreshold: 0.5,
         cellDetectionsHidden: false,
         cellDetectAllowFlipX: true,
@@ -970,6 +977,7 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
         setVectorOverlayHidden: (hidden) => set({ vectorOverlayHidden: hidden }),
         setVectorMinContacts: (n) => set({ vectorMinContacts: n }),
         setVectorDropIrregular: (drop) => set({ vectorDropIrregular: drop }),
+        setVectorMaxBranchLen: (px) => set({ vectorMaxBranchLen: Math.max(0, px) }),
         setCellDetectionThreshold: (threshold) =>
           set({
             cellDetectionThreshold: Math.min(1, Math.max(0, threshold))
@@ -1105,6 +1113,7 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
           vectorOverlayHidden: state.vectorOverlayHidden,
           vectorMinContacts: state.vectorMinContacts,
           vectorDropIrregular: state.vectorDropIrregular,
+          vectorMaxBranchLen: state.vectorMaxBranchLen,
           cellDetectionThreshold: state.cellDetectionThreshold,
           cellDetectionsHidden: state.cellDetectionsHidden,
           cellDetectAllowFlipX: state.cellDetectAllowFlipX,
