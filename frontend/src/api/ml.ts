@@ -25,7 +25,7 @@ import type {
   VectorSweepStatus
 } from "shared";
 import { subscribeToDie } from "./annotationsWebSocket";
-import { ApiError, apiGet, apiPost } from "./client";
+import { ApiError, apiDelete, apiGet, apiPost } from "./client";
 
 /**
  * Kick off the backend ML training-data export for a die. The backend crops
@@ -247,6 +247,16 @@ export async function fetchVectorLayerBlocks(
 /** The Vector layers list for the left panel (saved whole-die payloads). */
 export function getVectorLayers(dieId: string, signal?: AbortSignal): Promise<VectorLayerInfo[]> {
   return apiGet<VectorLayerInfo[]>(`/api/dies/${dieId}/vectorize/layers`, signal);
+}
+
+/** Rename a saved whole-die layer (Vector Layers tree ✎). */
+export function renameVectorLayer(dieId: string, hash: string, name: string): Promise<{ ok: boolean }> {
+  return apiPost(`/api/dies/${dieId}/vectorize/layers/${hash}/rename`, { name });
+}
+
+/** Delete a saved whole-die layer (payload + mask + params/name json). */
+export function deleteVectorLayer(dieId: string, hash: string): Promise<{ ok: boolean }> {
+  return apiDelete(`/api/dies/${dieId}/vectorize/layers/${hash}`);
 }
 
 /** Sidecar health — checkpoint name, device, training flag. */

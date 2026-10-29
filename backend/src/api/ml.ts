@@ -750,6 +750,30 @@ export function createMLRouter(config: {
     }
   });
 
+  // ── POST /api/dies/:dieId/vectorize/layers/:hash/rename {name} ────
+  // Rename a saved whole-die layer (the Vector Layers tree's ✎).
+  router.post("/api/dies/:dieId/vectorize/layers/:hash/rename", async (request, response, next) => {
+    try {
+      const name = String((request.body as { name?: unknown } | undefined)?.name ?? "");
+      await vectorSweep.renameLayer(String(request.params.dieId), String(request.params.hash), name);
+      response.json({ ok: true });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // ── DELETE /api/dies/:dieId/vectorize/layers/:hash ────────────────
+  // Delete a saved whole-die layer (derived cache only: payload + mask +
+  // params/name json under dataRoot/vectorize/<die>/<hash>).
+  router.delete("/api/dies/:dieId/vectorize/layers/:hash", async (request, response, next) => {
+    try {
+      await vectorSweep.deleteLayer(String(request.params.dieId), String(request.params.hash));
+      response.json({ ok: true });
+    } catch (error) {
+      next(error);
+    }
+  });
+
   // ── GET /api/dies/:dieId/sample?bbox=… — pipette colour readout ──────
   // Mean RGB of a small source region (the vector pipette samples the SAME
   // image the vectorize endpoint decodes — base or overlay). Tiny crops

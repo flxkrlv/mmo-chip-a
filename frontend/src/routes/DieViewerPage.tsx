@@ -1003,6 +1003,7 @@ function DieViewer({ dieId }: { dieId: string }) {
         if (gone) return;
         const layers = list.map((l) => ({
           hash: l.hash,
+          name: l.name ?? null,
           traces: l.traces,
           outlines: l.outlines,
           modified: l.modified

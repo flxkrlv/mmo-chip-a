@@ -135,7 +135,7 @@ interface DieViewerState {
   /** SAVED whole-die vecto payloads for this die (Vector layers list in the
    *  outline tree). Refreshed from `GET .../vectorize/layers`; the bump
    *  version invalidates the react-query after a sweep completes. */
-  savedVectorLayers: { hash: string; traces: number; outlines: number; modified: string }[];
+  savedVectorLayers: { hash: string; name?: string | null; traces: number; outlines: number; modified: string }[];
   savedVectorHidden: string[];
   savedVectorVersion: number;
   /** Cell type picked in the Cells (detection) tab — from the dropdown or by
@@ -190,7 +190,7 @@ setVectorPipetteArmed: (armed: boolean) => void;
 addVectorSample: (sample: { rgb: [number, number, number]; x: number; y: number }) => void;
 clearVectorSamples: () => void;
 setVectorSweepRunning: (running: boolean) => void;
-setSavedVectorLayers: (layers: { hash: string; traces: number; outlines: number; modified: string }[]) => void;
+setSavedVectorLayers: (layers: { hash: string; name?: string | null; traces: number; outlines: number; modified: string }[]) => void;
 toggleSavedVectorLayer: (hash: string) => void;
 bumpSavedVectorLayers: () => void;
   setCellDetectionTypeId: (id: string | null) => void;

@@ -508,6 +508,32 @@ export function createVectorSweep(config: {
    *  newest first. Reads params.json (written at completion) for the layer
    *  description; legacy payloads (mask.png only, no full.json) are skipped
    *  — there is nothing to draw yet. */
+  /** Rename a saved whole-die layer: writes name.json next to the payload
+   *  (listLayers reads it back). */
+  async function renameLayer(dieId: string, hash: string, name: string): Promise<void> {
+    if (!/^v1-[0-9a-f]{12}$/.test(hash)) throw new Error("bad layer hash");
+    const clean = name.trim().slice(0, 80);
+    if (!clean) throw new Error("empty name");
+    const dir = sweepDir(dieId, hash);
+    // Only rename layers that actually exist (a finished payload on disk).
+    await fs.access(path.join(dir, "full.json"));
+    const tmp = path.join(dir, `name.json.${process.pid}.tmp`);
+    await fs.writeFile(
+      tmp,
+      JSON.stringify({ name: clean, renamedAt: new Date().toISOString() })
+    );
+    await fs.rename(tmp, path.join(dir, "name.json"));
+  }
+
+  /** Delete a saved whole-die layer (the whole params dir: payload, mask,
+   *  params/name json). Derived cache data only — the source image and the
+   *  die record are untouched. Also evicts the in-memory full payload. */
+  async function deleteLayer(dieId: string, hash: string): Promise<void> {
+    if (!/^v1-[0-9a-f]{12}$/.test(hash)) throw new Error("bad layer hash");
+    fullCache.delete(`${dieId}|${hash}`);
+    await fs.rm(sweepDir(dieId, hash), { recursive: true, force: true });
+  }
+
   async function listLayers(dieId: string): Promise<VectorLayerInfo[]> {
     const root = path.join(config.dataRoot, "vectorize", dieId);
     let names: string[] = [];
@@ -537,6 +563,7 @@ export function createVectorSweep(config: {
       }
       let params: VectorizeParams | null = null;
       let completedAt: string | null = null;
+      let name: string | null = null;
       try {
         const pj = JSON.parse(
           await fs.readFile(path.join(sweepDir(dieId, hash), "params.json"), "utf8")
@@ -546,18 +573,26 @@ export function createVectorSweep(config: {
       } catch {
         // legacy result: describe by hash only
       }
+      try {
+        const nj = JSON.parse(
+          await fs.readFile(path.join(sweepDir(dieId, hash), "name.json"), "utf8")
+        ) as { name?: string };
+        name = nj.name ?? null;
+      } catch {
+        // unnamed layer
+      }
       let modified = "";
       try {
         modified = (await fs.stat(path.join(sweepDir(dieId, hash), "full.json"))).mtime.toISOString();
       } catch {
         modified = new Date(0).toISOString();
       }
-      out.push({ hash, traces, outlines, params, completedAt, modified });
+      out.push({ hash, name, traces, outlines, params, completedAt, modified });
     }
     out.sort((a, b) => b.modified.localeCompare(a.modified));
     return out;
   }
 
-  return { start, get, stop, readBlocks, listLayers };
+  return { start, get, stop, readBlocks, listLayers, renameLayer, deleteLayer };
 
 }

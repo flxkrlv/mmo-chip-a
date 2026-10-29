@@ -79,6 +79,11 @@ interface CachedRegion {
    *  every tile would walk (and stroke-path) all of them. */
   traceBoxes: { box: Rect; index: number }[];
   outlineBoxes: { box: Rect; index: number }[];
+  /** Lazily built Path2D per shape. Rebuilding moveTo/lineTo chains for
+   *  thousands of polylines PER TILE PER FRAME was the saved-layer jank;
+   *  a cached Path2D is stroke()d directly. */
+  tracePaths: (Path2D | null)[];
+  outlinePaths: (Path2D | null)[];
   /** Width-filter drop stats of the decode that filled this region. */
   stats?: { kept: number; droppedWidth: number; droppedShort?: number; merged?: number; irregular?: number };
   /** Group-namespace base for collectTraces: each decode region numbered its
@@ -94,8 +99,24 @@ interface PinnedLayer {
   outlines: [number, number][][];
   traceBoxes: { box: Rect; index: number }[];
   outlineBoxes: { box: Rect; index: number }[];
+  tracePaths: (Path2D | null)[];
+  outlinePaths: (Path2D | null)[];
   groupBase: number;
 }
+
+/** Path2D of a polyline; `close` for metal contours. */
+function buildPath(pts: [number, number][], close: boolean): Path2D {
+  const p = new Path2D();
+  p.moveTo(pts[0][0], pts[0][1]);
+  for (let i = 1; i < pts.length; i++) p.lineTo(pts[i][0], pts[i][1]);
+  if (close) p.closePath();
+  return p;
+}
+
+/** Below this zoom the outline fill (the biggest rasterization cost —
+ *  hundreds of large polygons per tile) stays on; at deeper zoom it is
+ *  dropped and only the cheap edge stroke remains. */
+const OUTLINE_FILL_MAX_ZOOM = 4;
 
 function pointsBox(points: [number, number][]): Rect {
   let minx = Infinity;
@@ -219,6 +240,8 @@ export class VectorizeLayer implements Layer {
               outlines,
               traceBoxes: traces.map((t, i) => ({ box: pointsBox(t.points), index: i })),
               outlineBoxes: outlines.map((o, i) => ({ box: pointsBox(o), index: i })),
+              tracePaths: traces.map(() => null),
+              outlinePaths: outlines.map(() => null),
               groupBase: (this.nextGroupBase++) * 1_000_000
             });
             this.invalidateCb?.();
@@ -388,6 +411,8 @@ export class VectorizeLayer implements Layer {
               outlines,
               traceBoxes: traces.map((t, i) => ({ box: pointsBox(t.points), index: i })),
               outlineBoxes: outlines.map((o, i) => ({ box: pointsBox(o), index: i })),
+              tracePaths: traces.map(() => null),
+              outlinePaths: outlines.map(() => null),
               groupBase: (this.nextGroupBase++) * 1_000_000
             });
             while (this.cache.size > MAX_REGIONS) {
@@ -494,14 +519,16 @@ export class VectorizeLayer implements Layer {
         if (!rectsIntersect(box, world)) continue;
         const pts = region.outlines[index];
         if (pts.length < 3) continue;
-        ctx.beginPath();
-        ctx.moveTo(pts[0][0], pts[0][1]);
-        for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1]);
-        ctx.closePath();
-        ctx.fillStyle = VECT_OUTLINE_FILL;
-        ctx.fill();
+        const path = (region.outlinePaths[index] ??= buildPath(pts, true));
+        // The fill is the rasterization hog (hundreds of large polygons per
+        // tile): keep it at overview zoom, drop it when zoomed in — the
+        // edge stroke still shows the captured metal.
+        if (zoom < OUTLINE_FILL_MAX_ZOOM) {
+          ctx.fillStyle = VECT_OUTLINE_FILL;
+          ctx.fill(path);
+        }
         ctx.strokeStyle = VECT_OUTLINE_STROKE;
-        ctx.stroke();
+        ctx.stroke(path);
       }
 
       // Centreline traces + endpoint snaps.
@@ -511,9 +538,7 @@ export class VectorizeLayer implements Layer {
         if ((t.score ?? 1) < minScore) continue;
         const pts = t.points;
         if (pts.length < 2) continue;
-        ctx.beginPath();
-        ctx.moveTo(pts[0][0], pts[0][1]);
-        for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1]);
+        const path = (region.tracePaths[index] ??= buildPath(pts, false));
         // Irregular (octilinear decoder kept the raw chain) — dashed, so
         // non-0/45/90° geometry is visible as such instead of "randomly
         // angled traces that look like a decoder bug".
@@ -522,7 +547,7 @@ export class VectorizeLayer implements Layer {
         }
         ctx.strokeStyle = VECT_TRACE_STROKE;
         ctx.lineWidth = Math.max(strokeW, 1.5 / zoom);
-        ctx.stroke();
+        ctx.stroke(path);
         ctx.setLineDash([]);
 
         for (const end of [pts[0], pts[pts.length - 1]]) {
@@ -565,27 +590,24 @@ export class VectorizeLayer implements Layer {
         if ((t.score ?? 1) < minScore) continue;
         const pts = t.points;
         if (pts.length < 2) continue;
-        ctx.beginPath();
-        ctx.moveTo(pts[0][0], pts[0][1]);
-        for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1]);
+        const path = (pin.tracePaths[index] ??= buildPath(pts, false));
         if (t.irregular === true) ctx.setLineDash([5 / zoom, 4 / zoom]);
         ctx.strokeStyle = VECT_TRACE_SAVED_STROKE;
         ctx.lineWidth = Math.max(strokeW, 1.5 / zoom);
-        ctx.stroke();
+        ctx.stroke(path);
         ctx.setLineDash([]);
       }
       for (const { box, index } of pin.outlineBoxes) {
         if (!rectsIntersect(box, world)) continue;
         const pts = pin.outlines[index];
         if (pts.length < 3) continue;
-        ctx.beginPath();
-        ctx.moveTo(pts[0][0], pts[0][1]);
-        for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1]);
-        ctx.closePath();
-        ctx.fillStyle = VECT_OUTLINE_FILL;
-        ctx.fill();
+        const path = (pin.outlinePaths[index] ??= buildPath(pts, true));
+        if (zoom < OUTLINE_FILL_MAX_ZOOM) {
+          ctx.fillStyle = VECT_OUTLINE_FILL;
+          ctx.fill(path);
+        }
         ctx.strokeStyle = "rgba(253, 224, 71, 0.22)";
-        ctx.stroke();
+        ctx.stroke(path);
       }
     }
   }
@@ -618,6 +640,8 @@ export class VectorizeLayer implements Layer {
         outlines: resp.outlines,
         traceBoxes: resp.traces.map((t, i) => ({ box: pointsBox(t.points), index: i })),
         outlineBoxes: resp.outlines.map((o, i) => ({ box: pointsBox(o), index: i })),
+        tracePaths: resp.traces.map(() => null),
+        outlinePaths: resp.outlines.map(() => null),
         stats: resp.stats,
         groupBase: (this.nextGroupBase++) * 1_000_000
       });

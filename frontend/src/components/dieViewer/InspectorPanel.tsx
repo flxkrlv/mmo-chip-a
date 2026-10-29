@@ -3,13 +3,14 @@ import { cellInstanceScale, cellWorldRect } from "../../lib/cellFootprint";
 import { padCountByPin, renamePinActions } from "../../lib/pinClipboard";
 import { useDialog } from "../Dialog";
 import { useQueryClient } from "@tanstack/react-query";
-import type { AnalogDevice, AnnotationNet, AnnotationNetEdge, AssistantFinding, Cell, CellType, DieAnnotations, DieMetadata, FloorplanRegion, HumanAnnotation, MLInferenceJob, MLTracePolyline, VectorizeParams, VectorSweepStatus, WireLayer } from "shared";
+import type { AnalogDevice, AnnotationNet, AnnotationNetEdge, AssistantFinding, Cell, CellType, DieAnnotations, DieMetadata, FloorplanRegion, HumanAnnotation, MLInferenceJob, MLTracePolyline, VectorBlocksResponse, VectorizeParams, VectorSweepStatus, WireLayer } from "shared";
 import type { ActionDispatcher } from "../../api/actions";
 import type { CellLibraryView } from "../../lib/cellLibrary";
 import { uuid } from "../../lib/uuid";
 import {
   exportMlData,
   fetchVectorBlocks,
+  fetchVectorLayerBlocks,
   getVectorSweep,
   mlJobKey,
   selectMLModel,
@@ -1438,6 +1439,11 @@ function VectorSection({
   // Where the Vector → nets traces come from: the cached whole-die sweep
   // payload (default — the point of the sweep) or the live viewport decodes.
   const [netsSource, setNetsSource] = useState<"whole-die" | "preview">("whole-die");
+  // Which saved whole-die run to materialize: the CURRENT params (auto) or a
+  // specific saved layer from the Vector Layers list (old runs keep working
+  // even after the params changed).
+  const savedLayers = useDieViewerStore((s) => s.savedVectorLayers);
+  const [layerHash, setLayerHash] = useState<string>("auto");
   const [sweep, setSweep] = useState<VectorSweepStatus>({
     dieId: "",
     status: "idle",
@@ -1560,22 +1566,31 @@ function VectorSection({
       let traces: MLTracePolyline[];
       let outlines: [number, number][][] | undefined;
       if (netsSource === "whole-die") {
-        // Whole-die path: the cached sweep payload for the CURRENT params —
-        // the same geometry the overlay draws, everywhere on the die.
+        // Whole-die path: either the cached sweep payload for the CURRENT
+        // params, or a SPECIFIC saved run picked in the selector (old runs
+        // keep working even after the params changed).
         if (!dieWidth || !dieHeight) throw new Error("die size unknown");
-        const layers = useOverlayLayers.getState().layers;
-        const visible = layers.find((l) => !l.hidden && l.loaded);
-        const overlaySource = visible?.serverFilename ?? visible?.name ?? undefined;
-        const resp = await fetchVectorBlocks(
-          dieId,
-          [0, 0, dieWidth, dieHeight],
-          usePreferences.getState().vectorParams,
-          overlaySource
-        );
-        if (!resp.blocks.length || resp.missing > 0) {
-          throw new Error(
-            "whole-die payload not found for the current params — run «Decode whole die» first"
+        let resp: VectorBlocksResponse;
+        if (layerHash !== "auto") {
+          resp = await fetchVectorLayerBlocks(dieId, layerHash, [0, 0, dieWidth, dieHeight]);
+          if (!resp.blocks.length || resp.missing > 0) {
+            throw new Error(`saved run ${layerHash} has no payload on disk (deleted?)`);
+          }
+        } else {
+          const layers = useOverlayLayers.getState().layers;
+          const visible = layers.find((l) => !l.hidden && l.loaded);
+          const overlaySource = visible?.serverFilename ?? visible?.name ?? undefined;
+          resp = await fetchVectorBlocks(
+            dieId,
+            [0, 0, dieWidth, dieHeight],
+            usePreferences.getState().vectorParams,
+            overlaySource
           );
+          if (!resp.blocks.length || resp.missing > 0) {
+            throw new Error(
+              "whole-die payload not found for the current params — run «Decode whole die» or pick a saved run below"
+            );
+          }
         }
         // Namespace the payload's group ids (they restart at 0) so they
         // can't collide inside one materialize call.
@@ -2126,10 +2141,28 @@ function VectorSection({
           style={{ fontSize: 10, flex: 1 }}
           onChange={(e) => setNetsSource(e.target.value as "whole-die" | "preview")}
         >
-          <option value="whole-die">whole die (cached sweep)</option>
+          <option value="whole-die">whole die (saved run)</option>
           <option value="preview">preview (live decodes)</option>
         </select>
       </div>
+      {netsSource === "whole-die" && (
+        <div className="row" style={{ gap: 6, marginTop: 4, alignItems: "center" }}>
+          <span className="u" style={{ fontSize: 10 }}>Run</span>
+          <select
+            value={layerHash}
+            style={{ fontSize: 10, flex: 1 }}
+            onChange={(e) => setLayerHash(e.target.value)}
+          >
+            <option value="auto">current params (auto)</option>
+            {savedLayers.map((l) => (
+              <option key={l.hash} value={l.hash}>
+                {l.name ?? "run"} · {l.traces} traces ·{" "}
+                {new Date(l.modified).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+              </option>
+            ))}
+          </select>
+        </div>
+      )}
       <div className="row" style={{ gap: 6, marginTop: 4, alignItems: "center" }}>
         <span className="u" style={{ fontSize: 10 }}>Min contacts / net</span>
         <select

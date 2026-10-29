@@ -5,6 +5,8 @@ import { LAYER_PURPOSE_OPTIONS } from "shared/layerPurpose";
 import { COLOR_ML_CELL } from "../../renderer/annotations/cellDetections";
 import { Ic } from "../../icons";
 import { useToast } from "../Toast";
+import { useDialog } from "../Dialog";
+import { deleteVectorLayer, renameVectorLayer } from "../../api/ml";
 import { useOverlayLayers } from "../../state/overlayLayers";
 import { useFloorplanStore } from "../../state/floorplan";
 import { useSession, DEFAULT_METAL_STACK, buildMetalStack, fetchMetalStack } from "../../state/session";
@@ -88,6 +90,7 @@ const VECTOR_LAYERS_KEY = "vector-layers";
 
 export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabels, onDeviceSelect, onOpenInRE, searchOpenRef, onSetCellTypeColor, foreignTypeOwners }: Props) {
   const toast = useToast();
+  const dialog = useDialog();
   const expandedSections = usePreferences((s) => s.expandedSections);
   const hiddenKinds = usePreferences((s) => s.hiddenKinds);
   const toggleSection = usePreferences((s) => s.toggleSectionExpanded);
@@ -1101,6 +1104,36 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
       {vectorLayersOpen &&
         savedVectorLayers.map((layer, i) => {
           const visible = !savedVectorHidden.includes(layer.hash);
+          const rename = async () => {
+            if (!dieId) return;
+            const name = await dialog.prompt(
+              `Layer name (saved whole-die run):`,
+              layer.name ?? "",
+              "Rename vector layer"
+            );
+            if (name === null) return;
+            try {
+              await renameVectorLayer(dieId, layer.hash, name);
+              useDieViewerStore.getState().bumpSavedVectorLayers();
+            } catch (e) {
+              toast.error("Rename failed", e instanceof Error ? e.message : String(e));
+            }
+          };
+          const remove = async () => {
+            if (!dieId) return;
+            const ok = await dialog.confirm(
+              `Delete "${layer.name ?? `Saved ${layer.traces} traces`}"/${layer.hash}?\n` +
+                `Only the cached decode is removed — the source image and annotations are untouched.`,
+              "Delete vector layer"
+            );
+            if (!ok) return;
+            try {
+              await deleteVectorLayer(dieId, layer.hash);
+              useDieViewerStore.getState().bumpSavedVectorLayers();
+            } catch (e) {
+              toast.error("Delete failed", e instanceof Error ? e.message : String(e));
+            }
+          };
           return (
             <TreeRow
               key={`veclayer:${layer.hash}`}
@@ -1109,11 +1142,52 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
               label={
                 <span style={{ display: "inline-flex", gap: 6, alignItems: "center", minWidth: 0 }}>
                   <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                    Saved {layer.traces} traces
+                    {layer.name ?? `Saved ${layer.traces} traces`}
                   </span>
                   <span style={{ fontSize: 9, color: "var(--ink3)" }}>
-                    #{i + 1}
+                    {layer.name ? `${layer.traces} traces` : `#${i + 1}`}
                   </span>
+                  {dieId && (
+                    <span
+                      style={{ display: "inline-flex", gap: 4, marginLeft: 2 }}
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      <button
+                        type="button"
+                        title="Rename layer"
+                        style={{
+                          fontSize: 9,
+                          lineHeight: 1,
+                          padding: "1px 3px",
+                          cursor: "pointer",
+                          background: "transparent",
+                          color: "var(--ink2)",
+                          border: "1px solid var(--l1, #333)",
+                          borderRadius: 3
+                        }}
+                        onClick={() => void rename()}
+                      >
+                        ✎
+                      </button>
+                      <button
+                        type="button"
+                        title="Delete layer (cached decode only)"
+                        style={{
+                          fontSize: 9,
+                          lineHeight: 1,
+                          padding: "1px 3px",
+                          cursor: "pointer",
+                          background: "transparent",
+                          color: "var(--ink2)",
+                          border: "1px solid var(--l1, #333)",
+                          borderRadius: 3
+                        }}
+                        onClick={() => void remove()}
+                      >
+                        🗑
+                      </button>
+                    </span>
+                  )}
                 </span>
               }
               visibility={{

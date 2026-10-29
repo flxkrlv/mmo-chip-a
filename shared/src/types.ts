@@ -1006,6 +1006,9 @@ export interface VectorSweepStatus {
 export interface VectorLayerInfo {
   /** Cache key (v1-<sha12>). */
   hash: string;
+  /** User-assigned display name (rename in the Vector Layers tree); null
+   *  until renamed. */
+  name?: string | null;
   traces: number;
   outlines: number;
   /** The params that produced it (written at completion); null for legacy
