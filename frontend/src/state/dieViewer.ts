@@ -120,6 +120,8 @@ interface DieViewerState {
     error: string | null;
     traces: number;
     droppedWidth?: number;
+    /** Octilinear decoder: chains kept raw with irregular=true. */
+    irregular?: number;
   };
   /** Vector pipette (VectorSection): armed → canvas clicks sample the metal
    *  colour instead of the active tool. Samples accumulate for averaging;
@@ -130,6 +132,12 @@ interface DieViewerState {
    *  pauses (it would fight the sweep for the sidecar's CV gate), the
    *  overlay comes back from the block cache when the sweep ends. */
   vectorSweepRunning: boolean;
+  /** SAVED whole-die vecto payloads for this die (Vector layers list in the
+   *  outline tree). Refreshed from `GET .../vectorize/layers`; the bump
+   *  version invalidates the react-query after a sweep completes. */
+  savedVectorLayers: { hash: string; traces: number; outlines: number; modified: string }[];
+  savedVectorHidden: string[];
+  savedVectorVersion: number;
   /** Cell type picked in the Cells (detection) tab — from the dropdown or by
    *  selecting a placed cell on the canvas while the tab is open. */
   cellDetectionTypeId: string | null;
@@ -176,11 +184,15 @@ setVectorStatus: (status: {
   error: string | null;
   traces: number;
   droppedWidth?: number;
+  irregular?: number;
 }) => void;
 setVectorPipetteArmed: (armed: boolean) => void;
 addVectorSample: (sample: { rgb: [number, number, number]; x: number; y: number }) => void;
 clearVectorSamples: () => void;
 setVectorSweepRunning: (running: boolean) => void;
+setSavedVectorLayers: (layers: { hash: string; traces: number; outlines: number; modified: string }[]) => void;
+toggleSavedVectorLayer: (hash: string) => void;
+bumpSavedVectorLayers: () => void;
   setCellDetectionTypeId: (id: string | null) => void;
   setCellDetectionsCount: (count: number) => void;
   setWireMapAvailable: (available: boolean) => void;
@@ -220,6 +232,9 @@ const INITIAL_STATE: DieViewerState = {
   vectorPipetteArmed: false,
   vectorSamples: [],
   vectorSweepRunning: false,
+  savedVectorLayers: [],
+  savedVectorHidden: [],
+  savedVectorVersion: 0,
   cellDetectionTypeId: null,
   cellDetectionsCount: 0,
   wireMapAvailable: false,
@@ -332,6 +347,17 @@ export const useDieViewerStore = create<DieViewerState & DieViewerActions>()((se
     if (get().vectorSweepRunning === running) return;
     set({ vectorSweepRunning: running });
   },
+  setSavedVectorLayers: (layers) =>
+    set({ savedVectorLayers: layers, savedVectorVersion: get().savedVectorVersion + 1 }),
+  toggleSavedVectorLayer: (hash) =>
+    set((state) => ({
+      savedVectorHidden: state.savedVectorHidden.includes(hash)
+        ? state.savedVectorHidden.filter((h) => h !== hash)
+        : [...state.savedVectorHidden, hash],
+      savedVectorVersion: state.savedVectorVersion + 1
+    })),
+  bumpSavedVectorLayers: () =>
+    set((state) => ({ savedVectorVersion: state.savedVectorVersion + 1 })),
   setCellDetectionTypeId: (id) => set({ cellDetectionTypeId: id }),
   setCellDetectionsCount: (count) => {
     if (get().cellDetectionsCount === count) return;

@@ -89,7 +89,7 @@ import { useDieExtraction } from "../hooks/useDieExtraction";
 import { setActiveProject, flushProjectDeviceNames } from "../state/analogDeviceNames";
 import { useExtractionProgress } from "../state/extractionProgress";
 import { loadClipper } from "../lib/extraction";
-import { sampleDieRegion, useMLJob, useMLStatus } from "../api/ml";
+import { getVectorLayers, sampleDieRegion, useMLJob, useMLStatus } from "../api/ml";
 import { WireDraftOverlay } from "../components/dieViewer/WireDraftOverlay";
 import { RectDraftOverlay } from "../components/dieViewer/RectDraftOverlay";
 import { PolyDraftOverlay } from "../components/dieViewer/PolyDraftOverlay";
@@ -989,6 +989,37 @@ function DieViewer({ dieId }: { dieId: string }) {
       vectorLayer?.destroy();
     };
   }, [vectorLayer]);
+
+  // Vector Layers (saved whole-die payloads): fetch the die's list, keep it
+  // in the store for the outline tree, and sync visibility into the layer.
+  // The store's `savedVectorVersion` bump (sweep completes / manual refresh)
+  // triggers a re-fetch.
+  const savedVectorVersion = useDieViewerStore((s) => s.savedVectorVersion);
+  useEffect(() => {
+    if (!die) return;
+    let gone = false;
+    getVectorLayers(die.id)
+      .then((list) => {
+        if (gone) return;
+        const layers = list.map((l) => ({
+          hash: l.hash,
+          traces: l.traces,
+          outlines: l.outlines,
+          modified: l.modified
+        }));
+        useDieViewerStore.getState().setSavedVectorLayers(layers);
+        const visibleLayers = layers;
+        const hidden = useDieViewerStore.getState().savedVectorHidden;
+        vectorLayer?.setSavedLayers(
+          visibleLayers.map((l) => l.hash),
+          new Set(hidden)
+        );
+      })
+      .catch(() => undefined);
+    return () => {
+      gone = true;
+    };
+  }, [die, savedVectorVersion, vectorLayer]);
 
   // Confidence-threshold pref change → re-filter the cached ML vias (recount
   // for the items list + redraw the overlay). No re-fetch: tile data already

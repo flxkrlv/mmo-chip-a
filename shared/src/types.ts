@@ -990,9 +990,27 @@ export interface VectorSweepStatus {
   done: number;
   total: number;
   error?: string | null;
+  /** Non-fatal decode concern (e.g. "threshold captures ~N% of the die —
+   *  neighbouring wires likely merged"). Shown in the inspector, not an abort. */
+  warning?: string | null;
   /** Cache key of the sweep's params — the block cache is keyed by it. */
   paramsHash?: string;
   overlayFilename?: string | null;
+}
+
+/** One SAVED whole-die vectorize payload (dataRoot/vectorize/<die>/<hash>/),
+ *  listed by the Vector layers panel. */
+export interface VectorLayerInfo {
+  /** Cache key (v1-<sha12>). */
+  hash: string;
+  traces: number;
+  outlines: number;
+  /** The params that produced it (written at completion); null for legacy
+   *  payloads without a params.json. */
+  params: VectorizeParams | null;
+  completedAt: string | null;
+  /** full.json mtime — sort key. */
+  modified: string;
 }
 
 /** One decoded 2048-px block of a whole-die sweep, from the disk cache. */

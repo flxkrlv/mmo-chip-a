@@ -1018,7 +1018,10 @@ async function materializeTraces(
     minScore,
     snapTargets,
     snapTol: Math.max(8, usePreferences.getState().viaSize * 2),
-    stitchTol: 12,
+    // Fragment-stitch distance tracks the Min-gap the user allows: fragments
+    // the decode itself would bridge (relief breaks) — NOT a licence to glue
+    // nearby wires. A hard 12 px used to stitch ends of ADJACENT buses.
+    stitchTol: Math.max(6, 2 * Math.round(usePreferences.getState().vectorParams.bridgePx) + 2),
     layer: "metal1"
   });
   if (!result.nets.length) {
@@ -1030,16 +1033,19 @@ async function materializeTraces(
           : `нет трасс для материализации (собрано ${traces.length}) — проверьте width/min length и что вьюпорт декодирован`
     };
   }
-  if (
-    !await dialog.confirm(
-      `Создать ${result.nets.length} net(ей) из ${traces.length} трасс?\n` +
-        `Концов со снапом: ${result.snappedEnds}, сшито разрывов: ${result.stitchedPairs}, ` +
-        `отброшено вырожденных: ${result.droppedDegenerate}` +
-        (result.filteredByScore > 0 ? `, score-фильтром: ${result.filteredByScore}` : "") +
-        `.\nДействие уйдёт в Undo.`
+    if (
+      !await dialog.confirm(
+        `Создать ${result.nets.length} net(ей) из ${traces.length} трасс?\n` +
+          `Концов со снапом: ${result.snappedEnds}, сшито разрывов: ${result.stitchedPairs}, ` +
+          `отброшено вырожденных: ${result.droppedDegenerate}` +
+          (result.filteredByScore > 0 ? `, score-фильтром: ${result.filteredByScore}` : "") +
+          `.\nДействие уйдёт в Undo.` +
+          (result.warnings.length
+            ? `\n\nВНИМАНИЕ:\n${result.warnings.join("\n")}`
+            : "")
+      )
     )
-  )
-    return null;
+      return null;
   await dispatcher.dispatch({
     kind: "batch",
     actions: result.nets.map((net) => ({ kind: "upsertNet", net, prevNet: null }))
@@ -1406,19 +1412,36 @@ function VectorSection({
   const presetNames = Object.keys(presets).sort();
 
   // Poll the sweep while it runs; refresh the layer's cache when it ends.
+  // A dead backend must NOT hold the overlay hostage: after 3 consecutive
+  // status polls fail, settle local state to "failed" and release the
+  // sweep-running flag (the user restarts the app and the job map is empty).
   useEffect(() => {
     useDieViewerStore.getState().setVectorSweepRunning(sweep.status === "running");
     if (sweep.status !== "running") return;
+    let failures = 0;
     const t = setInterval(() => {
       getVectorSweep(dieId)
         .then((s) => {
+          failures = 0;
           setSweep(s);
           if (s.status !== "running") {
             useDieViewerStore.getState().setVectorSweepRunning(false);
             vectorLayer?.clearCache();
+            useDieViewerStore.getState().bumpSavedVectorLayers();
           }
         })
-        .catch(() => {});
+        .catch(() => {
+          failures += 1;
+          if (failures >= 3) {
+            failures = 0;
+            setSweep((prev) => ({
+              ...prev,
+              status: prev.status === "running" ? "failed" : prev.status,
+              error: "backend unreachable — job status unknown (restart the app to clear the sweep)"
+            }));
+            useDieViewerStore.getState().setVectorSweepRunning(false);
+          }
+        });
     }, 1000);
     return () => clearInterval(t);
   }, [sweep.status, dieId, vectorLayer]);
@@ -1546,7 +1569,8 @@ function VectorSection({
             : status.error
               ? `error: ${status.error}`
               : `${status.traces} trace(s) decoded` +
-                (status.droppedWidth ? ` · width-filtered: ${status.droppedWidth}` : "")}
+                (status.droppedWidth ? ` · width-filtered: ${status.droppedWidth}` : "") +
+                (status.irregular ? ` · irregular: ${status.irregular}` : "")}
       </div>
       {scoreFilter > 0 && (
         <div className="m" style={{ fontSize: 10, color: "var(--warn, #d9a441)", marginBottom: 4 }}>
@@ -1898,7 +1922,13 @@ function VectorSection({
       {sweep.status === "completed" && (
         <div className="m" style={{ fontSize: 10, color: "var(--ink3)", marginTop: 4 }}>
           cached · {sweep.done} block(s) · changing any parameter switches the
-          overlay back to live mode (re-run to re-cache)
+          overlay back to live mode (re-run to re-cache) · the result is in
+          "Vector Layers" (left panel)
+        </div>
+      )}
+      {sweep.warning && (
+        <div className="m" style={{ fontSize: 10, color: "var(--warn, #d9a441)", marginTop: 4 }}>
+          {sweep.warning}
         </div>
       )}
       {sweep.error && (

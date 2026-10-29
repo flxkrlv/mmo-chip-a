@@ -1,6 +1,6 @@
 import type { DieMetadata, MLTracePolyline, VectorizeParams } from "shared";
 import { rectsIntersect, type Point, type Rect } from "../../lib/geometry";
-import { fetchVectorBlocks, vectorizeRegion } from "../../api/ml";
+import { fetchVectorBlocks, fetchVectorLayerBlocks, vectorizeRegion } from "../../api/ml";
 import type { Layer, RenderFrame, TileBounds } from "../types";
 
 /**
@@ -22,6 +22,7 @@ import type { Layer, RenderFrame, TileBounds } from "../types";
 // Amber — reads as "classical CV, not the model" next to the ML cyan.
 const VECT_TRACE_STROKE = "rgba(253, 224, 71, 0.95)";
 const VECT_TRACE_SNAP_STROKE = "rgba(253, 224, 71, 0.7)";
+const VECT_TRACE_SAVED_STROKE = "rgba(253, 200, 66, 0.75)";
 const VECT_OUTLINE_FILL = "rgba(253, 224, 71, 0.10)";
 const VECT_OUTLINE_STROKE = "rgba(253, 224, 71, 0.45)";
 
@@ -55,6 +56,8 @@ export interface VectorizeDisplay {
     error: string | null;
     traces: number;
     droppedWidth?: number;
+    /** Octilinear decoder: chains kept raw with irregular=true. */
+    irregular?: number;
   }) => void;
 }
 
@@ -77,7 +80,21 @@ interface CachedRegion {
   traceBoxes: { box: Rect; index: number }[];
   outlineBoxes: { box: Rect; index: number }[];
   /** Width-filter drop stats of the decode that filled this region. */
-  stats?: { kept: number; droppedWidth: number; droppedShort?: number; merged?: number };
+  stats?: { kept: number; droppedWidth: number; droppedShort?: number; merged?: number; irregular?: number };
+  /** Group-namespace base for collectTraces: each decode region numbered its
+   *  groups from 0 independently — WITHOUT a per-region offset every pair of
+   *  viewport decodes collided on group ids and materialized into ONE net. */
+  groupBase: number;
+}
+
+/** One SAVED whole-die payload pinned into the layers list (fetched BY
+ *  hash, drawn in amber while its eye toggle is on). */
+interface PinnedLayer {
+  traces: MLTracePolyline[];
+  outlines: [number, number][][];
+  traceBoxes: { box: Rect; index: number }[];
+  outlineBoxes: { box: Rect; index: number }[];
+  groupBase: number;
 }
 
 function pointsBox(points: [number, number][]): Rect {
@@ -124,6 +141,14 @@ export class VectorizeLayer implements Layer {
   private readonly blockMiss = new Set<string>();
   /** Keys with a blocks lookup in flight (don't re-ask every frame). */
   private readonly blocksInflight = new Set<string>();
+  /** Monotonic group-namespace base (in 1e6 strides) handed to regions and
+   *  pinned layers so their `group` ids never collide across decodes. */
+  private nextGroupBase = 0;
+  /** SAVED layers (pin by hash → fetched whole-die payload). */
+  private readonly pinned = new Map<string, PinnedLayer>();
+  private readonly pinnedInflight = new Set<string>();
+  private savedVisible: string[] = [];
+  private savedHiddenSet: ReadonlySet<string> = new Set();
 
   constructor(dieId: string, metadata: DieMetadata, display: VectorizeDisplay = {}) {
     this.dieId = dieId;
@@ -139,6 +164,8 @@ export class VectorizeLayer implements Layer {
     this.abort = null;
     this.cache.clear();
     this.snapCache.clear();
+    this.pinned.clear();
+    this.pinnedInflight.clear();
     this.inflightKey = null;
     this.queuedFetch = null;
   }
@@ -159,6 +186,50 @@ export class VectorizeLayer implements Layer {
     this.invalidateCb?.();
   }
 
+  /** Saved layers list from the outline tree (Vector layers): pinned, eye
+   *  toggles in the tree. Payloads are fetched BY hash and stay rendered
+   *  regardless of the live params. */
+  setSavedLayers(visibleHashes: string[], hiddenHashes: ReadonlySet<string>): void {
+    this.savedVisible = visibleHashes;
+    this.savedHiddenSet = hiddenHashes;
+    // Evict pins no longer wanted at all.
+    const wanted = new Set(visibleHashes);
+    for (const h of [...this.pinned.keys()]) {
+      if (!wanted.has(h)) this.pinned.delete(h);
+    }
+    for (const h of visibleHashes) {
+      if (!this.pinned.has(h) && !this.pinnedInflight.has(h)) {
+        this.pinnedInflight.add(h);
+        fetchVectorLayerBlocks(this.dieId, h, [
+          0,
+          0,
+          this.metadata.width,
+          this.metadata.height
+        ])
+          .then((resp) => {
+            if (this.destroyed) return;
+            const traces = resp.blocks.flatMap((b) => b.traces);
+            const outlines = resp.blocks.flatMap((b) => b.outlines);
+            if (traces.length + outlines.length === 0) {
+              this.pinned.delete(h);
+              return;
+            }
+            this.pinned.set(h, {
+              traces,
+              outlines,
+              traceBoxes: traces.map((t, i) => ({ box: pointsBox(t.points), index: i })),
+              outlineBoxes: outlines.map((o, i) => ({ box: pointsBox(o), index: i })),
+              groupBase: (this.nextGroupBase++) * 1_000_000
+            });
+            this.invalidateCb?.();
+          })
+          .catch(() => undefined)
+          .finally(() => this.pinnedInflight.delete(h));
+      }
+    }
+    this.invalidateCb?.();
+  }
+
   /** Latest error string (panel display), cleared on a successful fetch. */
   private lastError: string | null = null;
   /** Drop stats of the latest decode (panel diagnostics). */
@@ -167,6 +238,7 @@ export class VectorizeLayer implements Layer {
     droppedWidth: number;
     droppedShort?: number;
     merged?: number;
+    irregular?: number;
   } | null = null;
 
   private notifyStatus(loading: boolean): void {
@@ -174,21 +246,44 @@ export class VectorizeLayer implements Layer {
       loading,
       error: this.lastError,
       traces: this.collectTraces().length,
-      ...(this.lastStats ? { droppedWidth: this.lastStats.droppedWidth } : {})
+      ...(this.lastStats ? { droppedWidth: this.lastStats.droppedWidth } : {}),
+      ...(this.lastStats?.irregular ? { irregular: this.lastStats.irregular } : {})
     });
   }
 
-  /** Every decoded trace across cached regions, deduplicated by point
-   *  sequence — a trace straddling two fetched regions appears in both. */
+  /** Every decoded trace across cached regions and pinned saved layers,
+   *  deduplicated by point sequence — a trace straddling two fetched
+   *  regions appears in both. `group` ids are NAMESPACED per region/pin:
+   *  each decode numbers its groups from 0, so raw ids collide across
+   *  decodes and materialization would merge unrelated wires into one net. */
   collectTraces(): MLTracePolyline[] {
     const seen = new Set<string>();
     const out: MLTracePolyline[] = [];
     for (const region of this.cache.values()) {
+      const base = region.groupBase;
       for (const t of region.traces) {
         const key = t.points.map((p) => `${Math.round(p[0])},${Math.round(p[1])}`).join(";");
         if (seen.has(key)) continue;
         seen.add(key);
-        out.push(t);
+        out.push(
+          typeof t.group === "number"
+            ? { ...t, group: base + t.group }
+            : t
+        );
+      }
+    }
+    for (const [hash, pin] of this.pinned) {
+      if (this.savedHiddenSet.has(hash)) continue;
+      const base = pin.groupBase;
+      for (const t of pin.traces) {
+        const key = t.points.map((p) => `${Math.round(p[0])},${Math.round(p[1])}`).join(";");
+        if (seen.has(key)) continue;
+        seen.add(key);
+        out.push(
+          typeof t.group === "number"
+            ? { ...t, group: base + t.group }
+            : t
+        );
       }
     }
     return out;
@@ -268,7 +363,8 @@ export class VectorizeLayer implements Layer {
               traces,
               outlines,
               traceBoxes: traces.map((t, i) => ({ box: pointsBox(t.points), index: i })),
-              outlineBoxes: outlines.map((o, i) => ({ box: pointsBox(o), index: i }))
+              outlineBoxes: outlines.map((o, i) => ({ box: pointsBox(o), index: i })),
+              groupBase: (this.nextGroupBase++) * 1_000_000
             });
             while (this.cache.size > MAX_REGIONS) {
               const oldest = this.cache.keys().next().value;
@@ -409,6 +505,40 @@ export class VectorizeLayer implements Layer {
         }
       }
     }
+
+    // ── Pinned SAVED layers (the Vector layers list) ───────────────────
+    // Same culling/snap machinery; slightly dimmer strokes so the live
+    // reads stand out against saved results.
+    for (const [hash, pin] of this.pinned) {
+      if (this.savedHiddenSet.has(hash)) continue;
+      ctx.lineWidth = strokeW;
+      for (const { box, index } of pin.traceBoxes) {
+        if (!rectsIntersect(box, world)) continue;
+        const t = pin.traces[index];
+        if ((t.score ?? 1) < minScore) continue;
+        const pts = t.points;
+        if (pts.length < 2) continue;
+        ctx.beginPath();
+        ctx.moveTo(pts[0][0], pts[0][1]);
+        for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1]);
+        ctx.strokeStyle = VECT_TRACE_SAVED_STROKE;
+        ctx.lineWidth = Math.max(strokeW, 1.5 / zoom);
+        ctx.stroke();
+      }
+      for (const { box, index } of pin.outlineBoxes) {
+        if (!rectsIntersect(box, world)) continue;
+        const pts = pin.outlines[index];
+        if (pts.length < 3) continue;
+        ctx.beginPath();
+        ctx.moveTo(pts[0][0], pts[0][1]);
+        for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1]);
+        ctx.closePath();
+        ctx.fillStyle = VECT_OUTLINE_FILL;
+        ctx.fill();
+        ctx.strokeStyle = "rgba(253, 224, 71, 0.22)";
+        ctx.stroke();
+      }
+    }
   }
 
   /** One region request. While in flight, newer targets go to `queuedFetch`
@@ -439,7 +569,8 @@ export class VectorizeLayer implements Layer {
         outlines: resp.outlines,
         traceBoxes: resp.traces.map((t, i) => ({ box: pointsBox(t.points), index: i })),
         outlineBoxes: resp.outlines.map((o, i) => ({ box: pointsBox(o), index: i })),
-        stats: resp.stats
+        stats: resp.stats,
+        groupBase: (this.nextGroupBase++) * 1_000_000
       });
       // Evict the oldest region beyond the cap (Map = insertion order).
       while (this.cache.size > MAX_REGIONS) {

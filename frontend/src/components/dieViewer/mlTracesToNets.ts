@@ -55,6 +55,10 @@ export interface TracesToNetsResult {
   filteredByScore: number;
   /** How many fragment pairs were stitched into shared points. */
   stitchedPairs: number;
+  /** Suspicious merges: a "group" union holding hundreds of traces usually
+   *  means the MASK over-bridged wires (band too wide / Min gap too high) —
+   *  the netlist is technically connected but is not what the user drew. */
+  warnings: string[];
 }
 
 /** Endpoint merge key: snapped ends land on identical coordinates; decoded
@@ -198,9 +202,18 @@ export function buildNetsFromTraces(input: TracesToNetsInput): TracesToNetsResul
   });
 
   const nets: AnnotationNet[] = [];
+  const warnings: string[] = [];
+  const GROUP_WARN_TRACES = 64;
   let n = 0;
   for (const members of groups.values()) {
     n += 1;
+    if (members.length > GROUP_WARN_TRACES) {
+      warnings.push(
+        `net with ${members.length} traces merged by decoder group — the mask likely ` +
+          "over-bridged neighbouring wires (threshold band too wide / Min gap too high). " +
+          "Check the outlines; narrow the band or lower Min gap and re-decode."
+      );
+    }
     const nodes: AnnotationNetNode[] = [];
     const nodeByKey = new Map<string, AnnotationNetNode>();
     const edges: AnnotationNetEdge[] = [];
@@ -230,5 +243,5 @@ export function buildNetsFromTraces(input: TracesToNetsInput): TracesToNetsResul
     });
   }
 
-  return { nets, snappedEnds, droppedDegenerate, filteredByScore, stitchedPairs };
+  return { nets, snappedEnds, droppedDegenerate, filteredByScore, stitchedPairs, warnings };
 }

@@ -19,6 +19,7 @@ import type {
   MLSelectModelRequest,
   MLServiceStatus,
   VectorBlocksResponse,
+  VectorLayerInfo,
   VectorizeParams,
   VectorizeResponse,
   VectorSweepStatus
@@ -134,6 +135,9 @@ export async function vectorizeRegion(
   q.set("minLength", String(params.minLength));
   q.set("widthMin", String(params.widthMin));
   q.set("widthMax", String(params.widthMax));
+  q.set("decoder", params.decoder);
+  q.set("octDeltaPx", String(params.octDeltaPx));
+  q.set("octStrict", params.octStrict ? "1" : "0");
   if (overlaySource) q.set("overlaySource", overlaySource);
   return apiGet<VectorizeResponse>(
     `/api/dies/${dieId}/vectorize?${q.toString()}`,
@@ -189,7 +193,9 @@ export function stopVectorSweep(dieId: string): Promise<VectorSweepStatus> {
 }
 
 /** Cached sweep blocks for a bbox + params. `missing > 0` → the sweep hasn't
- *  covered the region (or params differ) — caller falls back to live decode. */
+ *  covered the region (or params differ) — caller falls back to live decode.
+ *  NB: decoder/oct params MUST be forwarded — the cache key (paramsHash)
+ *  includes them, and a mismatch turns every cached payload into a miss. */
 export async function fetchVectorBlocks(
   dieId: string,
   bbox: readonly [number, number, number, number],
@@ -211,11 +217,36 @@ export async function fetchVectorBlocks(
   q.set("minLength", String(params.minLength));
   q.set("widthMin", String(params.widthMin));
   q.set("widthMax", String(params.widthMax));
+  q.set("decoder", params.decoder);
+  q.set("octDeltaPx", String(params.octDeltaPx));
+  q.set("octStrict", params.octStrict ? "1" : "0");
   if (overlaySource) q.set("overlaySource", overlaySource);
   return apiGet<VectorBlocksResponse>(
     `/api/dies/${dieId}/vectorize/blocks?${q.toString()}`,
     signal
   );
+}
+
+/** A pinned SAVED whole-die payload: fetched BY hash (any params set that
+ *  completed once), one VectorBlockPayload with the whole die. */
+export async function fetchVectorLayerBlocks(
+  dieId: string,
+  hash: string,
+  dieBox: readonly [number, number, number, number],
+  signal?: AbortSignal
+): Promise<VectorBlocksResponse> {
+  const q = new URLSearchParams();
+  q.set("bbox", dieBox.join(","));
+  q.set("hash", hash);
+  return apiGet<VectorBlocksResponse>(
+    `/api/dies/${dieId}/vectorize/blocks?${q.toString()}`,
+    signal
+  );
+}
+
+/** The Vector layers list for the left panel (saved whole-die payloads). */
+export function getVectorLayers(dieId: string, signal?: AbortSignal): Promise<VectorLayerInfo[]> {
+  return apiGet<VectorLayerInfo[]>(`/api/dies/${dieId}/vectorize/layers`, signal);
 }
 
 /** Sidecar health — checkpoint name, device, training flag. */

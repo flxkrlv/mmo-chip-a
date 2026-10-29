@@ -82,6 +82,9 @@ const RULERS_KEY = "rulers";
 const BASE_IMAGES_KEY = "base-images";
 /** Session-group key for the "Overlay Layers" section. */
 const OVERLAY_LAYERS_KEY = "overlay-layers";
+/** Session-group key for the "Vector Layers" section (saved whole-die
+ *  vectorize payloads — rendered by the VectorizeLayer, not rbush). */
+const VECTOR_LAYERS_KEY = "vector-layers";
 
 export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabels, onDeviceSelect, onOpenInRE, searchOpenRef, onSetCellTypeColor, foreignTypeOwners }: Props) {
   const toast = useToast();
@@ -287,8 +290,12 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
   const mlResultsOpen = expandedGroups.includes(ML_RESULTS_KEY);
   const guidesOpen = expandedGroups.includes(GUIDES_KEY);
   const rulersOpen = expandedGroups.includes(RULERS_KEY);
-  const baseImagesOpen = expandedGroups.includes(BASE_IMAGES_KEY);
-  const overlayLayersOpen = expandedGroups.includes(OVERLAY_LAYERS_KEY);
+const baseImagesOpen = expandedGroups.includes(BASE_IMAGES_KEY);
+const overlayLayersOpen = expandedGroups.includes(OVERLAY_LAYERS_KEY);
+const vectorLayersOpen = expandedGroups.includes(VECTOR_LAYERS_KEY);
+const savedVectorLayers = useDieViewerStore((s) => s.savedVectorLayers);
+const savedVectorHidden = useDieViewerStore((s) => s.savedVectorHidden);
+const toggleSavedVectorLayer = useDieViewerStore((s) => s.toggleSavedVectorLayer);
   const mlAnyVisible = ML_KINDS.some((k) => !hiddenKinds.includes(k));
   const mlVisibility = {
     visible: mlAnyVisible,
@@ -1079,6 +1086,55 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
             />
           ))}
         </>
+      )}
+
+      <TreeSep />
+
+      {/* Vector layers (saved whole-die vectorize payloads) -------------- */}
+      <TreeRow
+        expand={vectorLayersOpen ? "open" : "closed"}
+        label="Vector Layers"
+        meta={savedVectorLayers.length}
+        onToggleExpand={() => toggleGroup(VECTOR_LAYERS_KEY)}
+        onSelect={() => toggleGroup(VECTOR_LAYERS_KEY)}
+      />
+      {vectorLayersOpen &&
+        savedVectorLayers.map((layer, i) => {
+          const visible = !savedVectorHidden.includes(layer.hash);
+          return (
+            <TreeRow
+              key={`veclayer:${layer.hash}`}
+              depth={1}
+              icon={Ic.image}
+              label={
+                <span style={{ display: "inline-flex", gap: 6, alignItems: "center", minWidth: 0 }}>
+                  <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    Saved {layer.traces} traces
+                  </span>
+                  <span style={{ fontSize: 9, color: "var(--ink3)" }}>
+                    #{i + 1}
+                  </span>
+                </span>
+              }
+              visibility={{
+                visible,
+                onToggle: () => toggleSavedVectorLayer(layer.hash)
+              }}
+            />
+          );
+        })}
+      {vectorLayersOpen && savedVectorLayers.length === 0 && (
+        <div
+          style={{
+            padding: "6px 10px 6px 20px",
+            fontSize: 10,
+            color: "var(--ink3)",
+            lineHeight: 1.5
+          }}
+        >
+          Run "Decode whole die" in the Vector tab — completed results appear
+          here and can be toggled on/off for visual control.
+        </div>
       )}
     </div>
   );

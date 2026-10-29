@@ -725,14 +725,26 @@ export function createMLRouter(config: {
         ? request.query.overlaySource
         : undefined;
       const vecParams = parseVectorParams(request);
+      const hash = typeof request.query.hash === "string" ? request.query.hash : undefined;
       const result = await vectorSweep.readBlocks(dieId, {
         dieWidth: record.width,
         dieHeight: record.height,
         bbox: [box[0], box[1], box[2], box[3]],
         params: vecParams,
-        overlaySource
+        overlaySource,
+        hash
       });
       response.json(result);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // The Vector layers list: every SAVED whole-die payload for the die
+  // (newest first) — the left panel's per-layer visibility toggles read it.
+  router.get("/api/dies/:dieId/vectorize/layers", async (request, response, next) => {
+    try {
+      response.json(await vectorSweep.listLayers(String(request.params.dieId)));
     } catch (error) {
       next(error);
     }
