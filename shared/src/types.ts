@@ -989,11 +989,14 @@ export interface VectorSweepStatus {
   status: "idle" | "running" | "completed" | "stopped" | "failed";
   done: number;
   total: number;
+  /** "masks" = assembling block masks (done/total), "decoding" = the one
+   *  whole-die decode is running (minutes — keep the app open). */
+  phase?: "masks" | "decoding" | null;
   error?: string | null;
-  /** Non-fatal decode concern (e.g. "threshold captures ~N% of the die —
+  /** Non-fatal decode concern (e.g. "threshold captures ~N% of the die -
    *  neighbouring wires likely merged"). Shown in the inspector, not an abort. */
   warning?: string | null;
-  /** Cache key of the sweep's params — the block cache is keyed by it. */
+  /** Cache key of the sweep's params - the block cache is keyed by it. */
   paramsHash?: string;
   overlayFilename?: string | null;
 }

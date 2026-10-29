@@ -199,6 +199,12 @@ interface PreferencesState {
   vectorPresets: Record<string, VectorizeParams>;
   /** Die-viewer: hide the vectorize overlay entirely (traces + outlines). */
   vectorOverlayHidden: boolean;
+  /** Materialization filter: a net must touch at least this many DISTINCT
+   *  device contacts to be created. 0 = off; 2 drops floating artifacts. */
+  vectorMinContacts: 0 | 1 | 2;
+  /** Materialization filter: skip octilinear traces kept raw with
+   *  `irregular: true` instead of materializing non-octilinear geometry. */
+  vectorDropIrregular: boolean;
   /** Minimum score (0..1) for an ML cell proposal to be shown / offered in
    *  merge-cells. Separate from the via threshold so the two overlays can be
    *  tuned independently. */
@@ -502,6 +508,8 @@ interface PreferencesActions {
   saveVectorPreset: (name: string, params: VectorizeParams) => void;
   deleteVectorPreset: (name: string) => void;
   setVectorOverlayHidden: (hidden: boolean) => void;
+  setVectorMinContacts: (n: 0 | 1 | 2) => void;
+  setVectorDropIrregular: (drop: boolean) => void;
   setCellDetectionThreshold: (threshold: number) => void;
   setCellDetectionsHidden: (hidden: boolean) => void;
   setCellDetectAllowFlipX: (allow: boolean) => void;
@@ -623,6 +631,8 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
         vectorParams: { ...DEFAULT_VECTOR_PARAMS },
         vectorPresets: {},
         vectorOverlayHidden: true,
+        vectorMinContacts: 0,
+        vectorDropIrregular: false,
         cellDetectionThreshold: 0.5,
         cellDetectionsHidden: false,
         cellDetectAllowFlipX: true,
@@ -958,6 +968,8 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
             return { vectorPresets: next };
           }),
         setVectorOverlayHidden: (hidden) => set({ vectorOverlayHidden: hidden }),
+        setVectorMinContacts: (n) => set({ vectorMinContacts: n }),
+        setVectorDropIrregular: (drop) => set({ vectorDropIrregular: drop }),
         setCellDetectionThreshold: (threshold) =>
           set({
             cellDetectionThreshold: Math.min(1, Math.max(0, threshold))
@@ -1091,6 +1103,8 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
           vectorParams: state.vectorParams,
           vectorPresets: state.vectorPresets,
           vectorOverlayHidden: state.vectorOverlayHidden,
+          vectorMinContacts: state.vectorMinContacts,
+          vectorDropIrregular: state.vectorDropIrregular,
           cellDetectionThreshold: state.cellDetectionThreshold,
           cellDetectionsHidden: state.cellDetectionsHidden,
           cellDetectAllowFlipX: state.cellDetectAllowFlipX,

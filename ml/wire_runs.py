@@ -312,6 +312,71 @@ def _group_edges(graph: _Graph) -> dict[int, int]:
     return out
 
 
+def _drop_parallel_duplicates(traces: list[dict], stats: dict) -> list[dict]:
+    """Remove same-group traces that just run PARALLEL to a longer one.
+
+    A fat wire (or an over-bridged mask) often yields two collinear
+    skeleton arms — the two "sides" of the corridor, sometimes closed into
+    a loop at the ends. Within one decoder group (= one physical wire)
+    such duplicates are pure artifacts: real parallel wires live in
+    DIFFERENT groups (they never share junctions). Rule: a trace is a
+    duplicate when most of its vertices lie within `dup_tol` of a longer
+    same-group trace's segments. The longer one is kept.
+    """
+    import numpy as np
+
+    if len(traces) < 2:
+        return traces
+    by_group: dict[int, list[int]] = {}
+    for i, t in enumerate(traces):
+        by_group.setdefault(int(t.get("group", -1)), []).append(i)
+
+    def plen(pts: list) -> float:
+        return float(
+            sum(
+                math.hypot(pts[i + 1][0] - pts[i][0], pts[i + 1][1] - pts[i][1])
+                for i in range(len(pts) - 1)
+            )
+        )
+
+    dropped = set()
+    for members in by_group.values():
+        if len(members) < 2:
+            continue
+        members.sort(key=lambda i: -plen(traces[i]["points"]))
+        kept: list[int] = []
+        for i in members:
+            pts = np.asarray(traces[i]["points"], dtype=np.float64)
+            dup = False
+            for j in kept:
+                ref = np.asarray(traces[j]["points"], dtype=np.float64)
+                # Vectorized point-to-segment distance: |pts| x |ref|-1.
+                a = ref[:-1]
+                b = ref[1:]
+                ab = b - a
+                ap = pts[:, None, :] - a[None, :, :]
+                ab_len2 = (ab * ab).sum(axis=1)
+                ab_len2[ab_len2 == 0] = 1.0
+                u = np.clip((ap * ab[None, :, :]).sum(axis=2) / ab_len2[None, :], 0.0, 1.0)
+                proj = a[None, :, :] + u[:, :, None] * ab[None, :, :]
+                dmin = np.sqrt(((pts[:, None, :] - proj) ** 2).sum(axis=2)).min(axis=1)
+                w_c = float(traces[i].get("width", 0.0))
+                w_r = float(traces[j].get("width", 0.0))
+                dup_tol = max(2.5, 0.6 * min(w for w in (w_c, w_r) if w > 0) if (w_c > 0 and w_r > 0) else 2.5)
+                close = float((dmin <= dup_tol).sum()) / len(dmin)
+                if close >= 0.7:
+                    dup = True
+                    break
+            if dup:
+                dropped.add(i)
+            else:
+                kept.append(i)
+    if not dropped:
+        return traces
+    stats["dropped_parallel"] = len(dropped)
+    return [t for i, t in enumerate(traces) if i not in dropped]
+
+
 def extract_wire_runs(
     mask_prob: np.ndarray,
     threshold: float = 0.5,
@@ -328,7 +393,7 @@ def extract_wire_runs(
     straight run, grouped by graph connectivity. Returns
     {"traces": [{points, score, width?, group}], "stats": {...}}."""
     binary = mask_prob > threshold
-    stats = {"kept": 0, "dropped_width": 0, "dropped_short": 0, "merged": 0}
+    stats = {"kept": 0, "dropped_width": 0, "dropped_short": 0, "merged": 0, "dropped_parallel": 0}
     if not binary.any():
         return {"traces": [], "stats": stats}
 
@@ -387,4 +452,8 @@ def extract_wire_runs(
         if len(out) >= max_traces:
             print(f"[warn] wire runs: hit cap {max_traces} — mask is noisy")
             break
+    # Same-group parallel duplicates (both sides of one fat corridor, the
+    # closed-loop artifact) — keep the longer representative of each pair.
+    out = _drop_parallel_duplicates(out, stats)
+    stats["kept"] = len(out)
     return {"traces": out, "stats": stats}

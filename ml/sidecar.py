@@ -43,6 +43,11 @@ from tiling import tile_predict
 from trainer import TrainParams, run_training
 from vectorize import VectorParams, build_mask, decode_mask, mask_pad_px, vectorize_region
 
+# Running whole-die decode subprocesses (job_id -> Popen) — cancelled by
+# POST /vectorize/decode/cancel when the sweep's Stop button fires.
+DECODE_JOBS: dict[str, "subprocess.Popen"] = {}
+DECODE_JOBS_LOCK = threading.Lock()
+
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -490,11 +495,18 @@ def vectorize_mask(image: UploadFile = File(...), body: str = Form(...)) -> dict
 
 
 @app.post("/vectorize/decode")
-def vectorize_decode(image: UploadFile = File(...), body: str = Form(...)) -> dict:
+def vectorize_decode(
+    image: UploadFile = File(...),
+    body: str = Form(...),
+    job_id: str = Form(default=""),
+) -> dict:
     """Whole-die decode (sweep step 2): runs decoder over the assembled
     seamless mask — grouped, spur-free, minimal-turn centreline traces.
     Intentionally NOT CV-gated: it runs for minutes and must not starve
-    behind (or starve) the live viewport decodes; they coexist on CPU."""
+    behind (or starve) the live viewport decodes; they coexist on CPU.
+    Runs in a SUBPROCESS (ml/decode_worker.py): the heavy skeletonize call
+    cannot be interrupted in-process, a child process can be terminated —
+    `job_id` registers it for POST /vectorize/decode/cancel."""
     import json as _json
     raw = image.file.read()
     arr = np.frombuffer(raw, dtype=np.uint8)
@@ -505,34 +517,99 @@ def vectorize_decode(image: UploadFile = File(...), body: str = Form(...)) -> di
         b = _json.loads(body)
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=400, detail=f"bad decode params: {exc}") from exc
-    p = VectorParams(min_len=int(b.get("min_len", 14)),
-                     width_min=float(b.get("width_min", 0.0)),
-                     width_max=float(b.get("width_max", 0.0)),
-                     decoder=b.get("decoder", "runs") if b.get("decoder", "runs") in ("runs", "octilinear") else "runs",
-                     oct_delta_px=float(b.get("oct_delta_px", 0.0)),
-                     oct_strict=bool(b.get("oct_strict", False)))
+    # Guard before spawning anything: a threshold that captures the
+    # background (bright-field shots with a low threshLow) makes the mask
+    # 90%+ white — decoding it is pointless and memory-lethal.
+    coverage = float((m > 127).sum(dtype=np.int64)) / m.size
+    if coverage > 0.7:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"threshold captures {coverage:.0%} of the die — that is background, "
+                "not metal. Narrow the band (Thresh low/high) or use the pipette, "
+                "then re-run the whole-die decode."
+            ),
+        )
+
+    import json
+    import subprocess
+    import sys
+    import tempfile
+    import time
+    import uuid
+
+    jid = job_id or f"decode-{uuid.uuid4().hex[:8]}"
+    tmp_dir = Path(tempfile.gettempdir())
+    mask_path = tmp_dir / f"mmochip_decode_{jid}.png"
+    out_path = tmp_dir / f"mmochip_decode_{jid}.json"
+    spec_path = tmp_dir / f"mmochip_decode_{jid}.json"
+    worker = Path(__file__).resolve().parent / "decode_worker.py"
+    mask_path.write_bytes(raw)
+    spec = {
+        "mask": str(mask_path),
+        "out": str(out_path),
+        "params": {
+            "min_len": b.get("min_len", 14),
+            "width_min": b.get("width_min", 0.0),
+            "width_max": b.get("width_max", 0.0),
+            "decoder": b.get("decoder", "runs"),
+            "oct_delta_px": b.get("oct_delta_px", 0.0),
+            "oct_strict": b.get("oct_strict", False),
+        },
+    }
+    if b.get("save_to"):
+        spec["save_to"] = str(b["save_to"])
+    spec_path.write_text(json.dumps(spec), encoding="utf-8")
+    proc = subprocess.Popen(
+        [sys.executable, str(worker), str(spec_path)],
+        cwd=str(worker.parent.parent),
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    with DECODE_JOBS_LOCK:
+        DECODE_JOBS[jid] = proc
+    deadline = time.monotonic() + 1800  # 30 min, matches the client timeout
     try:
-        mask_u8 = (m > 127).astype(np.uint8)
-        # Guard: a threshold that captures the background (bright-field
-        # shots with a low threshLow) makes the mask 90%+ white — decoding
-        # it is pointless and memory-lethal. Say so instead of crashing.
-        coverage = float(mask_u8.sum(dtype=np.float64)) / mask_u8.size
-        if coverage > 0.7:
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    f"threshold captures {coverage:.0%} of the die — that is background, "
-                    "not metal. Narrow the band (Thresh low/high) or use the pipette, "
-                    "then re-run the whole-die decode."
-                ),
-            )
-        return decode_mask(mask_u8, p)
-    except HTTPException:
-        raise
-    except Exception as exc:  # noqa: BLE001
-        import traceback
-        tail = traceback.format_exc().strip().splitlines()[-1]
-        raise HTTPException(status_code=500, detail=f"decode failed: {exc} | {tail}") from exc
+        while True:
+            code = proc.poll()
+            if code is not None:
+                break
+            if time.monotonic() > deadline:
+                proc.terminate()
+                raise HTTPException(status_code=500, detail="whole-die decode timed out (30 min)")
+            time.sleep(1.0)
+        if not out_path.exists():
+            raise HTTPException(status_code=499, detail="whole-die decode cancelled")
+        try:
+            result = json.loads(out_path.read_text(encoding="utf-8"))
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(status_code=500, detail=f"decode worker lost output: {exc}") from exc
+        if "error" in result:
+            detail = str(result["error"]).strip().splitlines()[-1]
+            raise HTTPException(status_code=500, detail=f"decode failed: {detail}")
+        return result
+    finally:
+        with DECODE_JOBS_LOCK:
+            DECODE_JOBS.pop(jid, None)
+        if proc.poll() is None:
+            proc.terminate()
+        for p in (mask_path, out_path, spec_path):
+            try:
+                p.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+
+@app.post("/vectorize/decode/cancel")
+def vectorize_decode_cancel(job_id: str = Form(...)) -> dict:
+    """Terminate a running whole-die decode subprocess (sweep Stop button).
+    The parent's in-flight decode request then returns 499 'cancelled'."""
+    with DECODE_JOBS_LOCK:
+        proc = DECODE_JOBS.get(job_id)
+    if proc is None or proc.poll() is not None:
+        return {"cancelled": False}
+    proc.terminate()
+    return {"cancelled": True}
 
 
 def _train_worker(job: JobRecord, params: TrainParams, out: str) -> None:

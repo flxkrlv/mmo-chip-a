@@ -482,9 +482,17 @@ export class VectorizeLayer implements Layer {
         ctx.beginPath();
         ctx.moveTo(pts[0][0], pts[0][1]);
         for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1]);
+        // Irregular (octilinear decoder kept the raw chain) — dashed, so
+        // non-0/45/90° geometry is visible as such instead of "randomly
+        // angled traces that look like a decoder bug".
+        if (t.irregular === true) {
+          ctx.setLineDash([5 / zoom, 4 / zoom]);
+        }
         ctx.strokeStyle = VECT_TRACE_STROKE;
         ctx.lineWidth = Math.max(strokeW, 1.5 / zoom);
         ctx.stroke();
+        ctx.setLineDash([]);
+
         for (const end of [pts[0], pts[pts.length - 1]]) {
           const skey = `${end[0]}:${end[1]}:${snapTol}`;
           let target = this.snapCache.get(skey);
@@ -521,9 +529,11 @@ export class VectorizeLayer implements Layer {
         ctx.beginPath();
         ctx.moveTo(pts[0][0], pts[0][1]);
         for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1]);
+        if (t.irregular === true) ctx.setLineDash([5 / zoom, 4 / zoom]);
         ctx.strokeStyle = VECT_TRACE_SAVED_STROKE;
         ctx.lineWidth = Math.max(strokeW, 1.5 / zoom);
         ctx.stroke();
+        ctx.setLineDash([]);
       }
       for (const { box, index } of pin.outlineBoxes) {
         if (!rectsIntersect(box, world)) continue;

@@ -9,6 +9,7 @@ import type { CellLibraryView } from "../../lib/cellLibrary";
 import { uuid } from "../../lib/uuid";
 import {
   exportMlData,
+  fetchVectorBlocks,
   getVectorSweep,
   mlJobKey,
   selectMLModel,
@@ -624,6 +625,7 @@ export function InspectorPanel({
             dieId={dieId}
             annotations={annotations}
             dispatcher={dispatcher}
+            die={die}
             mlViasLayer={mlViasLayer}
             vectorLayer={vectorLayer}
             getTraceSnapTargets={getTraceSnapTargets}
@@ -805,6 +807,7 @@ function MLPanel({
   dieId,
   annotations,
   dispatcher,
+  die,
   mlViasLayer,
   vectorLayer,
   getTraceSnapTargets
@@ -812,6 +815,7 @@ function MLPanel({
   dieId: string;
   annotations: DieAnnotations | undefined;
   dispatcher: ActionDispatcher;
+  die: DieMetadata | undefined;
   mlViasLayer: MLViasLayer | null;
   vectorLayer: VectorizeLayer | null;
   getTraceSnapTargets?: () => TraceSnapTarget[];
@@ -830,6 +834,8 @@ function MLPanel({
         dieId={dieId}
         annotations={annotations}
         dispatcher={dispatcher}
+        dieWidth={die?.width ?? 0}
+        dieHeight={die?.height ?? 0}
         vectorLayer={vectorLayer}
         getTraceSnapTargets={getTraceSnapTargets}
       />
@@ -1012,24 +1018,33 @@ async function materializeTraces(
   snapTargets: TraceSnapTarget[],
   dialog: { confirm(message: string, title?: string): Promise<boolean> }
 ): Promise<{ created: number } | { error: string } | null> {
-  const minScore = usePreferences.getState().traceConfidenceThreshold;
+  const prefs = usePreferences.getState();
   const result = buildNetsFromTraces({
     traces,
-    minScore,
+    minScore: prefs.traceConfidenceThreshold,
     snapTargets,
-    snapTol: Math.max(8, usePreferences.getState().viaSize * 2),
+    snapTol: Math.max(8, prefs.viaSize * 2),
     // Fragment-stitch distance tracks the Min-gap the user allows: fragments
     // the decode itself would bridge (relief breaks) — NOT a licence to glue
     // nearby wires. A hard 12 px used to stitch ends of ADJACENT buses.
-    stitchTol: Math.max(6, 2 * Math.round(usePreferences.getState().vectorParams.bridgePx) + 2),
+    stitchTol: Math.max(6, 2 * Math.round(prefs.vectorParams.bridgePx) + 2),
+    minDeviceContacts: prefs.vectorMinContacts,
+    dropIrregular: prefs.vectorDropIrregular,
     layer: "metal1"
   });
   if (!result.nets.length) {
-    const score = usePreferences.getState().traceConfidenceThreshold;
+    const score = prefs.traceConfidenceThreshold;
+    const reasons: string[] = [];
+    if (result.filteredByScore > 0)
+      reasons.push(`score-фильтром (Trace confidence = ${score.toFixed(2)}) отброшено ${result.filteredByScore}`);
+    if (result.droppedLowContacts > 0)
+      reasons.push(`фильтром «мин. контактов на net» (${prefs.vectorMinContacts}) отброшено ${result.droppedLowContacts}`);
+    if (result.droppedIrregular > 0)
+      reasons.push(`drop-irregular отброшено ${result.droppedIrregular}`);
     return {
       error:
-        result.filteredByScore > 0
-          ? `нет трасс: собрано ${traces.length}, score-фильтром (Trace confidence = ${score.toFixed(2)}) отброшено ${result.filteredByScore} — опустите слайдер или перекачайте декод`
+        reasons.length > 0
+          ? `нет трасс: собрано ${traces.length}; ${reasons.join("; ")} — ослабьте фильтры или перекачайте декод`
           : `нет трасс для материализации (собрано ${traces.length}) — проверьте width/min length и что вьюпорт декодирован`
     };
   }
@@ -1039,6 +1054,8 @@ async function materializeTraces(
           `Концов со снапом: ${result.snappedEnds}, сшито разрывов: ${result.stitchedPairs}, ` +
           `отброшено вырожденных: ${result.droppedDegenerate}` +
           (result.filteredByScore > 0 ? `, score-фильтром: ${result.filteredByScore}` : "") +
+          (result.droppedLowContacts > 0 ? `, мало контактов: ${result.droppedLowContacts}` : "") +
+          (result.droppedIrregular > 0 ? `, irregular: ${result.droppedIrregular}` : "") +
           `.\nДействие уйдёт в Undo.` +
           (result.warnings.length
             ? `\n\nВНИМАНИЕ:\n${result.warnings.join("\n")}`
@@ -1368,12 +1385,18 @@ function VectorSection({
   dieId,
   annotations,
   dispatcher,
+  dieWidth,
+  dieHeight,
   vectorLayer,
   getTraceSnapTargets
 }: {
   dieId: string;
   annotations: DieAnnotations | undefined;
   dispatcher: ActionDispatcher;
+  /** Die size in source px — the whole-die nets source fetches the cached
+   *  sweep payload for [0, 0, dieWidth, dieHeight]. */
+  dieWidth: number;
+  dieHeight: number;
   vectorLayer: VectorizeLayer | null;
   getTraceSnapTargets?: () => TraceSnapTarget[];
 }) {
@@ -1403,6 +1426,15 @@ function VectorSection({
   const [err, setErr] = useState<string | null>(null);
   const [tol, setTol] = useState(25);
   const scoreFilter = usePreferences((s) => s.traceConfidenceThreshold);
+  // Materialization filters (netlist side, not decode params — no cache
+  // impact): min device contacts per net + irregular-trace drop.
+  const minContacts = usePreferences((s) => s.vectorMinContacts);
+  const setMinContacts = usePreferences((s) => s.setVectorMinContacts);
+  const dropIrregular = usePreferences((s) => s.vectorDropIrregular);
+  const setDropIrregular = usePreferences((s) => s.setVectorDropIrregular);
+  // Where the Vector → nets traces come from: the cached whole-die sweep
+  // payload (default — the point of the sweep) or the live viewport decodes.
+  const [netsSource, setNetsSource] = useState<"whole-die" | "preview">("whole-die");
   const [sweep, setSweep] = useState<VectorSweepStatus>({
     dieId: "",
     status: "idle",
@@ -1522,7 +1554,35 @@ function VectorSection({
     setErr(null);
     setBusy("nets");
     try {
-      const traces = vectorLayer.collectTraces();
+      let traces: MLTracePolyline[];
+      if (netsSource === "whole-die") {
+        // Whole-die path: the cached sweep payload for the CURRENT params —
+        // the same geometry the overlay draws, everywhere on the die.
+        if (!dieWidth || !dieHeight) throw new Error("die size unknown");
+        const layers = useOverlayLayers.getState().layers;
+        const visible = layers.find((l) => !l.hidden && l.loaded);
+        const overlaySource = visible?.serverFilename ?? visible?.name ?? undefined;
+        const resp = await fetchVectorBlocks(
+          dieId,
+          [0, 0, dieWidth, dieHeight],
+          usePreferences.getState().vectorParams,
+          overlaySource
+        );
+        if (!resp.blocks.length || resp.missing > 0) {
+          throw new Error(
+            "whole-die payload not found for the current params — run «Decode whole die» first"
+          );
+        }
+        // Namespace the payload's group ids (they restart at 0) so they
+        // can't collide inside one materialize call.
+        traces = resp.blocks
+          .flatMap((b) => b.traces)
+          .map((t) =>
+            typeof t.group === "number" ? { ...t, group: 1_000_000 + t.group } : t
+          );
+      } else {
+        traces = vectorLayer.collectTraces();
+      }
       const outcome = await materializeTraces(
         traces,
         dispatcher,
@@ -1886,26 +1946,40 @@ function VectorSection({
             style={{ width: "100%", cursor: "pointer" }}
             onClick={() => void stopSweep()}
           >
-            Stop whole-die decode ({sweep.done}/{sweep.total})
+            Stop whole-die decode{" "}
+            {sweep.phase === "decoding"
+              ? "(decoding — stop now kills the sidecar decode too)"
+              : `(${sweep.done}/${sweep.total})`}
           </button>
-          <div
-            style={{
-              height: 5,
-              borderRadius: 3,
-              background: "var(--l1)",
-              overflow: "hidden",
-              marginTop: 6
-            }}
-          >
+          {sweep.phase === "decoding" ? (
+            <div
+              className="m"
+              style={{ fontSize: 10, color: "var(--ink3)", marginTop: 4 }}
+            >
+              One whole-die decode in progress — typically several minutes on
+              a dense die. Keep the app open; the overlay comes back from
+              cache when it finishes.
+            </div>
+          ) : (
             <div
               style={{
-                height: "100%",
-                width: `${sweep.total ? Math.round((sweep.done / sweep.total) * 100) : 0}%`,
-                background: "var(--accent, #7fb2ff)",
-                transition: "width 0.2s"
+                height: 5,
+                borderRadius: 3,
+                background: "var(--l1)",
+                overflow: "hidden",
+                marginTop: 6
               }}
-            />
-          </div>
+            >
+              <div
+                style={{
+                  height: "100%",
+                  width: `${sweep.total ? Math.round((sweep.done / sweep.total) * 100) : 0}%`,
+                  background: "var(--accent, #7fb2ff)",
+                  transition: "width 0.2s"
+                }}
+              />
+            </div>
+          )}
         </>
       ) : (
         <button
@@ -2038,12 +2112,47 @@ function VectorSection({
       )}
 
       {/* Vector traces → nets materialization */}
+      <div className="row" style={{ gap: 6, marginTop: 12, alignItems: "center" }}>
+        <span className="u" style={{ fontSize: 10 }}>Nets from</span>
+        <select
+          value={netsSource}
+          style={{ fontSize: 10, flex: 1 }}
+          onChange={(e) => setNetsSource(e.target.value as "whole-die" | "preview")}
+        >
+          <option value="whole-die">whole die (cached sweep)</option>
+          <option value="preview">preview (live decodes)</option>
+        </select>
+      </div>
+      <div className="row" style={{ gap: 6, marginTop: 4, alignItems: "center" }}>
+        <span className="u" style={{ fontSize: 10 }}>Min contacts / net</span>
+        <select
+          value={minContacts}
+          style={{ fontSize: 10 }}
+          onChange={(e) => setMinContacts(Number(e.target.value) as 0 | 1 | 2)}
+        >
+          <option value={0}>off</option>
+          <option value={1}>1</option>
+          <option value={2}>2</option>
+        </select>
+        <label
+          className="u"
+          style={{ fontSize: 10, display: "flex", gap: 4, alignItems: "center", cursor: "pointer" }}
+          title="Skip octilinear traces kept raw (irregular) — they did not fit the 0/45/90° lattice within Delta"
+        >
+          <input
+            type="checkbox"
+            checked={dropIrregular}
+            onChange={(e) => setDropIrregular(e.target.checked)}
+          />
+          drop irregular
+        </label>
+      </div>
       <button
         type="button"
         className="btn"
-        style={{ width: "100%", marginTop: 12 }}
+        style={{ width: "100%", marginTop: 6 }}
         disabled={busy !== null || !vectorLayer || !getTraceSnapTargets || hidden}
-        title="Materialize decoded vector traces into real annotation nets (ends snapped to device contacts / terminals / pins). Undoable."
+        title="Materialize decoded vector traces into real annotation nets (ends snapped to device contacts / terminals / pins; a contact lying ON the wire splits it and connects mid-wire). Undoable."
         onClick={() => void vectorToNets()}
       >
         {busy === "nets" ? "Создаю nets…" : "Vector → nets"}

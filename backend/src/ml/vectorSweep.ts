@@ -51,6 +51,16 @@ export function vectorParamsHash(
 
 interface SweepJob extends VectorSweepStatus {
   cancel: boolean;
+  /** Current sweep phase: assembling block masks, or waiting out the one
+   *  whole-die decode (minutes — the UI says "keep the app open"). */
+  phase: "masks" | "decoding";
+}
+
+/** Deterministic sidecar job id of the global decode — Stop uses it to
+ *  cancel the decode subprocess (a cancelled sweep must not leave the
+ *  sidecar burning CPU on a dead client's skeletonize for 10+ min). */
+function decodeJobId(dieId: string, hash: string): string {
+  return `sweep-${dieId}-${hash}`;
 }
 
 export function createVectorSweep(config: {
@@ -131,7 +141,8 @@ export function createVectorSweep(config: {
       error: job.error ?? null,
       warning: job.warning ?? null,
       paramsHash: job.paramsHash,
-      overlayFilename: job.overlayFilename ?? null
+      overlayFilename: job.overlayFilename ?? null,
+      phase: job.phase
     };
   }
 
@@ -150,18 +161,26 @@ export function createVectorSweep(config: {
     const hash = vectorParamsHash(args.params, args.overlaySource);
     const totalCols = Math.ceil(args.dieWidth / VECTOR_BLOCK_PX);
     const totalRows = Math.ceil(args.dieHeight / VECTOR_BLOCK_PX);
+    // Fast path: a full.json for THESE params already exists (a previous
+    // sweep completed — or its decode worker finished after the app was
+    // closed). Nothing to decode; report completion and warm the mem cache.
+    const cached = await readFullPayload(dieId, hash, args.dieWidth, args.dieHeight);
     const job: SweepJob = {
       dieId,
-      status: "running",
-      done: 0,
+      status: cached ? "completed" : "running",
+      done: cached ? totalCols * totalRows : 0,
       total: totalCols * totalRows,
       error: null,
       warning: null,
       paramsHash: hash,
       overlayFilename: args.overlaySource ?? null,
-      cancel: false
+      cancel: false,
+      phase: cached ? "decoding" : "masks"
     };
     jobs.set(dieId, job);
+    if (cached) {
+      return publicStatus(job);
+    }
 
     const dir = sweepDir(dieId, hash);
     await fs.mkdir(dir, { recursive: true });
@@ -264,16 +283,14 @@ export function createVectorSweep(config: {
           .png()
           .toBuffer();
         await fs.writeFile(path.join(dir, "mask.png"), fullPng);
-        // Soft warning (not an abort): a band this wide usually bleeds metal
-        // into the background — neighbours will merge in the decode. The
-        // user is still free to decode (some dies genuinely have dense
-        // metal), the inspector shows the warning.
         if (pxTotal > 0 && nzTotal / pxTotal > 0.45) {
           job.warning =
             `threshold captures ~${Math.round((100 * nzTotal) / pxTotal)}% of the die — ` +
             "neighbouring wires likely merged (band too wide / Min gap too high). " +
             "If nets come out merged, narrow the band or lower Min gap.";
         }
+        // Phase marker for the UI: masks are done, now the one long decode.
+        job.phase = "decoding";
         const decoded = (await postWithRetry(
           "/vectorize/decode",
           fullPng,
@@ -283,10 +300,15 @@ export function createVectorSweep(config: {
             width_max: args.params.widthMax,
             decoder: args.params.decoder,
             oct_delta_px: args.params.octDeltaPx,
-            oct_strict: args.params.octStrict
+            oct_strict: args.params.octStrict,
+            // Subprocess registry key on the sidecar — Stop cancels via it.
+            job_id: decodeJobId(dieId, hash),
+            // The worker writes the payload itself too: if the backend dies
+            // mid-decode, the cache still lands and the next start reuses it.
+            save_to: path.join(dir, "full.json")
           },
           // The global decode skeletonizes the whole die (tens of millions
-          // of px — minutes of CV-gated work). 30 min, no premature abort.
+          // of px - minutes of CV-gated work). 30 min, no premature abort.
           1_800_000,
           () => job.cancel
         )) as unknown as {
@@ -387,6 +409,20 @@ export function createVectorSweep(config: {
       // post-block / post-decode checkpoints; a finished decode is then
       // discarded, not written).
       job.status = "stopped";
+      // The whole-die decode runs as a sidecar SUBPROCESS: terminate it for
+      // real — otherwise it keeps skeletonizing a dead client's mask for
+      // 10+ minutes, starving everything else on CPU. Fire-and-forget: the
+      // in-flight decode POST will come back (499/500) and be discarded.
+      if (job.phase === "decoding" && job.paramsHash) {
+        const fd = new FormData();
+        fd.append("job_id", decodeJobId(dieId, job.paramsHash));
+        fetch(`${config.mlSidecarUrl}/vectorize/decode/cancel`, {
+          method: "POST",
+          body: fd
+        })
+          .then(() => undefined)
+          .catch(() => undefined);
+      }
     }
     return publicStatus(job);
   }
@@ -397,6 +433,36 @@ export function createVectorSweep(config: {
    *  params (client falls back to live decode) — never decoded here.
    *  `hash` override: the Vector layers list pins SAVED payloads (from other
    *  params sets) — they bypass the params-hash lookup. */
+    /** Read + mem-cache the full.json payload for a params hash, if present.
+   *  Returns the parsed entry or null (no cache file / unreadable). */
+  async function readFullPayload(
+    dieId: string,
+    hash: string,
+    dieWidth: number,
+    dieHeight: number
+  ): Promise<{ traces: VectorBlockPayload["traces"]; outlines: VectorBlockPayload["outlines"] } | null> {
+    const cacheKey = `${dieId}|${hash}`;
+    const cached = fullCache.get(cacheKey);
+    if (cached) return cached;
+    try {
+      const raw = await fs.readFile(path.join(sweepDir(dieId, hash), "full.json"), "utf8");
+      const parsed = JSON.parse(raw) as {
+        traces: VectorBlockPayload["traces"];
+        outlines: VectorBlockPayload["outlines"];
+      };
+      const entry = { traces: parsed.traces ?? [], outlines: parsed.outlines ?? [] };
+      // All-empty payloads are poison (they'd blank the overlay forever) —
+      // treat as a miss; the sweep will re-decode.
+      if (entry.traces.length === 0 && entry.outlines.length === 0) return null;
+      void dieWidth;
+      void dieHeight;
+      fullCache.set(cacheKey, entry);
+      return entry;
+    } catch {
+      return null;
+    }
+  }
+
   async function readBlocks(dieId: string, args: {
     dieWidth: number;
     dieHeight: number;
@@ -408,8 +474,7 @@ export function createVectorSweep(config: {
     const hash = /^v1-[0-9a-f]{12}$/.test(args.hash ?? "")
       ? (args.hash as string)
       : vectorParamsHash(args.params, args.overlaySource);
-    const cacheKey = `${dieId}|${hash}`;
-    const cached = fullCache.get(cacheKey);
+    const cached = await readFullPayload(dieId, hash, args.dieWidth, args.dieHeight);
     if (cached) {
       return {
         hash,
@@ -425,30 +490,7 @@ export function createVectorSweep(config: {
         missing: 0
       };
     }
-    try {
-      const raw = await fs.readFile(path.join(sweepDir(dieId, hash), "full.json"), "utf8");
-      const parsed = JSON.parse(raw) as {
-        traces: VectorBlockPayload["traces"];
-        outlines: VectorBlockPayload["outlines"];
-      };
-      const entry = { traces: parsed.traces ?? [], outlines: parsed.outlines ?? [] };
-      fullCache.set(cacheKey, entry);
-      return {
-        hash,
-        blocks: [
-          {
-            col: 0,
-            row: 0,
-            bbox: [0, 0, args.dieWidth, args.dieHeight],
-            traces: entry.traces,
-            outlines: entry.outlines
-          }
-        ],
-        missing: 0
-      };
-    } catch {
-      return { hash, blocks: [], missing: 1 };
-    }
+    return { hash, blocks: [], missing: 1 };
   }
 
   /** The Vector layers list: every SAVED whole-die payload for the die,

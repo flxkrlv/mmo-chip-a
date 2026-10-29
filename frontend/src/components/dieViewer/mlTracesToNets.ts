@@ -42,6 +42,14 @@ export interface TracesToNetsInput {
   layer: WireLayer;
   /** Net naming: `<prefix>1`, `<prefix>2`, … */
   namePrefix?: string;
+  /** A net must touch at least this many DISTINCT device contacts (pins /
+   *  electrodes / terminals) to be materialized. 0 = off. 2 filters
+   *  floating artifacts: only wires joining two real contacts survive. */
+  minDeviceContacts?: number;
+  /** Drop octilinear-decoder traces kept raw with `irregular: true`
+   *  (the raw axis could not be snapped within delta) instead of
+   *  materializing their non-octilinear geometry. */
+  dropIrregular?: boolean;
 }
 
 export interface TracesToNetsResult {
@@ -55,6 +63,10 @@ export interface TracesToNetsResult {
   filteredByScore: number;
   /** How many fragment pairs were stitched into shared points. */
   stitchedPairs: number;
+  /** Nets dropped by the min-device-contacts filter. */
+  droppedLowContacts: number;
+  /** Traces dropped by the drop-irregular filter. */
+  droppedIrregular: number;
   /** Suspicious merges: a "group" union holding hundreds of traces usually
    *  means the MASK over-bridged wires (band too wide / Min gap too high) —
    *  the netlist is technically connected but is not what the user drew. */
@@ -68,15 +80,39 @@ function endpointKey(x: number, y: number): string {
 }
 
 export function buildNetsFromTraces(input: TracesToNetsInput): TracesToNetsResult {
-  const { traces, minScore, snapTargets, snapTol, stitchTol, layer, namePrefix = "ML-" } = input;
+  const {
+    traces,
+    minScore,
+    snapTargets,
+    snapTol,
+    stitchTol,
+    layer,
+    namePrefix = "ML-",
+    minDeviceContacts = 0,
+    dropIrregular = false
+  } = input;
 
   // 1. Snap every polyline end to the nearest target (first hit wins by
   //    distance, matching the wire tool's nearest-candidate behaviour).
   let snappedEnds = 0;
   let droppedDegenerate = 0;
   let filteredByScore = 0;
-  const snapped: { points: [number, number][]; score: number; onContact: [boolean, boolean] }[] = [];
+  let droppedIrregular = 0;
+  interface SnappedTrace {
+    points: [number, number][];
+    score: number;
+    onContact: [boolean, boolean];
+    /** vertex index -> snap target label. Endpoints AND mid-wire contacts
+     *  (a contact lying ON the metal: the polyline is split at the
+     *  projection of the contact onto the nearest segment). */
+    contacts: Map<number, string>;
+  }
+  const snapped: SnappedTrace[] = [];
   for (const t of traces) {
+    if (dropIrregular && t.irregular === true) {
+      droppedIrregular += 1;
+      continue;
+    }
     if ((t.score ?? 1) < minScore) {
       filteredByScore += 1;
       continue;
@@ -87,6 +123,8 @@ export function buildNetsFromTraces(input: TracesToNetsInput): TracesToNetsResul
     }
     const pts = t.points.map((p) => [p[0], p[1]] as [number, number]);
     const onContact: [boolean, boolean] = [false, false];
+    const contacts = new Map<number, string>();
+    // 1a. Endpoints: proximity snap (wire-tool behaviour).
     for (const end of [0, pts.length - 1] as const) {
       let best: TraceSnapTarget | null = null;
       let bestD = snapTol;
@@ -100,10 +138,56 @@ export function buildNetsFromTraces(input: TracesToNetsInput): TracesToNetsResul
       if (best) {
         pts[end] = [best.x, best.y];
         onContact[end] = true;
+        contacts.set(end, best.label);
         snappedEnds += 1;
       }
     }
-    snapped.push({ points: pts, score: t.score ?? 1, onContact });
+    // 1b. Mid-wire contacts (INTERSECTION snap): a device contact that lies
+    //     ON the metal centreline — within snapTol of a SEGMENT, not just of
+    //     an endpoint — becomes a real net vertex: the polyline is split at
+    //     the projection point and the contact coordinates inserted. A wire
+    //     passing a pad in the middle now actually connects to it.
+    const insertions: { at: number; target: TraceSnapTarget }[] = [];
+    for (const s of snapTargets) {
+      let bestD = snapTol;
+      let bestAt = -1;
+      for (let i = 0; i < pts.length - 1; i++) {
+        const ax = pts[i][0];
+        const ay = pts[i][1];
+        const bx = pts[i + 1][0];
+        const by = pts[i + 1][1];
+        const dx = bx - ax;
+        const dy = by - ay;
+        const len2 = dx * dx + dy * dy;
+        const u =
+          len2 === 0
+            ? 0
+            : Math.max(0, Math.min(1, ((s.x - ax) * dx + (s.y - ay) * dy) / len2));
+        const px = ax + u * dx;
+        const py = ay + u * dy;
+        const d = Math.hypot(s.x - px, s.y - py);
+        if (d <= bestD) {
+          bestD = d;
+          bestAt = i + u;
+        }
+      }
+      // Skip endpoints already snapped to THIS target (1a did it).
+      if (bestAt >= 0) {
+        const isEnd =
+          bestAt < 0.5 || bestAt > pts.length - 1 - 0.5;
+        if (isEnd && contacts.has(bestAt < 0.5 ? 0 : pts.length - 1)) continue;
+        insertions.push({ at: bestAt, target: s });
+      }
+    }
+    // Splice from the end so earlier indices stay valid.
+    insertions.sort((a, b) => b.at - a.at);
+    for (const ins of insertions) {
+      const idx = Math.ceil(ins.at);
+      pts.splice(idx, 0, [ins.target.x, ins.target.y]);
+      contacts.set(idx, ins.target.label);
+      snappedEnds += 1;
+    }
+    snapped.push({ points: pts, score: t.score ?? 1, onContact, contacts });
   }
 
   // 1.5 Stitch decode fragments: endpoints that nearly touch are merged and
@@ -204,6 +288,7 @@ export function buildNetsFromTraces(input: TracesToNetsInput): TracesToNetsResul
   const nets: AnnotationNet[] = [];
   const warnings: string[] = [];
   const GROUP_WARN_TRACES = 64;
+  let droppedLowContacts = 0;
   let n = 0;
   for (const members of groups.values()) {
     n += 1;
@@ -213,6 +298,16 @@ export function buildNetsFromTraces(input: TracesToNetsInput): TracesToNetsResul
           "over-bridged neighbouring wires (threshold band too wide / Min gap too high). " +
           "Check the outlines; narrow the band or lower Min gap and re-decode."
       );
+    }
+    // Distinct device contacts this net touches (endpoint snaps + mid-wire
+    // intersection snaps across every member trace).
+    const labels = new Set<string>();
+    for (const i of members) {
+      for (const label of snapped[i].contacts.values()) labels.add(label);
+    }
+    if (minDeviceContacts > 0 && labels.size < minDeviceContacts) {
+      droppedLowContacts += 1;
+      continue;
     }
     const nodes: AnnotationNetNode[] = [];
     const nodeByKey = new Map<string, AnnotationNetNode>();
@@ -243,5 +338,14 @@ export function buildNetsFromTraces(input: TracesToNetsInput): TracesToNetsResul
     });
   }
 
-  return { nets, snappedEnds, droppedDegenerate, filteredByScore, stitchedPairs, warnings };
+  return {
+    nets,
+    snappedEnds,
+    droppedDegenerate,
+    filteredByScore,
+    stitchedPairs,
+    droppedLowContacts,
+    droppedIrregular,
+    warnings
+  };
 }
