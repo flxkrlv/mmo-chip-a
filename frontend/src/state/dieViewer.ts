@@ -126,6 +126,10 @@ interface DieViewerState {
    *  each keeps where it was taken (the layer draws markers). */
   vectorPipetteArmed: boolean;
   vectorSamples: { rgb: [number, number, number]; x: number; y: number }[];
+  /** True while a whole-die vectorize sweep runs: the live viewport decode
+   *  pauses (it would fight the sweep for the sidecar's CV gate), the
+   *  overlay comes back from the block cache when the sweep ends. */
+  vectorSweepRunning: boolean;
   /** Cell type picked in the Cells (detection) tab — from the dropdown or by
    *  selecting a placed cell on the canvas while the tab is open. */
   cellDetectionTypeId: string | null;
@@ -176,6 +180,7 @@ setVectorStatus: (status: {
 setVectorPipetteArmed: (armed: boolean) => void;
 addVectorSample: (sample: { rgb: [number, number, number]; x: number; y: number }) => void;
 clearVectorSamples: () => void;
+setVectorSweepRunning: (running: boolean) => void;
   setCellDetectionTypeId: (id: string | null) => void;
   setCellDetectionsCount: (count: number) => void;
   setWireMapAvailable: (available: boolean) => void;
@@ -214,6 +219,7 @@ const INITIAL_STATE: DieViewerState = {
   vectorStatus: { loading: false, error: null, traces: 0 },
   vectorPipetteArmed: false,
   vectorSamples: [],
+  vectorSweepRunning: false,
   cellDetectionTypeId: null,
   cellDetectionsCount: 0,
   wireMapAvailable: false,
@@ -322,6 +328,10 @@ export const useDieViewerStore = create<DieViewerState & DieViewerActions>()((se
   addVectorSample: (sample) =>
     set((state) => ({ vectorSamples: [...state.vectorSamples, sample] })),
   clearVectorSamples: () => set({ vectorSamples: [] }),
+  setVectorSweepRunning: (running) => {
+    if (get().vectorSweepRunning === running) return;
+    set({ vectorSweepRunning: running });
+  },
   setCellDetectionTypeId: (id) => set({ cellDetectionTypeId: id }),
   setCellDetectionsCount: (count) => {
     if (get().cellDetectionsCount === count) return;

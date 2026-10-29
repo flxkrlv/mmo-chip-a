@@ -552,6 +552,7 @@ export function createMLRouter(config: {
   const vectorizer = createVectorizer({ mlSidecarUrl: config.mlSidecarUrl });
   const vectorSweep = createVectorSweep({
     dataRoot: config.dataRoot,
+    mlSidecarUrl: config.mlSidecarUrl,
     runVectorize: vectorizer.runVectorize
   });
 

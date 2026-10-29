@@ -908,6 +908,10 @@ export interface MLTracePolyline {
   /** Median wire width in source px (distance-transform estimate). Set by
    *  the vectorize decoder; absent for ML traces. */
   widthPx?: number;
+  /** Runs-decoder connectivity group: traces sharing a group belong to one
+   *  physical wire / closed contour → one net (a contour cannot contain two
+   *  nets — that would be a virtual break). Absent for ML traces. */
+  group?: number;
 }
 
 /** Classical (no-model) metal vectorization: threshold a brightness/colour
@@ -951,7 +955,15 @@ export interface VectorizeResponse {
   bbox: [number, number, number, number];
   /** Why traces were dropped (width filter). Helps tuning: outlines show
    *  metal but traces vanish → droppedWidth is the usual suspect. */
-  stats?: { kept: number; droppedWidth: number };
+  stats?: {
+    kept: number;
+    droppedWidth: number;
+    /** Branches shorter than Min length (noise arms — removed before
+     *  junction dissolving, so they don't split real wires). */
+    droppedShort?: number;
+    /** Collinear pass-through junctions dissolved (fragments re-joined). */
+    merged?: number;
+  };
 }
 
 /** Whole-die vectorize sweep (block-by-block, results cached on disk). */

@@ -13,7 +13,12 @@ export interface RunVectorizeResult {
   traces: VectorizeResponse["traces"];
   outlines: VectorizeResponse["outlines"];
   /** Width-filter drop stats from the sidecar (kept / droppedWidth). */
-  stats?: { kept: number; droppedWidth: number };
+  stats?: {
+    kept: number;
+    droppedWidth: number;
+    droppedShort?: number;
+    merged?: number;
+  };
 }
 
 /**
@@ -120,9 +125,9 @@ export function createVectorizer(config: { mlSidecarUrl: string }) {
     if (!res.ok) throw new Error(`sidecar /vectorize ${res.status}`);
 
     const body = (await res.json()) as {
-      traces: { points: number[][]; score?: number; width?: number }[];
+      traces: { points: number[][]; score?: number; width?: number; group?: number }[];
       outlines: number[][][];
-      stats?: { kept: number; dropped_width?: number };
+      stats?: { kept: number; dropped_width?: number; dropped_short?: number; merged?: number };
     };
 
     const inKeep = (x: number, y: number) =>
@@ -149,7 +154,8 @@ export function createVectorizer(config: { mlSidecarUrl: string }) {
       traces.push({
         points: pts,
         ...(typeof t.score === "number" && Number.isFinite(t.score) ? { score: t.score } : {}),
-        ...(typeof t.width === "number" && Number.isFinite(t.width) ? { widthPx: t.width } : {})
+        ...(typeof t.width === "number" && Number.isFinite(t.width) ? { widthPx: t.width } : {}),
+        ...(typeof t.group === "number" && Number.isFinite(t.group) ? { group: t.group } : {})
       });
     }
 
@@ -164,7 +170,11 @@ export function createVectorizer(config: { mlSidecarUrl: string }) {
         ? {
             stats: {
               kept: body.stats.kept,
-              droppedWidth: body.stats.dropped_width ?? 0
+              droppedWidth: body.stats.dropped_width ?? 0,
+              ...(typeof body.stats.dropped_short === "number"
+                ? { droppedShort: body.stats.dropped_short }
+                : {}),
+              ...(typeof body.stats.merged === "number" ? { merged: body.stats.merged } : {})
             }
           }
         : {})

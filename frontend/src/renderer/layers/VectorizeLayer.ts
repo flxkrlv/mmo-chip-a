@@ -71,8 +71,27 @@ interface CachedRegion {
   paramsKey: string;
   traces: MLTracePolyline[];
   outlines: [number, number][][];
+  /** Per-trace bbox, precomputed once — draw() runs per renderer tile and
+   *  a whole-die payload holds thousands of polylines: without culling
+   *  every tile would walk (and stroke-path) all of them. */
+  traceBoxes: { box: Rect; index: number }[];
+  outlineBoxes: { box: Rect; index: number }[];
   /** Width-filter drop stats of the decode that filled this region. */
-  stats?: { kept: number; droppedWidth: number };
+  stats?: { kept: number; droppedWidth: number; droppedShort?: number; merged?: number };
+}
+
+function pointsBox(points: [number, number][]): Rect {
+  let minx = Infinity;
+  let miny = Infinity;
+  let maxx = -Infinity;
+  let maxy = -Infinity;
+  for (const [x, y] of points) {
+    if (x < minx) minx = x;
+    if (y < miny) miny = y;
+    if (x > maxx) maxx = x;
+    if (y > maxy) maxy = y;
+  }
+  return { x: minx, y: miny, width: maxx - minx, height: maxy - miny };
 }
 
 export class VectorizeLayer implements Layer {
@@ -140,8 +159,13 @@ export class VectorizeLayer implements Layer {
 
   /** Latest error string (panel display), cleared on a successful fetch. */
   private lastError: string | null = null;
-  /** Width-filter drop stats of the latest decode (panel diagnostics). */
-  private lastStats: { kept: number; droppedWidth: number } | null = null;
+  /** Drop stats of the latest decode (panel diagnostics). */
+  private lastStats: {
+    kept: number;
+    droppedWidth: number;
+    droppedShort?: number;
+    merged?: number;
+  } | null = null;
 
   private notifyStatus(loading: boolean): void {
     this.display.onStatusChange?.({
@@ -228,11 +252,15 @@ export class VectorizeLayer implements Layer {
           if (this.destroyed) return;
           if (resp.blocks.length > 0 && resp.missing === 0) {
             this.lastError = null;
+            const traces = resp.blocks.flatMap((b) => b.traces);
+            const outlines = resp.blocks.flatMap((b) => b.outlines);
             this.cache.set(key, {
               bbox,
               paramsKey: "",
-              traces: resp.blocks.flatMap((b) => b.traces),
-              outlines: resp.blocks.flatMap((b) => b.outlines)
+              traces,
+              outlines,
+              traceBoxes: traces.map((t, i) => ({ box: pointsBox(t.points), index: i })),
+              outlineBoxes: outlines.map((o, i) => ({ box: pointsBox(o), index: i }))
             });
             while (this.cache.size > MAX_REGIONS) {
               const oldest = this.cache.keys().next().value;
@@ -323,8 +351,12 @@ export class VectorizeLayer implements Layer {
       if (!rectsIntersect(regionRect, world)) continue;
 
       // Outlines first — the light "what did my threshold capture" fill.
+      // Per-shape bbox culling: a whole-die payload holds thousands of
+      // polylines and draw() runs per renderer tile.
       ctx.lineWidth = strokeW;
-      for (const pts of region.outlines) {
+      for (const { box, index } of region.outlineBoxes) {
+        if (!rectsIntersect(box, world)) continue;
+        const pts = region.outlines[index];
         if (pts.length < 3) continue;
         ctx.beginPath();
         ctx.moveTo(pts[0][0], pts[0][1]);
@@ -337,7 +369,9 @@ export class VectorizeLayer implements Layer {
       }
 
       // Centreline traces + endpoint snaps.
-      for (const t of region.traces) {
+      for (const { box, index } of region.traceBoxes) {
+        if (!rectsIntersect(box, world)) continue;
+        const t = region.traces[index];
         if ((t.score ?? 1) < minScore) continue;
         const pts = t.points;
         if (pts.length < 2) continue;
@@ -395,6 +429,8 @@ export class VectorizeLayer implements Layer {
         paramsKey: target.key.slice(target.bbox.join(",").length + 1),
         traces: resp.traces,
         outlines: resp.outlines,
+        traceBoxes: resp.traces.map((t, i) => ({ box: pointsBox(t.points), index: i })),
+        outlineBoxes: resp.outlines.map((o, i) => ({ box: pointsBox(o), index: i })),
         stats: resp.stats
       });
       // Evict the oldest region beyond the cap (Map = insertion order).

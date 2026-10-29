@@ -1407,12 +1407,14 @@ function VectorSection({
 
   // Poll the sweep while it runs; refresh the layer's cache when it ends.
   useEffect(() => {
+    useDieViewerStore.getState().setVectorSweepRunning(sweep.status === "running");
     if (sweep.status !== "running") return;
     const t = setInterval(() => {
       getVectorSweep(dieId)
         .then((s) => {
           setSweep(s);
           if (s.status !== "running") {
+            useDieViewerStore.getState().setVectorSweepRunning(false);
             vectorLayer?.clearCache();
           }
         })
@@ -1420,6 +1422,22 @@ function VectorSection({
     }, 1000);
     return () => clearInterval(t);
   }, [sweep.status, dieId, vectorLayer]);
+
+  // Also fetch the job once on mount — a sweep started elsewhere (or before
+  // a reload) shows its progress here and pauses the live overlay.
+  useEffect(() => {
+    let gone = false;
+    getVectorSweep(dieId)
+      .then((s) => {
+        if (gone) return;
+        setSweep(s);
+        useDieViewerStore.getState().setVectorSweepRunning(s.status === "running");
+      })
+      .catch(() => {});
+    return () => {
+      gone = true;
+    };
+  }, [dieId]);
 
   const startSweep = async () => {
     setErr(null);
@@ -1429,6 +1447,7 @@ function VectorSection({
       const overlaySource = visible?.serverFilename ?? visible?.name ?? undefined;
       const s = await startVectorSweep(dieId, params, overlaySource);
       setSweep(s);
+      useDieViewerStore.getState().setVectorSweepRunning(s.status === "running");
     } catch (e) {
       setErr(e instanceof Error ? e.message : "sweep start failed");
     }
@@ -1438,6 +1457,7 @@ function VectorSection({
     try {
       const s = await stopVectorSweep(dieId);
       setSweep(s);
+      if (s.status !== "running") useDieViewerStore.getState().setVectorSweepRunning(false);
     } catch {
       /* poll will settle the state */
     }

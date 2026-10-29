@@ -173,6 +173,20 @@ export function buildNetsFromTraces(input: TracesToNetsInput): TracesToNetsResul
     }
   });
 
+  // 1.6 Runs-decoder grouping: traces sharing a `group` belong to ONE
+  //     physical wire / closed contour (the decoder already dissolved noise
+  //     junctions) — union them even when no endpoints coincide.
+  const rawTraces = traces;
+  const groupIds = new Map<number, string>();
+  snapped.forEach((_, i) => {
+    const g = rawTraces[i]?.group;
+    if (typeof g !== "number") return;
+    const key = `g${g}`;
+    const prev = groupIds.get(g);
+    if (prev) union(prev, `t${i}`);
+    else groupIds.set(g, `t${i}`);
+  });
+
   // 3. One net per group: collect vertices (endpoint-key merged so shared
   //    ends become a single node — that is the electrical connection).
   const groups = new Map<string, number[]>();

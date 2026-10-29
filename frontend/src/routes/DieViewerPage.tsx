@@ -949,7 +949,9 @@ function DieViewer({ dieId }: { dieId: string }) {
     () =>
       die
         ? new VectorizeLayer(die.id, die, {
-            getHidden: () => usePreferences.getState().vectorOverlayHidden,
+            getHidden: () =>
+              usePreferences.getState().vectorOverlayHidden ||
+              useDieViewerStore.getState().vectorSweepRunning,
             getParams: () => usePreferences.getState().vectorParams,
             getOverlaySource: () => {
               const layers = useOverlayLayers.getState().layers;

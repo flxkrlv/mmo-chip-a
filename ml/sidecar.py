@@ -41,7 +41,7 @@ from heatmap import extract_components, extract_peaks, extract_trace_skeleton
 from model import build_model, infer_num_classes
 from tiling import tile_predict
 from trainer import TrainParams, run_training
-from vectorize import VectorParams, vectorize_region
+from vectorize import VectorParams, build_mask, decode_mask, mask_pad_px, vectorize_region
 
 
 def _now() -> str:
@@ -417,6 +417,107 @@ def vectorize_region_endpoint(
         raise HTTPException(
             status_code=500, detail=f"vectorize failed: {exc} | {tail}"
         ) from exc
+
+
+class MaskBody(BaseModel):
+    channel: str = "gray"
+    invert: bool = False
+    thresh_low: int = 120
+    thresh_high: int = 255
+    adaptive: bool = False
+    adaptive_block: int = 51
+    adaptive_c: int = 8
+    open_px: int = 1
+    bridge_px: int = 2
+
+
+def _params_from_mask_body(b: MaskBody) -> VectorParams:
+    return VectorParams(
+        channel=b.channel if b.channel in ("gray", "r", "g", "b") else "gray",
+        invert=b.invert,
+        thresh_low=b.thresh_low,
+        thresh_high=b.thresh_high,
+        adaptive=b.adaptive,
+        adaptive_block=b.adaptive_block,
+        adaptive_c=b.adaptive_c,
+        open_px=b.open_px,
+        bridge_px=b.bridge_px,
+    )
+
+
+@app.post("/vectorize/mask")
+def vectorize_mask(image: UploadFile = File(...), body: str = Form(...)) -> dict:
+    """Binary metal mask of the posted crop (whole-die sweep step 1). The
+    backend assembles block masks into one seamless die-sized mask and
+    decodes it ONCE — no tile seams by construction. Returns the mask as a
+    base64 PNG (0/255). NB: intentionally NOT CV-gated — the sweep must not
+    starve behind the user's live viewport decodes; masks are cheap."""
+    import json as _json
+    raw = image.file.read()
+    arr = np.frombuffer(raw, dtype=np.uint8)
+    bgr = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+    if bgr is None:
+        raise HTTPException(status_code=400, detail="could not decode image")
+    rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+    try:
+        body = MaskBody(**_json.loads(body))
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=400, detail=f"bad mask params: {exc}") from exc
+    mask = build_mask(rgb, _params_from_mask_body(body))
+    ok, png = cv2.imencode(".png", mask * 255)
+    if not ok:
+        raise HTTPException(status_code=500, detail="mask encode failed")
+    return {
+        "mask_png_b64": base64.b64encode(png.tobytes()).decode("ascii"),
+        "width": int(mask.shape[1]),
+        "height": int(mask.shape[0]),
+        # Padding baked into this mask (see mask_pad_px): the caller crops
+        # [pad .. width-pad] back to its core when assembling the die mask.
+        "pad": mask_pad_px(_params_from_mask_body(body)),
+    }
+
+
+@app.post("/vectorize/decode")
+def vectorize_decode(image: UploadFile = File(...), body: str = Form(...)) -> dict:
+    """Whole-die decode (sweep step 2): runs decoder over the assembled
+    seamless mask — grouped, spur-free, minimal-turn centreline traces.
+    Intentionally NOT CV-gated: it runs for minutes and must not starve
+    behind (or starve) the live viewport decodes; they coexist on CPU."""
+    import json as _json
+    raw = image.file.read()
+    arr = np.frombuffer(raw, dtype=np.uint8)
+    m = cv2.imdecode(arr, cv2.IMREAD_GRAYSCALE)
+    if m is None:
+        raise HTTPException(status_code=400, detail="could not decode mask")
+    try:
+        b = _json.loads(body)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=400, detail=f"bad decode params: {exc}") from exc
+    p = VectorParams(min_len=int(b.get("min_len", 14)),
+                     width_min=float(b.get("width_min", 0.0)),
+                     width_max=float(b.get("width_max", 0.0)))
+    try:
+        mask_u8 = (m > 127).astype(np.uint8)
+        # Guard: a threshold that captures the background (bright-field
+        # shots with a low threshLow) makes the mask 90%+ white — decoding
+        # it is pointless and memory-lethal. Say so instead of crashing.
+        coverage = float(mask_u8.sum(dtype=np.float64)) / mask_u8.size
+        if coverage > 0.7:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"threshold captures {coverage:.0%} of the die — that is background, "
+                    "not metal. Narrow the band (Thresh low/high) or use the pipette, "
+                    "then re-run the whole-die decode."
+                ),
+            )
+        return decode_mask(mask_u8, p)
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        import traceback
+        tail = traceback.format_exc().strip().splitlines()[-1]
+        raise HTTPException(status_code=500, detail=f"decode failed: {exc} | {tail}") from exc
 
 
 def _train_worker(job: JobRecord, params: TrainParams, out: str) -> None:

@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
+import sharp from "sharp";
 import type {
   VectorBlockPayload,
   VectorSweepStatus,
@@ -9,18 +10,17 @@ import type {
 import type { PredictBox } from "./predict.js";
 import type { RunVectorizeResult } from "./vectorize.js";
 
-/** Whole-die vectorize sweep: decode the die block-by-block (2048 px,
- *  under the live endpoint's 6 Mpx cap) and cache every block's decode on
- *  disk keyed by the params hash — the vector overlay then reads blocks
- *  instead of re-decoding the viewport, so a tuned parameter set covers the
- *  whole crystal instantly (the "inference" of the vector path).
- *
- * Blocks decode independently, so a wire crossing a block border is split
- * at the seam: the client's stitch tolerance merges the two halves into one
- * net (their endpoints coincide), same as ML tile seams.
+/** Whole-die vectorize sweep: assemble ONE seamless die-sized binary mask
+ *  from block crops (each block's mask is pixel-exact inside its core — the
+ *  sidecar pads every crop by the morphology/adaptive radius), then decode
+ *  traces ONCE over the full mask. Tile seams are impossible by
+ *  construction: a wire is always decoded whole. The decoded payload is
+ *  cached on disk keyed by the params hash ("the vector inference").
  */
 
 export const VECTOR_BLOCK_PX = 2048;
+/** Whole-die mask cap (px): 160 Mpx ≈ 160 MB Uint8 — guards memory. */
+const MAX_MASK_PX = 160_000_000;
 
 /** Stable cache key for a params set + image source. */
 export function vectorParamsHash(
@@ -51,6 +51,7 @@ interface SweepJob extends VectorSweepStatus {
 
 export function createVectorSweep(config: {
   dataRoot: string;
+  mlSidecarUrl: string;
   /** The live endpoint's runner — reuse its crop/sidecar/translate logic. */
   runVectorize: (args: {
     originalPath: string;
@@ -63,9 +64,55 @@ export function createVectorSweep(config: {
 }) {
   /** One active sweep per die (the die id is the job key, like ML jobs). */
   const jobs = new Map<string, SweepJob>();
+  /** Parsed full-die decode cache: keyed dieId|hash. Blocks responses read
+   *  this instead of re-parsing a multi-MB JSON every viewport fetch. */
+  const fullCache = new Map<string, { traces: VectorBlockPayload["traces"]; outlines: VectorBlockPayload["outlines"] }>();
 
   function sweepDir(dieId: string, hash: string): string {
     return path.join(config.dataRoot, "vectorize", dieId, hash);
+  }
+
+  /** Sidecar request helper (multipart with an image part + JSON body). */
+  async function postSidecar(
+    endpoint: string,
+    file: { name: string; blob: Blob },
+    json: Record<string, unknown>,
+    timeoutMs = 300_000
+  ): Promise<Record<string, unknown>> {
+    const fd = new FormData();
+    fd.append("image", file.blob, file.name);
+    fd.append("body", JSON.stringify(json));
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const res = await fetch(`${config.mlSidecarUrl}${endpoint}`, {
+        method: "POST",
+        body: fd,
+        signal: controller.signal
+      });
+      if (!res.ok) {
+        const text = await res.text().catch(() => "");
+        throw new Error(`sidecar ${endpoint} ${res.status}: ${text.slice(0, 200)}`);
+      }
+      return (await res.json()) as Record<string, unknown>;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  /** Mask params subset (what /vectorize/mask needs). */
+  function maskParams(p: VectorizeParams) {
+    return {
+      channel: p.channel,
+      invert: p.invert,
+      thresh_low: Math.round(p.threshLow),
+      thresh_high: Math.round(p.threshHigh),
+      adaptive: p.adaptive,
+      adaptive_block: Math.round(p.adaptiveBlock),
+      adaptive_c: Math.round(p.adaptiveC),
+      open_px: Math.round(p.openPx),
+      bridge_px: Math.round(p.bridgePx)
+    };
   }
 
   function publicStatus(job: SweepJob | undefined): VectorSweepStatus {
@@ -117,6 +164,22 @@ export function createVectorSweep(config: {
     // memory pressure. Retry transient "busy" (CV-gate 429) a few times.
     void (async () => {
       try {
+        if (args.dieWidth * args.dieHeight > MAX_MASK_PX) {
+          throw new Error(
+            `die too large for whole-die decode (${args.dieWidth}×${args.dieHeight} > ${MAX_MASK_PX} px)`
+          );
+        }
+        const pad = maskPad(args.params);
+        const maskW = args.dieWidth;
+        const maskH = args.dieHeight;
+        const mask = Buffer.alloc(maskW * maskH, 0); // binary 0/255
+        const sourcePath = args.overlayPath ?? args.originalPath;
+        // Early bail-out: a threshold that captures the background makes the
+        // mask mostly white — abort after a few blocks with a clear message
+        // instead of decoding garbage for minutes and crashing the sidecar.
+        let nzTotal = 0;
+        let pxTotal = 0;
+
         for (let row = 0; row < totalRows; row++) {
           for (let col = 0; col < totalCols; col++) {
             if (job.cancel) {
@@ -127,42 +190,98 @@ export function createVectorSweep(config: {
             const y0 = row * VECTOR_BLOCK_PX;
             const x1 = Math.min(args.dieWidth, x0 + VECTOR_BLOCK_PX);
             const y1 = Math.min(args.dieHeight, y0 + VECTOR_BLOCK_PX);
-            const bbox: [number, number, number, number] = [x0, y0, x1, y1];
-            let result: RunVectorizeResult | null = null;
-            let lastErr: unknown = null;
-            for (let attempt = 0; attempt < 3; attempt++) {
-              try {
-                result = await config.runVectorize({
-                  originalPath: args.originalPath,
-                  dieWidth: args.dieWidth,
-                  dieHeight: args.dieHeight,
-                  keep: bbox,
-                  vecParams: args.params,
-                  overlayPath: args.overlayPath
-                });
-                lastErr = null;
-                break;
-              } catch (e) {
-                lastErr = e;
-                await new Promise((r) => setTimeout(r, 1500));
+            // Padded crop: the mask is pixel-exact inside the core because
+            // every mask op (morph kernels, adaptive block) sees its full
+            // neighbourhood.
+            const cx0 = Math.max(0, x0 - pad);
+            const cy0 = Math.max(0, y0 - pad);
+            const cx1 = Math.min(args.dieWidth, x1 + pad);
+            const cy1 = Math.min(args.dieHeight, y1 + pad);
+            const crop = await sharp(sourcePath, { limitInputPixels: false })
+              .extract({ left: cx0, top: cy0, width: cx1 - cx0, height: cy1 - cy0 })
+              .png()
+              .toBuffer();
+            const resp = await postWithRetry("/vectorize/mask", crop, maskParams(args.params));
+            const maskB64 = String(resp.mask_png_b64 ?? "");
+            const respPad = Number(resp.pad ?? pad);
+            const maskPng = Buffer.from(maskB64, "base64");
+            const { data, info } = await sharp(maskPng)
+              .greyscale()
+              .raw()
+              .toBuffer({ resolveWithObject: true });
+            if (info.width !== cx1 - cx0 || info.height !== cy1 - cy0) {
+              throw new Error(
+                `block mask size mismatch: got ${info.width}×${info.height}, want ${cx1 - cx0}×${cy1 - cy0}`
+              );
+            }
+            let nzMask = 0;
+            for (let i = 0; i < data.length; i++) if (data[i] > 127) nzMask++;
+            console.log(`[vectorSweep] block ${col}_${row}: crop ${cx1 - cx0}x${cy1 - cy0} mask nz=${nzMask}`);
+            // Paste the CORE (the block rect) into the die-sized mask. The
+            // crop I sent was already padded by `pad`, so the block core
+            // sits at exactly (x0-cx0, y0-cy0) inside the returned mask —
+            // no extra offset (the sidecar's `pad` documents the unreliable
+            // ring for UNPADDED crops; mine is pre-padded). At die edges the
+            // ring is absent but the mask there is still exact (outside the
+            // die there is no metal, same as a whole-die decode).
+            const coreX = x0 - cx0;
+            const coreY = y0 - cy0;
+            for (let y = y0; y < y1; y++) {
+              const srcRow = (coreY + (y - y0)) * info.width + coreX;
+              const dstRow = y * maskW + x0;
+              for (let x = 0; x < x1 - x0; x++) {
+                // 255, not 1: the assembled buffer is encoded as an 8-bit
+                // grayscale PNG and decoded with a >127 threshold.
+                mask[dstRow + x] = data[srcRow + x] > 127 ? 255 : 0;
               }
             }
-            if (!result) {
-              throw lastErr instanceof Error ? lastErr : new Error("vectorize failed");
-            }
-            const payload: VectorBlockPayload = {
-              col,
-              row,
-              bbox,
-              traces: result.traces,
-              outlines: result.outlines
-            };
-            const tmp = `${path.join(dir, `${col}_${row}.json`)}.${process.pid}.tmp`;
-            await fs.writeFile(tmp, JSON.stringify(payload));
-            await fs.rename(tmp, path.join(dir, `${col}_${row}.json`));
             job.done += 1;
+            nzTotal += nzMask;
+            pxTotal += info.width * info.height;
+            if (job.done >= 3 && nzTotal / pxTotal > 0.85) {
+              throw new Error(
+                `threshold captures ~${Math.round((100 * nzTotal) / pxTotal)}% of the image — that is ` +
+                  `background, not metal. Narrow the band (Thresh low/high) or use the pipette, ` +
+                  `then re-run the whole-die decode.`
+              );
+            }
           }
         }
+        if (job.cancel) {
+          job.status = "stopped";
+          return;
+        }
+
+        // ── One global decode over the seamless mask ──────────────────
+        // Debug artifact: the assembled die mask next to the payload.
+        const fullPng = await sharp(mask, { raw: { width: maskW, height: maskH, channels: 1 } })
+          .png()
+          .toBuffer();
+        await fs.writeFile(path.join(dir, "mask.png"), fullPng);
+        const decoded = (await postWithRetry(
+          "/vectorize/decode",
+          fullPng,
+          {
+            min_len: Math.round(args.params.minLength),
+            width_min: args.params.widthMin,
+            width_max: args.params.widthMax
+          },
+          // The global decode skeletonizes the whole die (tens of millions
+          // of px — minutes of CV-gated work). 30 min, no premature abort.
+          1_800_000
+        )) as unknown as {
+          traces: VectorBlockPayload["traces"];
+          outlines: VectorBlockPayload["outlines"];
+        };
+        const payload = {
+          bbox: [0, 0, maskW, maskH] as [number, number, number, number],
+          traces: decoded.traces ?? [],
+          outlines: decoded.outlines ?? []
+        };
+        const tmp = `${path.join(dir, "full.json")}.${process.pid}.tmp`;
+        await fs.writeFile(tmp, JSON.stringify(payload));
+        await fs.rename(tmp, path.join(dir, "full.json"));
+        fullCache.set(`${dieId}|${hash}`, { traces: payload.traces, outlines: payload.outlines });
         job.status = "completed";
       } catch (e) {
         job.status = "failed";
@@ -171,6 +290,44 @@ export function createVectorSweep(config: {
     })();
 
     return publicStatus(job);
+  }
+
+  /** Morphology/adaptive padding baked into block masks (mirrors the
+   *  sidecar's mask_pad_px — the response's `pad` field confirms it). */
+  function maskPad(p: VectorizeParams): number {
+    return (
+      Math.max(
+        Math.round(p.openPx),
+        Math.round(p.bridgePx),
+        Math.ceil(Math.round(p.adaptiveBlock) / 2)
+      ) + 2
+    );
+  }
+
+  async function postWithRetry(
+    endpoint: string,
+    buf: Buffer,
+    json: Record<string, unknown>,
+    timeoutMs = 300_000
+  ): Promise<Record<string, unknown>> {
+    let lastErr: unknown = null;
+    // The sidecar's CV gate answers 429 when ANY other CV request is in
+    // flight (e.g. the user's live viewport decode running mid-sweep) —
+    // wait it out generously instead of failing the whole sweep.
+    for (let attempt = 0; attempt < 20; attempt++) {
+      try {
+        return await postSidecar(
+          endpoint,
+          { name: "crop.png", blob: new Blob([new Uint8Array(buf)], { type: "image/png" }) },
+          json,
+          timeoutMs
+        );
+      } catch (e) {
+        lastErr = e;
+        await new Promise((r) => setTimeout(r, 3000));
+      }
+    }
+    throw lastErr instanceof Error ? lastErr : new Error("sidecar request failed");
   }
 
   function get(dieId: string): VectorSweepStatus {
@@ -183,9 +340,10 @@ export function createVectorSweep(config: {
     return publicStatus(job);
   }
 
-  /** Cached blocks intersecting a source-px bbox for a params set. Missing
-   *  blocks are reported (client falls back to live decode) — never decoded
-   *  here: the sweep is the only writer. */
+  /** Cached blocks for a bbox + params. The sweep writes ONE full-die
+   *  decode (seamless by construction) — if it exists, it is the answer
+   *  regardless of the bbox. Missing → the sweep hasn't run for these
+   *  params (client falls back to live decode) — never decoded here. */
   async function readBlocks(dieId: string, args: {
     dieWidth: number;
     dieHeight: number;
@@ -194,31 +352,47 @@ export function createVectorSweep(config: {
     overlaySource?: string;
   }): Promise<{ hash: string; blocks: VectorBlockPayload[]; missing: number }> {
     const hash = vectorParamsHash(args.params, args.overlaySource);
-    const dir = sweepDir(dieId, hash);
-    const [bx0, by0, bx1, by1] = args.bbox;
-    const col0 = Math.max(0, Math.floor(bx0 / VECTOR_BLOCK_PX));
-    const row0 = Math.max(0, Math.floor(by0 / VECTOR_BLOCK_PX));
-    const col1 = Math.min(
-      Math.ceil(args.dieWidth / VECTOR_BLOCK_PX) - 1,
-      Math.floor((bx1 - 1) / VECTOR_BLOCK_PX)
-    );
-    const row1 = Math.min(
-      Math.ceil(args.dieHeight / VECTOR_BLOCK_PX) - 1,
-      Math.floor((by1 - 1) / VECTOR_BLOCK_PX)
-    );
-    const blocks: VectorBlockPayload[] = [];
-    let missing = 0;
-    for (let row = row0; row <= row1; row++) {
-      for (let col = col0; col <= col1; col++) {
-        try {
-          const raw = await fs.readFile(path.join(dir, `${col}_${row}.json`), "utf8");
-          blocks.push(JSON.parse(raw) as VectorBlockPayload);
-        } catch {
-          missing += 1;
-        }
-      }
+    const cacheKey = `${dieId}|${hash}`;
+    const cached = fullCache.get(cacheKey);
+    if (cached) {
+      return {
+        hash,
+        blocks: [
+          {
+            col: 0,
+            row: 0,
+            bbox: [0, 0, args.dieWidth, args.dieHeight],
+            traces: cached.traces,
+            outlines: cached.outlines
+          }
+        ],
+        missing: 0
+      };
     }
-    return { hash, blocks, missing };
+    try {
+      const raw = await fs.readFile(path.join(sweepDir(dieId, hash), "full.json"), "utf8");
+      const parsed = JSON.parse(raw) as {
+        traces: VectorBlockPayload["traces"];
+        outlines: VectorBlockPayload["outlines"];
+      };
+      const entry = { traces: parsed.traces ?? [], outlines: parsed.outlines ?? [] };
+      fullCache.set(cacheKey, entry);
+      return {
+        hash,
+        blocks: [
+          {
+            col: 0,
+            row: 0,
+            bbox: [0, 0, args.dieWidth, args.dieHeight],
+            traces: entry.traces,
+            outlines: entry.outlines
+          }
+        ],
+        missing: 0
+      };
+    } catch {
+      return { hash, blocks: [], missing: 1 };
+    }
   }
 
   return { start, get, stop, readBlocks };

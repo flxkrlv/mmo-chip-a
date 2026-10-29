@@ -14,8 +14,8 @@ from dataclasses import dataclass
 import cv2
 import numpy as np
 
-from heatmap import extract_trace_polylines, extract_trace_skeleton
-
+from heatmap import extract_trace_polylines
+from wire_runs import extract_wire_runs
 
 @dataclass
 class VectorParams:
@@ -50,10 +50,17 @@ def _empty(w: int, h: int) -> dict:
     return {"traces": [], "outlines": [], "width": int(w), "height": int(h)}
 
 
-def vectorize_region(rgb: np.ndarray, p: VectorParams) -> dict:
-    """Threshold → clean → decode. Returns traces + outline polylines in
-    crop-local pixel coords (Node translates them to source coords)."""
-    h, w = rgb.shape[:2]
+def mask_pad_px(p: VectorParams) -> int:
+    """Crop padding that makes the mask EXACT inside the core: every op that
+    reaches beyond a pixel (morphology kernels, adaptive gaussian block) is
+    covered, so block-assembled masks are pixel-identical to a whole-image
+    decode — no tile seams by construction."""
+    import math
+    return max(int(p.open_px), int(p.bridge_px), math.ceil(int(p.adaptive_block) / 2)) + 2
+
+
+def build_mask(rgb: np.ndarray, p: VectorParams) -> np.ndarray:
+    """Threshold → clean: the binary metal mask (uint8 0/1) of the crop."""
     ch = _channel_image(rgb, p.channel)
 
     # ── Binary metal mask ────────────────────────────────────────────
@@ -63,20 +70,14 @@ def vectorize_region(rgb: np.ndarray, p: VectorParams) -> dict:
         binary = cv2.adaptiveThreshold(
             ch, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, flag, block, max(0, int(p.adaptive_c))
         ) > 0
-        strength = ch.astype(np.float32) / 255.0
     else:
         lo = max(0, min(255, int(p.thresh_low)))
         hi = max(lo, min(255, int(p.thresh_high)))
         band = (ch >= lo) & (ch <= hi)
         binary = (~band) if p.invert else band
-        # Strength = depth inside the band — a cheap score proxy the client's
-        # existing trace-confidence slider can filter on.
-        lo_f, hi_f = lo / 255.0, max(hi, lo + 1) / 255.0
-        norm = (ch.astype(np.float32) / 255.0 - lo_f) / (hi_f - lo_f)
-        strength = np.clip((1.0 - norm) if p.invert else norm, 0.0, 1.0)
 
     if not binary.any():
-        return _empty(w, h)
+        return np.zeros(binary.shape, dtype=np.uint8)
 
     # ── Morphological cleanup ────────────────────────────────────────
     bin_u8 = binary.astype(np.uint8)
@@ -88,39 +89,37 @@ def vectorize_region(rgb: np.ndarray, p: VectorParams) -> dict:
         # skeleton decoder in heatmap.py — elliptical kernels under-bridge.
         k = cv2.getStructuringElement(cv2.MORPH_RECT, (2 * p.bridge_px + 1,) * 2)
         bin_u8 = cv2.morphologyEx(bin_u8, cv2.MORPH_CLOSE, k)
-    if not bin_u8.any():
+    return bin_u8
+
+
+def decode_mask(mask_u8: np.ndarray, p: VectorParams) -> dict:
+    """Runs decode of a binary mask: traces (grouped) + outlines + stats."""
+    h, w = mask_u8.shape[:2]
+    if not mask_u8.any():
         return _empty(w, h)
-    binary = bin_u8.astype(bool)
+    binary = mask_u8.astype(bool)
 
-    # ── Decode ───────────────────────────────────────────────────────
     # Width map: distance transform of the mask ×2 — every pixel's value is
-    # then the local wire width (distance-to-edge ≈ half width). The skeleton
-    # decoder reports each branch's median width; THIS function applies the
-    # [width_min, width_max] filter so it can also report drop stats: wires
-    # have a narrow, known width, so this kills fat blobs (pads, text,
-    # charging halos) and the wide bridges where parallel wires bleed.
-    dist = cv2.distanceTransform(bin_u8, cv2.DIST_L2, 3) * 2.0
+    # then the local wire width (distance-to-edge ≈ half width).
+    dist = cv2.distanceTransform(mask_u8, cv2.DIST_L2, 3) * 2.0
+    # Strength = depth inside the band — a cheap score proxy the client's
+    # existing trace-confidence slider can filter on.
+    lo = max(0, min(255, int(p.thresh_low)))
+    hi = max(lo, min(255, int(p.thresh_high)))
+    lo_f, hi_f = lo / 255.0, max(hi, lo + 1) / 255.0
+    # NB: mask-only decode has no channel values; score = 1 inside the mask
+    # unless the caller provides strength (live path passes it separately).
+    strength = None
 
-    traces = extract_trace_skeleton(
+    runs = extract_wire_runs(
         binary.astype(np.float32),
         threshold=0.5,
-        bridge_px=0,  # bridging already applied above (same op, once)
         min_len=max(2, int(p.min_len)),
-        score_map=strength,
         width_map=dist,
-        width_range=None,  # filtered HERE so we can report drop stats
+        width_min=p.width_min,
+        width_max=p.width_max,
+        score_map=strength,
     )
-
-    # Width filter with drop accounting: outlines show the metal but traces
-    # vanish → this is the usual suspect (fat buses, pads, charging halos).
-    kept: list[dict] = []
-    dropped_width = 0
-    for t in traces:
-        w = float(t.get("width", 0.0))
-        if (p.width_min > 0 and w < p.width_min) or (p.width_max > 0 and w > p.width_max):
-            dropped_width += 1
-            continue
-        kept.append(t)
 
     # Outlines: v1 contour polylines of the cleaned mask — the "what did my
     # threshold capture" preview the user tunes against.
@@ -132,9 +131,42 @@ def vectorize_region(rgb: np.ndarray, p: VectorParams) -> dict:
         max_polylines=max(1, int(p.max_outlines)),
     )
     return {
-        "traces": kept,
+        "traces": runs["traces"],
         "outlines": [o["points"] for o in outlines],
-        "stats": {"kept": len(kept), "dropped_width": dropped_width},
+        "stats": {
+            "kept": runs["stats"]["kept"],
+            "dropped_width": runs["stats"]["dropped_width"],
+            "dropped_short": runs["stats"]["dropped_short"],
+            "merged": runs["stats"]["merged"],
+        },
         "width": int(w),
         "height": int(h),
     }
+
+
+def vectorize_region(rgb: np.ndarray, p: VectorParams) -> dict:
+    """Threshold → clean → decode. Returns traces + outline polylines in
+    crop-local pixel coords (Node translates them to source coords)."""
+    h, w = rgb.shape[:2]
+    ch = _channel_image(rgb, p.channel)
+    mask_u8 = build_mask(rgb, p)
+    result = decode_mask(mask_u8, p)
+    if result["traces"] or result["outlines"]:
+        # Score: depth inside the band — brightness margin per trace.
+        if p.adaptive:
+            strength_full = ch.astype(np.float32) / 255.0
+        else:
+            lo = max(0, min(255, int(p.thresh_low)))
+            hi = max(lo, min(255, int(p.thresh_high)))
+            lo_f, hi_f = lo / 255.0, max(hi, lo + 1) / 255.0
+            norm = (ch.astype(np.float32) / 255.0 - lo_f) / (hi_f - lo_f)
+            strength_full = np.clip((1.0 - norm) if p.invert else norm, 0.0, 1.0)
+        for t in result["traces"]:
+            pts = t["points"]
+            xs = np.array([pt[0] for pt in pts])
+            ys = np.array([pt[1] for pt in pts])
+            sel = strength_full[ys, xs]
+            t["score"] = round(float(sel.mean()) if sel.size else 0.0, 4)
+    result["width"] = int(w)
+    result["height"] = int(h)
+    return result
