@@ -199,6 +199,13 @@ interface PreferencesState {
   vectorPresets: Record<string, VectorizeParams>;
   /** Die-viewer: hide the vectorize overlay entirely (traces + outlines). */
   vectorOverlayHidden: boolean;
+  /** Per-saved-vector-layer visibility. Absent or true = HIDDEN (a fresh
+   *  page load starts with every Vector layer's eye off — whole-die rasters
+   *  are heavy and rarely what you want on open); an explicit `false` means
+   *  the user turned that layer on and it survives reloads. */
+  vectorLayerHidden: Record<string, boolean>;
+  /** Per-saved-vector-layer colour (hex). Absent = the default amber. */
+  vectorLayerColors: Record<string, string>;
   /** Vector OUTLINE opacity (0..1) — the amber "what did the threshold
    *  capture" metal contours. Traces (centrelines) keep their own fixed
    *  style. 1 = fully opaque (a solid silhouette of the captured metal);
@@ -519,6 +526,8 @@ interface PreferencesActions {
   deleteVectorPreset: (name: string) => void;
   setVectorOverlayHidden: (hidden: boolean) => void;
   setVectorOutlineAlpha: (a: number) => void;
+  setVectorLayerVisible: (hash: string, visible: boolean) => void;
+  setVectorLayerColor: (hash: string, color: string) => void;
   setVectorMinContacts: (n: 0 | 1 | 2) => void;
   setVectorDropIrregular: (drop: boolean) => void;
   setVectorMaxBranchLen: (px: number) => void;
@@ -644,6 +653,8 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
         vectorPresets: {},
         vectorOverlayHidden: true,
         vectorOutlineAlpha: 0.3,
+        vectorLayerHidden: {},
+        vectorLayerColors: {},
         vectorMinContacts: 0,
         vectorDropIrregular: false,
         vectorMaxBranchLen: 0,
@@ -983,6 +994,15 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
           }),
         setVectorOverlayHidden: (hidden) => set({ vectorOverlayHidden: hidden }),
   setVectorOutlineAlpha: (a) => set({ vectorOutlineAlpha: Math.min(1, Math.max(0, a)) }),
+  setVectorLayerVisible: (hash, visible) =>
+    set((state) => ({
+      // Absent = hidden (the default), so only explicit values are stored.
+      vectorLayerHidden: { ...state.vectorLayerHidden, [hash]: !visible }
+    })),
+  setVectorLayerColor: (hash, color) =>
+    set((state) => ({
+      vectorLayerColors: { ...state.vectorLayerColors, [hash]: color }
+    })),
         setVectorMinContacts: (n) => set({ vectorMinContacts: n }),
         setVectorDropIrregular: (drop) => set({ vectorDropIrregular: drop }),
         setVectorMaxBranchLen: (px) => set({ vectorMaxBranchLen: Math.max(0, px) }),
@@ -1120,6 +1140,8 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
           vectorPresets: state.vectorPresets,
           vectorOverlayHidden: state.vectorOverlayHidden,
           vectorOutlineAlpha: state.vectorOutlineAlpha,
+          vectorLayerHidden: state.vectorLayerHidden,
+          vectorLayerColors: state.vectorLayerColors,
           vectorMinContacts: state.vectorMinContacts,
           vectorDropIrregular: state.vectorDropIrregular,
           vectorMaxBranchLen: state.vectorMaxBranchLen,

@@ -146,8 +146,12 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
   const cellDetectionsCount = useDieViewerStore((s) => s.cellDetectionsCount);
   const wireMapAvailable = useDieViewerStore((s) => s.wireMapAvailable);
   const savedVectorLayers = useDieViewerStore((s) => s.savedVectorLayers);
-  const savedVectorHidden = useDieViewerStore((s) => s.savedVectorHidden);
-  const toggleSavedVectorLayer = useDieViewerStore((s) => s.toggleSavedVectorLayer);
+  // Per-layer visibility + colour live in preferences (persisted; a layer
+  // is visible only when explicitly enabled — absent = hidden).
+  const vectorLayerHidden = usePreferences((s) => s.vectorLayerHidden);
+  const setVectorLayerVisible = usePreferences((s) => s.setVectorLayerVisible);
+  const vectorLayerColors = usePreferences((s) => s.vectorLayerColors);
+  const setVectorLayerColor = usePreferences((s) => s.setVectorLayerColor);
 
   // Whole-net ids present in the current selection — includes nets selected
   // by clicking a sub-part (edge/node id like "net:abc/edge:1") on the canvas,
@@ -1103,22 +1107,7 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
       />
       {vectorLayersOpen &&
         savedVectorLayers.map((layer, i) => {
-          const visible = !savedVectorHidden.includes(layer.hash);
-          const rename = async () => {
-            if (!dieId) return;
-            const name = await dialog.prompt(
-              `Layer name (saved whole-die run):`,
-              layer.name ?? "",
-              "Rename vector layer"
-            );
-            if (name === null) return;
-            try {
-              await renameVectorLayer(dieId, layer.hash, name);
-              useDieViewerStore.getState().bumpSavedVectorLayers();
-            } catch (e) {
-              toast.error("Rename failed", e instanceof Error ? e.message : String(e));
-            }
-          };
+          const visible = vectorLayerHidden[layer.hash] === false;
           const remove = async () => {
             if (!dieId) return;
             const ok = await dialog.confirm(
@@ -1141,9 +1130,15 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
               icon={Ic.image}
               label={
                 <span style={{ display: "inline-flex", gap: 6, alignItems: "center", minWidth: 0 }}>
-                  <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                    {layer.name ?? `Saved ${layer.traces} traces`}
-                  </span>
+                  <VectorLayerColorDot
+                    hash={layer.hash}
+                    color={vectorLayerColors[layer.hash] ?? VECTOR_LAYER_PALETTE[0].value}
+                  />
+                  <VectorLayerName
+                    dieId={dieId ?? undefined}
+                    hash={layer.hash}
+                    display={layer.name ?? `Saved ${layer.traces} traces`}
+                  />
                   <span style={{ fontSize: 9, color: "var(--ink3)" }}>
                     {layer.name ? `${layer.traces} traces` : `#${i + 1}`}
                   </span>
@@ -1152,23 +1147,6 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
                       style={{ display: "inline-flex", gap: 4, marginLeft: 2 }}
                       onClick={(e) => e.stopPropagation()}
                     >
-                      <button
-                        type="button"
-                        title="Rename layer"
-                        style={{
-                          fontSize: 9,
-                          lineHeight: 1,
-                          padding: "1px 3px",
-                          cursor: "pointer",
-                          background: "transparent",
-                          color: "var(--ink2)",
-                          border: "1px solid var(--l1, #333)",
-                          borderRadius: 3
-                        }}
-                        onClick={() => void rename()}
-                      >
-                        ✎
-                      </button>
                       <button
                         type="button"
                         title="Delete layer (cached decode only)"
@@ -1192,7 +1170,7 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
               }
               visibility={{
                 visible,
-                onToggle: () => toggleSavedVectorLayer(layer.hash)
+                onToggle: () => setVectorLayerVisible(layer.hash, !visible)
               }}
             />
           );
@@ -1606,6 +1584,119 @@ function ViaSettingsButton() {
         </>
       )}
     </SettingsPopover>
+  );
+}
+
+/** Saved Vector Layers: colour palette (the tree's per-layer dot). */
+const VECTOR_LAYER_PALETTE = [
+  { label: "Amber (default)", value: "#fdc842" },
+  { label: "Cyan", value: "#22d3ee" },
+  { label: "Green", value: "#4ade80" },
+  { label: "Red", value: "#f87171" },
+  { label: "Magenta", value: "#e879f9" },
+  { label: "Blue", value: "#60a5fa" },
+  { label: "Orange", value: "#fb923c" },
+  { label: "White", value: "#e5e7eb" }
+];
+
+/** Saved Vector Layers: the per-layer colour dot → swatches popover. */
+function VectorLayerColorDot({ hash, color }: { hash: string; color: string }) {
+  const setVectorLayerColor = usePreferences((s) => s.setVectorLayerColor);
+  return (
+    <SettingsPopover
+      label="Layer colour"
+      triggerContent={
+        <span
+          style={{
+            display: "inline-block",
+            width: 10,
+            height: 10,
+            borderRadius: "50%",
+            background: color,
+            border: "1px solid rgba(255,255,255,0.35)",
+            flex: "0 0 auto"
+          }}
+        />
+      }
+      triggerStyle={{ padding: "0 4px", height: 16, background: "transparent" }}
+    >
+      <div style={{ padding: 8 }}>
+        <div className="u" style={{ fontSize: 10, marginBottom: 6 }}>
+          Layer colour (traces + metal outlines)
+        </div>
+        <ColorSwatches
+          options={VECTOR_LAYER_PALETTE}
+          value={color}
+          onPick={(c) => setVectorLayerColor(hash, c)}
+        />
+      </div>
+    </SettingsPopover>
+  );
+}
+
+/** Saved Vector Layers: double-click to rename (same interaction as the
+ *  Overlay Layers rows). The backend stores the name; a local override
+ *  bridges the refetch. */
+function VectorLayerName({ dieId, hash, display }: { dieId?: string; hash: string; display: string }) {
+  const toast = useToast();
+  const [local, setLocal] = useState<string | null>(null);
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(display);
+  const shown = local ?? display;
+  useEffect(() => {
+    if (!editing) {
+      setDraft(shown);
+      setLocal(null);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [display, editing]);
+  const commit = async () => {
+    const next = draft.trim().slice(0, 80);
+    setEditing(false);
+    if (!dieId || !next || next === shown) return;
+    setLocal(next);
+    try {
+      await renameVectorLayer(dieId, hash, next);
+      useDieViewerStore.getState().bumpSavedVectorLayers();
+    } catch (e) {
+      toast.error("Rename failed", e instanceof Error ? e.message : String(e));
+      setLocal(null);
+    }
+  };
+  if (editing) {
+    return (
+      <input
+        autoFocus
+        value={draft}
+        maxLength={80}
+        onChange={(event) => setDraft(event.target.value)}
+        onClick={(event) => event.stopPropagation()}
+        onDoubleClick={(event) => event.stopPropagation()}
+        onKeyDown={(event) => {
+          if (event.key === "Enter") void commit();
+          if (event.key === "Escape") {
+            setDraft(shown);
+            setEditing(false);
+          }
+        }}
+        onBlur={() => void commit()}
+        style={{ width: "100%", minWidth: 0, background: "var(--l1)", color: "inherit", border: "1px solid var(--accent)" }}
+      />
+    );
+  }
+  return (
+    <span
+      title="Double-click to rename"
+      onDoubleClick={(event) => {
+        if (!dieId) return;
+        event.stopPropagation();
+        setDraft(shown);
+        setEditing(true);
+      }}
+      style={{ cursor: "text", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+    >
+      {shown}
+    </span>
   );
 }
 

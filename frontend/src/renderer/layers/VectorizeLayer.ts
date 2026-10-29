@@ -22,7 +22,6 @@ import type { Layer, RenderFrame, TileBounds } from "../types";
 // Amber — reads as "classical CV, not the model" next to the ML cyan.
 const VECT_TRACE_STROKE = "rgba(253, 224, 71, 0.95)";
 const VECT_TRACE_SNAP_STROKE = "rgba(253, 224, 71, 0.7)";
-const VECT_TRACE_SAVED_STROKE = "rgba(253, 200, 66, 0.75)";
 
 const FETCH_DEBOUNCE_MS = 300;
 /** Below the backend's 6 Mpx cap (it rejects bigger). Beyond this the view
@@ -94,8 +93,20 @@ interface CachedRegion {
   groupBase: number;
 }
 
+/** Default saved-layer colour (hex): the amber "classical CV" tone the
+ *  saved strokes always had. Per-layer colours override it. */
+const VECT_LAYER_DEFAULT_COLOR = "#fdc842";
+
+/** hex → 8-bit rgb triple (invalid / non-hex → null). */
+function hexToRgb(hex: string): [number, number, number] | null {
+  const m = /^#?([0-9a-f]{6})$/i.exec(hex.trim());
+  if (!m) return null;
+  const n = parseInt(m[1], 16);
+  return [(n >> 16) & 0xff, (n >> 8) & 0xff, n & 0xff];
+}
+
 /** One SAVED whole-die payload pinned into the layers list (fetched BY
- *  hash, drawn in amber while its eye toggle is on). */
+ *  hash, drawn while its eye toggle is on). */
 interface PinnedLayer {
   traces: MLTracePolyline[];
   outlines: [number, number][][];
@@ -104,6 +115,9 @@ interface PinnedLayer {
   tracePaths: (Path2D | null)[];
   outlinePaths: (Path2D | null)[];
   groupBase: number;
+  /** Per-layer colour (hex). Changing it drops the baked bitmaps — they
+   *  are rebuilt on the next draw in the new colour. */
+  color: string;
   /** Pre-rasterized die-sized renders (lazy, per layer) — saved payloads
    *  never change, so painting them is one drawImage blit per tile instead
    *  of a per-shape vector loop on every tile re-render. Outlines are
@@ -231,9 +245,15 @@ export class VectorizeLayer implements Layer {
   }
 
   /** Saved layers list from the outline tree (Vector layers): pinned, eye
-   *  toggles in the tree. Payloads are fetched BY hash and stay rendered
-   *  regardless of the live params. */
-  setSavedLayers(visibleHashes: string[], hiddenHashes: ReadonlySet<string>): void {
+   *  toggles persisted in preferences. Payloads are fetched BY hash and
+   *  stay rendered regardless of the live params. `colors` maps hash → hex
+   *  (absent = the default amber); a changed colour drops the layer's baked
+   *  bitmaps so the next draw re-bakes in the new colour. */
+  setSavedLayers(
+    visibleHashes: string[],
+    hiddenHashes: ReadonlySet<string>,
+    colors?: ReadonlyMap<string, string>
+  ): void {
     this.savedVisible = visibleHashes;
     this.savedHiddenSet = hiddenHashes;
     // Evict pins no longer wanted at all.
@@ -265,12 +285,22 @@ export class VectorizeLayer implements Layer {
               outlineBoxes: outlines.map((o, i) => ({ box: pointsBox(o), index: i })),
               tracePaths: traces.map(() => null),
               outlinePaths: outlines.map(() => null),
-              groupBase: (this.nextGroupBase++) * 1_000_000
+              groupBase: (this.nextGroupBase++) * 1_000_000,
+              color: colors?.get(h) ?? VECT_LAYER_DEFAULT_COLOR
             });
             this.invalidateCb?.();
           })
           .catch(() => undefined)
           .finally(() => this.pinnedInflight.delete(h));
+      } else {
+        // Colour update on an already-pinned layer: re-bake if changed.
+        const pin = this.pinned.get(h);
+        const next = colors?.get(h) ?? VECT_LAYER_DEFAULT_COLOR;
+        if (pin && pin.color !== next) {
+          pin.color = next;
+          pin.outlineBitmap = null;
+          pin.traceBitmap = null;
+        }
       }
     }
     this.invalidateCb?.();
@@ -613,8 +643,6 @@ export class VectorizeLayer implements Layer {
     const snapTol = this.display.getSnapTol?.() ?? 12;
     const strokeW = 1 / zoom;
     const outlineAlpha = Math.min(1, Math.max(0, this.display.getOutlineAlpha?.() ?? 0.3));
-    const outlineFill = `rgba(253, 224, 71, ${outlineAlpha.toFixed(3)})`;
-    const outlineEdge = `rgba(253, 224, 71, ${Math.min(1, outlineAlpha * 1.6).toFixed(3)})`;
     for (const [hash, pin] of this.pinned) {
       if (this.savedHiddenSet.has(hash)) {
         // Free the (large) bitmaps of a hidden layer — they are rebuilt from
@@ -623,6 +651,10 @@ export class VectorizeLayer implements Layer {
         pin.traceBitmap = null;
         continue;
       }
+      // Per-layer colour (the tree's picker); amber unless overridden.
+      const [r, g, b] = hexToRgb(pin.color) ?? hexToRgb(VECT_LAYER_DEFAULT_COLOR)!;
+      const outlineFill = `rgba(${r}, ${g}, ${b}, ${outlineAlpha.toFixed(3)})`;
+      const outlineEdge = `rgba(${r}, ${g}, ${b}, ${Math.min(1, outlineAlpha * 1.6).toFixed(3)})`;
       if (zoom < SAVED_BITMAP_MAX_ZOOM) {
         const ob = this.ensureOutlineBitmap(pin);
         const tb = this.ensureTraceBitmap(pin);
@@ -647,7 +679,7 @@ export class VectorizeLayer implements Layer {
         if (pts.length < 2) continue;
         const path = (pin.tracePaths[index] ??= buildPath(pts, false));
         if (t.irregular === true) ctx.setLineDash([5 / zoom, 4 / zoom]);
-        ctx.strokeStyle = VECT_TRACE_SAVED_STROKE;
+        ctx.strokeStyle = `rgba(${r}, ${g}, ${b}, 0.75)`;
         ctx.lineWidth = Math.max(strokeW, 1.5 / zoom);
         ctx.stroke(path);
         ctx.setLineDash([]);
@@ -670,17 +702,18 @@ export class VectorizeLayer implements Layer {
   /** Bake the saved layer's metal outlines once into a die-sized offscreen
    *  canvas (world units × bitmap scale) at FULL strength — the blit goes
    *  through `globalAlpha`, so the outline-opacity slider works live
-   *  without a re-bake. Solid amber fill + edge stroke (the edge reads as
-   *  part of the silhouette once alpha is applied uniformly). */
+   *  without a re-bake. Solid layer colour fill + edge stroke (the edge
+   *  reads as part of the silhouette once alpha is applied uniformly). */
   private ensureOutlineBitmap(pin: PinnedLayer): { canvas: HTMLCanvasElement } | null {
     if (pin.outlineBitmap !== undefined) return pin.outlineBitmap;
+    const [r, g, b] = hexToRgb(pin.color) ?? hexToRgb(VECT_LAYER_DEFAULT_COLOR)!;
     pin.outlineBitmap = this.bakePinBitmap(pin, (c) => {
       for (const o of pin.outlines) {
         if (o.length < 3) continue;
         const path = buildPath(o, true);
-        c.fillStyle = "rgb(253, 224, 71)";
+        c.fillStyle = `rgb(${r}, ${g}, ${b})`;
         c.fill(path);
-        c.strokeStyle = "rgb(253, 224, 71)";
+        c.strokeStyle = `rgb(${r}, ${g}, ${b})`;
         c.lineWidth = 1;
         c.stroke(path);
       }
@@ -688,17 +721,18 @@ export class VectorizeLayer implements Layer {
     return pin.outlineBitmap;
   }
 
-  /** Bake the saved layer's centreline traces once (fixed dim style — the
-   *  opacity slider deliberately does not touch them). */
+  /** Bake the saved layer's centreline traces once (fixed 75% dim of the
+   *  layer colour — the opacity slider deliberately does not touch them). */
   private ensureTraceBitmap(pin: PinnedLayer): { canvas: HTMLCanvasElement } | null {
     if (pin.traceBitmap !== undefined) return pin.traceBitmap;
+    const [r, g, b] = hexToRgb(pin.color) ?? hexToRgb(VECT_LAYER_DEFAULT_COLOR)!;
     pin.traceBitmap = this.bakePinBitmap(pin, (c) => {
       for (const t of pin.traces) {
         const pts = t.points;
         if (pts.length < 2) continue;
         const path = buildPath(pts, false);
         if (t.irregular === true) c.setLineDash([5, 4]);
-        c.strokeStyle = VECT_TRACE_SAVED_STROKE;
+        c.strokeStyle = `rgba(${r}, ${g}, ${b}, 0.75)`;
         c.lineWidth = 1.5;
         c.stroke(path);
         c.setLineDash([]);

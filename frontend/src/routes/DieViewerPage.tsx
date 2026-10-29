@@ -1010,18 +1010,40 @@ function DieViewer({ dieId }: { dieId: string }) {
           modified: l.modified
         }));
         useDieViewerStore.getState().setSavedVectorLayers(layers);
-        const visibleLayers = layers;
-        const hidden = useDieViewerStore.getState().savedVectorHidden;
-        vectorLayer?.setSavedLayers(
-          visibleLayers.map((l) => l.hash),
-          new Set(hidden)
+        // Visibility + colours live in preferences (persisted): a layer is
+        // visible only when explicitly enabled — fresh loads start with
+        // every Vector layer's eye off.
+        const prefs = usePreferences.getState();
+        const hidden = new Set(
+          layers.map((l) => l.hash).filter((h) => prefs.vectorLayerHidden[h] !== false)
         );
+        const colors = new Map(
+          Object.entries(prefs.vectorLayerColors).filter(([h]) =>
+            layers.some((l) => l.hash === h)
+          )
+        );
+        vectorLayer?.setSavedLayers(layers.map((l) => l.hash), hidden, colors);
       })
       .catch(() => undefined);
     return () => {
       gone = true;
     };
   }, [die, savedVectorVersion, vectorLayer]);
+
+  // Per-layer visibility / colour changes re-drive the VectorizeLayer (pins
+  // survive — only eye sets and colours move, nothing refetches).
+  const vectorLayerHidden = usePreferences((s) => s.vectorLayerHidden);
+  const vectorLayerColors = usePreferences((s) => s.vectorLayerColors);
+  useEffect(() => {
+    if (!vectorLayer || !die) return;
+    const layers = useDieViewerStore.getState().savedVectorLayers;
+    if (!layers.length) return;
+    const hidden = new Set(
+      layers.map((l) => l.hash).filter((h) => vectorLayerHidden[h] !== false)
+    );
+    const colors = new Map(Object.entries(vectorLayerColors));
+    vectorLayer.setSavedLayers(layers.map((l) => l.hash), hidden, colors);
+  }, [vectorLayerHidden, vectorLayerColors, vectorLayer, die]);
 
   // Confidence-threshold pref change → re-filter the cached ML vias (recount
   // for the items list + redraw the overlay). No re-fetch: tile data already

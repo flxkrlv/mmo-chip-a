@@ -138,7 +138,6 @@ interface DieViewerState {
    *  outline tree). Refreshed from `GET .../vectorize/layers`; the bump
    *  version invalidates the react-query after a sweep completes. */
   savedVectorLayers: { hash: string; name?: string | null; traces: number; outlines: number; modified: string }[];
-  savedVectorHidden: string[];
   savedVectorVersion: number;
   /** Cell type picked in the Cells (detection) tab — from the dropdown or by
    *  selecting a placed cell on the canvas while the tab is open. */
@@ -193,7 +192,6 @@ addVectorSample: (sample: { rgb: [number, number, number]; x: number; y: number 
 clearVectorSamples: () => void;
 setVectorSweepRunning: (running: boolean) => void;
 setSavedVectorLayers: (layers: { hash: string; name?: string | null; traces: number; outlines: number; modified: string }[]) => void;
-toggleSavedVectorLayer: (hash: string) => void;
 bumpSavedVectorLayers: () => void;
   setCellDetectionTypeId: (id: string | null) => void;
   setCellDetectionsCount: (count: number) => void;
@@ -235,7 +233,6 @@ const INITIAL_STATE: DieViewerState = {
   vectorSamples: [],
   vectorSweepRunning: false,
   savedVectorLayers: [],
-  savedVectorHidden: [],
   savedVectorVersion: 0,
   cellDetectionTypeId: null,
   cellDetectionsCount: 0,
@@ -351,13 +348,6 @@ export const useDieViewerStore = create<DieViewerState & DieViewerActions>()((se
   },
   setSavedVectorLayers: (layers) =>
     set({ savedVectorLayers: layers, savedVectorVersion: get().savedVectorVersion + 1 }),
-  toggleSavedVectorLayer: (hash) =>
-    set((state) => ({
-      savedVectorHidden: state.savedVectorHidden.includes(hash)
-        ? state.savedVectorHidden.filter((h) => h !== hash)
-        : [...state.savedVectorHidden, hash],
-      savedVectorVersion: state.savedVectorVersion + 1
-    })),
   bumpSavedVectorLayers: () =>
     set((state) => ({ savedVectorVersion: state.savedVectorVersion + 1 })),
   setCellDetectionTypeId: (id) => set({ cellDetectionTypeId: id }),
