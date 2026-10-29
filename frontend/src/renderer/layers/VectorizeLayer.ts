@@ -91,7 +91,9 @@ function pointsBox(points: [number, number][]): Rect {
     if (x > maxx) maxx = x;
     if (y > maxy) maxy = y;
   }
-  return { x: minx, y: miny, width: maxx - minx, height: maxy - miny };
+  // Half-px inflation: horizontal/vertical runs produce zero-height/width
+  // boxes that strict-intersect would drop when aligned with a tile edge.
+  return { x: minx - 0.5, y: miny - 0.5, width: maxx - minx + 1, height: maxy - miny + 1 };
 }
 
 export class VectorizeLayer implements Layer {
@@ -243,14 +245,20 @@ export class VectorizeLayer implements Layer {
     // Whole-die sweep cache first: if every block intersecting the viewport
     // is decoded for THESE params, draw from disk — no sidecar round-trip.
     // Any missing block (sweep not run / params changed mid-sweep) → mark
-    // the key and fall back to the live viewport decode.
+    // the key and fall back to the live viewport decode. An EMPTY payload
+    // (0 traces + 0 outlines) is treated as a miss too: an empty cached
+    // decode would otherwise stick and silently blank the overlay.
     if (!this.blockMiss.has(key) && !this.blocksInflight.has(key)) {
       this.blocksInflight.add(key);
       fetchVectorBlocks(this.dieId, bbox, params, overlaySource)
         .then((resp) => {
           this.blocksInflight.delete(key);
           if (this.destroyed) return;
-          if (resp.blocks.length > 0 && resp.missing === 0) {
+          const counts = resp.blocks.reduce(
+            (n, b) => n + b.traces.length + b.outlines.length,
+            0
+          );
+          if (resp.blocks.length > 0 && resp.missing === 0 && counts > 0) {
             this.lastError = null;
             const traces = resp.blocks.flatMap((b) => b.traces);
             const outlines = resp.blocks.flatMap((b) => b.outlines);
