@@ -1016,11 +1016,13 @@ async function materializeTraces(
   traces: MLTracePolyline[],
   dispatcher: ActionDispatcher,
   snapTargets: TraceSnapTarget[],
-  dialog: { confirm(message: string, title?: string): Promise<boolean> }
+  dialog: { confirm(message: string, title?: string): Promise<boolean> },
+  outlines?: [number, number][][]
 ): Promise<{ created: number } | { error: string } | null> {
   const prefs = usePreferences.getState();
   const result = buildNetsFromTraces({
     traces,
+    outlines,
     minScore: prefs.traceConfidenceThreshold,
     snapTargets,
     snapTol: Math.max(8, prefs.viaSize * 2),
@@ -1056,6 +1058,7 @@ async function materializeTraces(
           (result.filteredByScore > 0 ? `, score-фильтром: ${result.filteredByScore}` : "") +
           (result.droppedLowContacts > 0 ? `, мало контактов: ${result.droppedLowContacts}` : "") +
           (result.droppedIrregular > 0 ? `, irregular: ${result.droppedIrregular}` : "") +
+          (result.outlineConnected > 0 ? `, по контуру металла: ${result.outlineConnected}` : "") +
           `.\nДействие уйдёт в Undo.` +
           (result.warnings.length
             ? `\n\nВНИМАНИЕ:\n${result.warnings.join("\n")}`
@@ -1555,6 +1558,7 @@ function VectorSection({
     setBusy("nets");
     try {
       let traces: MLTracePolyline[];
+      let outlines: [number, number][][] | undefined;
       if (netsSource === "whole-die") {
         // Whole-die path: the cached sweep payload for the CURRENT params —
         // the same geometry the overlay draws, everywhere on the die.
@@ -1580,14 +1584,17 @@ function VectorSection({
           .map((t) =>
             typeof t.group === "number" ? { ...t, group: 1_000_000 + t.group } : t
           );
+        outlines = resp.blocks.flatMap((b) => b.outlines);
       } else {
         traces = vectorLayer.collectTraces();
+        outlines = vectorLayer.collectOutlines();
       }
       const outcome = await materializeTraces(
         traces,
         dispatcher,
         getTraceSnapTargets(),
-        dialog
+        dialog,
+        outlines
       );
       if (outcome && "error" in outcome) setErr(outcome.error);
     } catch (e) {

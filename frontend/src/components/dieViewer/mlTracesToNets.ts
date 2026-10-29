@@ -29,6 +29,11 @@ export interface TraceSnapTarget {
 export interface TracesToNetsInput {
   /** Deduplicated trace polylines (layer.collectTraces()). */
   traces: MLTracePolyline[];
+  /** Metal outline contours (layer.collectOutlines()) — the authoritative
+   *  "is this contact ON the metal" test: a contact point INSIDE a closed
+   *  contour is on the metal even where the centreline+width proxy misses
+   *  (wide pads, corners, width-estimate drift). Absent → skipped. */
+  outlines?: [number, number][][];
   /** Drop traces scoring below this (the trace-confidence slider value). */
   minScore: number;
   snapTargets: TraceSnapTarget[];
@@ -67,6 +72,9 @@ export interface TracesToNetsResult {
   droppedLowContacts: number;
   /** Traces dropped by the drop-irregular filter. */
   droppedIrregular: number;
+  /** Contacts connected via the outline-membership test (phase 1c) —
+   *  inside a metal contour but beyond the centreline+width reach. */
+  outlineConnected: number;
   /** Suspicious merges: a "group" union holding hundreds of traces usually
    *  means the MASK over-bridged wires (band too wide / Min gap too high) —
    *  the netlist is technically connected but is not what the user drew. */
@@ -77,6 +85,26 @@ export interface TracesToNetsResult {
  *  junction ends agree within ~2 px, so quantize to a 2 px grid. */
 function endpointKey(x: number, y: number): string {
   return `${Math.round(x / 2)}:${Math.round(y / 2)}`;
+}
+
+/** Axis-aligned bbox of a polyline — cheap reject before point-in-polygon. */
+function pointsBoxOf(points: [number, number][]): {
+  minX: number;
+  minY: number;
+  maxX: number;
+  maxY: number;
+} {
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (const [x, y] of points) {
+    if (x < minX) minX = x;
+    if (y < minY) minY = y;
+    if (x > maxX) maxX = x;
+    if (y > maxY) maxY = y;
+  }
+  return { minX, minY, maxX, maxY };
 }
 
 export function buildNetsFromTraces(input: TracesToNetsInput): TracesToNetsResult {
@@ -107,7 +135,46 @@ export function buildNetsFromTraces(input: TracesToNetsInput): TracesToNetsResul
      *  projection of the contact onto the nearest segment). */
     contacts: Map<number, string>;
   }
-  const snapped: SnappedTrace[] = [];
+  /** Point-in-polygon (even-odd ray cast) — closed-contour membership. */
+  const pointInPolygon = (x: number, y: number, poly: [number, number][]): boolean => {
+    let inside = false;
+    for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+      const yi = poly[i][1];
+      const yj = poly[j][1];
+      if (yi > y !== yj > y) {
+        const xi = poly[i][0];
+        const xj = poly[j][0];
+        if (x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) inside = !inside;
+      }
+    }
+    return inside;
+  };
+  /** Strict segment crossing (orientation test) — a wire can cross a pad
+   *  without any of its VERTICES inside the pad. */
+  const segCross = (
+    ax: number, ay: number, bx: number, by: number,
+    cx: number, cy: number, dx: number, dy: number
+  ): boolean => {
+    const d1 = (dx - cx) * (ay - cy) - (dy - cy) * (ax - cx);
+    const d2 = (dx - cx) * (by - cy) - (dy - cy) * (bx - cx);
+    const d3 = (bx - ax) * (cy - ay) - (by - ay) * (cx - ax);
+    const d4 = (bx - ax) * (dy - ay) - (by - ay) * (dx - ax);
+    return ((d1 > 0 && d2 < 0) || (d1 < 0 && d2 > 0)) &&
+      ((d3 > 0 && d4 < 0) || (d3 < 0 && d4 > 0));
+  };
+  /** Every target label that gets a connection in phases 1a/1b/1c — 1c only
+   *  rescues contacts nothing else connected. */
+  const snappedLabels = new Set<string>();
+  interface PendingTrace {
+    points: [number, number][];
+    score: number;
+    onContact: [boolean, boolean];
+    contacts: Map<number, string>;
+    /** Deferred contact insertions (splice from the end AFTER phase 1c, so
+     *  1c's projection indices stay valid against the original points). */
+    insertions: { at: number; target: TraceSnapTarget }[];
+  }
+  const pending: PendingTrace[] = [];
   for (const t of traces) {
     if (dropIrregular && t.irregular === true) {
       droppedIrregular += 1;
@@ -132,6 +199,7 @@ export function buildNetsFromTraces(input: TracesToNetsInput): TracesToNetsResul
     // contacts on wide wires/pads visibly intersecting the metal did not
     // connect (fixed 8..12 px lost to half the wire width).
     const effTol = snapTol + (t.widthPx ?? 0) / 2;
+    const insertions: { at: number; target: TraceSnapTarget }[] = [];
     // 1a. Endpoints: proximity snap (wire-tool behaviour).
     for (const end of [0, pts.length - 1] as const) {
       let best: TraceSnapTarget | null = null;
@@ -147,16 +215,17 @@ export function buildNetsFromTraces(input: TracesToNetsInput): TracesToNetsResul
         pts[end] = [best.x, best.y];
         onContact[end] = true;
         contacts.set(end, best.label);
+        snappedLabels.add(best.label);
         snappedEnds += 1;
       }
     }
     // 1b. Mid-wire contacts (INTERSECTION snap): a device contact that lies
-    //     ON the metal centreline — within snapTol of a SEGMENT, not just of
-    //     an endpoint — becomes a real net vertex: the polyline is split at
-    //     the projection point and the contact coordinates inserted. A wire
-    //     passing a pad in the middle now actually connects to it.
-    const insertions: { at: number; target: TraceSnapTarget }[] = [];
+    //     ON the metal centreline — within tolerance of a SEGMENT, not just
+    //     of an endpoint — becomes a real net vertex: the polyline is split
+    //     at the projection point and the contact coordinates inserted. A
+    //     wire passing a pad in the middle now actually connects to it.
     for (const s of snapTargets) {
+      if (snappedLabels.has(s.label)) continue;
       let bestD = effTol;
       let bestAt = -1;
       for (let i = 0; i < pts.length - 1; i++) {
@@ -185,17 +254,127 @@ export function buildNetsFromTraces(input: TracesToNetsInput): TracesToNetsResul
           bestAt < 0.5 || bestAt > pts.length - 1 - 0.5;
         if (isEnd && contacts.has(bestAt < 0.5 ? 0 : pts.length - 1)) continue;
         insertions.push({ at: bestAt, target: s });
+        snappedLabels.add(s.label);
       }
     }
-    // Splice from the end so earlier indices stay valid.
-    insertions.sort((a, b) => b.at - a.at);
-    for (const ins of insertions) {
+    pending.push({ points: pts, score: t.score ?? 1, onContact, contacts, insertions });
+  }
+
+  // 1c. OUTLINE-MEMBERSHIP connect (the authoritative "on metal" test): a
+  //     contact point INSIDE a closed metal contour is on the metal even
+  //     where centreline+width missed it — wide pads (the width filter can
+  //     suppress the pad's own centreline), corner geometry, width-estimate
+  //     drift. The contact attaches to the nearest trace that lies in the
+  //     SAME contour (a trace with any vertex inside it), so a pad contact
+  //     joins the wire entering that pad, never a foreign wire.
+  let outlineConnected = 0;
+  const outlines = input.outlines ?? [];
+  if (outlines.length > 0) {
+    const outlineBoxes = outlines.map((o) => pointsBoxOf(o));
+    for (const s of snapTargets) {
+      if (snappedLabels.has(s.label)) continue;
+      // Which metal contours contain the contact point (bbox prefilter).
+      const hit = new Set<number>();
+      for (let oi = 0; oi < outlines.length; oi++) {
+        const b = outlineBoxes[oi];
+        if (s.x < b.minX || s.x > b.maxX || s.y < b.minY || s.y > b.maxY) continue;
+        if (pointInPolygon(s.x, s.y, outlines[oi])) hit.add(oi);
+      }
+      if (hit.size === 0) continue;
+      // Traces lying in those contours: a vertex inside, or a segment
+      // strictly crossing the contour edge (a long straight wire crosses a
+      // pad without any vertex inside it).
+      let bestTrace = -1;
+      let bestD = Infinity;
+      let bestAt = -1;
+      for (let ti = 0; ti < pending.length; ti++) {
+        const pts = pending[ti].points;
+        let inSameContour = false;
+        for (const p of pts) {
+          for (const oi of hit) {
+            const b = outlineBoxes[oi];
+            if (p[0] < b.minX || p[0] > b.maxX || p[1] < b.minY || p[1] > b.maxY) continue;
+            if (pointInPolygon(p[0], p[1], outlines[oi])) {
+              inSameContour = true;
+              break;
+            }
+          }
+          if (inSameContour) break;
+        }
+        if (!inSameContour) {
+          outer: for (let i = 0; i < pts.length - 1; i++) {
+            for (const oi of hit) {
+              const poly = outlines[oi];
+              const b = outlineBoxes[oi];
+              // Cheap reject: the segment must reach the outline bbox.
+              if (
+                Math.max(pts[i][0], pts[i + 1][0]) < b.minX ||
+                Math.min(pts[i][0], pts[i + 1][0]) > b.maxX ||
+                Math.max(pts[i][1], pts[i + 1][1]) < b.minY ||
+                Math.min(pts[i][1], pts[i + 1][1]) > b.maxY
+              )
+                continue;
+              for (let k = 0, j = poly.length - 1; k < poly.length; j = k++) {
+                if (
+                  segCross(
+                    pts[i][0], pts[i][1], pts[i + 1][0], pts[i + 1][1],
+                    poly[j][0], poly[j][1], poly[k][0], poly[k][1]
+                  )
+                ) {
+                  inSameContour = true;
+                  break outer;
+                }
+              }
+            }
+          }
+        }
+        if (!inSameContour) continue;
+        for (let i = 0; i < pts.length - 1; i++) {
+          const ax = pts[i][0];
+          const ay = pts[i][1];
+          const bx = pts[i + 1][0];
+          const by = pts[i + 1][1];
+          const dx = bx - ax;
+          const dy = by - ay;
+          const len2 = dx * dx + dy * dy;
+          const u =
+            len2 === 0
+              ? 0
+              : Math.max(0, Math.min(1, ((s.x - ax) * dx + (s.y - ay) * dy) / len2));
+          const px = ax + u * dx;
+          const py = ay + u * dy;
+          const d = Math.hypot(s.x - px, s.y - py);
+          if (d < bestD) {
+            bestD = d;
+            bestTrace = ti;
+            bestAt = i + u;
+          }
+        }
+      }
+      if (bestTrace >= 0) {
+        pending[bestTrace].insertions.push({ at: bestAt, target: s });
+        snappedLabels.add(s.label);
+        outlineConnected += 1;
+      }
+    }
+  }
+
+  const snapped: SnappedTrace[] = [];
+  // Splice every deferred insertion (desc so earlier indices stay valid).
+  for (const p of pending) {
+    p.insertions.sort((a, b) => b.at - a.at);
+    for (const ins of p.insertions) {
       const idx = Math.ceil(ins.at);
-      pts.splice(idx, 0, [ins.target.x, ins.target.y]);
-      contacts.set(idx, ins.target.label);
+      p.points.splice(idx, 0, [ins.target.x, ins.target.y]);
+      p.contacts.set(idx, ins.target.label);
       snappedEnds += 1;
     }
-    snapped.push({ points: pts, score: t.score ?? 1, onContact, contacts });
+    snapped.push({
+      points: p.points,
+      score: p.score,
+      onContact: p.onContact,
+      contacts: p.contacts
+    });
   }
 
   // 1.5 Stitch decode fragments: endpoints that nearly touch are merged and
@@ -354,6 +533,7 @@ export function buildNetsFromTraces(input: TracesToNetsInput): TracesToNetsResul
     stitchedPairs,
     droppedLowContacts,
     droppedIrregular,
+    outlineConnected,
     warnings
   };
 }

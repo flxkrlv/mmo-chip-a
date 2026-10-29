@@ -289,6 +289,30 @@ export class VectorizeLayer implements Layer {
     return out;
   }
 
+  /** Metal outline polygons (the "what did the threshold capture" contours)
+   *  of everything currently collected — same dedupe rule as collectTraces.
+   *  Materialization uses them for the authoritative "is this contact
+   *  ON the metal" test (point-in-polygon), which the centreline+width
+   *  proxy only approximates. */
+  collectOutlines(): [number, number][][] {
+    const seen = new Set<string>();
+    const out: [number, number][][] = [];
+    const push = (pts: [number, number][]) => {
+      const key = pts.map((p) => `${Math.round(p[0])},${Math.round(p[1])}`).join(";");
+      if (seen.has(key)) return;
+      seen.add(key);
+      out.push(pts);
+    };
+    for (const region of this.cache.values()) {
+      for (const o of region.outlines) push(o);
+    }
+    for (const [hash, pin] of this.pinned) {
+      if (this.savedHiddenSet.has(hash)) continue;
+      for (const o of pin.outlines) push(o);
+    }
+    return out;
+  }
+
   /**
    * One per frame, before any tile draw: schedule a viewport-sized region
    * fetch. `frame.world` is the FULL visible world rect (draw() below only
