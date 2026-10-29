@@ -2151,7 +2151,16 @@ function VectorSection({
         type="button"
         className="btn"
         style={{ width: "100%", marginTop: 6 }}
-        disabled={busy !== null || !vectorLayer || !getTraceSnapTargets || hidden}
+        disabled={
+          busy !== null ||
+          !vectorLayer ||
+          !getTraceSnapTargets ||
+          // Only the preview source needs the live overlay: whole-die
+          // materializes from the saved sweep payload, the overlay state is
+          // irrelevant (it used to be disabled while the overlay was hidden
+          // — its default! — even with "whole die" selected).
+          (netsSource === "preview" && hidden)
+        }
         title="Materialize decoded vector traces into real annotation nets (ends snapped to device contacts / terminals / pins; a contact lying ON the wire splits it and connects mid-wire). Undoable."
         onClick={() => void vectorToNets()}
       >
