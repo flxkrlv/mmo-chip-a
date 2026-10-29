@@ -274,11 +274,16 @@ def extract_polygon_axis(
     width_max: float = 0.0,
     score_map: np.ndarray | None = None,
     max_traces: int = 200_000,
+    progress=None,
 ) -> dict:
     """Octilinear (0/45/90 deg) traces of a binary metal mask.
 
     Same trace contract as extract_wire_runs: {"traces": [...], "stats":
     {...}} plus per-trace `irregular` and stats["irregular"].
+
+    `progress(stage)` — optional whole-die decode progress callback
+    (skeletonize / graph from the shared corridor-graph builder, then runs
+    for the per-chain octilinear snap).
     """
     binary = mask_prob > threshold
     stats = {
@@ -298,7 +303,7 @@ def extract_polygon_axis(
         delta_px = max(0.75, width_min / 2.0) if width_min > 0 else 0.75
 
     # 1. proven pixel-skeleton corridor graph (one chain per corridor)
-    graph, _skel = WR._build_graph(binary)
+    graph, _skel = WR._build_graph(binary, progress=progress)
 
     # 2. wire_runs graph phase: short drop -> collinear dissolve
     for e in graph.edges:
@@ -306,6 +311,8 @@ def extract_polygon_axis(
             e.removed = True
             stats["dropped_short"] += 1
     stats["merged"] = WR._merge_collinear(graph, tol_deg=30.0)
+    if progress:
+        progress("runs")
     # NB: positions must be captured BEFORE the merge: it deletes dissolved
     # junction nodes from graph.nodes, but their lattice points stay valid
     # trace endpoints.

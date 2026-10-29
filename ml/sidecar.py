@@ -559,6 +559,10 @@ def vectorize_decode(
     }
     if b.get("save_to"):
         spec["save_to"] = str(b["save_to"])
+    if b.get("progress_path"):
+        # The worker writes live decode progress (stage/pct/eta) there; the
+        # sweep backend reads the same file for its status endpoint.
+        spec["progress_path"] = str(b["progress_path"])
     spec_path.write_text(json.dumps(spec), encoding="utf-8")
     proc = subprocess.Popen(
         [sys.executable, str(worker), str(spec_path)],

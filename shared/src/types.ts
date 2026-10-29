@@ -983,6 +983,22 @@ export interface VectorizeResponse {
   };
 }
 
+/** Live decode-phase progress of a whole-die sweep: the decode worker
+ *  writes progress.json (stage, pct, elapsed, eta) next to the payload;
+ *  the sweep reads it while phase === "decoding". */
+export interface VectorSweepDecodeProgress {
+  /** Decoder stage: queued / read / widthmap / skeletonize / graph / runs /
+   *  outlines / write. */
+  stage: string;
+  /** 0..100 (weighted estimate; the worker calibrates weights from the
+   *  previous run's per-stage durations). */
+  pct: number;
+  /** Milliseconds since the decode started. */
+  elapsedMs: number;
+  /** Milliseconds to completion estimate (null until pct > 0). */
+  etaMs: number | null;
+}
+
 /** Whole-die vectorize sweep (block-by-block, results cached on disk). */
 export interface VectorSweepStatus {
   dieId: string;
@@ -992,6 +1008,8 @@ export interface VectorSweepStatus {
   /** "masks" = assembling block masks (done/total), "decoding" = the one
    *  whole-die decode is running (minutes — keep the app open). */
   phase?: "masks" | "decoding" | null;
+  /** Decode-phase progress (present while running + decoding). */
+  decode?: VectorSweepDecodeProgress | null;
   error?: string | null;
   /** Non-fatal decode concern (e.g. "threshold captures ~N% of the die -
    *  neighbouring wires likely merged"). Shown in the inspector, not an abort. */

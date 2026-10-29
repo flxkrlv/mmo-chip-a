@@ -2,6 +2,7 @@ import { useState, useRef, useEffect, type ReactNode } from "react";
 import { cellInstanceScale, cellWorldRect } from "../../lib/cellFootprint";
 import { padCountByPin, renamePinActions } from "../../lib/pinClipboard";
 import { useDialog } from "../Dialog";
+import { useToast } from "../Toast";
 import { useQueryClient } from "@tanstack/react-query";
 import type { AnalogDevice, AnnotationNet, AnnotationNetEdge, AssistantFinding, Cell, CellType, DieAnnotations, DieMetadata, FloorplanRegion, HumanAnnotation, MLInferenceJob, MLTracePolyline, VectorBlocksResponse, VectorizeParams, VectorSweepStatus, WireLayer } from "shared";
 import type { ActionDispatcher } from "../../api/actions";
@@ -1380,6 +1381,29 @@ function VSlider({
   );
 }
 
+/** Decode-phase progress labels (the worker's stage names → readable text). */
+const DECODE_STAGE_LABEL: Record<string, string> = {
+  queued: "starting",
+  read: "reading mask",
+  widthmap: "width map",
+  skeletonize: "skeleton",
+  graph: "wire graph",
+  runs: "extracting traces",
+  outlines: "metal outlines",
+  write: "saving result"
+};
+
+/** mm:ss (or h:mm:ss) for the decode elapsed / ETA readout. */
+function fmtDuration(ms: number): string {
+  const s = Math.max(0, Math.round(ms / 1000));
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = s % 60;
+  return h > 0
+    ? `${h}:${String(m).padStart(2, "0")}:${String(sec).padStart(2, "0")}`
+    : `${m}:${String(sec).padStart(2, "0")}`;
+}
+
 /**
  * Classical (no-model) metal vectorization: threshold a brightness/colour
  * channel of the visible image, decode skeleton traces + mask outlines, and
@@ -1414,6 +1438,7 @@ function VectorSection({
       ? `${(Math.round(um * 100) / 100).toFixed(2)} µm`
       : "off";
   const dialog = useDialog();
+  const toast = useToast();
   const params = usePreferences((s) => s.vectorParams);
   const patch = usePreferences((s) => s.patchVectorParams);
   const resetParams = usePreferences((s) => s.resetVectorParams);
@@ -1467,11 +1492,22 @@ function VectorSection({
       getVectorSweep(dieId)
         .then((s) => {
           failures = 0;
+          const wasRunning = sweep.status === "running";
           setSweep(s);
           if (s.status !== "running") {
             useDieViewerStore.getState().setVectorSweepRunning(false);
             vectorLayer?.clearCache();
             useDieViewerStore.getState().bumpSavedVectorLayers();
+            // "Notify when it's done": the whole-die decode takes minutes
+            // with the user working elsewhere — celebrate the finish.
+            if (wasRunning && s.status === "completed") {
+              toast.success(
+                "Whole-die decode finished",
+                `${s.done}/${s.total} blocks decoded — overlay + Vector Layers updated`
+              );
+            } else if (wasRunning && s.status === "failed") {
+              toast.error("Whole-die decode failed", s.error ?? undefined);
+            }
           }
         })
         .catch(() => {
@@ -1977,14 +2013,46 @@ function VectorSection({
               : `(${sweep.done}/${sweep.total})`}
           </button>
           {sweep.phase === "decoding" ? (
-            <div
-              className="m"
-              style={{ fontSize: 10, color: "var(--ink3)", marginTop: 4 }}
-            >
-              One whole-die decode in progress — typically several minutes on
-              a dense die. Keep the app open; the overlay comes back from
-              cache when it finishes.
-            </div>
+            <>
+              <div
+                style={{
+                  height: 5,
+                  borderRadius: 3,
+                  background: "var(--l1)",
+                  overflow: "hidden",
+                  marginTop: 6
+                }}
+              >
+                <div
+                  style={{
+                    height: "100%",
+                    width: sweep.decode
+                      ? `${Math.max(2, sweep.decode.pct)}%`
+                      : "100%",
+                    background: "var(--accent, #7fb2ff)",
+                    transition: "width 0.4s",
+                    // No progress.json yet (worker starting / legacy): pulse
+                    // the full-width bar so it doesn't read as frozen.
+                    opacity: sweep.decode ? 1 : 0.5,
+                    animation: sweep.decode ? undefined : "vectorPulse 1.6s ease-in-out infinite"
+                  }}
+                />
+              </div>
+              <div
+                className="m"
+                style={{ fontSize: 10, color: "var(--ink3)", marginTop: 4 }}
+              >
+                {sweep.decode
+                  ? `${DECODE_STAGE_LABEL[sweep.decode.stage] ?? sweep.decode.stage} · ` +
+                    `elapsed ${fmtDuration(sweep.decode.elapsedMs)}` +
+                    (sweep.decode.etaMs != null
+                      ? ` · ~${fmtDuration(sweep.decode.etaMs)} left`
+                      : "")
+                  : "starting decode…"}
+                {" — typically several minutes on a dense die. Keep the app "}
+                open; the overlay comes back from cache when it finishes.
+              </div>
+            </>
           ) : (
             <div
               style={{

@@ -66,12 +66,19 @@ class _Graph:
         return d
 
 
-def _build_graph(binary: np.ndarray) -> tuple[_Graph, np.ndarray]:
-    """skeletonize + cluster junction/end pixels + one edge per corridor."""
+def _build_graph(binary: np.ndarray, progress=None) -> tuple[_Graph, np.ndarray]:
+    """skeletonize + cluster junction/end pixels + one edge per corridor.
+
+    `progress(stage)` — optional coarse-stage callback for the whole-die
+    decode progress bar (skeletonize is the minutes-long stage)."""
     from scipy.ndimage import center_of_mass, label as scipy_label
     from skimage.morphology import skeletonize
 
+    if progress:
+        progress("skeletonize")
     skel = skeletonize(binary).astype(np.uint8)
+    if progress:
+        progress("graph")
     h, w = skel.shape
     padded = np.pad(skel, 1, mode="constant")
     neighbours = np.zeros((h, w), dtype=np.uint8)
@@ -388,16 +395,20 @@ def extract_wire_runs(
     score_map: np.ndarray | None = None,
     turn_tol_deg: float = 20.0,
     max_traces: int = 200_000,
+    progress=None,
 ) -> dict:
     """Skeleton → cleaned branch graph → one minimal-vertex polyline per
     straight run, grouped by graph connectivity. Returns
-    {"traces": [{points, score, width?, group}], "stats": {...}}."""
+    {"traces": [{points, score, width?, group}], "stats": {...}}.
+
+    `progress(stage)` — optional whole-die decode progress callback; stages
+    (skeletonize / graph / runs) come from _build_graph and the emit phase."""
     binary = mask_prob > threshold
     stats = {"kept": 0, "dropped_width": 0, "dropped_short": 0, "merged": 0, "dropped_parallel": 0}
     if not binary.any():
         return {"traces": [], "stats": stats}
 
-    graph, _skel = _build_graph(binary)
+    graph, _skel = _build_graph(binary, progress=progress)
     # Graph-phase short-edge drop FIRST: noise arms off a junction vanish
     # here, which dissolves the junction (degree 3→2) so the collinear merge
     # below can stitch the long branches back into ONE wire. Doing it in the
@@ -407,6 +418,8 @@ def extract_wire_runs(
             e.removed = True
             stats["dropped_short"] += 1
     stats["merged"] = _merge_collinear(graph, tol_deg=30.0)
+    if progress:
+        progress("runs")
 
     strength = mask_prob if score_map is None else score_map
     traces: list[dict] = []

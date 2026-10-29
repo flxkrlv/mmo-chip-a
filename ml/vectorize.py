@@ -96,8 +96,12 @@ def build_mask(rgb: np.ndarray, p: VectorParams) -> np.ndarray:
     return bin_u8
 
 
-def decode_mask(mask_u8: np.ndarray, p: VectorParams) -> dict:
-    """Runs decode of a binary mask: traces (grouped) + outlines + stats."""
+def decode_mask(mask_u8: np.ndarray, p: VectorParams, progress=None) -> dict:
+    """Runs decode of a binary mask: traces (grouped) + outlines + stats.
+
+    `progress(stage)` — optional whole-die decode progress callback; the
+    worker in decode_worker.py turns stage transitions + per-stage durations
+    into the progress.json the sweep's UI reads."""
     h, w = mask_u8.shape[:2]
     if not mask_u8.any():
         return _empty(w, h)
@@ -105,6 +109,8 @@ def decode_mask(mask_u8: np.ndarray, p: VectorParams) -> dict:
 
     # Width map: distance transform of the mask ×2 — every pixel's value is
     # then the local wire width (distance-to-edge ≈ half width).
+    if progress:
+        progress("widthmap")
     dist = cv2.distanceTransform(mask_u8, cv2.DIST_L2, 3) * 2.0
 
     # Strength = depth inside the band — a cheap score proxy the client's
@@ -126,6 +132,7 @@ def decode_mask(mask_u8: np.ndarray, p: VectorParams) -> dict:
             width_min=p.width_min,
             width_max=p.width_max,
             score_map=strength,
+            progress=progress,
         )
     else:
         runs = extract_wire_runs(
@@ -136,10 +143,13 @@ def decode_mask(mask_u8: np.ndarray, p: VectorParams) -> dict:
             width_min=p.width_min,
             width_max=p.width_max,
             score_map=strength,
+            progress=progress,
         )
 
     # Outlines: v1 contour polylines of the cleaned mask — the "what did my
     # threshold capture" preview the user tunes against.
+    if progress:
+        progress("outlines")
     outlines = extract_trace_polylines(
         binary.astype(np.float32),
         threshold=0.5,

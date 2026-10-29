@@ -5,6 +5,7 @@ import sharp from "sharp";
 import type {
   VectorBlockPayload,
   VectorLayerInfo,
+  VectorSweepDecodeProgress,
   VectorSweepStatus,
   VectorizeParams
 } from "shared";
@@ -54,6 +55,9 @@ interface SweepJob extends VectorSweepStatus {
   /** Current sweep phase: assembling block masks, or waiting out the one
    *  whole-die decode (minutes — the UI says "keep the app open"). */
   phase: "masks" | "decoding";
+  /** Decode-phase progress (read from the worker's progress.json while
+   *  phase === "decoding" and the job is still running). */
+  decode?: VectorSweepDecodeProgress;
 }
 
 /** Deterministic sidecar job id of the global decode — Stop uses it to
@@ -138,11 +142,15 @@ export function createVectorSweep(config: {
       status: job.status,
       done: job.done,
       total: job.total,
+      phase: job.phase,
+      decode:
+        job.status === "running" && job.phase === "decoding"
+          ? job.decode ?? null
+          : null,
       error: job.error ?? null,
       warning: job.warning ?? null,
       paramsHash: job.paramsHash,
-      overlayFilename: job.overlayFilename ?? null,
-      phase: job.phase
+      overlayFilename: job.overlayFilename ?? null
     };
   }
 
@@ -291,6 +299,37 @@ export function createVectorSweep(config: {
         }
         // Phase marker for the UI: masks are done, now the one long decode.
         job.phase = "decoding";
+        // Progress poller: the decode worker writes progress.json (stage,
+        // pct, elapsed, eta) next to the payload; surface it while the
+        // sidecar grinds. Self-terminates once the job leaves "running".
+        const progressPath = path.join(dir, "progress.json");
+        const progressPoll = setInterval(() => {
+          if (job.status !== "running") {
+            clearInterval(progressPoll);
+            return;
+          }
+          void fs
+            .readFile(progressPath, "utf8")
+            .then((raw) => {
+              if (job.status !== "running") return;
+              const p = JSON.parse(raw) as {
+                stage?: unknown;
+                pct?: unknown;
+                elapsed_ms?: unknown;
+                eta_ms?: unknown;
+              };
+              job.decode = {
+                stage: String(p.stage ?? ""),
+                pct: Math.max(0, Math.min(100, Number(p.pct) || 0)),
+                elapsedMs: Number(p.elapsed_ms) || 0,
+                etaMs: p.eta_ms == null || !Number.isFinite(Number(p.eta_ms)) ? null : Number(p.eta_ms)
+              };
+            })
+            .catch(() => {
+              // No progress file yet (legacy worker / first seconds) —
+              // keep whatever we had, the UI falls back to elapsed-only.
+            });
+        }, 2000);
         const decoded = (await postWithRetry(
           "/vectorize/decode",
           fullPng,
@@ -305,7 +344,9 @@ export function createVectorSweep(config: {
             job_id: decodeJobId(dieId, hash),
             // The worker writes the payload itself too: if the backend dies
             // mid-decode, the cache still lands and the next start reuses it.
-            save_to: path.join(dir, "full.json")
+            save_to: path.join(dir, "full.json"),
+            // Live decode progress (stage/pct/eta) the status endpoint reads.
+            progress_path: path.join(dir, "progress.json")
           },
           // The global decode skeletonizes the whole die (tens of millions
           // of px - minutes of CV-gated work). 30 min, no premature abort.

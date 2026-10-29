@@ -102,6 +102,10 @@ interface PinnedLayer {
   tracePaths: (Path2D | null)[];
   outlinePaths: (Path2D | null)[];
   groupBase: number;
+  /** Pre-rasterized die-sized render (lazy, per layer) — saved payloads
+   *  never change, so painting them is one drawImage blit per tile instead
+   *  of a per-shape vector loop on every tile re-render. */
+  bitmap?: { canvas: HTMLCanvasElement } | null;
 }
 
 /** Path2D of a polyline; `close` for metal contours. */
@@ -117,6 +121,16 @@ function buildPath(pts: [number, number][], close: boolean): Path2D {
  *  hundreds of large polygons per tile) stays on; at deeper zoom it is
  *  dropped and only the cheap edge stroke remains. */
 const OUTLINE_FILL_MAX_ZOOM = 4;
+
+/** Saved layers render from a PRE-RASTERIZED die-sized bitmap below this
+ *  zoom; above it the vector path (crisp, sparse shapes per tile) is used.
+ *  TiledCanvas re-renders every visible tile on every zoom change — the
+ *  per-shape vector loop ran on each of those re-renders (hundreds of
+ *  fill/stroke per tile = the "Vector Layers lag the canvas" report). */
+const SAVED_BITMAP_MAX_ZOOM = 6;
+/** Longest bitmap side (px): a 4096² RGBA canvas ≈ 67 MB — one per VISIBLE
+ *  saved layer, dropped again when the layer's eye goes off. */
+const SAVED_BITMAP_MAX_DIM = 4096;
 
 function pointsBox(points: [number, number][]): Rect {
   let minx = Infinity;
@@ -574,7 +588,10 @@ export class VectorizeLayer implements Layer {
 
   /** Pinned SAVED layers (the Vector layers list) — drawn independently of
    *  the live overlay: works while "Show vector overlay" is off. Slightly
-   *  dimmer strokes so the live reads stand out against saved results. */
+   *  dimmer strokes so the live reads stand out against saved results.
+   *  At overview/mid zoom the layer paints from its pre-rasterized bitmap
+   *  (one drawImage per tile); the per-shape vector loop below is the deep-
+   *  zoom fallback where the bitmap would blur. */
   private drawSaved(ctx: CanvasRenderingContext2D, bounds: TileBounds): void {
     const { zoom } = bounds;
     const world = bounds.world;
@@ -582,7 +599,21 @@ export class VectorizeLayer implements Layer {
     const snapTol = this.display.getSnapTol?.() ?? 12;
     const strokeW = 1 / zoom;
     for (const [hash, pin] of this.pinned) {
-      if (this.savedHiddenSet.has(hash)) continue;
+      if (this.savedHiddenSet.has(hash)) {
+        // Free the (large) bitmap of a hidden layer — it is rebuilt from
+        // the still-pinned payload the moment the eye turns back on.
+        pin.bitmap = null;
+        continue;
+      }
+      if (zoom < SAVED_BITMAP_MAX_ZOOM) {
+        const bm = this.ensureSavedBitmap(pin);
+        if (bm) {
+          // One blit per tile re-render: the tile canvases only re-draw on
+          // zoom change / eviction, so this is the whole cost.
+          ctx.drawImage(bm.canvas, 0, 0, this.metadata.width, this.metadata.height);
+          continue;
+        }
+      }
       ctx.lineWidth = strokeW;
       for (const { box, index } of pin.traceBoxes) {
         if (!rectsIntersect(box, world)) continue;
@@ -610,6 +641,46 @@ export class VectorizeLayer implements Layer {
         ctx.stroke(path);
       }
     }
+  }
+
+  /** Bake the saved layer once into a die-sized offscreen canvas (world
+   *  units × bitmap scale). Same paint recipe as the vector path at the
+   *  ~1:1 reference zoom: trace 1.5, outline hairline + 10% fill, dashed
+   *  irregular. NB: no score filter — whole-die decode scores are all 1.0
+   *  (mask-only path), so the confidence slider never applied here. */
+  private ensureSavedBitmap(pin: PinnedLayer): { canvas: HTMLCanvasElement } | null {
+    if (pin.bitmap) return pin.bitmap;
+    const w = this.metadata.width;
+    const h = this.metadata.height;
+    if (!(w > 0 && h > 0)) return null;
+    const scale = Math.min(1, SAVED_BITMAP_MAX_DIM / Math.max(w, h));
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.max(1, Math.round(w * scale));
+    canvas.height = Math.max(1, Math.round(h * scale));
+    const c = canvas.getContext("2d");
+    if (!c) return null;
+    c.scale(canvas.width / w, canvas.height / h);
+    for (const o of pin.outlines) {
+      if (o.length < 3) continue;
+      const path = buildPath(o, true);
+      c.fillStyle = VECT_OUTLINE_FILL;
+      c.fill(path);
+      c.strokeStyle = "rgba(253, 224, 71, 0.22)";
+      c.lineWidth = 1;
+      c.stroke(path);
+    }
+    for (const t of pin.traces) {
+      const pts = t.points;
+      if (pts.length < 2) continue;
+      const path = buildPath(pts, false);
+      if (t.irregular === true) c.setLineDash([5, 4]);
+      c.strokeStyle = VECT_TRACE_SAVED_STROKE;
+      c.lineWidth = 1.5;
+      c.stroke(path);
+      c.setLineDash([]);
+    }
+    pin.bitmap = { canvas };
+    return pin.bitmap;
   }
 
   /** One region request. While in flight, newer targets go to `queuedFetch`
