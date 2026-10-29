@@ -142,6 +142,9 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
   const mlViasCount = useDieViewerStore((s) => s.mlViasCount);
   const cellDetectionsCount = useDieViewerStore((s) => s.cellDetectionsCount);
   const wireMapAvailable = useDieViewerStore((s) => s.wireMapAvailable);
+  const savedVectorLayers = useDieViewerStore((s) => s.savedVectorLayers);
+  const savedVectorHidden = useDieViewerStore((s) => s.savedVectorHidden);
+  const toggleSavedVectorLayer = useDieViewerStore((s) => s.toggleSavedVectorLayer);
 
   // Whole-net ids present in the current selection — includes nets selected
   // by clicking a sub-part (edge/node id like "net:abc/edge:1") on the canvas,
@@ -290,12 +293,9 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
   const mlResultsOpen = expandedGroups.includes(ML_RESULTS_KEY);
   const guidesOpen = expandedGroups.includes(GUIDES_KEY);
   const rulersOpen = expandedGroups.includes(RULERS_KEY);
-const baseImagesOpen = expandedGroups.includes(BASE_IMAGES_KEY);
-const overlayLayersOpen = expandedGroups.includes(OVERLAY_LAYERS_KEY);
-const vectorLayersOpen = expandedGroups.includes(VECTOR_LAYERS_KEY);
-const savedVectorLayers = useDieViewerStore((s) => s.savedVectorLayers);
-const savedVectorHidden = useDieViewerStore((s) => s.savedVectorHidden);
-const toggleSavedVectorLayer = useDieViewerStore((s) => s.toggleSavedVectorLayer);
+  const baseImagesOpen = expandedGroups.includes(BASE_IMAGES_KEY);
+  const overlayLayersOpen = expandedGroups.includes(OVERLAY_LAYERS_KEY);
+  const vectorLayersOpen = expandedGroups.includes(VECTOR_LAYERS_KEY);
   const mlAnyVisible = ML_KINDS.some((k) => !hiddenKinds.includes(k));
   const mlVisibility = {
     visible: mlAnyVisible,
