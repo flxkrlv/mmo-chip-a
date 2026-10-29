@@ -130,10 +130,11 @@ export function buildNetsFromTraces(input: TracesToNetsInput): TracesToNetsResul
     points: [number, number][];
     score: number;
     onContact: [boolean, boolean];
-    /** vertex index -> snap target label. Endpoints AND mid-wire contacts
-     *  (a contact lying ON the metal: the polyline is split at the
-     *  projection of the contact onto the nearest segment). */
-    contacts: Map<number, string>;
+    /** Contact BRANCHES (отростки): a separate edge polyline-vertex →
+     *  contact. The wire polyline itself is NEVER bent to reach a contact —
+     *  mid-wire contacts split a segment COLLINEARLY at the projection
+     *  point and branch from there, so the geometry stays honest. */
+    branches: { vertex: number; label: string; x: number; y: number }[];
   }
   /** Point-in-polygon (even-odd ray cast) — closed-contour membership. */
   const pointInPolygon = (x: number, y: number, poly: [number, number][]): boolean => {
@@ -168,11 +169,14 @@ export function buildNetsFromTraces(input: TracesToNetsInput): TracesToNetsResul
   interface PendingTrace {
     points: [number, number][];
     score: number;
-    onContact: [boolean, boolean];
-    contacts: Map<number, string>;
-    /** Deferred contact insertions (splice from the end AFTER phase 1c, so
-     *  1c's projection indices stay valid against the original points). */
+    /** Deferred mid-wire contact splits (splice from the end AFTER phase
+     *  1c, so 1c's projection indices stay valid against the original
+     *  points). The split inserts the PROJECTION point — collinear, the
+     *  wire does not bend; the branch edge continues to the contact. */
     insertions: { at: number; target: TraceSnapTarget }[];
+    /** Contacts nearest a polyline END: branch off the end vertex, the
+     *  wire keeps its shape (no more last-edge yanked to the contact). */
+    endBranches: { end: 0 | 1; target: TraceSnapTarget }[];
   }
   const pending: PendingTrace[] = [];
   for (const t of traces) {
@@ -189,8 +193,6 @@ export function buildNetsFromTraces(input: TracesToNetsInput): TracesToNetsResul
       continue;
     }
     const pts = t.points.map((p) => [p[0], p[1]] as [number, number]);
-    const onContact: [boolean, boolean] = [false, false];
-    const contacts = new Map<number, string>();
     // Width-aware tolerance: the snap measures CONTACT POINT to CENTRELINE
     // distance, but the user's mental model is "the contact overlaps the
     // metal polygon". The centreline sits widthPx/2 away from the metal
@@ -200,7 +202,12 @@ export function buildNetsFromTraces(input: TracesToNetsInput): TracesToNetsResul
     // connect (fixed 8..12 px lost to half the wire width).
     const effTol = snapTol + (t.widthPx ?? 0) / 2;
     const insertions: { at: number; target: TraceSnapTarget }[] = [];
-    // 1a. Endpoints: proximity snap (wire-tool behaviour).
+    const endBranches: { end: 0 | 1; target: TraceSnapTarget }[] = [];
+    // 1a. Endpoints: the contact nearest a polyline END becomes a BRANCH
+    //     off that end vertex. The endpoint itself is NOT moved onto the
+    //     contact any more — yanking the last edge toward the contact broke
+    //     the wire shape (the reported "ломает последний edge"); the
+    //     отросток edge carries the connection instead.
     for (const end of [0, pts.length - 1] as const) {
       let best: TraceSnapTarget | null = null;
       let bestD = effTol;
@@ -212,18 +219,14 @@ export function buildNetsFromTraces(input: TracesToNetsInput): TracesToNetsResul
         }
       }
       if (best) {
-        pts[end] = [best.x, best.y];
-        onContact[end] = true;
-        contacts.set(end, best.label);
+        endBranches.push({ end: end === 0 ? 0 : 1, target: best });
         snappedLabels.add(best.label);
-        snappedEnds += 1;
       }
     }
-    // 1b. Mid-wire contacts (INTERSECTION snap): a device contact that lies
-    //     ON the metal centreline — within tolerance of a SEGMENT, not just
-    //     of an endpoint — becomes a real net vertex: the polyline is split
-    //     at the projection point and the contact coordinates inserted. A
-    //     wire passing a pad in the middle now actually connects to it.
+    // 1b. Mid-wire contacts (INTERSECTION snap): a device contact within
+    //     tolerance of a SEGMENT splits the polyline at the projection
+    //     point — a COLLINEAR split, the wire stays straight — and a branch
+    //     edge runs from that wire point to the contact (отросток).
     for (const s of snapTargets) {
       if (snappedLabels.has(s.label)) continue;
       let bestD = effTol;
@@ -248,16 +251,18 @@ export function buildNetsFromTraces(input: TracesToNetsInput): TracesToNetsResul
           bestAt = i + u;
         }
       }
-      // Skip endpoints already snapped to THIS target (1a did it).
       if (bestAt >= 0) {
         const isEnd =
           bestAt < 0.5 || bestAt > pts.length - 1 - 0.5;
-        if (isEnd && contacts.has(bestAt < 0.5 ? 0 : pts.length - 1)) continue;
-        insertions.push({ at: bestAt, target: s });
+        if (isEnd) {
+          endBranches.push({ end: bestAt < 0.5 ? 0 : 1, target: s });
+        } else {
+          insertions.push({ at: bestAt, target: s });
+        }
         snappedLabels.add(s.label);
       }
     }
-    pending.push({ points: pts, score: t.score ?? 1, onContact, contacts, insertions });
+    pending.push({ points: pts, score: t.score ?? 1, insertions, endBranches });
   }
 
   // 1c. OUTLINE-MEMBERSHIP connect (the authoritative "on metal" test): a
@@ -352,7 +357,16 @@ export function buildNetsFromTraces(input: TracesToNetsInput): TracesToNetsResul
         }
       }
       if (bestTrace >= 0) {
-        pending[bestTrace].insertions.push({ at: bestAt, target: s });
+        // Branch off an end vertex when the projection lands there;
+        // otherwise a collinear split + branch from the wire point.
+        const ptsLen = pending[bestTrace].points.length;
+        if (bestAt < 0.5) {
+          pending[bestTrace].endBranches.push({ end: 0, target: s });
+        } else if (bestAt > ptsLen - 1 - 0.5) {
+          pending[bestTrace].endBranches.push({ end: 1, target: s });
+        } else {
+          pending[bestTrace].insertions.push({ at: bestAt, target: s });
+        }
         snappedLabels.add(s.label);
         outlineConnected += 1;
       }
@@ -360,20 +374,54 @@ export function buildNetsFromTraces(input: TracesToNetsInput): TracesToNetsResul
   }
 
   const snapped: SnappedTrace[] = [];
-  // Splice every deferred insertion (desc so earlier indices stay valid).
+  // Realize every deferred connection: collinear mid-wire splits first
+  // (desc so earlier indices stay valid), then end-vertex branches.
   for (const p of pending) {
+    const branches: SnappedTrace["branches"] = [];
     p.insertions.sort((a, b) => b.at - a.at);
     for (const ins of p.insertions) {
+      // Insert the PROJECTION point (on the segment — collinear split, the
+      // wire geometry does not bend) and branch from it to the contact.
+      const near = Math.abs(ins.at - Math.round(ins.at)) < 0.01;
+      if (near) {
+        // Projection lands on an existing vertex — no split needed.
+        branches.push({
+          vertex: Math.round(ins.at),
+          label: ins.target.label,
+          x: ins.target.x,
+          y: ins.target.y
+        });
+        continue;
+      }
       const idx = Math.ceil(ins.at);
-      p.points.splice(idx, 0, [ins.target.x, ins.target.y]);
-      p.contacts.set(idx, ins.target.label);
-      snappedEnds += 1;
+      const seg = Math.min(Math.floor(ins.at), p.points.length - 2);
+      const u = ins.at - seg;
+      const ax = p.points[seg][0];
+      const ay = p.points[seg][1];
+      const bx = p.points[seg + 1][0];
+      const by = p.points[seg + 1][1];
+      p.points.splice(idx, 0, [ax + u * (bx - ax), ay + u * (by - ay)]);
+      branches.push({
+        vertex: idx,
+        label: ins.target.label,
+        x: ins.target.x,
+        y: ins.target.y
+      });
     }
+    for (const eb of p.endBranches) {
+      branches.push({
+        vertex: eb.end === 0 ? 0 : p.points.length - 1,
+        label: eb.target.label,
+        x: eb.target.x,
+        y: eb.target.y
+      });
+    }
+    snappedEnds += branches.length;
     snapped.push({
       points: p.points,
       score: p.score,
-      onContact: p.onContact,
-      contacts: p.contacts
+      onContact: [false, false],
+      branches
     });
   }
 
@@ -462,6 +510,21 @@ export function buildNetsFromTraces(input: TracesToNetsInput): TracesToNetsResul
     else groupIds.set(g, `t${i}`);
   });
 
+  // 1.7 Traces branching to the SAME contact are electrically one net (the
+  //     contact IS the connection point; endpoints no longer move onto it,
+  //     so the coordinate-based union below can't see this any more).
+  const tracesByLabel = new Map<string, number[]>();
+  snapped.forEach((t, i) => {
+    for (const b of t.branches) {
+      const list = tracesByLabel.get(b.label);
+      if (list) list.push(i);
+      else tracesByLabel.set(b.label, [i]);
+    }
+  });
+  for (const list of tracesByLabel.values()) {
+    for (let j = 1; j < list.length; j++) union(`t${list[0]}`, `t${list[j]}`);
+  }
+
   // 3. One net per group: collect vertices (endpoint-key merged so shared
   //    ends become a single node — that is the electrical connection).
   const groups = new Map<string, number[]>();
@@ -486,11 +549,11 @@ export function buildNetsFromTraces(input: TracesToNetsInput): TracesToNetsResul
           "Check the outlines; narrow the band or lower Min gap and re-decode."
       );
     }
-    // Distinct device contacts this net touches (endpoint snaps + mid-wire
-    // intersection snaps across every member trace).
+    // Distinct device contacts this net touches (branch connections across
+    // every member trace).
     const labels = new Set<string>();
     for (const i of members) {
-      for (const label of snapped[i].contacts.values()) labels.add(label);
+      for (const b of snapped[i].branches) labels.add(b.label);
     }
     if (minDeviceContacts > 0 && labels.size < minDeviceContacts) {
       droppedLowContacts += 1;
@@ -509,12 +572,22 @@ export function buildNetsFromTraces(input: TracesToNetsInput): TracesToNetsResul
       return node;
     };
     for (const i of members) {
-      const pts = snapped[i].points;
-      for (let j = 0; j < pts.length - 1; j++) {
-        const a = nodeAt(pts[j][0], pts[j][1]);
-        const b = nodeAt(pts[j + 1][0], pts[j + 1][1]);
+      const s = snapped[i];
+      for (let j = 0; j < s.points.length - 1; j++) {
+        const a = nodeAt(s.points[j][0], s.points[j][1]);
+        const b = nodeAt(s.points[j + 1][0], s.points[j + 1][1]);
         if (a.id === b.id) continue;
         edges.push({ id: uuid(), from: a.id, to: b.id, layer });
+      }
+      // Contact branches (отростки): one edge from the wire vertex the
+      // branch leaves (a collinear split point or an end vertex) to the
+      // contact node. Same label → same node, so traces meeting at one
+      // contact are connected through it.
+      for (const b of s.branches) {
+        const from = nodeAt(s.points[b.vertex][0], s.points[b.vertex][1]);
+        const contact = nodeAt(b.x, b.y);
+        if (from.id === contact.id) continue;
+        edges.push({ id: uuid(), from: from.id, to: contact.id, layer });
       }
     }
     nets.push({
