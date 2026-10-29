@@ -442,7 +442,15 @@ export class VectorizeLayer implements Layer {
 
     const params = this.display.getParams?.();
     const hidden = this.display.getHidden?.() ?? false;
-    if (!params || hidden) return;
+    // SAVED layers render regardless of the live overlay's hidden flag and
+    // even without live params: their eye toggles in "Vector Layers" are
+    // the source of truth. Gating them behind the global hide switch used
+    // to make the eye toggle do nothing while "Show vector overlay" was off
+    // (the default!) — the exact "saved layer renders nothing" report.
+    if (hidden || !params) {
+      this.drawSaved(ctx, bounds);
+      return;
+    }
     const world = bounds.world;
 
     // ── Paint every cached region overlapping the view ───────────────
@@ -513,10 +521,17 @@ export class VectorizeLayer implements Layer {
         }
       }
     }
+  }
 
-    // ── Pinned SAVED layers (the Vector layers list) ───────────────────
-    // Same culling/snap machinery; slightly dimmer strokes so the live
-    // reads stand out against saved results.
+  /** Pinned SAVED layers (the Vector layers list) — drawn independently of
+   *  the live overlay: works while "Show vector overlay" is off. Slightly
+   *  dimmer strokes so the live reads stand out against saved results. */
+  private drawSaved(ctx: CanvasRenderingContext2D, bounds: TileBounds): void {
+    const { zoom } = bounds;
+    const world = bounds.world;
+    const minScore = this.display.getTraceConfidenceThreshold?.() ?? 0;
+    const snapTol = this.display.getSnapTol?.() ?? 12;
+    const strokeW = 1 / zoom;
     for (const [hash, pin] of this.pinned) {
       if (this.savedHiddenSet.has(hash)) continue;
       ctx.lineWidth = strokeW;
