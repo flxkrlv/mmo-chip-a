@@ -40,7 +40,10 @@ export function vectorParamsHash(
       params.bridgePx,
       params.minLength,
       params.widthMin,
-      params.widthMax
+      params.widthMax,
+      params.decoder,
+      params.octDeltaPx,
+      params.octStrict
     ]) + `|${overlaySource ?? ""}`;
   return `v1-${createHash("sha1").update(canonical).digest("hex").slice(0, 12)}`;
 }
@@ -264,7 +267,10 @@ export function createVectorSweep(config: {
           {
             min_len: Math.round(args.params.minLength),
             width_min: args.params.widthMin,
-            width_max: args.params.widthMax
+            width_max: args.params.widthMax,
+            decoder: args.params.decoder,
+            oct_delta_px: args.params.octDeltaPx,
+            oct_strict: args.params.octStrict
           },
           // The global decode skeletonizes the whole die (tens of millions
           // of px — minutes of CV-gated work). 30 min, no premature abort.

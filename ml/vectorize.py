@@ -15,6 +15,7 @@ import cv2
 import numpy as np
 
 from heatmap import extract_trace_polylines
+from polygon_axis import extract_polygon_axis
 from wire_runs import extract_wire_runs
 
 @dataclass
@@ -32,6 +33,9 @@ class VectorParams:
     width_min: float = 1.5         # keep branches with median width in range
     width_max: float = 0.0         # 0 = no upper bound
     max_outlines: int = 4000       # cap on the preview outline count
+    decoder: str = "runs"          # "runs" (skeleton, default) | "octilinear"
+    oct_delta_px: float = 0.0      # 0 = auto (max(0.75, width_min/2))
+    oct_strict: bool = False       # reserved: hard octilinear mode (L3), not implemented yet
 
 
 def _channel_image(rgb: np.ndarray, channel: str) -> np.ndarray:
@@ -102,6 +106,7 @@ def decode_mask(mask_u8: np.ndarray, p: VectorParams) -> dict:
     # Width map: distance transform of the mask ×2 — every pixel's value is
     # then the local wire width (distance-to-edge ≈ half width).
     dist = cv2.distanceTransform(mask_u8, cv2.DIST_L2, 3) * 2.0
+
     # Strength = depth inside the band — a cheap score proxy the client's
     # existing trace-confidence slider can filter on.
     lo = max(0, min(255, int(p.thresh_low)))
@@ -111,15 +116,27 @@ def decode_mask(mask_u8: np.ndarray, p: VectorParams) -> dict:
     # unless the caller provides strength (live path passes it separately).
     strength = None
 
-    runs = extract_wire_runs(
-        binary.astype(np.float32),
-        threshold=0.5,
-        min_len=max(2, int(p.min_len)),
-        width_map=dist,
-        width_min=p.width_min,
-        width_max=p.width_max,
-        score_map=strength,
-    )
+    if p.decoder == "octilinear":
+        runs = extract_polygon_axis(
+            binary.astype(np.float32),
+            threshold=0.5,
+            min_len=max(2, int(p.min_len)),
+            delta_px=float(p.oct_delta_px),
+            width_map=dist,
+            width_min=p.width_min,
+            width_max=p.width_max,
+            score_map=strength,
+        )
+    else:
+        runs = extract_wire_runs(
+            binary.astype(np.float32),
+            threshold=0.5,
+            min_len=max(2, int(p.min_len)),
+            width_map=dist,
+            width_min=p.width_min,
+            width_max=p.width_max,
+            score_map=strength,
+        )
 
     # Outlines: v1 contour polylines of the cleaned mask — the "what did my
     # threshold capture" preview the user tunes against.
@@ -138,6 +155,7 @@ def decode_mask(mask_u8: np.ndarray, p: VectorParams) -> dict:
             "dropped_width": runs["stats"]["dropped_width"],
             "dropped_short": runs["stats"]["dropped_short"],
             "merged": runs["stats"]["merged"],
+            "irregular": runs["stats"].get("irregular", 0),
         },
         "width": int(w),
         "height": int(h),

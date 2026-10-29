@@ -18,6 +18,8 @@ export interface RunVectorizeResult {
     droppedWidth: number;
     droppedShort?: number;
     merged?: number;
+    /** Octilinear decoder: chains kept raw with irregular=true. */
+    irregular?: number;
   };
 }
 
@@ -104,6 +106,9 @@ export function createVectorizer(config: { mlSidecarUrl: string }) {
     fd.append("min_len", String(Math.round(p.minLength)));
     fd.append("width_min", String(p.widthMin));
     fd.append("width_max", String(p.widthMax));
+    fd.append("decoder", p.decoder);
+    fd.append("oct_delta_px", String(p.octDeltaPx));
+    fd.append("oct_strict", p.octStrict ? "true" : "false");
 
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), VECT_TIMEOUT_MS);
@@ -125,9 +130,9 @@ export function createVectorizer(config: { mlSidecarUrl: string }) {
     if (!res.ok) throw new Error(`sidecar /vectorize ${res.status}`);
 
     const body = (await res.json()) as {
-      traces: { points: number[][]; score?: number; width?: number; group?: number }[];
+      traces: { points: number[][]; score?: number; width?: number; group?: number; irregular?: boolean }[];
       outlines: number[][][];
-      stats?: { kept: number; dropped_width?: number; dropped_short?: number; merged?: number };
+      stats?: { kept: number; dropped_width?: number; dropped_short?: number; merged?: number; irregular?: number };
     };
 
     const inKeep = (x: number, y: number) =>
@@ -155,7 +160,8 @@ export function createVectorizer(config: { mlSidecarUrl: string }) {
         points: pts,
         ...(typeof t.score === "number" && Number.isFinite(t.score) ? { score: t.score } : {}),
         ...(typeof t.width === "number" && Number.isFinite(t.width) ? { widthPx: t.width } : {}),
-        ...(typeof t.group === "number" && Number.isFinite(t.group) ? { group: t.group } : {})
+        ...(typeof t.group === "number" && Number.isFinite(t.group) ? { group: t.group } : {}),
+        ...(t.irregular === true ? { irregular: true } : {})
       });
     }
 
@@ -174,7 +180,8 @@ export function createVectorizer(config: { mlSidecarUrl: string }) {
               ...(typeof body.stats.dropped_short === "number"
                 ? { droppedShort: body.stats.dropped_short }
                 : {}),
-              ...(typeof body.stats.merged === "number" ? { merged: body.stats.merged } : {})
+              ...(typeof body.stats.merged === "number" ? { merged: body.stats.merged } : {}),
+              ...(typeof body.stats.irregular === "number" ? { irregular: body.stats.irregular } : {})
             }
           }
         : {})

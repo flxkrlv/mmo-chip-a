@@ -576,7 +576,10 @@ export function createMLRouter(config: {
       bridgePx: num("bridgePx", 2),
       minLength: num("minLength", 14),
       widthMin: num("widthMin", 1.5),
-      widthMax: num("widthMax", 30)
+      widthMax: num("widthMax", 30),
+      decoder: String(request.query.decoder) === "octilinear" ? "octilinear" : "runs",
+      octDeltaPx: num("octDeltaPx", 0),
+      octStrict: num("octStrict", 0) !== 0
     };
   }
 

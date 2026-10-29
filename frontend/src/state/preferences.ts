@@ -565,7 +565,10 @@ export const DEFAULT_VECTOR_PARAMS: VectorizeParams = {
   bridgePx: 2,
   minLength: 14,
   widthMin: 1.5,
-  widthMax: 30
+  widthMax: 30,
+  decoder: "runs",
+  octDeltaPx: 0,
+  octStrict: false
 };
 
 export const usePreferences = create<PreferencesState & PreferencesActions>()(

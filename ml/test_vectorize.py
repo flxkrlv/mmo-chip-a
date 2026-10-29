@@ -116,6 +116,108 @@ def test_reports_per_trace_width_and_score() -> None:
     assert 0.0 < t["score"] <= 1.0
 
 
+# ── Octilinear decoder (polygon axis + 45/90 snap) ────────────────────────
+
+
+def _oct(img: np.ndarray, **kw) -> dict:
+    kw.setdefault("min_len", 14)
+    kw.setdefault("width_min", 0)
+    return vectorize_region(img, VectorParams(decoder="octilinear", **kw))
+
+
+def _wire(points: list[tuple[int, int]], thick: int = 6) -> np.ndarray:
+    """Fat polyline wire mask (thickness `thick`, drawn as a stroked path)."""
+    img = _blank(160, 240)
+    pts = np.array(points, dtype=np.int32).reshape(-1, 1, 2)
+    cv2.polylines(img, [pts], False, (200, 200, 200), thickness=thick)
+    return img
+
+
+def test_octilinear_empty_decodes_to_empty() -> None:
+    r = _oct(_blank())
+    assert r["traces"] == [] and r["outlines"] == []
+
+
+def test_octilinear_straight_noisy_wire_is_one_two_point_trace() -> None:
+    # a straight bus with jagged (staircase) edges: a human drew a line
+    img = _blank(160, 240)
+    rng = np.random.default_rng(7)
+    for x in range(20, 220):
+        j0 = int(rng.integers(-1, 2))
+        j1 = int(rng.integers(-1, 2))
+        img[30 + j0:36 + j1, x] = 200
+    r = _oct(img, oct_delta_px=1.5)
+    assert r["traces"], "no traces at all"
+    t = r["traces"][0]
+    assert len(t["points"]) == 2, f"expected ONE straight segment, got {t['points']}"
+    (x0, y0), (x1, y1) = t["points"]
+    assert y0 == y1, f"not horizontal: {t['points']}"
+    assert x1 > x0
+
+
+def test_octilinear_L_turn_only_orthogonal() -> None:
+    # path: right along y=100, then up
+    img = _wire([(20, 120), (150, 120), (150, 40)])
+    r = _oct(img, oct_delta_px=1.5)
+    assert r["traces"], "no traces"
+    # trace must consist of only axial/diagonal-45 segments, ≥7 verts not
+    # expected — one turn kept as a corner vertex
+    assert len(r["traces"][0]["points"]) <= 3, r["traces"][0]["points"]
+    pts = r["traces"][0]["points"]
+    for (x0, y0), (x1, y1) in zip(pts, pts[1:]):
+        assert x0 == x1 or y0 == y1 or abs(x1 - x0) == abs(y1 - y0), (
+            f"non-octilinear segment {(x0, y0)}->{(x1, y1)}"
+        )
+
+
+def test_octilinear_diagonal_is_exact_45() -> None:
+    img = _wire([(20, 110), (120, 10)])  # dx == -dy: a true 45 degree run
+    r = _oct(img, oct_delta_px=1.5)
+    assert r["traces"], "no traces"
+    pts = r["traces"][0]["points"]
+    for (x0, y0), (x1, y1) in zip(pts, pts[1:]):
+        assert x0 == x1 or y0 == y1 or abs(x1 - x0) == abs(y1 - y0), (
+            f"non-octilinear segment {(x0, y0)}->{(x1, y1)}"
+        )
+    assert len(pts) <= 3, f"diagonal not straight: {pts}"
+
+
+def test_octilinear_T_junction_one_group() -> None:
+    img = _wire([(20, 100), (220, 100)])  # bus
+    img2 = _wire([(110, 20), (110, 100)])  # stem drops onto the bus
+    img = img | img2
+    r = _oct(img, oct_delta_px=1.5)
+    assert len(r["traces"]) >= 2, f"T junction lost arms: {r['stats']}"
+    groups = {t["group"] for t in r["traces"]}
+    assert len(groups) == 1, f"T should be ONE group, got {groups}"
+
+
+def test_octilinear_ring_is_closed_cycle_one_group() -> None:
+    img = _blank(160, 240)
+    cv2.rectangle(img, (30, 30), (200, 120), (200, 200, 200), 6)  # closed ring
+    r = _oct(img, oct_delta_px=1.5)
+    assert r["traces"], "ring produced no traces"
+    assert len(r["traces"]) == 1, f"ring split: {[(len(t['points'])) for t in r['traces']]}"
+    t = r["traces"][0]
+    assert t["points"][0] == t["points"][-1], "cycle not closed"
+
+
+def test_octilinear_irregular_flag_for_non_octilinear_draw() -> None:
+    # a corridor drawn at ~30 deg (not octilinear, deviation > delta)
+    img = _wire([(20, 130), (160, 60)], thick=8)  # dy=-70 over dx=140: 27 deg
+    r = _oct(img, oct_delta_px=0.75)
+    assert r["traces"], "no traces"
+    assert any(t.get("irregular") for t in r["traces"]), (
+        "30-deg trace should stay raw with irregular=True"
+    )
+
+
+def test_octilinear_stats_report_irregular_count() -> None:
+    img = _wire([(20, 130), (160, 60)], thick=8)
+    r = _oct(img, oct_delta_px=0.75)
+    assert r["stats"]["irregular"] >= 1
+
+
 def main() -> int:
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     failed = 0

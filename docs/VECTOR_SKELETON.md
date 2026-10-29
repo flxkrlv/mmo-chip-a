@@ -107,6 +107,56 @@ This also removes the width-filter's job: a skeleton computed *inside a
 clean polygon* has no blob/noise problem — width stays only as metadata
 (wire width in µm for SPICE).
 
+## Octilinear decoder: what we actually shipped (same day)
+
+The user's formalization: traces must contain ONLY 0°/45°/90° segments drawn
+the way a human sketches them — straight runs, minimal vertices, on the
+die-aligned lattice — with a bounded deviation δ from the raw axis (default
+auto = widthMin/2), and NO geometry forgery: chains not representable
+within δ stay raw with `irregular: true`. Hard mode (`oct_strict`, rubber-band
+guarantee inside the eroded polygon) is specified but not wired yet.
+
+The shipped decoder is `ml/polygon_axis.py` (`decoder: "octilinear"):
+
+1. **Source of chains: the proven pixel-skeleton corridor graph**
+   (`wire_runs._build_graph`) — NOT a polygon medial axis. The pure
+   polygon-based attempt (Delaunay circumcenter approximate medial axis,
+   Yang–Brock–Moll 2004, ~200 lines) is in git history and died on a real
+   phenomenon: thin-web tessellation generates phantom junctions
+   (sliver-triangle circumcenter clusters ~1 px apart), and spur pruning
+   cascades from them inward — a straight noisy bus collapsed to its middle
+   third. The pixel skeleton has none of these; prior art check (DDG + CGAL
+   docs): openvoronoi/pyvoronoi (Boost segment-Voronoi) or CGAL straight
+   skeleton bindings would fix it, at the price of C++ builds on Windows —
+   deferred until the snap shows its limits.
+2. **wire_runs graph phase unchanged**: short-drop before junction
+   dissolving, collinear pass-through dissolving, one group.
+3. **L2 octilinear snap** per chain: relaxed-anchor `_reach_off` (intervals)
+   — the fitted line may FLOAT ≤ δ from the anchor, closing the ~1 px
+   junction-centroid offset that caused kinks; momentum tie-break (the
+   previous direction wins near-ties — jitter must not zigzag); `_exact_end`
+   makes diagonals grid-exact (|dx| == |dy|); knight-move connectors at real
+   corners.
+4. **Stitching**: chains re-concatenate through surviving degree-2 junctions
+   → one closed trace per ring, one trace per pass-through line.
+5. **Cleanup between independently snapped chains**: `_cleanup_kinks`
+   (intersects the two legs' snapped directions for corner seams; tail
+   clusters project onto the leg-in line), `_fuse_octilinear` (same-class
+   pass-through vertices die), `_straighten_legs` (≤4 px askew legs snap to
+   the lattice).
+6. **Honesty**: `_is_irregular` (point-to-fit deviation vs δ), walk
+   violations, hugging criterion (a fit that decomposes into ≥4 tiny legs
+   is a staircase of a non-octilinear line) and non-oct leg length — any of
+   these set `irregular: true` and the trace keeps its raw geometry.
+
+δ: `oct_delta_px` (0 = auto = max(0.75, widthMin/2)); per-point cap never
+exceeds the corridor (distanceTransform − 0.5).
+Params plumbed end-to-end: `VectorParams` (sidecar Form + MaskBody + decode
+body) → `VectorizeParams` (+ `vectorParamsHash`), UI toggle **Octilinear
+decodes** (default OFF; runs stays the default until live validation).
+Synthetic: 8 octilinear decoder tests in `ml/test_vectorize.py` — 17/17.
+Live validation pending (baseline 296 traces / 157 groups).
+
 ## What the user should do after reload
 
 1. Tune the band (or pipette) on the visible source until the preview shows
@@ -115,3 +165,5 @@ clean polygon* has no blob/noise problem — width stays only as metadata
 2. Press **Decode whole die** (~1 min masks + several minutes global decode).
 3. Pan/zoom — traces come from the cache; **Vector → nets** materializes
    with group-aware one-contour-one-net semantics.
+4. Toggle **Octilinear decodes** (off by default) — Δ snap slider appears;
+   compare fragmentation vs the runs decoder on the live die.

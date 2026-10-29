@@ -379,6 +379,9 @@ def vectorize_region_endpoint(
     width_min: float = Form(1.5),
     width_max: float = Form(0.0),
     max_outlines: int = Form(4000),
+    decoder: str = Form("runs"),
+    oct_delta_px: float = Form(0.0),
+    oct_strict: bool = Form(False),
 ) -> dict:
     """Classical (no-model) metal vectorization of the posted crop: threshold
     a brightness/colour channel into a mask, clean it, decode skeleton traces
@@ -406,6 +409,9 @@ def vectorize_region_endpoint(
         width_min=width_min,
         width_max=width_max,
         max_outlines=max_outlines,
+        decoder=decoder if decoder in ("runs", "octilinear") else "runs",
+        oct_delta_px=oct_delta_px,
+        oct_strict=oct_strict,
     )
     try:
         return vectorize_region(rgb, params)
@@ -429,6 +435,9 @@ class MaskBody(BaseModel):
     adaptive_c: int = 8
     open_px: int = 1
     bridge_px: int = 2
+    decoder: str = "runs"
+    oct_delta_px: float = 0.0
+    oct_strict: bool = False
 
 
 def _params_from_mask_body(b: MaskBody) -> VectorParams:
@@ -442,6 +451,9 @@ def _params_from_mask_body(b: MaskBody) -> VectorParams:
         adaptive_c=b.adaptive_c,
         open_px=b.open_px,
         bridge_px=b.bridge_px,
+        decoder=b.decoder if b.decoder in ("runs", "octilinear") else "runs",
+        oct_delta_px=b.oct_delta_px,
+        oct_strict=b.oct_strict,
     )
 
 
@@ -495,7 +507,10 @@ def vectorize_decode(image: UploadFile = File(...), body: str = Form(...)) -> di
         raise HTTPException(status_code=400, detail=f"bad decode params: {exc}") from exc
     p = VectorParams(min_len=int(b.get("min_len", 14)),
                      width_min=float(b.get("width_min", 0.0)),
-                     width_max=float(b.get("width_max", 0.0)))
+                     width_max=float(b.get("width_max", 0.0)),
+                     decoder=b.get("decoder", "runs") if b.get("decoder", "runs") in ("runs", "octilinear") else "runs",
+                     oct_delta_px=float(b.get("oct_delta_px", 0.0)),
+                     oct_strict=bool(b.get("oct_strict", False)))
     try:
         mask_u8 = (m > 127).astype(np.uint8)
         # Guard: a threshold that captures the background (bright-field

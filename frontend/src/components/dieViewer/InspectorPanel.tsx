@@ -1741,6 +1741,45 @@ function VectorSection({
         confidence slider above also applies (brightness margin).
       </div>
 
+      <label
+        className="row"
+        style={{
+          gap: 6,
+          alignItems: "center",
+          marginTop: 8,
+          fontSize: 11,
+          cursor: "pointer"
+        }}
+        title="0/45/90° centrelines: traces drawn the way a human sketches them (straight runs, right-angle and 45° turns on the die-aligned lattice). Off = the standard runs decoder."
+      >
+        <input
+          type="checkbox"
+          checked={params.decoder === "octilinear"}
+          onChange={(e) =>
+            patch({ decoder: e.target.checked ? "octilinear" : "runs" })
+          }
+        />
+        Octilinear decodes
+      </label>
+      {params.decoder === "octilinear" ? (
+        <VSlider
+          label="Δ snap (px)"
+          value={params.octDeltaPx > 0 ? params.octDeltaPx : 0}
+          min={0}
+          max={6}
+          step={0.25}
+          format={(v) => (v === 0 ? "auto" : `${v} px`)}
+          onChange={(v) => patch({ octDeltaPx: v })}
+        />
+      ) : null}
+      {params.decoder === "octilinear" ? (
+        <div className="m" style={{ fontSize: 10, color: "var(--ink3)", marginTop: 2 }}>
+          Δ = how far a drawn line may drift from the raw axis (0 = auto: half
+          the thinnest wire). Traces that cannot honestly snap (say, a wire
+          drawn at 30°) stay as-is and report irregular.
+        </div>
+      ) : null}
+
       {/* Presets */}
       <div
         className="row"

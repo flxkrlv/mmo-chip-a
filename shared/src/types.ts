@@ -912,6 +912,9 @@ export interface MLTracePolyline {
    *  physical wire / closed contour → one net (a contour cannot contain two
    *  nets — that would be a virtual break). Absent for ML traces. */
   group?: number;
+  /** True when the raw axis could NOT be honestly snapped to 0/45/90°
+   *  within delta (octilinear decoder) — the trace stays as drawn. */
+  irregular?: boolean;
 }
 
 /** Classical (no-model) metal vectorization: threshold a brightness/colour
@@ -942,6 +945,17 @@ export interface VectorizeParams {
    *  [widthMin, widthMax] px. 0 disables the respective bound. */
   widthMin: number;
   widthMax: number;
+  /** Trace decoder: "runs" = pixel-skeleton runs decoder (default);
+   *  "octilinear" = 0/45/90 deg-only centrelines via WL octilinear snap
+   *  (see docs/VECTOR_SKELETON.md). */
+  decoder: "runs" | "octilinear";
+  /** Max deviation of a snapped octilinear line from the raw axis (px).
+   *  0 = auto: max(0.75, widthMin/2) — drift no further than half the
+   *  thinnest kept wire. Chains not representable within delta stay raw
+   *  with `irregular: true`. */
+  octDeltaPx: number;
+  /** Hard octilinear mode (rubber-band guarantee) — reserved, not wired yet. */
+  octStrict: boolean;
 }
 
 /** Response of the vectorize endpoint: skeleton traces + mask outlines in
@@ -963,6 +977,9 @@ export interface VectorizeResponse {
     droppedShort?: number;
     /** Collinear pass-through junctions dissolved (fragments re-joined). */
     merged?: number;
+    /** Octilinear decoder: chains not honestly representable within delta
+     *  (kept raw with irregular: true). */
+    irregular?: number;
   };
 }
 
