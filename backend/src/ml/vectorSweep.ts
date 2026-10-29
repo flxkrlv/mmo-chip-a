@@ -447,10 +447,21 @@ export function createVectorSweep(config: {
     try {
       const raw = await fs.readFile(path.join(sweepDir(dieId, hash), "full.json"), "utf8");
       const parsed = JSON.parse(raw) as {
-        traces: VectorBlockPayload["traces"];
+        traces: (VectorBlockPayload["traces"][number] & { width?: number })[];
         outlines: VectorBlockPayload["outlines"];
       };
-      const entry = { traces: parsed.traces ?? [], outlines: parsed.outlines ?? [] };
+      // Normalize the raw sidecar trace shape (decoder writes `width`) into
+      // the client's `widthPx` — the live path does the same translation,
+      // and cached payloads (written by the decode worker) must match, or
+      // e.g. the width-aware contact snap silently loses its width input.
+      const entry = {
+        traces: (parsed.traces ?? []).map((t) =>
+          typeof t.width === "number" && !("widthPx" in t)
+            ? { ...t, widthPx: t.width }
+            : t
+        ),
+        outlines: parsed.outlines ?? []
+      };
       // All-empty payloads are poison (they'd blank the overlay forever) —
       // treat as a miss; the sweep will re-decode.
       if (entry.traces.length === 0 && entry.outlines.length === 0) return null;

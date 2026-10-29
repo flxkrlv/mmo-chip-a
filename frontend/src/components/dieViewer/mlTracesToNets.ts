@@ -124,10 +124,18 @@ export function buildNetsFromTraces(input: TracesToNetsInput): TracesToNetsResul
     const pts = t.points.map((p) => [p[0], p[1]] as [number, number]);
     const onContact: [boolean, boolean] = [false, false];
     const contacts = new Map<number, string>();
+    // Width-aware tolerance: the snap measures CONTACT POINT to CENTRELINE
+    // distance, but the user's mental model is "the contact overlaps the
+    // metal polygon". The centreline sits widthPx/2 away from the metal
+    // edge, so a contact centre anywhere inside the metal band is up to
+    // widthPx/2 off the axis — include that in the tolerance. Without this,
+    // contacts on wide wires/pads visibly intersecting the metal did not
+    // connect (fixed 8..12 px lost to half the wire width).
+    const effTol = snapTol + (t.widthPx ?? 0) / 2;
     // 1a. Endpoints: proximity snap (wire-tool behaviour).
     for (const end of [0, pts.length - 1] as const) {
       let best: TraceSnapTarget | null = null;
-      let bestD = snapTol;
+      let bestD = effTol;
       for (const s of snapTargets) {
         const d = Math.hypot(s.x - pts[end][0], s.y - pts[end][1]);
         if (d <= bestD) {
@@ -149,7 +157,7 @@ export function buildNetsFromTraces(input: TracesToNetsInput): TracesToNetsResul
     //     passing a pad in the middle now actually connects to it.
     const insertions: { at: number; target: TraceSnapTarget }[] = [];
     for (const s of snapTargets) {
-      let bestD = snapTol;
+      let bestD = effTol;
       let bestAt = -1;
       for (let i = 0; i < pts.length - 1; i++) {
         const ax = pts[i][0];
