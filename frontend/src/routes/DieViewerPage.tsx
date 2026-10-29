@@ -977,6 +977,7 @@ function DieViewer({ dieId }: { dieId: string }) {
             getSnapTol: () => Math.max(8, usePreferences.getState().viaSize * 2),
             getTraceConfidenceThreshold: () =>
               usePreferences.getState().traceConfidenceThreshold,
+            getOutlineAlpha: () => usePreferences.getState().vectorOutlineAlpha,
             getSamples: () => useDieViewerStore.getState().vectorSamples,
             onStatusChange: (status) =>
               useDieViewerStore.getState().setVectorStatus(status)

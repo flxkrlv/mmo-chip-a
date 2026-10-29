@@ -23,8 +23,6 @@ import type { Layer, RenderFrame, TileBounds } from "../types";
 const VECT_TRACE_STROKE = "rgba(253, 224, 71, 0.95)";
 const VECT_TRACE_SNAP_STROKE = "rgba(253, 224, 71, 0.7)";
 const VECT_TRACE_SAVED_STROKE = "rgba(253, 200, 66, 0.75)";
-const VECT_OUTLINE_FILL = "rgba(253, 224, 71, 0.10)";
-const VECT_OUTLINE_STROKE = "rgba(253, 224, 71, 0.45)";
 
 const FETCH_DEBOUNCE_MS = 300;
 /** Below the backend's 6 Mpx cap (it rejects bigger). Beyond this the view
@@ -47,6 +45,10 @@ export interface VectorizeDisplay {
   /** Minimum score (0..1) for a trace to draw — the vectorize score is a
    *  brightness margin, so this filters weak-threshold noise. */
   getTraceConfidenceThreshold?: () => number;
+  /** Opacity (0..1) of the vectorize metal OUTLINES — the amber "what did
+   *  the threshold capture" contours. Traces keep their fixed style. 1 =
+   *  fully opaque. Absent ⇒ 0.3. */
+  getOutlineAlpha?: () => number;
   /** Pipette samples to mark on the canvas (world coords + sampled rgb). */
   getSamples?: () => VectorPipetteSample[];
   /** Status for the inspector: loading flag, last error, region trace count,
@@ -102,10 +104,13 @@ interface PinnedLayer {
   tracePaths: (Path2D | null)[];
   outlinePaths: (Path2D | null)[];
   groupBase: number;
-  /** Pre-rasterized die-sized render (lazy, per layer) — saved payloads
+  /** Pre-rasterized die-sized renders (lazy, per layer) — saved payloads
    *  never change, so painting them is one drawImage blit per tile instead
-   *  of a per-shape vector loop on every tile re-render. */
-  bitmap?: { canvas: HTMLCanvasElement } | null;
+   *  of a per-shape vector loop on every tile re-render. Outlines are
+   *  baked at FULL strength and blitted through `globalAlpha` (the user's
+   *  opacity slider); traces keep their fixed dim style. */
+  outlineBitmap?: { canvas: HTMLCanvasElement } | null;
+  traceBitmap?: { canvas: HTMLCanvasElement } | null;
 }
 
 /** Path2D of a polyline; `close` for metal contours. */
@@ -122,15 +127,19 @@ function buildPath(pts: [number, number][], close: boolean): Path2D {
  *  dropped and only the cheap edge stroke remains. */
 const OUTLINE_FILL_MAX_ZOOM = 4;
 
-/** Saved layers render from a PRE-RASTERIZED die-sized bitmap below this
+/** Saved layers render from PRE-RASTERIZED die-sized bitmaps below this
  *  zoom; above it the vector path (crisp, sparse shapes per tile) is used.
  *  TiledCanvas re-renders every visible tile on every zoom change — the
  *  per-shape vector loop ran on each of those re-renders (hundreds of
  *  fill/stroke per tile = the "Vector Layers lag the canvas" report). */
 const SAVED_BITMAP_MAX_ZOOM = 6;
-/** Longest bitmap side (px): a 4096² RGBA canvas ≈ 67 MB — one per VISIBLE
- *  saved layer, dropped again when the layer's eye goes off. */
-const SAVED_BITMAP_MAX_DIM = 4096;
+/** Longest bitmap side (px): outlines and traces bake into SEPARATE
+ *  canvases (the outline one is blitted through `globalAlpha` = the user's
+ *  opacity slider, so it must be baked at full strength). ~8192² RGBA ≈
+ *  268 MB worst case, ~195 MB for a 5 Mpx die — per VISIBLE saved layer,
+ *  dropped again when the layer's eye goes off. The user asked for crisper
+ *  rasters; the caps bound the worst case. */
+const SAVED_BITMAP_MAX_DIM = 8192;
 
 function pointsBox(points: [number, number][]): Rect {
   let minx = Infinity;
@@ -520,6 +529,11 @@ export class VectorizeLayer implements Layer {
     const strokeW = 1 / zoom;
     const minScore = this.display.getTraceConfidenceThreshold?.() ?? 0;
     const snapTol = this.display.getSnapTol?.() ?? 12;
+    // Outline opacity (user slider): fill takes α, the edge stroke reads
+    // slightly stronger so the contour line stays defined even at low α.
+    const outlineAlpha = Math.min(1, Math.max(0, this.display.getOutlineAlpha?.() ?? 0.3));
+    const outlineFill = `rgba(253, 224, 71, ${outlineAlpha.toFixed(3)})`;
+    const outlineEdge = `rgba(253, 224, 71, ${Math.min(1, outlineAlpha * 1.6).toFixed(3)})`;
     for (const region of this.cache.values()) {
       const [rx0, ry0, rx1, ry1] = region.bbox;
       const regionRect: Rect = { x: rx0, y: ry0, width: rx1 - rx0, height: ry1 - ry0 };
@@ -538,10 +552,10 @@ export class VectorizeLayer implements Layer {
         // tile): keep it at overview zoom, drop it when zoomed in — the
         // edge stroke still shows the captured metal.
         if (zoom < OUTLINE_FILL_MAX_ZOOM) {
-          ctx.fillStyle = VECT_OUTLINE_FILL;
+          ctx.fillStyle = outlineFill;
           ctx.fill(path);
         }
-        ctx.strokeStyle = VECT_OUTLINE_STROKE;
+        ctx.strokeStyle = outlineEdge;
         ctx.stroke(path);
       }
 
@@ -598,19 +612,29 @@ export class VectorizeLayer implements Layer {
     const minScore = this.display.getTraceConfidenceThreshold?.() ?? 0;
     const snapTol = this.display.getSnapTol?.() ?? 12;
     const strokeW = 1 / zoom;
+    const outlineAlpha = Math.min(1, Math.max(0, this.display.getOutlineAlpha?.() ?? 0.3));
+    const outlineFill = `rgba(253, 224, 71, ${outlineAlpha.toFixed(3)})`;
+    const outlineEdge = `rgba(253, 224, 71, ${Math.min(1, outlineAlpha * 1.6).toFixed(3)})`;
     for (const [hash, pin] of this.pinned) {
       if (this.savedHiddenSet.has(hash)) {
-        // Free the (large) bitmap of a hidden layer — it is rebuilt from
+        // Free the (large) bitmaps of a hidden layer — they are rebuilt from
         // the still-pinned payload the moment the eye turns back on.
-        pin.bitmap = null;
+        pin.outlineBitmap = null;
+        pin.traceBitmap = null;
         continue;
       }
       if (zoom < SAVED_BITMAP_MAX_ZOOM) {
-        const bm = this.ensureSavedBitmap(pin);
-        if (bm) {
-          // One blit per tile re-render: the tile canvases only re-draw on
-          // zoom change / eviction, so this is the whole cost.
-          ctx.drawImage(bm.canvas, 0, 0, this.metadata.width, this.metadata.height);
+        const ob = this.ensureOutlineBitmap(pin);
+        const tb = this.ensureTraceBitmap(pin);
+        if (ob && tb) {
+          // Two blits per tile re-render (tile canvases only re-draw on zoom
+          // change / eviction): the outline silhouette through globalAlpha —
+          // baked at full strength, the slider dims it live — then the
+          // traces at their fixed style.
+          ctx.globalAlpha = outlineAlpha;
+          ctx.drawImage(ob.canvas, 0, 0, this.metadata.width, this.metadata.height);
+          ctx.globalAlpha = 1;
+          ctx.drawImage(tb.canvas, 0, 0, this.metadata.width, this.metadata.height);
           continue;
         }
       }
@@ -634,22 +658,61 @@ export class VectorizeLayer implements Layer {
         if (pts.length < 3) continue;
         const path = (pin.outlinePaths[index] ??= buildPath(pts, true));
         if (zoom < OUTLINE_FILL_MAX_ZOOM) {
-          ctx.fillStyle = VECT_OUTLINE_FILL;
+          ctx.fillStyle = outlineFill;
           ctx.fill(path);
         }
-        ctx.strokeStyle = "rgba(253, 224, 71, 0.22)";
+        ctx.strokeStyle = outlineEdge;
         ctx.stroke(path);
       }
     }
   }
 
-  /** Bake the saved layer once into a die-sized offscreen canvas (world
-   *  units × bitmap scale). Same paint recipe as the vector path at the
-   *  ~1:1 reference zoom: trace 1.5, outline hairline + 10% fill, dashed
-   *  irregular. NB: no score filter — whole-die decode scores are all 1.0
-   *  (mask-only path), so the confidence slider never applied here. */
-  private ensureSavedBitmap(pin: PinnedLayer): { canvas: HTMLCanvasElement } | null {
-    if (pin.bitmap) return pin.bitmap;
+  /** Bake the saved layer's metal outlines once into a die-sized offscreen
+   *  canvas (world units × bitmap scale) at FULL strength — the blit goes
+   *  through `globalAlpha`, so the outline-opacity slider works live
+   *  without a re-bake. Solid amber fill + edge stroke (the edge reads as
+   *  part of the silhouette once alpha is applied uniformly). */
+  private ensureOutlineBitmap(pin: PinnedLayer): { canvas: HTMLCanvasElement } | null {
+    if (pin.outlineBitmap !== undefined) return pin.outlineBitmap;
+    pin.outlineBitmap = this.bakePinBitmap(pin, (c) => {
+      for (const o of pin.outlines) {
+        if (o.length < 3) continue;
+        const path = buildPath(o, true);
+        c.fillStyle = "rgb(253, 224, 71)";
+        c.fill(path);
+        c.strokeStyle = "rgb(253, 224, 71)";
+        c.lineWidth = 1;
+        c.stroke(path);
+      }
+    });
+    return pin.outlineBitmap;
+  }
+
+  /** Bake the saved layer's centreline traces once (fixed dim style — the
+   *  opacity slider deliberately does not touch them). */
+  private ensureTraceBitmap(pin: PinnedLayer): { canvas: HTMLCanvasElement } | null {
+    if (pin.traceBitmap !== undefined) return pin.traceBitmap;
+    pin.traceBitmap = this.bakePinBitmap(pin, (c) => {
+      for (const t of pin.traces) {
+        const pts = t.points;
+        if (pts.length < 2) continue;
+        const path = buildPath(pts, false);
+        if (t.irregular === true) c.setLineDash([5, 4]);
+        c.strokeStyle = VECT_TRACE_SAVED_STROKE;
+        c.lineWidth = 1.5;
+        c.stroke(path);
+        c.setLineDash([]);
+      }
+    });
+    return pin.traceBitmap;
+  }
+
+  /** Shared bake: die-sized canvas at SAVED_BITMAP_MAX_DIM, draw callback in
+   *  world units. `undefined` (not null) marks "not baked yet". */
+  private bakePinBitmap(
+    pin: PinnedLayer,
+    paint: (c: CanvasRenderingContext2D) => void
+  ): { canvas: HTMLCanvasElement } | null {
     const w = this.metadata.width;
     const h = this.metadata.height;
     if (!(w > 0 && h > 0)) return null;
@@ -660,27 +723,8 @@ export class VectorizeLayer implements Layer {
     const c = canvas.getContext("2d");
     if (!c) return null;
     c.scale(canvas.width / w, canvas.height / h);
-    for (const o of pin.outlines) {
-      if (o.length < 3) continue;
-      const path = buildPath(o, true);
-      c.fillStyle = VECT_OUTLINE_FILL;
-      c.fill(path);
-      c.strokeStyle = "rgba(253, 224, 71, 0.22)";
-      c.lineWidth = 1;
-      c.stroke(path);
-    }
-    for (const t of pin.traces) {
-      const pts = t.points;
-      if (pts.length < 2) continue;
-      const path = buildPath(pts, false);
-      if (t.irregular === true) c.setLineDash([5, 4]);
-      c.strokeStyle = VECT_TRACE_SAVED_STROKE;
-      c.lineWidth = 1.5;
-      c.stroke(path);
-      c.setLineDash([]);
-    }
-    pin.bitmap = { canvas };
-    return pin.bitmap;
+    paint(c);
+    return { canvas };
   }
 
   /** One region request. While in flight, newer targets go to `queuedFetch`

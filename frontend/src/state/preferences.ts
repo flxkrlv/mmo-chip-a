@@ -199,6 +199,11 @@ interface PreferencesState {
   vectorPresets: Record<string, VectorizeParams>;
   /** Die-viewer: hide the vectorize overlay entirely (traces + outlines). */
   vectorOverlayHidden: boolean;
+  /** Vector OUTLINE opacity (0..1) — the amber "what did the threshold
+   *  capture" metal contours. Traces (centrelines) keep their own fixed
+   *  style. 1 = fully opaque (a solid silhouette of the captured metal);
+   *  default 0.3 ≈ the old soft look, a bit stronger. */
+  vectorOutlineAlpha: number;
   /** Materialization filter: a net must touch at least this many DISTINCT
    *  device contacts to be created. 0 = off; 2 drops floating artifacts. */
   vectorMinContacts: 0 | 1 | 2;
@@ -513,6 +518,7 @@ interface PreferencesActions {
   saveVectorPreset: (name: string, params: VectorizeParams) => void;
   deleteVectorPreset: (name: string) => void;
   setVectorOverlayHidden: (hidden: boolean) => void;
+  setVectorOutlineAlpha: (a: number) => void;
   setVectorMinContacts: (n: 0 | 1 | 2) => void;
   setVectorDropIrregular: (drop: boolean) => void;
   setVectorMaxBranchLen: (px: number) => void;
@@ -637,6 +643,7 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
         vectorParams: { ...DEFAULT_VECTOR_PARAMS },
         vectorPresets: {},
         vectorOverlayHidden: true,
+        vectorOutlineAlpha: 0.3,
         vectorMinContacts: 0,
         vectorDropIrregular: false,
         vectorMaxBranchLen: 0,
@@ -975,6 +982,7 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
             return { vectorPresets: next };
           }),
         setVectorOverlayHidden: (hidden) => set({ vectorOverlayHidden: hidden }),
+  setVectorOutlineAlpha: (a) => set({ vectorOutlineAlpha: Math.min(1, Math.max(0, a)) }),
         setVectorMinContacts: (n) => set({ vectorMinContacts: n }),
         setVectorDropIrregular: (drop) => set({ vectorDropIrregular: drop }),
         setVectorMaxBranchLen: (px) => set({ vectorMaxBranchLen: Math.max(0, px) }),
@@ -1111,6 +1119,7 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
           vectorParams: state.vectorParams,
           vectorPresets: state.vectorPresets,
           vectorOverlayHidden: state.vectorOverlayHidden,
+          vectorOutlineAlpha: state.vectorOutlineAlpha,
           vectorMinContacts: state.vectorMinContacts,
           vectorDropIrregular: state.vectorDropIrregular,
           vectorMaxBranchLen: state.vectorMaxBranchLen,

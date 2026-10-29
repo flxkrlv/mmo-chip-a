@@ -6,8 +6,10 @@ import type { PinClip } from "../lib/pinClipboard";
 import type { FloorplanClip } from "../lib/floorplanClipboard";
 
 /** Which right-panel tab is showing. The ML tab also drives a render mode:
- *  traces/vias size from `mlConfig` instead of display preferences. */
-export type InspectorTab = "inspector" | "ml" | "cells" | "cv" | "ai" | "lib" | "mcp";
+ *  traces/vias size from `mlConfig` instead of display preferences. The
+ *  tab bar renders in TWO rows (Inspector/ML/Cells/CV/AI/Lib, then
+ *  Trace/MCP) — one row overflowed and produced a stray width scrollbar. */
+export type InspectorTab = "inspector" | "ml" | "cells" | "cv" | "ai" | "lib" | "mcp" | "trace";
 
 /** Mockup defaults for the ML config until a real per-die value is seeded
  *  from the annotations blob. Source-pixel units. */

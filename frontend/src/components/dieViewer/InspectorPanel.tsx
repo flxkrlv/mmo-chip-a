@@ -578,36 +578,59 @@ export function InspectorPanel({
   const setTab = usePreferences((s) => s.setInspectorTab);
   const selectedIds = useDieViewerStore((s) => s.selectedIds);
 
+  // Two rows: row 1 = the analysis tabs, row 2 = Trace + MCP. One row for
+  // all seven labels overflowed the panel width and produced a stray
+  // horizontal scrollbar. "Trace" holds the vector traces (no model) — the
+  // recommended wire path; see the notice in the ML tab.
+  const row1 = ["inspector", "ml", "cells", "cv", "ai", "lib"] as const;
+  const row2 = ["trace", "mcp"] as const;
+  const tabLabel = (k: (typeof row1)[number] | (typeof row2)[number]): string =>
+    k === "inspector"
+      ? "Inspector"
+      : k === "ml"
+        ? "ML"
+        : k === "cells"
+          ? "Cells"
+          : k === "cv"
+            ? "CV"
+            : k === "lib"
+              ? "Lib"
+              : k === "ai"
+                ? "AI"
+                : k === "trace"
+                  ? "Trace"
+                  : "MCP";
+  const tabTitle = (k: string): string | undefined =>
+    k === "lib"
+      ? "Analog library — lay a device out and place it (I)"
+      : k === "trace"
+        ? "Vector traces (no model) — classical wire extraction, the recommended path"
+        : k === "ml"
+          ? "ML inference — experimental wire/via detection, not fully validated"
+          : undefined;
+
+  const renderTabButton = (k: (typeof row1)[number] | (typeof row2)[number]) => (
+    <button
+      key={k}
+      type="button"
+      className={"tab" + (tab === k ? " on" : "")}
+      style={{ background: "transparent", cursor: "pointer" }}
+      onClick={() => setTab(k)}
+      title={tabTitle(k)}
+    >
+      {tabLabel(k)}
+    </button>
+  );
+
   return (
     <div style={{ display: "flex", flexDirection: "column", minHeight: 0, flex: "1 1 auto" }}>
-      <div
-        className="ph"
-        style={{ padding: 0, gap: 0, height: 30 }}
-      >
-        {(["inspector", "ml", "cells", "cv", "ai", "lib", "mcp"] as const).map((k) => (
-          <button
-            key={k}
-            type="button"
-            className={"tab" + (tab === k ? " on" : "")}
-            style={{ background: "transparent", cursor: "pointer" }}
-            onClick={() => setTab(k)}
-            title={k === "lib" ? "Analog library — lay a device out and place it (I)" : undefined}
-          >
-            {k === "inspector"
-              ? "Inspector"
-              : k === "ml"
-                ? "ML"
-                : k === "cells"
-                  ? "Cells"
-                  : k === "cv"
-                    ? "CV"
-                    : k === "lib"
-                      ? "Lib"
-                      : k === "ai"
-                        ? "AI"
-                        : "MCP"}
-          </button>
-        ))}
+      <div style={{ display: "flex", flexDirection: "column", flex: "0 0 auto" }}>
+        <div className="ph" style={{ padding: 0, gap: 0, height: 28 }}>
+          {row1.map(renderTabButton)}
+        </div>
+        <div className="ph" style={{ padding: 0, gap: 0, height: 28 }}>
+          {row2.map(renderTabButton)}
+        </div>
       </div>
 
       <div style={{ flex: "1 1 auto", overflow: "auto", minHeight: 0 }}>
@@ -629,6 +652,14 @@ export function InspectorPanel({
             dispatcher={dispatcher}
             die={die}
             mlViasLayer={mlViasLayer}
+            getTraceSnapTargets={getTraceSnapTargets}
+          />
+        ) : tab === "trace" ? (
+          <TracePanel
+            dieId={dieId}
+            annotations={annotations}
+            dispatcher={dispatcher}
+            die={die}
             vectorLayer={vectorLayer}
             getTraceSnapTargets={getTraceSnapTargets}
           />
@@ -811,7 +842,6 @@ function MLPanel({
   dispatcher,
   die,
   mlViasLayer,
-  vectorLayer,
   getTraceSnapTargets
 }: {
   dieId: string;
@@ -819,11 +849,27 @@ function MLPanel({
   dispatcher: ActionDispatcher;
   die: DieMetadata | undefined;
   mlViasLayer: MLViasLayer | null;
-  vectorLayer: VectorizeLayer | null;
   getTraceSnapTargets?: () => TraceSnapTarget[];
 }) {
   return (
     <div>
+      <div
+        style={{
+          margin: "8px 10px 0",
+          padding: "7px 9px",
+          border: "1px solid var(--warn, #d9a441)",
+          borderRadius: 4,
+          background: "rgba(217, 164, 65, 0.08)",
+          fontSize: 10,
+          lineHeight: 1.5,
+          color: "var(--ink2)"
+        }}
+      >
+        <b style={{ color: "var(--warn, #d9a441)" }}>ML wire detection is experimental</b>{" "}
+        — not fully implemented or validated yet. For metal traces use the{" "}
+        <b>Trace</b> tab (Vector traces, no model): classical CV extraction
+        with tunable parameters, no checkpoint required.
+      </div>
       <MLSectionHeader>Inference</MLSectionHeader>
       <InferenceSection
         dieId={dieId}
@@ -831,7 +877,67 @@ function MLPanel({
         mlViasLayer={mlViasLayer}
         getTraceSnapTargets={getTraceSnapTargets}
       />
-      <MLSectionHeader>Vector traces (no model)</MLSectionHeader>
+      <MLSectionHeader>ML Vias</MLSectionHeader>
+      <ApproveSection dieId={dieId} annotations={annotations} dispatcher={dispatcher} mlViasLayer={mlViasLayer} />
+      <MLSectionHeader>Training</MLSectionHeader>
+      <TrainingSection dieId={dieId} />
+    </div>
+  );
+}
+
+/** The "Trace" tab: classical vector wire extraction (no model) — the
+ *  recommended path for metal traces. The ML confidence slider is
+ *  duplicated here on purpose: it is shared state (it also filters vector
+ *  traces by their brightness margin), and the Trace tab should be
+ *  self-contained. */
+function TracePanel({
+  dieId,
+  annotations,
+  dispatcher,
+  die,
+  vectorLayer,
+  getTraceSnapTargets
+}: {
+  dieId: string;
+  annotations: DieAnnotations | undefined;
+  dispatcher: ActionDispatcher;
+  die: DieMetadata | undefined;
+  vectorLayer: VectorizeLayer | null;
+  getTraceSnapTargets?: () => TraceSnapTarget[];
+}) {
+  // Duplicated from the ML tab ON PURPOSE — it is shared state (it filters
+  // vector traces by their brightness margin too), so both sliders drive
+  // the same preference.
+  const traceConfidence = usePreferences((s) => s.traceConfidenceThreshold);
+  const setTraceConfidence = usePreferences((s) => s.setTraceConfidenceThreshold);
+  return (
+    <div>
+      <div
+        className="row"
+        style={{ justifyContent: "space-between", margin: "8px 10px 4px" }}
+      >
+        <span className="u" style={{ fontSize: 10 }}>
+          Trace confidence
+        </span>
+        <span className="m" style={{ fontSize: 11, color: "var(--ink2)" }}>
+          {traceConfidence.toFixed(2)}
+        </span>
+      </div>
+      <div style={{ padding: "0 10px" }}>
+        <input
+          type="range"
+          min={0}
+          max={1}
+          step={0.01}
+          value={traceConfidence}
+          style={{ width: "100%" }}
+          onChange={(e) => setTraceConfidence(Number(e.target.value))}
+        />
+        <div className="m" style={{ fontSize: 10, color: "var(--ink3)", marginTop: 4 }}>
+          Shared with ML traces: hides traces whose score (brightness margin
+          for vector decodes, model probability for ML) is below this. 0 = off.
+        </div>
+      </div>
       <VectorSection
         dieId={dieId}
         annotations={annotations}
@@ -841,10 +947,6 @@ function MLPanel({
         vectorLayer={vectorLayer}
         getTraceSnapTargets={getTraceSnapTargets}
       />
-      <MLSectionHeader>ML Vias</MLSectionHeader>
-      <ApproveSection dieId={dieId} annotations={annotations} dispatcher={dispatcher} mlViasLayer={mlViasLayer} />
-      <MLSectionHeader>Training</MLSectionHeader>
-      <TrainingSection dieId={dieId} />
     </div>
   );
 }
@@ -1447,6 +1549,8 @@ function VectorSection({
   const deletePreset = usePreferences((s) => s.deleteVectorPreset);
   const hidden = usePreferences((s) => s.vectorOverlayHidden);
   const setHidden = usePreferences((s) => s.setVectorOverlayHidden);
+  const outlineAlpha = usePreferences((s) => s.vectorOutlineAlpha);
+  const setOutlineAlpha = usePreferences((s) => s.setVectorOutlineAlpha);
   const status = useDieViewerStore((s) => s.vectorStatus);
   const pipetteArmed = useDieViewerStore((s) => s.vectorPipetteArmed);
   const setPipetteArmed = useDieViewerStore((s) => s.setVectorPipetteArmed);
@@ -1700,6 +1804,38 @@ function VectorSection({
         </div>
       )}
 
+      {/* Outline opacity: the amber "what did the threshold capture"
+          contours are the tuning feedback — sometimes they need to be near
+          opaque to read against a busy die. Traces keep their style. */}
+      <div
+        className="row"
+        style={{ justifyContent: "space-between", marginBottom: 4, marginTop: 6 }}
+      >
+        <span className="u" style={{ fontSize: 10 }}>
+          Outline opacity
+        </span>
+        <span className="m" style={{ fontSize: 11, color: "var(--ink2)" }}>
+          {Math.round(outlineAlpha * 100)}%
+        </span>
+      </div>
+      <input
+        type="range"
+        min={0}
+        max={1}
+        step={0.01}
+        value={outlineAlpha}
+        style={{ width: "100%" }}
+        onChange={(e) => setOutlineAlpha(Number(e.target.value))}
+      />
+      <div
+        className="m"
+        style={{ fontSize: 10, color: "var(--ink3)", marginTop: 4, marginBottom: 6 }}
+      >
+        Transparency of the metal OUTLINES (both live and saved layers). 100%
+        = solid amber silhouette of the captured metal; centrelines are
+        unaffected.
+      </div>
+
       {/* Channel + polarity */}
       <div
         className="row"
@@ -1952,8 +2088,7 @@ function VectorSection({
           type="button"
           className="btn"
           style={{ cursor: "pointer" }}
-          disabled={hidden}
-          title="Save the current parameters as a named preset"
+          title="Save the current parameters as a named preset (independent of the overlay's visibility)"
           onClick={() => void saveAsPreset()}
         >
           Save
