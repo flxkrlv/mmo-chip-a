@@ -69,6 +69,14 @@ class _Graph:
 def _build_graph(binary: np.ndarray, progress=None) -> tuple[_Graph, np.ndarray]:
     """skeletonize + cluster junction/end pixels + one edge per corridor.
 
+    The corridor ordering is VECTORIZED: flat-index lookup maps and a
+    precomputed 8-neighbour matrix (in the original walk's offset order)
+    replaced the old per-pixel python set walk, which ground for tens of
+    minutes on die-sized masks (the whole-die decode spent 20+ minutes
+    inside "graph" — this stage). Output contract is unchanged: identical
+    component enumeration, start-point choice, tie-break directions and
+    node attachments, so traces are bit-identical for the same mask.
+
     `progress(stage)` — optional coarse-stage callback for the whole-die
     decode progress bar (skeletonize is the minutes-long stage)."""
     from scipy.ndimage import center_of_mass, label as scipy_label
@@ -101,49 +109,94 @@ def _build_graph(binary: np.ndarray, progress=None) -> tuple[_Graph, np.ndarray]
     cor_labels, n_cor = scipy_label(
         corridors.astype(np.uint8), structure=np.ones((3, 3), dtype=np.uint8)
     )
-
     graph = _Graph(nodes=nodes)
+    if n_cor == 0:
+        return graph, skel
+
+    # ── Vectorized corridor index ────────────────────────────────────
+    # Corridor pixels (flat row-major, like np.nonzero per label produced),
+    # grouped per component label in the SAME row-major order the original
+    # per-label np.nonzero yielded (it decided each walk's start pixel).
+    cor_flat = cor_labels.ravel()
+    nz_flat = np.flatnonzero(cor_flat)         # corridor pixels, ascending
+    labs_all = cor_flat[nz_flat]
+    by_lab = np.argsort(labs_all, kind="stable")
+    rows_by_lab = by_lab                        # rows of the grouped array
+    grouped_flat = nz_flat[by_lab]              # flat idx, grouped by label
+    grouped_lab = labs_all[by_lab]
+    n = grouped_flat.size
+    lab_edges = np.searchsorted(
+        grouped_lab, np.arange(1, n_cor + 2), side="left"
+    )
+    # Global flat idx -> row in the grouped arrays (for neighbour lookup).
+    sorted_by_flat = np.argsort(grouped_flat)
+    flat_sorted = grouped_flat[sorted_by_flat]  # ascending flat idx
+
+    # Offsets in the EXACT order the original walk scanned neighbours
+    # (dy -1..1 x dx -1..1) — tie-breaks must stay identical.
+    offsets = [(dy, dx) for dy in (-1, 0, 1) for dx in (-1, 0, 1) if dx or dy]
+
+    ys_all = grouped_flat // w
+    xs_all = grouped_flat % w
+    nbrs = np.full((n, 8), -1, dtype=np.int32)
+    node_nbrs = np.zeros((n, 8), dtype=np.int32)
+    node_lab_flat = node_labels.ravel()
+    for j, (dy, dx) in enumerate(offsets):
+        ny = ys_all + dy
+        nx = xs_all + dx
+        valid = (ny >= 0) & (ny < h) & (nx >= 0) & (nx < w)
+        nf = np.clip(ny, 0, h - 1) * w + np.clip(nx, 0, w - 1)
+        pos = np.searchsorted(flat_sorted, nf).clip(max=n - 1)
+        hit = valid & (flat_sorted[pos] == nf)
+        row = np.where(hit, sorted_by_flat[pos], -1)
+        same = hit & (grouped_lab[np.maximum(row, 0)] == grouped_lab)
+        nbrs[:, j] = np.where(same, row, -1)
+        node_nbrs[:, j] = np.where(
+            valid, np.maximum(node_lab_flat[nf], 0), 0
+        )
+
+    # First junction label adjacent to each pixel (offset order — the
+    # original end_node() returned the first nonzero scan hit).
+    first_node = np.full(n, 0, dtype=np.int32)
+    any_node_rows = np.nonzero((node_nbrs > 0).any(axis=1))[0]
+    if any_node_rows.size:
+        j0 = np.argmax(node_nbrs[any_node_rows] > 0, axis=1)
+        first_node[any_node_rows] = node_nbrs[any_node_rows, j0]
+
+    seen = np.zeros(n, dtype=bool)
     for lab in range(1, n_cor + 1):
-        ys, xs = np.nonzero(cor_labels == lab)
-        pts = list(zip(xs.tolist(), ys.tolist()))
-        if not pts:
+        s, e = lab_edges[lab - 1], lab_edges[lab]
+        if e == s:
             continue
-        pt_set = set(pts)
-        # Order the path: walk from an endpoint (a pixel with exactly one
-        # corridor neighbour inside the component); cycles walk from any px.
-        def cor_nbrs(p: tuple[int, int]) -> list[tuple[int, int]]:
-            x, y = p
-            return [
-                (x + dx, y + dy)
-                for dy in (-1, 0, 1)
-                for dx in (-1, 0, 1)
-                if (dx or dy) and (x + dx, y + dy) in pt_set
-            ]
-
-        start = next((p for p in pts if len(cor_nbrs(p)) == 1), pts[0])
-        ordered = [start]
-        seen = {start}
+        # Start pixel: first (row-major) pixel with exactly one in-component
+        # neighbour — an endpoint; a node-free ring starts at its first px.
+        local = nbrs[s:e]
+        cnt = (local >= 0).sum(axis=1)
+        end_rows = np.nonzero(cnt == 1)[0]
+        cur = s + (int(end_rows[0]) if end_rows.size else 0)
+        ordered: list[int] = [cur]
+        seen[cur] = True
         while True:
-            nxt = [q for q in cor_nbrs(ordered[-1]) if q not in seen]
-            if not nxt:
+            row = nbrs[cur]
+            nxt = -1
+            for j in range(8):
+                q = row[j]
+                if q >= 0 and not seen[q]:
+                    nxt = int(q)
+                    break
+            if nxt < 0:
                 break
-            ordered.append(nxt[0])
-            seen.add(nxt[0])
-
-        def end_node(p: tuple[int, int]) -> int | None:
-            x, y = p
-            for dy in (-1, 0, 1):
-                for dx in (-1, 0, 1):
-                    if not (dx or dy):
-                        continue
-                    lab_n = int(node_labels[y + dy, x + dx]) if 0 <= y + dy < h and 0 <= x + dx < w else 0
-                    if lab_n:
-                        return lab_n
-            return None
-
-        a = end_node(ordered[0])
-        b = end_node(ordered[-1])
-        graph.edges.append(_Edge(a=a, b=b, points=ordered))
+            ordered.append(nxt)
+            seen[nxt] = True
+            cur = nxt
+        seen[np.asarray(ordered, dtype=np.int64)] = False
+        flat_pts = grouped_flat[np.asarray(ordered, dtype=np.int64)]
+        pts = [(int(f % w), int(f // w)) for f in flat_pts]
+        a = int(first_node[ordered[0]])
+        b = int(first_node[ordered[-1]])
+        graph.edges.append(_Edge(
+            a=a if a > 0 else None, b=b if b > 0 else None, points=pts
+        ))
     return graph, skel
 
 
@@ -209,46 +262,107 @@ def _edge_dir_at(graph: _Graph, e: _Edge, at_start: bool) -> tuple[float, float]
 
 def _merge_collinear(graph: _Graph, tol_deg: float) -> int:
     """Dissolve junctions with exactly two aligned incidents (straight pass-
-    through). Real corners (~90°) and T/X junctions survive. Returns merges."""
+    through). Real corners (~90°) and T/X junctions survive. Returns merges.
+
+    Incremental rewrite of the rescan-everything loop: node -> incident
+    edges adjacency is MAINTAINED, and candidates live in a heap keyed by
+    the dict insertion order. Decisions are unchanged — the original scan
+    always dissolved the FIRST eligible node in insertion order and
+    recomputed everything after each dissolve; the heap pops exactly that.
+    The old full rescan was O(nodes x edges) per dissolve — on a die-sized
+    graph (18k junction clusters / 13k corridors) it ground for 15+
+    minutes inside the whole-die decode's "graph" stage."""
+    import heapq
+
+    edges = graph.edges
+
+    # Adjacency: node -> [(edge_id, at_start)], built in the same order the
+    # old _incident scan saw them (edges in list order, a-before-b).
+    adj: dict[int, list[tuple[int, bool]]] = {}
+    for i, e in enumerate(edges):
+        if e.removed:
+            continue
+        if e.a is not None:
+            adj.setdefault(e.a, []).append((i, True))
+        if e.b is not None:
+            adj.setdefault(e.b, []).append((i, False))
+        if e.a == e.b and e.a is not None:  # loop attached twice
+            adj[e.a].append((i, False))
+
+    def live_inc(node: int) -> list[tuple[int, bool]]:
+        inc = [p for p in adj.get(node, []) if not edges[p[0]].removed]
+        # Drop consumed entries so lists don't bloat across dissolves.
+        if len(inc) != len(adj.get(node, [])):
+            adj[node] = inc if inc else []
+        return inc
+
+    # Candidates: every node that could possibly be eligible. Heap keyed by
+    # dict insertion order = "first eligible node" of the original rescan.
+    order = {node: pos for pos, node in enumerate(graph.nodes)}
+    pending: list[tuple[int, int]] = [
+        (order[n], n) for n in graph.nodes if len(adj.get(n, [])) == 2
+    ]
+    heapq.heapify(pending)
+
     merges = 0
-    changed = True
-    while changed:
-        changed = False
-        for node in list(graph.nodes):
-            if node not in graph.nodes:
+    while pending:
+        _pos, node = heapq.heappop(pending)
+        if node not in graph.nodes:
+            continue
+        inc = live_inc(node)
+        if len(inc) != 2:
+            continue
+        (e1_id, s1), (e2_id, s2) = inc
+        if e1_id == e2_id:
+            continue  # loop attached twice — not a pass-through
+        e1, e2 = edges[e1_id], edges[e2_id]
+        if not e1.points or not e2.points:
+            continue
+        d1 = _edge_dir_at(graph, e1, not s1)  # travel INTO the node along e1
+        d2 = _edge_dir_at(graph, e2, s2)      # travel OUT of the node along e2
+        if d1 is None or d2 is None:
+            continue
+        dot = max(-1.0, min(1.0, d1[0] * d2[0] + d1[1] * d2[1]))
+        ang = math.degrees(math.acos(dot))
+        if ang > tol_deg:
+            continue  # real corner/other topology — drop until a change
+
+        # Reorient: e1 must walk INTO the node, e2 must walk OUT of it;
+        # capture pre-merge attachment ends for adjacency maintenance.
+        a1_old, b1_old = e1.a, e1.b
+        a2_old, b2_old = e2.a, e2.b
+        if s1:
+            e1.a, e1.b = e1.b, e1.a
+            e1.points.reverse()
+        if not s2:
+            e2.a, e2.b = e2.b, e2.a
+            e2.points.reverse()
+        # after reorientation e1.b == node and e2.a == node
+        e1.points = e1.points + [graph.nodes[node]] + e2.points
+        new_a, new_b = e1.a, e2.b  # e1 takes over e2's far end
+        e1.b = new_b
+        e2.removed = True
+        del graph.nodes[node]
+        merges += 1
+
+        # ── Maintain adjacency surgically: drop e1/e2's stale entries at
+        #    their old ends, re-add e1 at its new pair of ends ──
+        for nid, removed_edge in (
+            (a1_old, e1_id), (b1_old, e1_id),
+            (a2_old, e2_id), (b2_old, e2_id),
+        ):
+            if nid is None:
                 continue
-            inc = _incident(graph, node)
-            if len(inc) != 2:
-                continue
-            (e1, s1), (e2, s2) = inc
-            if e1 is e2:
-                continue  # loop attached twice — not a pass-through
-            if len(e1.points) < 1 or len(e2.points) < 1:
-                continue
-            d1 = _edge_dir_at(graph, e1, not s1)  # travel INTO the node along e1
-            d2 = _edge_dir_at(graph, e2, s2)      # travel OUT of the node along e2
-            if d1 is None or d2 is None:
-                continue
-            dot = max(-1.0, min(1.0, d1[0] * d2[0] + d1[1] * d2[1]))
-            ang = math.degrees(math.acos(dot))
-            if ang > tol_deg:
-                continue
-            # Orient: e1 must walk INTO the node (node at its b end), e2 must
-            # walk OUT of the node (node at its a end); then concatenate.
-            if s1:
-                e1.a, e1.b = e1.b, e1.a
-                e1.points.reverse()
-            if not s2:
-                e2.a, e2.b = e2.b, e2.a
-                e2.points.reverse()
-            # after reorientation e1.b == node and e2.a == node
-            e1.points = e1.points + [graph.nodes[node]] + e2.points
-            e1.b = e2.b
-            e2.removed = True
-            del graph.nodes[node]
-            merges += 1
-            changed = True
-            break
+            lst = adj.get(nid)
+            if lst:
+                adj[nid] = [p for p in lst if p[0] != removed_edge]
+        if new_a is not None:
+            adj.setdefault(new_a, []).append((e1_id, True))
+        if new_b is not None:
+            adj.setdefault(new_b, []).append((e1_id, False))
+        for nid in (new_a, new_b):
+            if nid is not None and nid in graph.nodes:
+                heapq.heappush(pending, (order[nid], nid))
     return merges
 
 

@@ -47,6 +47,10 @@ from vectorize import VectorParams, build_mask, decode_mask, mask_pad_px, vector
 # POST /vectorize/decode/cancel when the sweep's Stop button fires.
 DECODE_JOBS: dict[str, "subprocess.Popen"] = {}
 DECODE_JOBS_LOCK = threading.Lock()
+# save_to (full.json path) -> job_id of the in-flight decode — a repeated
+# sweep start (double click / retried POST) must JOIN the running worker,
+# not spawn a second CPU-eating twin over the same mask.
+DECODE_SAVE_TO: dict[str, str] = {}
 
 
 def _now() -> str:
@@ -538,11 +542,40 @@ def vectorize_decode(
     import time
     import uuid
 
-    jid = job_id or f"decode-{uuid.uuid4().hex[:8]}"
+    jid = job_id or b.get("job_id") or f"decode-{uuid.uuid4().hex[:8]}"
+    save_to = str(b["save_to"]) if b.get("save_to") else None
     tmp_dir = Path(tempfile.gettempdir())
+
+    # Join-into-flight: another worker is already decoding the same target
+    # (retried/double-started POST) — wait for ITS full.json instead of
+    # spawning a twin that would halve (or worse) everyone's CPU share.
+    with DECODE_JOBS_LOCK:
+        existing_jid = DECODE_SAVE_TO.get(save_to) if save_to else None
+        existing_proc = DECODE_JOBS.get(existing_jid) if existing_jid else None
+    if existing_proc is not None and existing_proc.poll() is None:
+        deadline_join = time.monotonic() + 3600  # same extended budget
+        while True:
+            if existing_proc.poll() is not None:
+                break
+            if time.monotonic() > deadline_join:
+                raise HTTPException(status_code=499, detail="joined decode wait timed out")
+            time.sleep(1.0)
+        if save_to and Path(save_to).exists():
+            try:
+                joined = json.loads(Path(save_to).read_text(encoding="utf-8"))
+            except Exception:
+                joined = None
+            if joined and "error" not in joined:
+                return joined
+        raise HTTPException(status_code=499, detail="joined decode failed — retry")
+
     mask_path = tmp_dir / f"mmochip_decode_{jid}.png"
-    out_path = tmp_dir / f"mmochip_decode_{jid}.json"
-    spec_path = tmp_dir / f"mmochip_decode_{jid}.json"
+    # DISTINCT filenames: the worker OVERWRITES its spec with the result,
+    # so sharing one name used to make a killed worker's leftover SPEC read
+    # back as a "successful" (trace-less) decode — the sweep then wrote a
+    # poison-empty payload. `.result.json` cannot pre-exist as a spec.
+    out_path = tmp_dir / f"mmochip_decode_{jid}.result.json"
+    spec_path = tmp_dir / f"mmochip_decode_{jid}.spec.json"
     worker = Path(__file__).resolve().parent / "decode_worker.py"
     mask_path.write_bytes(raw)
     spec = {
@@ -557,12 +590,16 @@ def vectorize_decode(
             "oct_strict": b.get("oct_strict", False),
         },
     }
-    if b.get("save_to"):
-        spec["save_to"] = str(b["save_to"])
+    if save_to:
+        spec["save_to"] = save_to
     if b.get("progress_path"):
         # The worker writes live decode progress (stage/pct/eta) there; the
         # sweep backend reads the same file for its status endpoint.
         spec["progress_path"] = str(b["progress_path"])
+        try:  # stale error dump of a previous attempt must not mislead
+            Path(b["progress_path"]).with_name("decode-error.txt").unlink(missing_ok=True)
+        except OSError:
+            pass
     spec_path.write_text(json.dumps(spec), encoding="utf-8")
     proc = subprocess.Popen(
         [sys.executable, str(worker), str(spec_path)],
@@ -572,7 +609,12 @@ def vectorize_decode(
     )
     with DECODE_JOBS_LOCK:
         DECODE_JOBS[jid] = proc
-    deadline = time.monotonic() + 1800  # 30 min, matches the client timeout
+        if save_to:
+            DECODE_SAVE_TO[save_to] = jid
+    deadline = time.monotonic() + 3600  # 60 min — die-sized "graph" stages
+    # (pure corridor walk over tens of millions of skeleton px) measured
+    # ~25 min ALONE on a 56 Mpx die; 30 min used to behead a run that was
+    # otherwise healthy.
     try:
         while True:
             code = proc.poll()
@@ -584,17 +626,46 @@ def vectorize_decode(
             time.sleep(1.0)
         if not out_path.exists():
             raise HTTPException(status_code=499, detail="whole-die decode cancelled")
+        # Forensics: persist WHY a decode died next to the sweep's progress
+        # file — the temp out file is unlinked below and the raw traceback
+        # otherwise exists only in the worker's vanished stdout.
+        def _dump_worker_error(text: str) -> None:
+            pp = b.get("progress_path")
+            if not pp:
+                return
+            try:
+                Path(pp).with_name("decode-error.txt").write_text(text, encoding="utf-8")
+            except OSError:
+                pass
         try:
             result = json.loads(out_path.read_text(encoding="utf-8"))
         except Exception as exc:  # noqa: BLE001
+            tail = ""
+            try:
+                tail = out_path.read_text(errors="ignore")[-800:]
+            except Exception:  # noqa: BLE001 — gone or locked
+                tail = "(out file unreadable)"
+            _dump_worker_error(f"out file unreadable: {exc}\ntail: {tail}")
             raise HTTPException(status_code=500, detail=f"decode worker lost output: {exc}") from exc
         if "error" in result:
+            _dump_worker_error(str(result["error"]))
             detail = str(result["error"]).strip().splitlines()[-1]
             raise HTTPException(status_code=500, detail=f"decode failed: {detail}")
+        # Shape check: anything that parses but is not a decode result
+        # (stale spec leftovers, truncated junk) must not reach the client
+        # as success — an empty payload then poisons the frontend overlay.
+        if "traces" not in result or "stats" not in result:
+            _dump_worker_error(f"result shape invalid: keys={sorted(result)[:10]}")
+            raise HTTPException(
+                status_code=500,
+                detail=f"decode worker lost output: result is not a decode payload (keys: {sorted(result)})"
+            )
         return result
     finally:
         with DECODE_JOBS_LOCK:
             DECODE_JOBS.pop(jid, None)
+            if save_to and DECODE_SAVE_TO.get(save_to) == jid:
+                DECODE_SAVE_TO.pop(save_to, None)
         if proc.poll() is None:
             proc.terminate()
         for p in (mask_path, out_path, spec_path):

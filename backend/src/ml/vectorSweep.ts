@@ -1,6 +1,11 @@
-import { createHash } from "node:crypto";
+﻿import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
+import {
+  Agent as UndiciAgent,
+  fetch as undiciFetch,
+  FormData as UndiciFormData
+} from "undici";
 import sharp from "sharp";
 import type {
   VectorBlockPayload,
@@ -90,7 +95,19 @@ export function createVectorSweep(config: {
     return path.join(config.dataRoot, "vectorize", dieId, hash);
   }
 
-  /** Sidecar request helper (multipart with an image part + JSON body). */
+  /** Sidecar request helper (multipart with an image part + JSON body).
+   *  undici (Node's fetch) drops a response body idle >300 s by default —
+   *  the whole-die decode POST streams nothing for minutes, so every sweep
+   *  attempt died at 5 min and postWithRetry spawned ANOTHER worker while
+   *  the previous grind went on: old decodes kept stacking (the "100% CPU
+   *  forever" incident).
+   *  NB: the Agent comes from the NPM undici, which is a different module
+   *  instance than Node's bundled one — global fetch rejects it
+   *  ("invalid onRequestStart method"), so the long-poll request goes
+   *  through undici's OWN fetch with matching classes (fetch/FormData).
+   *  Short calls (block masks etc.) stay on global fetch — nothing to
+   *  hold past 5 min. */
+  const decodeAgent = new UndiciAgent({ bodyTimeout: 0, headersTimeout: 0 });
   async function postSidecar(
     endpoint: string,
     file: { name: string; blob: Blob },
@@ -100,10 +117,36 @@ export function createVectorSweep(config: {
     const fd = new FormData();
     fd.append("image", file.blob, file.name);
     fd.append("body", JSON.stringify(json));
+    // The sidecar reads `job_id` as its own Form field (subprocess registry
+    // for Stop/cancel) — send it outside the body JSON too.
+    if (typeof json.job_id === "string" && json.job_id) {
+      fd.append("job_id", json.job_id);
+    }
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
-      const res = await fetch(`${config.mlSidecarUrl}${endpoint}`, {
+      const url = `${config.mlSidecarUrl}${endpoint}`;
+      if (timeoutMs > 900_000) {
+        // Minutes-long whole-die decode: no idle-body limits at all.
+        const ufd = new UndiciFormData();
+        ufd.append("image", file.blob, file.name);
+        ufd.append("body", JSON.stringify(json));
+        if (typeof json.job_id === "string" && json.job_id) {
+          ufd.append("job_id", json.job_id);
+        }
+        const res = await undiciFetch(url, {
+          method: "POST",
+          body: ufd,
+          signal: controller.signal,
+          dispatcher: decodeAgent
+        });
+        if (!res.ok) {
+          const text = await res.text().catch(() => "");
+          throw new Error(`sidecar ${endpoint} ${res.status}: ${text.slice(0, 200)}`);
+        }
+        return (await res.json()) as Record<string, unknown>;
+      }
+      const res = await fetch(url, {
         method: "POST",
         body: fd,
         signal: controller.signal
@@ -349,9 +392,21 @@ export function createVectorSweep(config: {
             progress_path: path.join(dir, "progress.json")
           },
           // The global decode skeletonizes the whole die (tens of millions
-          // of px - minutes of CV-gated work). 30 min, no premature abort.
-          1_800_000,
-          () => job.cancel
+          // of px - minutes of CV-gated work). 60 min: die-sized "graph"
+          // stages measured ~25 min alone; the old 30-min pair (this + the
+          // sidecar's own deadline) beheaded healthy runs.
+          3_600_000,
+          () => job.cancel,
+          (attempt, err) => {
+            // Surfaces silent retries in the UI (the whole-die decode is
+            // one long request — a hiccup WITHOUT this is invisible and
+            // the user reads a stuck bar for the retried twin's runtime).
+            const msg = err instanceof Error ? err.message : String(err);
+            job.warning =
+              `sidecar glitch (attempt ${attempt}, ${msg.slice(0, 160)}) — ` +
+              "decode is being retried; progress restarts from the mask phase";
+            console.warn(`[vectorSweep] ${dieId}: retry #${attempt}: ${msg}`);
+          }
         )) as unknown as {
           traces: VectorBlockPayload["traces"];
           outlines: VectorBlockPayload["outlines"];
@@ -362,6 +417,7 @@ export function createVectorSweep(config: {
           job.status = "stopped";
           return;
         }
+        job.warning = null; // retries recovered — drop the stale notice
         const payload = {
           bbox: [0, 0, maskW, maskH] as [number, number, number, number],
           traces: decoded.traces ?? [],
@@ -413,7 +469,8 @@ export function createVectorSweep(config: {
     buf: Buffer,
     json: Record<string, unknown>,
     timeoutMs = 300_000,
-    shouldStop?: () => boolean
+    shouldStop?: () => boolean,
+    onRetry?: (attempt: number, err: unknown) => void
   ): Promise<Record<string, unknown>> {
     let lastErr: unknown = null;
     // The sidecar's CV gate answers 429 when ANY other CV request is in
@@ -431,6 +488,7 @@ export function createVectorSweep(config: {
       } catch (e) {
         lastErr = e;
         if (shouldStop?.()) throw new Error("stopped");
+        onRetry?.(attempt + 1, e);
         await new Promise((r) => setTimeout(r, 3000));
       }
     }

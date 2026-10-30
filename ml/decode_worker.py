@@ -58,18 +58,32 @@ class ProgressWriter:
         self._stage_start = time.monotonic()
         self._stage_ms: dict[str, float] = {}
         self._done = False
-        # Calibration: the previous run's real per-stage durations (this
-        # file is written next to the payload — a re-decode of the same die
-        # size on the same machine is a good speed prior).
-        weights = dict(DEFAULT_STAGE_MS)
         try:
             prev = json.loads(self.path.read_text(encoding="utf-8"))
             prev_ms = prev.get("stage_ms") or {}
-            calibrated = {k: float(v) for k, v in prev_ms.items() if float(v) > 0.0}
-            if calibrated:
-                weights = calibrated
         except Exception:  # noqa: BLE001 — first run / unreadable: defaults
-            pass
+            prev_ms = {}
+
+        # Calibration: the previous run's real per-stage durations (this
+        # file is written next to the payload — a re-decode of the same die
+        # size on the same machine is a good speed prior). Keep the DEFAULT
+        # weight for any stage the previous run never reached: merging only
+        # the recorded stages starved the unseen ones down to weight 0 —
+        # right after skeletonize pct jumped to 100% with eta 0 ("0:00 left"
+        # forever) while "graph" was still grinding for minutes.
+        weights = {
+            k: float(prev_ms.get(k) or DEFAULT_STAGE_MS[k])
+            for k in DEFAULT_STAGE_MS
+        }
+        # Clamp every stage to a sane share of the bar (2%..40% of total):
+        # one gigantic measured stage (e.g. a lucky-fast skeletonize on a
+        # sparse die next to a heavy unmeasured "graph") otherwise pushes
+        # everything else to ~0 weight and freezes the bar at 99.9% with
+        # eta ~0 s while decode grinds on for tens of minutes.
+        for _ in range(4):
+            total_w = sum(weights.values()) or 1.0
+            lo, hi = total_w / 50.0, total_w * 0.4
+            weights = {k: min(max(v, lo), hi) for k, v in weights.items()}
         self._weights = weights
         self._total_w = sum(weights.values()) or 1.0
         self._thread = threading.Thread(target=self._tick, daemon=True)

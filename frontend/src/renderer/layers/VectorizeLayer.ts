@@ -659,14 +659,37 @@ export class VectorizeLayer implements Layer {
         const ob = this.ensureOutlineBitmap(pin);
         const tb = this.ensureTraceBitmap(pin);
         if (ob && tb) {
-          // Two blits per tile re-render (tile canvases only re-draw on zoom
-          // change / eviction): the outline silhouette through globalAlpha —
-          // baked at full strength, the slider dims it live — then the
-          // traces at their fixed style.
-          ctx.globalAlpha = outlineAlpha;
-          ctx.drawImage(ob.canvas, 0, 0, this.metadata.width, this.metadata.height);
-          ctx.globalAlpha = 1;
-          ctx.drawImage(tb.canvas, 0, 0, this.metadata.width, this.metadata.height);
+          // Sub-rect blit: the bitmap is baked at ~bakeScale px per world
+          // unit, so this tile's world rect maps to a SOURCE sub-rect —
+          // resample only that. The old full-bitmap drawImage resampled the
+          // whole die-sized source into EVERY tile of every frame (the
+          // saved-layer jank returned on the big die). The outline siluet
+          // reads through globalAlpha — baked at full strength, the user's
+          // opacity slider dims it live — traces blit at fixed style.
+          const blit = (bm: { canvas: HTMLCanvasElement }, alpha: number) => {
+            const bx = bm.canvas.width / this.metadata.width;
+            const by = bm.canvas.height / this.metadata.height;
+            const sx = Math.max(0, Math.floor(world.x * bx));
+            const sy = Math.max(0, Math.floor(world.y * by));
+            const sw = Math.min(
+              bm.canvas.width - sx,
+              Math.ceil((world.x + world.width) * bx) - sx
+            );
+            const sh = Math.min(
+              bm.canvas.height - sy,
+              Math.ceil((world.y + world.height) * by) - sy
+            );
+            if (sw <= 0 || sh <= 0) return;
+            if (alpha < 1) ctx.globalAlpha = alpha;
+            ctx.drawImage(
+              bm.canvas,
+              sx, sy, sw, sh,
+              sx / bx, sy / by, sw / bx, sh / by
+            );
+            if (alpha < 1) ctx.globalAlpha = 1;
+          };
+          blit(ob, outlineAlpha);
+          blit(tb, 1);
           continue;
         }
       }
