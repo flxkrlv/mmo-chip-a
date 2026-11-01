@@ -1,5 +1,6 @@
 import type { DieMetadata, MLTracePolyline, VectorizeParams } from "shared";
 import { rectsIntersect, type Point, type Rect } from "../../lib/geometry";
+import { traceRegionBox, type TraceRegionLike } from "../../components/dieViewer/userNetFilter";
 import { fetchVectorBlocks, fetchVectorLayerBlocks, vectorizeRegion } from "../../api/ml";
 import type { Layer, RenderFrame, TileBounds } from "../types";
 
@@ -50,6 +51,10 @@ export interface VectorizeDisplay {
   getOutlineAlpha?: () => number;
   /** Pipette samples to mark on the canvas (world coords + sampled rgb). */
   getSamples?: () => VectorPipetteSample[];
+  /** P2-2 trace regions: when non-empty, traces/outlines are RENDERED only
+   *  where they touch at least one region (materialization applies the same
+   *  filter in the Inspector). Empty ⇒ whole die. */
+  getTraceRegions?: () => TraceRegionLike[];
   /** Status for the inspector: loading flag, last error, region trace count,
    *  and the last decode's width-filter drop stats. */
   onStatusChange?: (status: {
@@ -242,6 +247,34 @@ export class VectorizeLayer implements Layer {
     this.snapCache.clear();
     this.blockMiss.clear();
     this.invalidateCb?.();
+  }
+
+  /** Redraw request from outside (e.g. the P2-2 trace region list changed —
+   *  culling happens at draw time, but tiles are cached rasters that don't
+   *  re-render without an invalidate). */
+  refresh(): void {
+    this.invalidateCb?.();
+  }
+
+  /** Bounding boxes of the active trace regions (P2-2); empty = off. */
+  private traceRegionRects(): Rect[] {
+    const regions = this.display.getTraceRegions?.() ?? [];
+    return regions.map((r) => traceRegionBox(r));
+  }
+
+  private static inAnyRegion(box: Rect, regions: Rect[]): boolean {
+    if (regions.length === 0) return true;
+    for (const r of regions) {
+      if (
+        box.x + box.width >= r.x &&
+        r.x + r.width >= box.x &&
+        box.y + box.height >= r.y &&
+        r.y + r.height >= box.y
+      ) {
+        return true;
+      }
+    }
+    return false;
   }
 
   /** Saved layers list from the outline tree (Vector layers): pinned, eye
@@ -559,6 +592,8 @@ export class VectorizeLayer implements Layer {
     const strokeW = 1 / zoom;
     const minScore = this.display.getTraceConfidenceThreshold?.() ?? 0;
     const snapTol = this.display.getSnapTol?.() ?? 12;
+    // P2-2: trace regions restrict what renders at all.
+    const regionRects = this.traceRegionRects();
     // Outline opacity (user slider): fill takes α, the edge stroke reads
     // slightly stronger so the contour line stays defined even at low α.
     const outlineAlpha = Math.min(1, Math.max(0, this.display.getOutlineAlpha?.() ?? 0.3));
@@ -575,6 +610,7 @@ export class VectorizeLayer implements Layer {
       ctx.lineWidth = strokeW;
       for (const { box, index } of region.outlineBoxes) {
         if (!rectsIntersect(box, world)) continue;
+        if (!VectorizeLayer.inAnyRegion(box, regionRects)) continue;
         const pts = region.outlines[index];
         if (pts.length < 3) continue;
         const path = (region.outlinePaths[index] ??= buildPath(pts, true));
@@ -592,6 +628,7 @@ export class VectorizeLayer implements Layer {
       // Centreline traces + endpoint snaps.
       for (const { box, index } of region.traceBoxes) {
         if (!rectsIntersect(box, world)) continue;
+        if (!VectorizeLayer.inAnyRegion(box, regionRects)) continue;
         const t = region.traces[index];
         if ((t.score ?? 1) < minScore) continue;
         const pts = t.points;
@@ -643,6 +680,9 @@ export class VectorizeLayer implements Layer {
     const snapTol = this.display.getSnapTol?.() ?? 12;
     const strokeW = 1 / zoom;
     const outlineAlpha = Math.min(1, Math.max(0, this.display.getOutlineAlpha?.() ?? 0.3));
+    // P2-2: with trace regions active the pre-baked die-sized bitmaps can't
+    // be culled per shape — fall back to the vector path, which can.
+    const regionRects = this.traceRegionRects();
     for (const [hash, pin] of this.pinned) {
       if (this.savedHiddenSet.has(hash)) {
         // Free the (large) bitmaps of a hidden layer — they are rebuilt from
@@ -655,7 +695,7 @@ export class VectorizeLayer implements Layer {
       const [r, g, b] = hexToRgb(pin.color) ?? hexToRgb(VECT_LAYER_DEFAULT_COLOR)!;
       const outlineFill = `rgba(${r}, ${g}, ${b}, ${outlineAlpha.toFixed(3)})`;
       const outlineEdge = `rgba(${r}, ${g}, ${b}, ${Math.min(1, outlineAlpha * 1.6).toFixed(3)})`;
-      if (zoom < SAVED_BITMAP_MAX_ZOOM) {
+      if (zoom < SAVED_BITMAP_MAX_ZOOM && regionRects.length === 0) {
         const ob = this.ensureOutlineBitmap(pin);
         const tb = this.ensureTraceBitmap(pin);
         if (ob && tb) {
@@ -696,6 +736,7 @@ export class VectorizeLayer implements Layer {
       ctx.lineWidth = strokeW;
       for (const { box, index } of pin.traceBoxes) {
         if (!rectsIntersect(box, world)) continue;
+        if (!VectorizeLayer.inAnyRegion(box, regionRects)) continue;
         const t = pin.traces[index];
         if ((t.score ?? 1) < minScore) continue;
         const pts = t.points;
@@ -709,6 +750,7 @@ export class VectorizeLayer implements Layer {
       }
       for (const { box, index } of pin.outlineBoxes) {
         if (!rectsIntersect(box, world)) continue;
+        if (!VectorizeLayer.inAnyRegion(box, regionRects)) continue;
         const pts = pin.outlines[index];
         if (pts.length < 3) continue;
         const path = (pin.outlinePaths[index] ??= buildPath(pts, true));

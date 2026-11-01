@@ -270,3 +270,64 @@ export function collectUserNetPolylines(
   }
   return out;
 }
+
+// ── P2-2: trace regions ─────────────────────────────────────────────
+
+export interface TraceRegionLike {
+  kind: "rect" | "poly";
+  x?: number;
+  y?: number;
+  width?: number;
+  height?: number;
+  points?: [number, number][];
+}
+
+/** Bounding box of a trace region (a polygon region culls by the bbox of
+ *  its vertices — the same approximation the plan specifies for drawing). */
+export function traceRegionBox(r: TraceRegionLike): { x: number; y: number; width: number; height: number } {
+  if (r.kind === "rect") {
+    return { x: r.x ?? 0, y: r.y ?? 0, width: r.width ?? 0, height: r.height ?? 0 };
+  }
+  const [x0, y0, x1, y1] = bboxOf(r.points ?? []);
+  return { x: x0, y: y0, width: x1 - x0, height: y1 - y0 };
+}
+
+function rectsIntersectBox(
+  box: { x: number; y: number; width: number; height: number },
+  r: { x: number; y: number; width: number; height: number }
+): boolean {
+  return (
+    box.x + box.width >= r.x &&
+    r.x + r.width >= box.x &&
+    box.y + box.height >= r.y &&
+    r.y + r.height >= box.y
+  );
+}
+
+/** Keep only traces / outlines that touch at least ONE region. When no
+ *  regions exist the input passes through unchanged — "whole die". Runs
+ *  BEFORE the hand-drawn-nets filter (P2-1) in the materialize pipeline. */
+export function filterTracesByRegions(
+  traces: MLTracePolyline[],
+  outlines: [number, number][][],
+  regions: TraceRegionLike[]
+): {
+  traces: MLTracePolyline[];
+  outlines: [number, number][][];
+  droppedOutsideRegion: number;
+} {
+  if (regions.length === 0) return { traces, outlines, droppedOutsideRegion: 0 };
+  const boxes = regions.map(traceRegionBox);
+  const inRegion = (pts: [number, number][]) => {
+    const [x0, y0, x1, y1] = bboxOf(pts);
+    const box = { x: x0, y: y0, width: x1 - x0, height: y1 - y0 };
+    return boxes.some((r) => rectsIntersectBox(box, r));
+  };
+  const tracesKept = traces.filter((t) => inRegion(t.points));
+  const outlinesKept = outlines.filter((o) => inRegion(o));
+  return {
+    traces: tracesKept,
+    outlines: outlinesKept,
+    droppedOutsideRegion: traces.length - tracesKept.length
+  };
+}

@@ -35,8 +35,8 @@ import {
 } from "../../renderer/layers/MLViasLayer";
 import type { VectorizeLayer } from "../../renderer/layers/VectorizeLayer";
 import { buildNetsFromTraces, type TraceSnapTarget } from "./mlTracesToNets";
-import { filterTracesByUserNets, collectUserNetPolylines, type UserNetPolyline } from "./userNetFilter";
-import { useDieViewerStore } from "../../state/dieViewer";
+import { filterTracesByUserNets, filterTracesByRegions, collectUserNetPolylines, type UserNetPolyline, type TraceRegionLike } from "./userNetFilter";
+import { useDieViewerStore, selectTraceRegions } from "../../state/dieViewer";
 import { usePreferences, selectNetWidth } from "../../state/preferences";
 import { useSession, DEFAULT_METAL_STACK } from "../../state/session";
 import { useOverlayLayers } from "../../state/overlayLayers";
@@ -1123,10 +1123,22 @@ async function materializeTraces(
   snapTargets: TraceSnapTarget[],
   dialog: { confirm(message: string, title?: string): Promise<boolean> },
   outlines?: [number, number][][],
-  userPolylines?: UserNetPolyline[]
+  userPolylines?: UserNetPolyline[],
+  traceRegions?: TraceRegionLike[]
 ): Promise<{ created: number } | { error: string } | null> {
   const prefs = usePreferences.getState();
   const rawTraceCount = traces.length;
+  // P2-2: traces AND outlines outside every drawn trace region are dropped
+  // (no regions = whole die). Runs before the hand-drawn filter.
+  const regionFilter =
+    traceRegions && traceRegions.length > 0
+      ? filterTracesByRegions(traces, outlines ?? [], traceRegions)
+      : null;
+  if (regionFilter) {
+    traces = regionFilter.traces;
+    outlines = regionFilter.outlines;
+  }
+  const droppedOutsideRegion = regionFilter?.droppedOutsideRegion ?? 0;
   // P2-1: traces matching hand-drawn nets are dropped BEFORE materialization
   // (the decoder re-detects wires the user already drew). Skipped when no
   // hand-drawn nets exist or the toggle is off.
@@ -1155,6 +1167,8 @@ async function materializeTraces(
   if (!result.nets.length) {
     const score = prefs.traceConfidenceThreshold;
     const reasons: string[] = [];
+    if (droppedOutsideRegion > 0)
+      reasons.push(`trace-region-фильтром отброшено ${droppedOutsideRegion} трасс вне нарисованных областей`);
     if (respect && droppedUserNets > 0)
       reasons.push(
         `тумблером «Respect hand-drawn nets» отброшено ${droppedUserNets} трасс, совпавших с нарисованными вручную`
@@ -1177,6 +1191,7 @@ async function materializeTraces(
         `Создать ${result.nets.length} net(ей) из ${rawTraceCount} трасс?\n` +
           `Концов со снапом: ${result.snappedEnds}, сшито разрывов: ${result.stitchedPairs}, ` +
           `отброшено вырожденных: ${result.droppedDegenerate}` +
+          (droppedOutsideRegion > 0 ? `, вне trace region: ${droppedOutsideRegion}` : "") +
           (droppedUserNets > 0 ? `, совпадает с нарисованными вручную: ${droppedUserNets}` : "") +
           (result.filteredByScore > 0 ? `, score-фильтром: ${result.filteredByScore}` : "") +
           (result.droppedLowContacts > 0 ? `, мало контактов: ${result.droppedLowContacts}` : "") +
@@ -1600,6 +1615,8 @@ function VectorSection({
     () => (respectUserNets ? collectUserNetPolylines(annotations, netWidth) : []),
     [respectUserNets, annotations, netWidth]
   );
+  // P2-2: the die's drawn trace regions restrict what materializes.
+  const traceRegions = useDieViewerStore(selectTraceRegions(dieId));
   // Where the Vector → nets traces come from: the cached whole-die sweep
   // payload (default — the point of the sweep) or the live viewport decodes.
   const [netsSource, setNetsSource] = useState<"whole-die" | "preview">("whole-die");
@@ -1785,7 +1802,8 @@ function VectorSection({
         getTraceSnapTargets(),
         dialog,
         outlines,
-        userNetPolylines
+        userNetPolylines,
+        traceRegions
       );
       if (outcome && "error" in outcome) setErr(outcome.error);
     } catch (e) {

@@ -31,7 +31,7 @@ import {
   ANNOTATION_KIND_VALUES,
   type AnnotationKind
 } from "../../state/annotationKinds";
-import { useDieViewerStore } from "../../state/dieViewer";
+import { useDieViewerStore, type VectorTraceRegion } from "../../state/dieViewer";
 import { usePreferences, selectNetWidth } from "../../state/preferences";
 import { TreeRow, TreeSep } from "../tree/TreeRow";
 import { NetColorPickerBody } from "./NetColorPickerBody";
@@ -87,6 +87,9 @@ const OVERLAY_LAYERS_KEY = "overlay-layers";
 /** Session-group key for the "Vector Layers" section (saved whole-die
  *  vectorize payloads — rendered by the VectorizeLayer, not rbush). */
 const VECTOR_LAYERS_KEY = "vector-layers";
+/** Outline-tree group key for the P2-2 vectorize trace regions. */
+const TRACE_REGIONS_KEY = "vector-trace-regions";
+const EMPTY_TRACE_REGIONS: VectorTraceRegion[] = [];
 
 export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabels, onDeviceSelect, onOpenInRE, searchOpenRef, onSetCellTypeColor, foreignTypeOwners }: Props) {
   const toast = useToast();
@@ -152,7 +155,6 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
   const setVectorLayerVisible = usePreferences((s) => s.setVectorLayerVisible);
   const vectorLayerColors = usePreferences((s) => s.vectorLayerColors);
   const setVectorLayerColor = usePreferences((s) => s.setVectorLayerColor);
-
   // Whole-net ids present in the current selection — includes nets selected
   // by clicking a sub-part (edge/node id like "net:abc/edge:1") on the canvas,
   // so a canvas marquee/shift-click selection can drive the bulk color picker
@@ -211,6 +213,11 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
   const matchCell = useCallback((name: string) => !q || name.toLowerCase().includes(q), [q]);
 
   const dieId = useSession((s) => s.dieId);
+  // P2-2: the die's vectorize trace regions + their list management.
+  const traceRegions = useDieViewerStore((s) =>
+    dieId ? (s.traceRegionsByDie[dieId] ?? EMPTY_TRACE_REGIONS) : EMPTY_TRACE_REGIONS
+  );
+  const removeTraceRegion = useDieViewerStore((s) => s.removeTraceRegion);
   const [uploadingLegacy, setUploadingLegacy] = useState(false);
   const onLocalFilePick = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -1210,6 +1217,70 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
         >
           Run "Decode whole die" in the Vector tab — completed results appear
           here and can be toggled on/off for visual control.
+        </div>
+      )}
+
+      <TreeSep />
+
+      {/* Vectorize trace regions (P2-2) — drawn rects/polygons restricting
+          what the vectorize overlay renders and "Vector → nets" materializes. */}
+      <TreeRow
+        expand={expandedGroups.includes(TRACE_REGIONS_KEY) ? "open" : "closed"}
+        label="Trace Regions"
+        meta={traceRegions.length}
+        onToggleExpand={() => toggleGroup(TRACE_REGIONS_KEY)}
+        onSelect={() => toggleGroup(TRACE_REGIONS_KEY)}
+      />
+      {expandedGroups.includes(TRACE_REGIONS_KEY) &&
+        traceRegions.map((region) => (
+          <TreeRow
+            key={region.id}
+            depth={1}
+            icon={Ic.roi}
+            label={
+              <span style={{ display: "inline-flex", gap: 6, alignItems: "center", minWidth: 0 }}>
+                <span style={{ fontSize: 10, overflow: "hidden", textOverflow: "ellipsis" }}>
+                  {region.kind === "rect"
+                    ? `rect (x≈${region.x}, y≈${region.y}) ${region.width}×${region.height}`
+                    : `poly · ${region.points.length} pts`}
+                </span>
+                <span
+                  style={{ display: "inline-flex", marginLeft: 2 }}
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  <button
+                    type="button"
+                    title="Delete trace region"
+                    style={{
+                      fontSize: 9,
+                      lineHeight: 1,
+                      padding: "1px 3px",
+                      cursor: "pointer",
+                      background: "transparent",
+                      color: "var(--ink2)",
+                      border: "1px solid var(--l1, #333)",
+                      borderRadius: 3
+                    }}
+                    onClick={() => dieId && removeTraceRegion(dieId, region.id)}
+                  >
+                    🗑
+                  </button>
+                </span>
+              </span>
+            }
+          />
+        ))}
+      {expandedGroups.includes(TRACE_REGIONS_KEY) && traceRegions.length === 0 && (
+        <div
+          style={{
+            padding: "6px 10px 6px 20px",
+            fontSize: 10,
+            color: "var(--ink3)",
+            lineHeight: 1.5
+          }}
+        >
+          Draw with the "vector" tools in the toolbar: traces render and
+          materialize only inside the drawn area(s).
         </div>
       )}
     </div>

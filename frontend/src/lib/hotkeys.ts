@@ -24,7 +24,9 @@ export type DieViewerToolId =
   | "measure"
   | "pan"
   | "comment"
-  | "floorplan";
+  | "floorplan"
+  | "traceRegionRect"
+  | "traceRegionPoly";
 
 export const DIE_VIEWER_HOTKEYS: Record<string, DieViewerToolId> = {
   "s": "select",

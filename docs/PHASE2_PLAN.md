@@ -43,6 +43,16 @@
 
 ### P2-2. Инструмент «Nets from …» (ограничение области материализации)
 
+> ✅ Реализовано 2026-11-01: «vector»-инструменты тулбара `traceRegionRect`
+> (drag rectangle, commit on release) и `traceRegionPoly` (click-vertices,
+> Enter). Регионы — session state в dieViewer store
+> (`traceRegionsByDie[dieId]`, переживает reset). Рендер: culling по bbox
+> против ≥1 региона в `VectorizeLayer.draw()`/`drawSaved()` (saved-битмапы
+> выключаются при активных регионах). Материализация: тот же фильтр перед
+> hand-drawn-фильтром, счётчик «вне trace region» в диалоге. UI: список
+> «Trace Regions» в OutlineTree рядом с Vector Layers + 🗑-удаление.
+> viewport-preview режим уже был (коллекция из live decodes).
+
 Сейчас материализация всегда whole-die (все собранные трассы). Нужны режимы:
 
 - «whole die» — как сейчас;

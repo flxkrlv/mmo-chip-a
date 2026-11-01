@@ -1,6 +1,8 @@
 import { describe, it, expect } from "vitest";
 import {
   filterTracesByUserNets,
+  filterTracesByRegions,
+  traceRegionBox,
   collectUserNetPolylines,
   USER_NET_DEFAULT_TOL
 } from "./userNetFilter";
@@ -133,5 +135,42 @@ describe("filterTracesByUserNets", () => {
 
   it("collectUserNetPolylines tolerates missing annotations", () => {
     expect(collectUserNetPolylines(undefined, 8)).toEqual([]);
+  });
+
+  it("traceRegionBox culls a rect and a polygon by their extents", () => {
+    expect(traceRegionBox({ kind: "rect", x: 10, y: 20, width: 30, height: 40 })).toEqual({
+      x: 10,
+      y: 20,
+      width: 30,
+      height: 40
+    });
+    expect(
+      traceRegionBox({ kind: "poly", points: [[0, 0], [100, 10], [50, 90]] })
+    ).toEqual({ x: 0, y: 0, width: 100, height: 90 });
+  });
+
+  it("filterTracesByRegions keeps traces inside / touching a region", () => {
+    const traces = [
+      t([[10, 10], [90, 90]]), // inside
+      t([[200, 10], [290, 90]]), // outside → dropped
+      t([[95, 10], [150, 90]]) // straddles the region edge → kept
+    ];
+    const outlines: [number, number][][] = [
+      [[20, 20], [80, 20], [80, 80], [20, 80]], // inside → kept
+      [[300, 300], [320, 300], [320, 320], [300, 320]] // outside → dropped
+    ];
+    const r = filterTracesByRegions(traces, outlines, [{ kind: "rect", x: 0, y: 0, width: 100, height: 100 }]);
+    expect(r.traces).toHaveLength(2);
+    expect(r.droppedOutsideRegion).toBe(1);
+    expect(r.outlines).toHaveLength(1);
+  });
+
+  it("filterTracesByRegions passes everything through without regions", () => {
+    const traces = [t([[0, 0], [5, 5]])];
+    const outlines: [number, number][][] = [[[1, 1], [2, 1], [2, 2]]];
+    const r = filterTracesByRegions(traces, outlines, []);
+    expect(r.traces).toBe(traces);
+    expect(r.outlines).toBe(outlines);
+    expect(r.droppedOutsideRegion).toBe(0);
   });
 });
