@@ -17,8 +17,7 @@ const net: AnnotationNet = {
   ],
 };
 
-describe("net marquee parts", () => {
-  it("selects only fully contained segments left-to-right", () => {
+describe("net marquee parts", () => {  it("selects only fully contained segments left-to-right", () => {
     const annotation = buildNetAnnotation(net, () => 10, () => "#fff");
     expect(annotation.rectPickParts?.({ x: 5, y: 5, width: 30, height: 10 }, true)).toEqual([
       "net:n1/edge:ab",
@@ -305,5 +304,64 @@ describe("die-wide meganet spatial index", () => {
     });
     expect(lineTo).toBeGreaterThan(0);
     expect(lineTo).toBeLessThan(200);
+  });
+});
+
+describe("AnnotationLayer pass semantics", () => {
+  // The layer drives the net through several passes: conductor passes carry
+  // { pass: undefined, layerFilter }, then one "select" and one "dots"
+  // pass. Each pass must paint ONLY its share — the empty-pass skip and the
+  // loose ends of the earlier dots/selection extraction broke the frame
+  // cost back up to ×8 as soon as anything was selected.
+  function makeCtx(tally: { strokes: number; arcs: number }) {
+    return {
+      lineCap: "", lineJoin: "", lineWidth: 0, strokeStyle: "", fillStyle: "",
+      beginPath() {}, moveTo() {}, lineTo() {}, fill() {},
+      arc() { tally.arcs++; },
+      stroke() { tally.strokes++; },
+    } as unknown as CanvasRenderingContext2D;
+  }
+  const drawState = (extra: Record<string, unknown>) =>
+    ({
+      selected: false,
+      isSelected: (id: string) => id === "net:n1/edge:ab",
+      selectedEmpty: false,
+      ...extra,
+    }) as never;
+  const bounds = { zoom: 1, world: { x: 0, y: 0, width: 100, height: 100 } } as never;
+
+  it("a conductor pass for a layer the net has no edges on paints NOTHING", () => {
+    const annotation = buildNetAnnotation(net, () => 4, () => "#fff");
+    // net edges carry no `layer`, so only the UNTAGGED pass has content.
+    const tally = { strokes: 0, arcs: 0 };
+    annotation.draw(makeCtx(tally), bounds, drawState({ layerFilter: "metal2" }));
+    expect(tally.strokes).toBe(0);
+    expect(tally.arcs).toBe(0);
+  });
+
+  it("conductor passes never paint node dots — dots only in their pass", () => {
+    const annotation = buildNetAnnotation(net, () => 4, () => "#fff");
+    const tally = { strokes: 0, arcs: 0 };
+    annotation.draw(makeCtx(tally), bounds, drawState({ layerFilter: "__untagged__" }));
+    expect(tally.arcs).toBe(0); // junction dots do NOT run per conductor pass
+
+    const dotPass = { strokes: 0, arcs: 0 };
+    annotation.draw(makeCtx(dotPass), bounds, drawState({ pass: "dots" }));
+    expect(dotPass.arcs).toBeGreaterThan(0);
+  });
+
+  it("the select pass paints only selected edges; the select skip survives selection", () => {
+    const annotation = buildNetAnnotation(net, () => 4, () => "#fff");
+    // Selection is live (selectedEmpty=false) — an unfocused conductor pass
+    // over an absent layer still must paint nothing.
+    const s = { strokes: 0, arcs: 0 };
+    annotation.draw(makeCtx(s), bounds, drawState({ layerFilter: "metal2" }));
+    expect(s.strokes).toBe(0);
+
+    // The dedicated select pass paints ONLY the hit edge (one stroke batch),
+    // not every edge.
+    const sel = { strokes: 0, arcs: 0 };
+    annotation.draw(makeCtx(sel), bounds, drawState({ pass: "select" }));
+    expect(sel.strokes).toBe(1);
   });
 });

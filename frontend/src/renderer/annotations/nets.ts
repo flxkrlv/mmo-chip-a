@@ -262,16 +262,22 @@ export function buildNetAnnotation(
     drawOrder,
     bbox,
     draw(ctx, bounds, state) {
-      // Pass split: the AnnotationLayer calls the net once per conductor pass
-      // (edges, filtered by layer), then once more in a dedicated "dots"
-      // pass after all edge passes. Dots never varied between passes (they
-      // painted identically on top), so painting them once AFTER everything
-      // renders the same image for 1/8th of the canvas calls; edges paint
-      // only in edge passes. A state with no pass (direct callers, tests)
-      // keeps the legacy everything-at-once draw.
+      // Pass split (the AnnotationLayer drives all of these):
+      //   - state.pass === undefined && state.layerFilter set → a conductor
+      //     pass: paint ONLY the net's unselected edges (filtered by layer).
+      //   - state.pass === "select" → paint ONLY selected parts (runs once,
+      //     after all conductor passes; opaque SELECT_COLOR means the same
+      //     raster as the old repaint-in-every-pass selection).
+      //   - state.pass === "dots" → paint ONLY node dots (runs once,
+      //     after the select pass).
+      // A state with a pass but none of the above (via body/label) → nothing.
+      // A state with NO pass and NO layerFilter (direct callers, tests) keeps
+      // the legacy everything-at-once draw.
       const isDotPass = state.pass === "dots";
-      const isEdgePass = state.pass === undefined;
-      if (!isDotPass && !isEdgePass) return;
+      const isSelectPass = state.pass === "select";
+      const isEdgePass = state.pass === undefined; // conductor pass or legacy
+      const isLegacyDraw = isEdgePass && !state.layerFilter;
+      if (!isDotPass && !isSelectPass && !isEdgePass) return;
 
       // ML mode: the stroke is the real document-space width (source px), so
       // it scales with the image like the export footprint. Otherwise it's a
@@ -281,24 +287,23 @@ export function buildNetAnnotation(
       const worldWidth = mlMode ? getWidth() : screenWidth / bounds.zoom;
       const baseColor = getColor(netId);
       const whole = state.selected;
+      // selectedEmpty short-circuit: with nothing selected anywhere the
+      // membership test is pointless work per candidate.
       const edgeSel = (e: AnnotationNet["edges"][number]) =>
-        whole || state.isSelected(edgeSubId(e.id));
+        whole || (state.selectedEmpty ? false : state.isSelected(edgeSubId(e.id)));
       const nodeSel = (n: AnnotationNet["nodes"][number]) =>
-        whole || state.isSelected(nodeSubId(n.id));
+        whole || (state.selectedEmpty ? false : state.isSelected(nodeSubId(n.id)));
 
       ctx.lineCap = "round";
       ctx.lineJoin = "round";
 
-      // The AnnotationLayer replays EVERY net in EVERY conductor pass. A net
-      // without edges on the current pass used to pay a cell-bucket query per
-      // pass just to skip every candidate. Edge sections now early-out; node
-      // dots keep painting in every pass (they painted above higher-layer
-      // wires before — rerouting them under other nets' metal2 edges would
-      // change cross-net stacking). With sub-part selection live, selected
-      // edges paint unfiltered in every pass — same as before.
+      // A conductor pass whose layer this net has no edges on ends before any
+      // query — its only content there would be painting nothing. Selected
+      // parts no longer paint inside these passes at all (they have the
+      // dedicated "select" pass), so this skip no longer needs to care about
+      // the selection state — it used to disable ALL pass skips while
+      // anything was selected, silently re-multiplying the frame cost.
       const passSkipsEdges =
-        !whole &&
-        state.selectedEmpty &&
         !!state.layerFilter &&
         state.layerFilter !== UNTAGGED_LAYER &&
         !layersPresent.has(state.layerFilter);
@@ -349,7 +354,7 @@ export function buildNetAnnotation(
       // restricts which edges to draw in the current pass.
       const netOverrideColor = getNetOverrideColor?.(netId);
       const byColor = new Map<string, EdgeHit[]>();
-      if (isEdgePass && !whole && !passSkipsEdges) {
+      if (isEdgePass && !passSkipsEdges) {
         forEdgesInRect(cull, (h) => {
           const e = h.e;
           if (edgeSel(e)) return; // drawn in the selection pass below
@@ -374,22 +379,23 @@ export function buildNetAnnotation(
         ctx.stroke();
       }
 
-      // Selected edges draw on top of everything in SELECT_COLOR. The whole
-      // net selected → all edges (rare, one redraw). Otherwise the query is
-      // candidate-scoped like the unselected pass.
+      // Selected edges draw on top of everything in SELECT_COLOR — in their
+      // dedicated "select" pass (or a legacy bare draw). The whole net
+      // selected → all edges (one pass over the edge array, no queries).
+      // Otherwise the query is candidate-scoped like the unselected pass.
       const selectedHits: EdgeHit[] = [];
-      if (isEdgePass && whole) {
+      if ((isSelectPass || isLegacyDraw) && whole) {
         for (const e of net.edges) {
           const a = nodeIndex.get(e.from);
           const b = nodeIndex.get(e.to);
           if (a && b) selectedHits.push({ e, a, b });
         }
-      } else if (isEdgePass && !passSkipsEdges) {
+      } else if ((isSelectPass || isLegacyDraw) && !state.selectedEmpty) {
         forEdgesInRect(cull, (h) => {
           if (state.isSelected(edgeSubId(h.e.id))) selectedHits.push(h);
         });
       }
-      if (selectedHits.length > 0 && !passSkipsEdges) {
+      if ((isSelectPass || isLegacyDraw) && selectedHits.length > 0) {
         ctx.strokeStyle = SELECT_COLOR;
         ctx.lineWidth = worldWidth * SELECT_WIDTH_MULT;
         ctx.beginPath();
@@ -427,7 +433,12 @@ export function buildNetAnnotation(
       lastNodeWorldRadius = showNodes ? nodeRadius : 0;
       const visibleNodes = new Set<string>();
 
-      if ((isDotPass || isEdgePass) && showNodes) {
+      // Dots paint ONLY in their dedicated pass (or a legacy bare draw).
+      // Conductor passes used to repaint them identically — the grid query +
+      // batching ran ×8 per tile per frame even after the dots pass existed,
+      // because conductor passes carry `pass === undefined` too (they're
+      // distinguished by having a `layerFilter`).
+      if (showNodes && (isDotPass || isLegacyDraw)) {
         // Node colour follows the highest-priority connected edge's layer (
         // metal1 dots teal, metal2 violet, …) — the per-node best layer is
         // precomputed at build time. Dots batch by colour: N× (beginPath +

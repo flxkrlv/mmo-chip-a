@@ -29,9 +29,12 @@ export interface AnnotationDrawState {
   selectedEmpty?: boolean;
   /** Render pass for vias: "body" = shape only (drawn before nets),
    *  "label" = text only (drawn after nets). Nets additionally receive
-   *  "dots" — a dedicated final pass where net annotations paint ONLY their
-   *  node dots (see AnnotationLayer.draw). */
-  pass?: "body" | "label" | "dots";
+   *  "select" (after all conductor passes: ONLY selected parts — selection
+   *  always ends up on top of everything, so painting it once there is the
+   *  same raster as the old repaint-in-every-conductor-pass, at 1/8th the
+   *  work) and "dots" (a final pass where net annotations paint ONLY their
+   *  node dots). */
+  pass?: "body" | "label" | "dots" | "select";
 }
 
 /** Result of a successful point-pick. */
@@ -424,6 +427,20 @@ export class AnnotationLayer implements Layer {
         layerState.selected = selected.has(h.annotation.id);
         h.annotation.draw(ctx, bounds, layerState);
       }
+    }
+
+    // Net selection — ONE dedicated pass AFTER all conductor passes. The
+    // SELECT_COLOR is opaque, and selection was repainted inside every
+    // conductor pass anyway (so the last pass already left it on top of
+    // everything): painting it once produces the identical raster at ⅛th
+    // the queries. Without it, ANY selection (one vertex, one edge, a cell
+    // — anything) used to disable the empty-pass skip for EVERY net and
+    // multiply the whole frame's work again.
+    const netSelectState: AnnotationDrawState = { ...state, pass: "select" };
+    for (const h of nets) {
+      if (!isVisible(h.annotation)) continue;
+      netSelectState.selected = selected.has(h.annotation.id);
+      h.annotation.draw(ctx, bounds, netSelectState);
     }
 
     // Net node dots — ONE dedicated pass after all edge passes. Node dots
