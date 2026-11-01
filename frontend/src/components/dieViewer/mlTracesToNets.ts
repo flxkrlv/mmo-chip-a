@@ -79,6 +79,10 @@ export interface TracesToNetsResult {
   /** Contacts connected via the outline-membership test (phase 1c) —
    *  inside a metal contour but beyond the centreline+width reach. */
   outlineConnected: number;
+  /** Contacts INSIDE a metal contour whose nearest wire vertex/edge is
+   *  LONGER than maxBranchLen — the snap dropped per the phase-1c budget
+   *  spec (no chord across the pad; the contact stays unattached). */
+  outlineDropped: number;
   /** Suspicious merges: a "group" union holding hundreds of traces usually
    *  means the MASK over-bridged wires (band too wide / Min gap too high) —
    *  the netlist is technically connected but is not what the user drew. */
@@ -318,14 +322,26 @@ export function buildNetsFromTraces(input: TracesToNetsInput): TracesToNetsResul
     pending.push({ points: pts, score: t.score ?? 1, insertions, endBranches, group: t.group });
   }
 
-  // 1c. OUTLINE-MEMBERSHIP connect (the authoritative "on metal" test): a
-  //     contact point INSIDE a closed metal contour is on the metal even
-  //     where centreline+width missed it — wide pads (the width filter can
-  //     suppress the pad's own centreline), corner geometry, width-estimate
-  //     drift. The contact attaches to the nearest trace that lies in the
-  //     SAME contour (a trace with any vertex inside it), so a pad contact
-  //     joins the wire entering that pad, never a foreign wire.
+  // 1c. CONTACT-IN-METAL connect (the authoritative "on metal" test) —
+  //     USER SPEC: a contact INSIDE the decoded vectorized metal gets ONE
+  //     branch along the SHORTEST path to a wire VERTEX or EDGE of its net,
+  //     and only when that distance is NOT greater than maxBranchLen —
+  //     otherwise the snap is DROPPED (never a long chord across the pad).
+  //     Two candidate tiers, the globally nearest wins:
+  //       A. traces lying in the SAME contour(s) as the contact (a vertex
+  //          inside, or a segment strictly crossing the edge) — nearest
+  //          point on the wire (branchAt: split AT the projection, an end
+  //          vertex only when the projection sits essentially on it).
+  //       B. (maxBranchLen > 0 only) any trace whose END VERTEX is near
+  //          the contact, contour-independent — the decoded wire that
+  //          ALMOST reached the contact (its centreline stops short at the
+  //          width filter or a min-gap the mask did not merge) attaches
+  //          from its end instead of a far same-contour wire. The budget
+  //          is the feature's knob — a foreign wire ends within it too,
+  //          but only when it is strictly closer than everything on the
+  //          contact's own metal.
   let outlineConnected = 0;
+  let outlineDropped = 0;
   const outlines = input.outlines ?? [];
   if (outlines.length > 0) {
     const outlineBoxes = outlines.map((o) => pointsBoxOf(o));
@@ -409,7 +425,38 @@ export function buildNetsFromTraces(input: TracesToNetsInput): TracesToNetsResul
           }
         }
       }
-      if (bestTrace >= 0 && (maxBranchLen <= 0 || bestD <= maxBranchLen)) {
+      // Tier B: the wire that ALMOST reached the contact — nearest trace
+      // END vertex over ALL traces, contour-independent. Only when the
+      // budget is on (0 = the old outline-only behaviour).
+      let endTrace = -1;
+      let endD = Infinity;
+      let endWhich = -1;
+      if (maxBranchLen > 0) {
+        for (let ti = 0; ti < pending.length; ti++) {
+          const pts = pending[ti].points;
+          for (const end of [0, pts.length - 1] as const) {
+            const d = Math.hypot(s.x - pts[end][0], s.y - pts[end][1]);
+            if (d < endD) {
+              endD = d;
+              endTrace = ti;
+              endWhich = end === 0 ? 0 : 1;
+            }
+          }
+        }
+      }
+      // Winner: the globally nearest tier (ties → tier A, the contact's
+      // own metal). Longer than maxBranchLen ⇒ DROP the snap (user spec):
+      // the contact stays unattached rather than drawing a chord neither
+      // it nor the wire explains.
+      if (bestTrace < 0 && endTrace < 0) continue;
+      const useProj =
+        bestTrace >= 0 && (endTrace < 0 || bestD <= endD);
+      const winD = useProj ? bestD : endD;
+      if (maxBranchLen > 0 && winD > maxBranchLen) {
+        outlineDropped += 1;
+        continue;
+      }
+      if (useProj) {
         // Branch AT the projection (the nearest point on the wire — the
         // T-junction the user asked for); the trace end vertex only when
         // the projection sits essentially on it (branchAt, 1 px eps).
@@ -419,9 +466,11 @@ export function buildNetsFromTraces(input: TracesToNetsInput): TracesToNetsResul
         } else {
           pending[bestTrace].insertions.push({ at: ba.at, target: s });
         }
-        snappedLabels.add(s.label);
-        outlineConnected += 1;
+      } else {
+        pending[endTrace].endBranches.push({ end: endWhich === 0 ? 0 : 1, target: s });
       }
+      snappedLabels.add(s.label);
+      outlineConnected += 1;
     }
   }
 
@@ -661,6 +710,7 @@ export function buildNetsFromTraces(input: TracesToNetsInput): TracesToNetsResul
     droppedLowContacts,
     droppedIrregular,
     outlineConnected,
+    outlineDropped,
     warnings
   };
 }

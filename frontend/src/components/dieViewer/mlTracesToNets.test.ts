@@ -146,4 +146,72 @@ describe("contact branch attach (mlTracesToNets)", () => {
     expect(result.filteredByScore).toBe(1);
     expect(result.nets).toHaveLength(1); // group 2 union survived the shift
   });
+
+  it("an almost-reaching wire END wins over a far same-contour wire (tier B)", () => {
+    // The user's triangle case: the contact sits on a wide pad whose own
+    // centreline was width-filtered away; a decoded wire APPROACHES the
+    // contact and stops just short of the pad edge (min-gap blob), its end
+    // a few px from the contact; the nearest trace actually IN the pad is
+    // far away. The branch must take the near wire END (tier B), not draw
+    // a long chord to the far in-pad wire.
+    const farInPad: MLTracePolyline = {
+      points: [[60, -60], [60, 160]],
+      score: 1
+    };
+    const almostReached: MLTracePolyline = {
+      points: [[300, 58], [205, 58]], // ends OUTSIDE the pad, no crossing
+      score: 1
+    };
+    const result = buildNetsFromTraces({
+      traces: [farInPad, almostReached],
+      outlines: [[[0, 0], [200, 0], [200, 100], [0, 100]]],
+      minScore: 0,
+      snapTargets: [{ x: 195, y: 50, label: "pad-C" }],
+      snapTol: 2, // phases 1a/1b can't reach → phase 1c decides
+      stitchTol: 6,
+      layer: "metal1",
+      maxBranchLen: 20
+    });
+    expect(result.outlineConnected).toBe(1);
+    // The branch may live in the approaching wire's own net — search all:
+    const touches = result.nets.flatMap((net) =>
+      net.edges.filter((e) => edgeNodes(net, e).some(near(195, 50))).map((e) => ({ net, e }))
+    );
+    expect(touches).toHaveLength(1);
+    const [a, b] = edgeNodes(touches[0].net, touches[0].e);
+    // The branch leaves from the approaching wire's END (205, 58):
+    expect([a, b].some(near(205, 58))).toBe(true);
+    // …and NOT from the far in-pad wire (x = 60):
+    expect([a, b].every((n) => Math.abs(n.x - 60) > 20)).toBe(true);
+  });
+
+  it("a snap longer than maxBranchLen is dropped, not drawn as a chord", () => {
+    const farInPad: MLTracePolyline = {
+      points: [[60, -60], [60, 160]],
+      score: 1
+    };
+    const almostReached: MLTracePolyline = {
+      points: [[300, 58], [205, 58]],
+      score: 1
+    };
+    const result = buildNetsFromTraces({
+      traces: [farInPad, almostReached],
+      outlines: [[[0, 0], [200, 0], [200, 100], [0, 100]]],
+      minScore: 0,
+      snapTargets: [{ x: 195, y: 50, label: "pad-C" }],
+      snapTol: 2,
+      stitchTol: 6,
+      layer: "metal1",
+      maxBranchLen: 5 // nothing within the budget → drop the snap entirely
+    });
+    expect(result.outlineConnected).toBe(0);
+    expect(result.outlineDropped).toBe(1);
+    // No net touches the contact point at all:
+    for (const net of result.nets) {
+      for (const e of net.edges) {
+        const [a, b] = edgeNodes(net, e);
+        expect([a, b].some(near(195, 50))).toBe(false);
+      }
+    }
+  });
 });

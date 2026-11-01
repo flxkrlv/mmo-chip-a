@@ -1164,6 +1164,9 @@ async function materializeTraces(
           (result.droppedLowContacts > 0 ? `, мало контактов: ${result.droppedLowContacts}` : "") +
           (result.droppedIrregular > 0 ? `, irregular: ${result.droppedIrregular}` : "") +
           (result.outlineConnected > 0 ? `, по контуру металла: ${result.outlineConnected}` : "") +
+          (result.outlineDropped > 0
+            ? `, отброшено длиннее Max branch len: ${result.outlineDropped}`
+            : "") +
           `.\nДействие уйдёт в Undo.` +
           (result.warnings.length
             ? `\n\nВНИМАНИЕ:\n${result.warnings.join("\n")}`
