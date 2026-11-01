@@ -896,11 +896,16 @@ export function createMLRouter(config: {
       const fd = new FormData();
       fd.append("image", new Blob([new Uint8Array(crop)], { type: "image/png" }), "crop.png");
       fd.append("preprocess", JSON.stringify(parsePreprocess(body.preprocess)));
-      const res = await fetchSidecar(
-        `${config.mlSidecarUrl}/vectorize/preprocess`,
-        SIDECAR_RW_TIMEOUT_MS,
-        { method: "POST", body: fd }
-      );
+      // A bare Node fetch failure surfaces as the cryptic "fetch failed"
+      // (the packaged app often runs WITHOUT the optional ML sidecar
+      // plugin — say so instead of leaking transport noise).
+      let res: Response;
+      try {
+        res = await fetchSidecar(`${config.mlSidecarUrl}/vectorize/preprocess`, SIDECAR_RW_TIMEOUT_MS, { method: "POST", body: fd });
+      } catch {
+        response.status(503).json({ error: "sidecar unreachable (ML plugin not installed in this build?)" });
+        return;
+      }
       if (!res.ok) {
         response.status(502).json({ error: `preprocess failed (sidecar ${res.status})` });
         return;
