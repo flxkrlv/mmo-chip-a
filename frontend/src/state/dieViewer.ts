@@ -427,8 +427,14 @@ function setsEqual(a: ReadonlySet<string>, b: ReadonlySet<string>): boolean {
   return true;
 }
 
-/** Select the die's vectorize trace regions (P2-2). */
+/** Select the die's vectorize trace regions (P2-2). The empty fallback is a
+ *  STABLE module constant: zustand compares snapshots by identity, and a
+ *  fresh `[]` per selector call used to loop React into "Maximum update
+ *  depth exceeded" on any die without regions. */
 export function selectTraceRegions(dieId: string | null | undefined) {
   return (state: { traceRegionsByDie: Record<string, VectorTraceRegion[]> }): VectorTraceRegion[] =>
-    (dieId ? state.traceRegionsByDie[dieId] : undefined) ?? [];
+    (dieId ? state.traceRegionsByDie[dieId] : undefined) ?? NO_TRACE_REGIONS;
 }
+
+/** Shared empty list — never mutated, safe to return from selectors. */
+const NO_TRACE_REGIONS: VectorTraceRegion[] = [];
