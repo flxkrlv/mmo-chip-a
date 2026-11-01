@@ -109,6 +109,9 @@ export function createVectorizer(config: { mlSidecarUrl: string }) {
     fd.append("decoder", p.decoder);
     fd.append("oct_delta_px", String(p.octDeltaPx));
     fd.append("oct_strict", p.octStrict ? "true" : "false");
+    // P2-3: pre-processing knobs ride along as one JSON field — the sidecar
+    // applies them to the crop right after imdecode, before the channel.
+    fd.append("preprocess", JSON.stringify(p.preprocess ?? {}));
 
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), VECT_TIMEOUT_MS);

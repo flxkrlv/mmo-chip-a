@@ -41,7 +41,16 @@ from heatmap import extract_components, extract_peaks, extract_trace_skeleton
 from model import build_model, infer_num_classes
 from tiling import tile_predict
 from trainer import TrainParams, run_training
-from vectorize import VectorParams, build_mask, decode_mask, mask_pad_px, vectorize_region
+from vectorize import (
+    PreprocessParams,
+    VectorParams,
+    apply_preprocess,
+    build_mask,
+    decode_mask,
+    mask_pad_px,
+    parse_preprocess,
+    vectorize_region,
+)
 
 # Running whole-die decode subprocesses (job_id -> Popen) — cancelled by
 # POST /vectorize/decode/cancel when the sweep's Stop button fires.
@@ -391,6 +400,7 @@ def vectorize_region_endpoint(
     decoder: str = Form("runs"),
     oct_delta_px: float = Form(0.0),
     oct_strict: bool = Form(False),
+    preprocess: str = Form("{}"),
 ) -> dict:
     """Classical (no-model) metal vectorization of the posted crop: threshold
     a brightness/colour channel into a mask, clean it, decode skeleton traces
@@ -423,6 +433,11 @@ def vectorize_region_endpoint(
         oct_strict=oct_strict,
     )
     try:
+        # P2-3: pre-threshold conditioning (tone LUT / denoise / CLAHE /
+        # unsharp), applied to the crop before the channel extraction.
+        import json as _json
+        params.preprocess = parse_preprocess(_json.loads(preprocess) if preprocess else {})
+        rgb = apply_preprocess(rgb, params.preprocess)
         return vectorize_region(rgb, params)
     except HTTPException:
         raise
@@ -447,6 +462,7 @@ class MaskBody(BaseModel):
     decoder: str = "runs"
     oct_delta_px: float = 0.0
     oct_strict: bool = False
+    preprocess: dict = {}
 
 
 def _params_from_mask_body(b: MaskBody) -> VectorParams:
@@ -463,6 +479,7 @@ def _params_from_mask_body(b: MaskBody) -> VectorParams:
         decoder=b.decoder if b.decoder in ("runs", "octilinear") else "runs",
         oct_delta_px=b.oct_delta_px,
         oct_strict=b.oct_strict,
+        preprocess=parse_preprocess(b.preprocess),
     )
 
 
@@ -484,7 +501,11 @@ def vectorize_mask(image: UploadFile = File(...), body: str = Form(...)) -> dict
         body = MaskBody(**_json.loads(body))
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=400, detail=f"bad mask params: {exc}") from exc
-    mask = build_mask(rgb, _params_from_mask_body(body))
+    maskParams = _params_from_mask_body(body)
+    # P2-3: the mask must come from the SAME preprocessed pixels the live
+    # region decode sees — apply before build_mask.
+    rgb = apply_preprocess(rgb, maskParams.preprocess)
+    mask = build_mask(rgb, maskParams)
     ok, png = cv2.imencode(".png", mask * 255)
     if not ok:
         raise HTTPException(status_code=500, detail="mask encode failed")
@@ -494,7 +515,7 @@ def vectorize_mask(image: UploadFile = File(...), body: str = Form(...)) -> dict
         "height": int(mask.shape[0]),
         # Padding baked into this mask (see mask_pad_px): the caller crops
         # [pad .. width-pad] back to its core when assembling the die mask.
-        "pad": mask_pad_px(_params_from_mask_body(body)),
+        "pad": mask_pad_px(maskParams),
     }
 
 

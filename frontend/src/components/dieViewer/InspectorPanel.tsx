@@ -4,7 +4,8 @@ import { padCountByPin, renamePinActions } from "../../lib/pinClipboard";
 import { useDialog } from "../Dialog";
 import { useToast } from "../Toast";
 import { useQueryClient } from "@tanstack/react-query";
-import type { AnalogDevice, AnnotationNet, AnnotationNetEdge, AssistantFinding, Cell, CellType, DieAnnotations, DieMetadata, FloorplanRegion, HumanAnnotation, MLInferenceJob, MLTracePolyline, VectorBlocksResponse, VectorizeParams, VectorSweepStatus, WireLayer } from "shared";
+import type { AnalogDevice, AnnotationNet, AnnotationNetEdge, AssistantFinding, Cell, CellType, DieAnnotations, DieMetadata, FloorplanRegion, HumanAnnotation, MLInferenceJob, MLTracePolyline, VectorBlocksResponse, VectorizeParams, VectorizePreprocess, VectorSweepStatus, WireLayer } from "shared";
+import { NEUTRAL_VECTOR_PREPROCESS } from "shared";
 import type { ActionDispatcher } from "../../api/actions";
 import type { CellLibraryView } from "../../lib/cellLibrary";
 import { uuid } from "../../lib/uuid";
@@ -1580,6 +1581,21 @@ function VectorSection({
   const toast = useToast();
   const params = usePreferences((s) => s.vectorParams);
   const patch = usePreferences((s) => s.patchVectorParams);
+  // P2-3: pre-threshold conditioning (neutral unless the user opens a knob).
+  // Old persisted presets may lack the subobject — fall back to neutral.
+  const pp = params.preprocess ?? NEUTRAL_VECTOR_PREPROCESS;
+  const patchPP = (partial: Partial<VectorizePreprocess>) =>
+    patch({ preprocess: { ...pp, ...partial } });
+  const preprocessActive = !(
+    pp.brightness === 0 &&
+    pp.contrast === 1 &&
+    pp.gamma === 1 &&
+    pp.shadows === 0 &&
+    pp.highlights === 0 &&
+    pp.claheClip <= 0 &&
+    pp.sharpenAmount <= 0 &&
+    pp.denoiseMedian <= 0
+  );
   const resetParams = usePreferences((s) => s.resetVectorParams);
   const presets = usePreferences((s) => s.vectorPresets);
   const savePreset = usePreferences((s) => s.saveVectorPreset);
@@ -2111,6 +2127,134 @@ function VectorSection({
           drawn at 30°) stay as-is and report irregular.
         </div>
       ) : null}
+
+      {/* P2-3: pre-threshold image conditioning — tune the crop so metal is
+          uniform + high-contrast FIRST, then the threshold sees a cleaner
+          image. Collapsible: neutral until any knob is opened. Changing any
+          value re-decodes (it changes the vector params hash). */}
+      <details style={{ marginTop: 10 }}>
+        <summary
+          className="u"
+          style={{
+            fontSize: 11,
+            cursor: "pointer",
+            color: preprocessActive ? "var(--accent, #7ec8f0)" : undefined
+          }}
+        >
+          Preprocess {preprocessActive ? "· active" : "· off"}
+        </summary>
+        <div style={{ marginTop: 4 }}>
+          <VSlider
+            label="Brightness"
+            value={pp.brightness}
+            min={-100}
+            max={100}
+            step={5}
+            format={(v) => (v === 0 ? "off" : `${v > 0 ? "+" : ""}${v}`)}
+            onChange={(v) => patchPP({ brightness: v })}
+          />
+          <VSlider
+            label="Contrast"
+            value={pp.contrast}
+            min={0}
+            max={2}
+            step={0.05}
+            format={(v) => (v === 1 ? "off" : `×${v.toFixed(2)}`)}
+            onChange={(v) => patchPP({ contrast: v })}
+          />
+          <VSlider
+            label="Gamma"
+            value={pp.gamma}
+            min={0.2}
+            max={5}
+            step={0.05}
+            format={(v) => (v === 1 ? "off" : v.toFixed(2))}
+            onChange={(v) => patchPP({ gamma: v })}
+          />
+          <VSlider
+            label="Shadows"
+            value={pp.shadows}
+            min={0}
+            max={100}
+            step={5}
+            format={(v) => (v === 0 ? "off" : `${v}`)}
+            onChange={(v) => patchPP({ shadows: v })}
+          />
+          <VSlider
+            label="Highlights"
+            value={pp.highlights}
+            min={0}
+            max={100}
+            step={5}
+            format={(v) => (v === 0 ? "off" : `${v}`)}
+            onChange={(v) => patchPP({ highlights: v })}
+          />
+          <VSlider
+            label="CLAHE clip (0 = off)"
+            value={pp.claheClip}
+            min={0}
+            max={10}
+            step={0.25}
+            format={(v) => (v === 0 ? "off" : v.toFixed(2))}
+            onChange={(v) => patchPP({ claheClip: v })}
+          />
+          {pp.claheClip > 0 ? (
+            <VSlider
+              label="CLAHE tiles"
+              value={pp.claheTiles}
+              min={1}
+              max={16}
+              step={1}
+              format={(v) => `${v}×${v}`}
+              onChange={(v) => patchPP({ claheTiles: Math.round(v) })}
+            />
+          ) : null}
+          <VSlider
+            label="Sharpen (0 = off)"
+            value={pp.sharpenAmount}
+            min={0}
+            max={200}
+            step={5}
+            format={(v) => (v === 0 ? "off" : `${v}%`)}
+            onChange={(v) => patchPP({ sharpenAmount: v })}
+          />
+          {pp.sharpenAmount > 0 ? (
+            <VSlider
+              label="Sharpen radius"
+              value={pp.sharpenRadius}
+              min={0.5}
+              max={5}
+              step={0.25}
+              format={(v) => `${v.toFixed(2)} px`}
+              onChange={(v) => patchPP({ sharpenRadius: v })}
+            />
+          ) : null}
+          <VSlider
+            label="Denoise median (0 = off)"
+            value={pp.denoiseMedian}
+            min={0}
+            max={5}
+            step={1}
+            format={(v) => (v === 0 ? "off" : `${v} px`)}
+            onChange={(v) => patchPP({ denoiseMedian: Math.round(v) })}
+          />
+          <div className="m" style={{ fontSize: 10, color: "var(--ink3)", marginTop: 2 }}>
+            Applied to the crop before the threshold (tone LUT → denoise →
+            CLAHE → sharpen). Goal: uniform, high-contrast metal FIRST; tune
+            Thresh/Width on the preprocessed result. Any change re-decodes.
+          </div>
+          {preprocessActive && (
+            <button
+              type="button"
+              className="btn"
+              style={{ width: "100%", marginTop: 4 }}
+              onClick={() => patch({ preprocess: { ...NEUTRAL_VECTOR_PREPROCESS } })}
+            >
+              Reset preprocess
+            </button>
+          )}
+        </div>
+      </details>
 
       {/* Presets */}
       <div

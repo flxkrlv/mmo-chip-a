@@ -956,7 +956,55 @@ export interface VectorizeParams {
   octDeltaPx: number;
   /** Hard octilinear mode (rubber-band guarantee) — reserved, not wired yet. */
   octStrict: boolean;
+  /** P2-3: optional pre-processor applied to the crop BEFORE the
+   *  thresholding (tone LUT → denoise → CLAHE → unsharp). The goal is a
+   *  metal that is uniform + high-contrast FIRST; threshold/morphology are
+   *  then tuned on the already-preprocessed crop. All values neutral at
+   *  0 / 1 respectively. Absent / neutral = no pre-processing. Enters the
+   *  vector params hash, so changing it re-decodes (no stale cache). */
+  preprocess?: VectorizePreprocess;
 }
+
+/** Tonal + local pre-processing knobs (applied in the sidecar, per crop):
+ *  one composed tone LUT (brightness/contrast/gamma/shadows/highlights),
+ *  then median denoise, then CLAHE, then unsharp. Each stage is skipped
+ *  when its value is neutral. */
+export interface VectorizePreprocess {
+  /** Tone-level offset, -100..100 (8-bit levels), 0 = off. */
+  brightness: number;
+  /** Contrast factor around mid-gray, 0..2, 1 = off. */
+  contrast: number;
+  /** Gamma exponent (1 = neutral; >1 brightens shadows, <1 darkens). 0.2..5. */
+  gamma: number;
+  /** Shadow lift 0..100 — re-opens dark metal crushed by exposure. */
+  shadows: number;
+  /** Highlight compression 0..100 — pulls blown plates back into range. */
+  highlights: number;
+  /** CLAHE clip limit 0..10; 0 = off (tiles are irrelevant when off). */
+  claheClip: number;
+  /** CLAHE tile grid size 1..16 (claheTiles×claheTiles). */
+  claheTiles: number;
+  /** Unsharp-mask amount 0..200 (%). */
+  sharpenAmount: number;
+  /** Unsharp-mask radius 0.5..5 px. */
+  sharpenRadius: number;
+  /** Median-blur denoise radius 0..5 px; 0 = off. */
+  denoiseMedian: number;
+}
+
+/** The all-neutral preprocess (no-op) — the shared default. */
+export const NEUTRAL_VECTOR_PREPROCESS: VectorizePreprocess = {
+  brightness: 0,
+  contrast: 1,
+  gamma: 1,
+  shadows: 0,
+  highlights: 0,
+  claheClip: 0,
+  claheTiles: 8,
+  sharpenAmount: 0,
+  sharpenRadius: 1,
+  denoiseMedian: 0
+};
 
 /** Response of the vectorize endpoint: skeleton traces + mask outlines in
  *  source-image coords. Not persisted — computed live while tuning. */

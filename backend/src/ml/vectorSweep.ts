@@ -12,8 +12,10 @@ import type {
   VectorLayerInfo,
   VectorSweepDecodeProgress,
   VectorSweepStatus,
-  VectorizeParams
+  VectorizeParams,
+  VectorizePreprocess
 } from "shared";
+import { NEUTRAL_VECTOR_PREPROCESS } from "shared";
 import type { PredictBox } from "./predict.js";
 import type { RunVectorizeResult } from "./vectorize.js";
 
@@ -29,11 +31,40 @@ export const VECTOR_BLOCK_PX = 2048;
 /** Whole-die mask cap (px): 160 Mpx ≈ 160 MB Uint8 — guards memory. */
 const MAX_MASK_PX = 160_000_000;
 
-/** Stable cache key for a params set + image source. */
+/** Sanitize an untrusted `preprocess` blob (query string or POST body) into
+ *  a VectorizePreprocess with every knob clamped to its range — anything
+ *  missing/invalid falls back to the neutral value so the sidecar can apply
+ *  it verbatim. Used by the blocks/live routes (query) and the sweep start
+ *  (POST body merge). */
+export function parsePreprocess(raw: unknown): VectorizePreprocess {
+  const src = (typeof raw === "object" && raw !== null ? raw : {}) as Record<string, unknown>;
+  const num = (key: string, fallback: number, min: number, max: number) => {
+    const n = Number(src[key]);
+    return Number.isFinite(n) ? Math.min(max, Math.max(min, n)) : fallback;
+  };
+  return {
+    brightness: num("brightness", NEUTRAL_VECTOR_PREPROCESS.brightness, -100, 100),
+    contrast: num("contrast", NEUTRAL_VECTOR_PREPROCESS.contrast, 0, 2),
+    gamma: num("gamma", NEUTRAL_VECTOR_PREPROCESS.gamma, 0.2, 5),
+    shadows: num("shadows", NEUTRAL_VECTOR_PREPROCESS.shadows, 0, 100),
+    highlights: num("highlights", NEUTRAL_VECTOR_PREPROCESS.highlights, 0, 100),
+    claheClip: num("claheClip", NEUTRAL_VECTOR_PREPROCESS.claheClip, 0, 10),
+    claheTiles: Math.round(num("claheTiles", NEUTRAL_VECTOR_PREPROCESS.claheTiles, 1, 16)),
+    sharpenAmount: num("sharpenAmount", NEUTRAL_VECTOR_PREPROCESS.sharpenAmount, 0, 200),
+    sharpenRadius: num("sharpenRadius", NEUTRAL_VECTOR_PREPROCESS.sharpenRadius, 0.5, 5),
+    denoiseMedian: Math.round(num("denoiseMedian", NEUTRAL_VECTOR_PREPROCESS.denoiseMedian, 0, 5))
+  };
+}
+
+/** Stable cache key for a params set + image source. The preprocess sub-
+ *  object is included SCALAR-FORM in a fixed order (P2-3) — a different
+ *  tone/local setting must hash differently or the sweep would silently
+ *  reuse the previous run's full.json. */
 export function vectorParamsHash(
   params: VectorizeParams,
   overlaySource: string | undefined
 ): string {
+  const pp = params.preprocess ?? NEUTRAL_VECTOR_PREPROCESS;
   const canonical =
     JSON.stringify([
       params.channel,
@@ -50,7 +81,17 @@ export function vectorParamsHash(
       params.widthMax,
       params.decoder,
       params.octDeltaPx,
-      params.octStrict
+      params.octStrict,
+      pp.brightness,
+      pp.contrast,
+      pp.gamma,
+      pp.shadows,
+      pp.highlights,
+      pp.claheClip,
+      pp.claheTiles,
+      pp.sharpenAmount,
+      pp.sharpenRadius,
+      pp.denoiseMedian
     ]) + `|${overlaySource ?? ""}`;
   return `v1-${createHash("sha1").update(canonical).digest("hex").slice(0, 12)}`;
 }
@@ -161,7 +202,9 @@ export function createVectorSweep(config: {
     }
   }
 
-  /** Mask params subset (what /vectorize/mask needs). */
+  /** Mask params subset (what /vectorize/mask needs) + the preprocess
+   *  sub-object (P2-3) — the mask must be computed from the SAME
+   *  preprocessed crop the live decode sees. */
   function maskParams(p: VectorizeParams) {
     return {
       channel: p.channel,
@@ -172,7 +215,8 @@ export function createVectorSweep(config: {
       adaptive_block: Math.round(p.adaptiveBlock),
       adaptive_c: Math.round(p.adaptiveC),
       open_px: Math.round(p.openPx),
-      bridge_px: Math.round(p.bridgePx)
+      bridge_px: Math.round(p.bridgePx),
+      preprocess: p.preprocess ?? NEUTRAL_VECTOR_PREPROCESS
     };
   }
 
@@ -452,14 +496,19 @@ export function createVectorSweep(config: {
     return publicStatus(job);
   }
 
-  /** Morphology/adaptive padding baked into block masks (mirrors the
-   *  sidecar's mask_pad_px — the response's `pad` field confirms it). */
+  /** Morphology/adaptive/preprocess padding baked into block masks (mirrors
+   *  the sidecar's mask_pad_px — the response's `pad` field confirms it).
+   *  The preprocess reaches beyond a pixel (median radius, unsharp ~3σ)
+   *  BEFORE the mask exists, so it pads too. */
   function maskPad(p: VectorizeParams): number {
+    const pp = p.preprocess ?? NEUTRAL_VECTOR_PREPROCESS;
     return (
       Math.max(
         Math.round(p.openPx),
         Math.round(p.bridgePx),
-        Math.ceil(Math.round(p.adaptiveBlock) / 2)
+        Math.ceil(Math.round(p.adaptiveBlock) / 2),
+        pp.denoiseMedian,
+        Math.ceil(pp.sharpenRadius * 3)
       ) + 2
     );
   }

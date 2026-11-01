@@ -138,6 +138,7 @@ export async function vectorizeRegion(
   q.set("decoder", params.decoder);
   q.set("octDeltaPx", String(params.octDeltaPx));
   q.set("octStrict", params.octStrict ? "1" : "0");
+  if (params.preprocess) q.set("preprocess", JSON.stringify(params.preprocess));
   if (overlaySource) q.set("overlaySource", overlaySource);
   return apiGet<VectorizeResponse>(
     `/api/dies/${dieId}/vectorize?${q.toString()}`,
@@ -220,6 +221,7 @@ export async function fetchVectorBlocks(
   q.set("decoder", params.decoder);
   q.set("octDeltaPx", String(params.octDeltaPx));
   q.set("octStrict", params.octStrict ? "1" : "0");
+  if (params.preprocess) q.set("preprocess", JSON.stringify(params.preprocess));
   if (overlaySource) q.set("overlaySource", overlaySource);
   return apiGet<VectorBlocksResponse>(
     `/api/dies/${dieId}/vectorize/blocks?${q.toString()}`,

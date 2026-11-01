@@ -10,6 +10,7 @@ import type {
   LayerType,
   VectorizeParams
 } from "shared";
+import { NEUTRAL_VECTOR_PREPROCESS } from "shared";
 import {
   CELL_COLOR,
   NET_COLOR,
@@ -603,7 +604,8 @@ export const DEFAULT_VECTOR_PARAMS: VectorizeParams = {
   widthMax: 30,
   decoder: "runs",
   octDeltaPx: 0,
-  octStrict: false
+  octStrict: false,
+  preprocess: { ...NEUTRAL_VECTOR_PREPROCESS }
 };
 
 export const usePreferences = create<PreferencesState & PreferencesActions>()(

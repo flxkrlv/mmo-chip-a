@@ -36,6 +36,105 @@ class VectorParams:
     decoder: str = "runs"          # "runs" (skeleton, default) | "octilinear"
     oct_delta_px: float = 0.0      # 0 = auto (max(0.75, width_min/2))
     oct_strict: bool = False       # reserved: hard octilinear mode (L3), not implemented yet
+    preprocess: "PreprocessParams" = None  # P2-3: set by the handlers
+
+
+@dataclass
+class PreprocessParams:
+    """P2-3: optional pre-threshold image conditioning (applied to the crop
+    BEFORE the channel extraction: tone LUT → median denoise → CLAHE →
+    unsharp). All values neutral at 0 / 1 respectively; each stage skips
+    when neutral so the default is a strict no-op."""
+    brightness: float = 0.0        # tone offset, -100..100 (8-bit levels)
+    contrast: float = 1.0          # factor around mid-gray, 0..2
+    gamma: float = 1.0             # exponent, 0.2..5 (1 = neutral)
+    shadows: float = 0.0           # shadow lift 0..100
+    highlights: float = 0.0        # highlight compression 0..100
+    clahe_clip: float = 0.0        # clip limit 0..10; 0 = off
+    clahe_tiles: int = 8           # tile grid 1..16
+    sharpen_amount: float = 0.0    # unsharp amount 0..200 (%)
+    sharpen_radius: float = 1.0    # unsharp radius, px 0.5..5
+    denoise_median: int = 0        # median radius px, 0 = off
+
+    def neutral(self) -> bool:
+        return (
+            self.brightness == 0 and self.contrast == 1 and self.gamma == 1
+            and self.shadows == 0 and self.highlights == 0 and self.clahe_clip <= 0
+            and self.sharpen_amount <= 0 and self.denoise_median <= 0
+        )
+
+
+def parse_preprocess(raw) -> PreprocessParams:
+    """Clamp an untrusted preprocess dict (JSON) into the ranges below —
+    the sidecar never second-guesses the caller once these pass."""
+    raw = raw if isinstance(raw, dict) else {}
+    def num(key, fallback, lo, hi):
+        try:
+            v = float(raw.get(key, fallback))
+        except (TypeError, ValueError):
+            v = fallback
+        if not (v == v):  # NaN guard
+            v = fallback
+        return max(lo, min(hi, v))
+    return PreprocessParams(
+        brightness=num("brightness", 0.0, -100, 100),
+        contrast=num("contrast", 1.0, 0, 2),
+        gamma=num("gamma", 1.0, 0.2, 5),
+        shadows=num("shadows", 0.0, 0, 100),
+        highlights=num("highlights", 0.0, 0, 100),
+        clahe_clip=num("clahe_clip", 0.0, 0, 10),
+        clahe_tiles=int(max(1, min(16, num("clahe_tiles", 8, 1, 16)))),
+        sharpen_amount=num("sharpen_amount", 0.0, 0, 200),
+        sharpen_radius=num("sharpen_radius", 1.0, 0.5, 5),
+        denoise_median=int(max(0, min(5, num("denoise_median", 0, 0, 5)))),
+    )
+
+
+def apply_preprocess(rgb: np.ndarray, pp: PreprocessParams) -> np.ndarray:
+    """Pre-threshold conditioning of the crop (P2-3). Cheap on purpose:
+    the whole tonal cascade is ONE 256-entry LUT over the RGB, then the
+    local ops (median / CLAHE / unsharp) only when their knobs are open.
+    Pushed to runVectorize's crop path + the sweep's per-block mask crops,
+    so live region decodes, whole-die blocks and trace-region crops all
+    see the same preprocessed pixels."""
+    if pp is None or pp.neutral():
+        return rgb
+
+    # ── 1. One composed tone LUT (per-value, identical across channels) ──
+    x = np.arange(256, dtype=np.float32)
+    t = x / 255.0
+    out = x + pp.brightness                    # brightness offset
+    out = (out - 127.5) * pp.contrast + 127.5  # contrast around mid-gray
+    if abs(pp.gamma - 1.0) > 1e-3:
+        # clamp to [0,1] BEFORE pow — out may be out of range until now.
+        safe = np.clip(out / 255.0, 0.0, 1.0)
+        out = 255.0 * np.power(safe, 1.0 / pp.gamma)
+    if pp.shadows > 0:
+        out = out + (pp.shadows / 100.0) * (1.0 - t) ** 2 * (255.0 - x)
+    if pp.highlights > 0:
+        out = out - (pp.highlights / 100.0) * t ** 2 * x
+    lut = np.clip(np.round(out), 0, 255).astype(np.uint8)
+    img = cv2.LUT(rgb, lut)
+
+    # ── 2. Median denoise (odd kernel) ──────────────────────────────────
+    if pp.denoise_median > 0:
+        img = cv2.medianBlur(img, 2 * int(pp.denoise_median) + 1)
+
+    # ── 3. CLAHE — per channel, equalizes metal-vs-background contrast ──
+    if pp.clahe_clip > 0:
+        tiles = max(1, int(pp.clahe_tiles))
+        clahe = cv2.createCLAHE(clipLimit=float(pp.clahe_clip), tileGridSize=(tiles, tiles))
+        img = cv2.merge([clahe.apply(img[:, :, i]) for i in range(3)])
+
+    # ── 4. Unsharp mask (last — sharpness must survive the denoise) ─────
+    if pp.sharpen_amount > 0:
+        amount = min(2.0, pp.sharpen_amount / 100.0)
+        sigma = max(0.3, float(pp.sharpen_radius) / 2.0)
+        ksize = int(6 * sigma + 1) | 1  # odd, cover ~3σ
+        blur = cv2.GaussianBlur(img, (ksize, ksize), sigma)
+        img = cv2.addWeighted(img, 1.0 + amount, blur, -amount, 0)
+
+    return img
 
 
 def _channel_image(rgb: np.ndarray, channel: str) -> np.ndarray:
@@ -56,11 +155,19 @@ def _empty(w: int, h: int) -> dict:
 
 def mask_pad_px(p: VectorParams) -> int:
     """Crop padding that makes the mask EXACT inside the core: every op that
-    reaches beyond a pixel (morphology kernels, adaptive gaussian block) is
+    reaches beyond a pixel (morphology kernels, adaptive gaussian block, the
+    P2-3 preprocess's median/unsharp radii — they run BEFORE the mask) is
     covered, so block-assembled masks are pixel-identical to a whole-image
     decode — no tile seams by construction."""
     import math
-    return max(int(p.open_px), int(p.bridge_px), math.ceil(int(p.adaptive_block) / 2)) + 2
+    pp = p.preprocess if p.preprocess is not None else PreprocessParams()
+    return max(
+        int(p.open_px),
+        int(p.bridge_px),
+        math.ceil(int(p.adaptive_block) / 2),
+        int(pp.denoise_median),
+        math.ceil(pp.sharpen_radius * 3),
+    ) + 2
 
 
 def build_mask(rgb: np.ndarray, p: VectorParams) -> np.ndarray:

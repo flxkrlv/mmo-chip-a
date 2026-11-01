@@ -18,6 +18,7 @@ import type {
   VectorizeParams,
   VectorizeResponse
 } from "shared";
+import { NEUTRAL_VECTOR_PREPROCESS } from "shared";
 import { createMLJobManager } from "../ml/jobs.js";
 import { resolveOverlayOriginalPath } from "./overlayImages.js";
 import {
@@ -30,7 +31,7 @@ import {
   type MLPredictor
 } from "../ml/predict.js";
 import { createVectorizer } from "../ml/vectorize.js";
-import { createVectorSweep } from "../ml/vectorSweep.js";
+import { createVectorSweep, parsePreprocess } from "../ml/vectorSweep.js";
 import { readAnnotations, readDieRecord } from "../store.js";
 import type { AnnotationBroadcaster } from "../ws.js";
 
@@ -579,7 +580,8 @@ export function createMLRouter(config: {
       widthMax: num("widthMax", 30),
       decoder: String(request.query.decoder) === "octilinear" ? "octilinear" : "runs",
       octDeltaPx: num("octDeltaPx", 0),
-      octStrict: num("octStrict", 0) !== 0
+      octStrict: num("octStrict", 0) !== 0,
+      preprocess: parsePreprocess(request.query.preprocess)
     };
   }
 

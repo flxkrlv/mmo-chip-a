@@ -75,6 +75,19 @@
 
 ### P2-3. Предварительная обработка изображения перед векторизацией
 
+> ✅ Реализовано 2026-11-01: `VectorizeParams.preprocess` (subobject, flat
+> scalars; neutral = no-op) — tone LUT (brightness/contrast/gamma/shadows/
+> highlights одним LUT) → median denoise → CLAHE (per-channel) → unsharp.
+> Применяется в sidecar (cv2) СРАЗУ после imdecode у `/vectorize/region` и
+> `/vectorize/mask` — так что live-регионы, sweep-блоки и trace-region
+> кропы видят одни и те же preprocess-пиксели. `mask_pad_px`/`maskPad`
+> учли denoise/unsharp-радиусы (безтайл-инвариант сохранён).
+> `vectorParamsHash` включает preprocess по-скалярно → новая настройка =
+> новый sweep-dir (старые runs остаются как saved layers). UI —
+> схлопываемая секция «Preprocess» в Vector-вкладке (VSlider'ы + reset),
+> `params.json`/пресеты берут subobject автоматом. ВАЖНО: sidecar
+> трогает python-код → нужен рестарт sidecar'а.
+
 Цель: юзер подбирает обработку, при которой металл максимально однородный и
 контрастный, и только потом крутит порог/morphology. Что Problems to Solve:
 
