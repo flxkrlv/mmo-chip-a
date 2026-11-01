@@ -28,8 +28,10 @@ export interface AnnotationDrawState {
    *  skipped outright in the common empty-selection case. */
   selectedEmpty?: boolean;
   /** Render pass for vias: "body" = shape only (drawn before nets),
-   *  "label" = text only (drawn after nets). */
-  pass?: "body" | "label";
+   *  "label" = text only (drawn after nets). Nets additionally receive
+   *  "dots" — a dedicated final pass where net annotations paint ONLY their
+   *  node dots (see AnnotationLayer.draw). */
+  pass?: "body" | "label" | "dots";
 }
 
 /** Result of a successful point-pick. */
@@ -422,6 +424,19 @@ export class AnnotationLayer implements Layer {
         layerState.selected = selected.has(h.annotation.id);
         h.annotation.draw(ctx, bounds, layerState);
       }
+    }
+
+    // Net node dots — ONE dedicated pass after all edge passes. Node dots
+    // never changed between passes (they painted identically, on top, eight
+    // times), so a final single pass renders the EXACT same image for a
+    // fraction of the work: with "show dots at wire turns" on, dense
+    // vectorized nets produced N nodes × 8 passes of arc-fill canvas calls
+    // per tile per repaint — the dominant cost of that toggle.
+    const netDotState: AnnotationDrawState = { ...state, pass: "dots" };
+    for (const h of nets) {
+      if (!isVisible(h.annotation)) continue;
+      netDotState.selected = selected.has(h.annotation.id);
+      h.annotation.draw(ctx, bounds, netDotState);
     }
 
     // Via labels — on top of everything (nets + via bodies).

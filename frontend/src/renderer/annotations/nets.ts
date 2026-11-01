@@ -262,6 +262,17 @@ export function buildNetAnnotation(
     drawOrder,
     bbox,
     draw(ctx, bounds, state) {
+      // Pass split: the AnnotationLayer calls the net once per conductor pass
+      // (edges, filtered by layer), then once more in a dedicated "dots"
+      // pass after all edge passes. Dots never varied between passes (they
+      // painted identically on top), so painting them once AFTER everything
+      // renders the same image for 1/8th of the canvas calls; edges paint
+      // only in edge passes. A state with no pass (direct callers, tests)
+      // keeps the legacy everything-at-once draw.
+      const isDotPass = state.pass === "dots";
+      const isEdgePass = state.pass === undefined;
+      if (!isDotPass && !isEdgePass) return;
+
       // ML mode: the stroke is the real document-space width (source px), so
       // it scales with the image like the export footprint. Otherwise it's a
       // zoom-stable on-screen width (clamped, then back to world units).
@@ -338,7 +349,7 @@ export function buildNetAnnotation(
       // restricts which edges to draw in the current pass.
       const netOverrideColor = getNetOverrideColor?.(netId);
       const byColor = new Map<string, EdgeHit[]>();
-      if (!whole && !passSkipsEdges) {
+      if (isEdgePass && !whole && !passSkipsEdges) {
         forEdgesInRect(cull, (h) => {
           const e = h.e;
           if (edgeSel(e)) return; // drawn in the selection pass below
@@ -367,13 +378,13 @@ export function buildNetAnnotation(
       // net selected → all edges (rare, one redraw). Otherwise the query is
       // candidate-scoped like the unselected pass.
       const selectedHits: EdgeHit[] = [];
-      if (whole) {
+      if (isEdgePass && whole) {
         for (const e of net.edges) {
           const a = nodeIndex.get(e.from);
           const b = nodeIndex.get(e.to);
           if (a && b) selectedHits.push({ e, a, b });
         }
-      } else if (!passSkipsEdges) {
+      } else if (isEdgePass && !passSkipsEdges) {
         forEdgesInRect(cull, (h) => {
           if (state.isSelected(edgeSubId(h.e.id))) selectedHits.push(h);
         });
@@ -416,50 +427,84 @@ export function buildNetAnnotation(
       lastNodeWorldRadius = showNodes ? nodeRadius : 0;
       const visibleNodes = new Set<string>();
 
-      if (showNodes) {
+      if ((isDotPass || isEdgePass) && showNodes) {
         // Node colour follows the highest-priority connected edge's layer (
         // metal1 dots teal, metal2 violet, …) — the per-node best layer is
-        // precomputed at build time; only queried candidates are examined.
+        // precomputed at build time. Dots batch by colour: N× (beginPath +
+        // arc + fill) collapses into one path with N arc subpaths + ONE fill
+        // per colour (moveTo before each arc prevents connecting chords);
+        // junction crosses likewise become subpaths of one stroke per colour.
+        type DotBatch = { dots: AnnotationNet["nodes"]; crosses: AnnotationNet["nodes"] };
+        const batches = new Map<string, DotBatch>();
+        const selNodes: AnnotationNet["nodes"] = [];
+        const nailBatch = (col: string): DotBatch => {
+          let b = batches.get(col);
+          if (!b) {
+            b = { dots: [], crosses: [] };
+            batches.set(col, b);
+          }
+          return b;
+        };
         forNodesInRect(cull, (n) => {
-          if (nodeSel(n)) return;
+          if (nodeSel(n)) {
+            selNodes.push(n);
+            visibleNodes.add(n.id);
+            return;
+          }
           if (!nodeWantsDot(n.id)) return;
           visibleNodes.add(n.id);
           const bestLayer = nodeBestLayer.get(n.id);
           const layerCol = bestLayer && (getLayerColor?.(bestLayer) ?? WIRE_LAYER_COLOR[bestLayer]);
           const dotColor = netOverrideColor ?? layerCol ?? baseColor;
-          ctx.fillStyle = dotColor;
-          ctx.beginPath();
-          ctx.arc(n.x, n.y, nodeRadius, 0, Math.PI * 2);
-          ctx.fill();
+          const b = nailBatch(dotColor);
+          b.dots.push(n);
           // A junction (several segments of this net meet here) gets a
           // contrasting cross inside the dot, so it reads differently from a
           // dangling end or a plain cell contact.
-          if (junctionCross && (nodeDegree.get(n.id) ?? 0) >= 3) {
-            const h = nodeRadius * 0.62;
-            ctx.strokeStyle = contrastColor(dotColor);
+          if (junctionCross && (nodeDegree.get(n.id) ?? 0) >= 3) b.crosses.push(n);
+        });
+        for (const [col, b] of batches) {
+          if (b.dots.length > 0) {
+            ctx.fillStyle = col;
+            ctx.beginPath();
+            for (const n of b.dots) {
+              ctx.moveTo(n.x + nodeRadius, n.y);
+              ctx.arc(n.x, n.y, nodeRadius, 0, Math.PI * 2);
+            }
+            ctx.fill();
+          }
+          if (b.crosses.length > 0) {
+            ctx.strokeStyle = contrastColor(col);
             ctx.lineWidth = Math.max(nodeRadius * 0.3, 1.5 / bounds.zoom);
             ctx.beginPath();
-            ctx.moveTo(n.x - h, n.y - h);
-            ctx.lineTo(n.x + h, n.y + h);
-            ctx.moveTo(n.x + h, n.y - h);
-            ctx.lineTo(n.x - h, n.y + h);
+            const h = nodeRadius * 0.62;
+            for (const n of b.crosses) {
+              ctx.moveTo(n.x - h, n.y - h);
+              ctx.lineTo(n.x + h, n.y + h);
+              ctx.moveTo(n.x + h, n.y - h);
+              ctx.lineTo(n.x - h, n.y + h);
+            }
             ctx.stroke();
           }
-        });
+        }
         const selRadius = nodeRadius * SELECT_NODE_MULT;
-        ctx.fillStyle = SELECT_COLOR;
-        ctx.strokeStyle = SELECT_RING;
-        ctx.lineWidth = SELECT_OUTLINE_PX / bounds.zoom;
-        forNodesInRect(cull, (n) => {
-          if (!nodeSel(n)) return;
-          visibleNodes.add(n.id);
+        if (selNodes.length > 0) {
+          ctx.fillStyle = SELECT_COLOR;
           ctx.beginPath();
-          ctx.arc(n.x, n.y, selRadius, 0, Math.PI * 2);
+          for (const n of selNodes) {
+            ctx.moveTo(n.x + selRadius, n.y);
+            ctx.arc(n.x, n.y, selRadius, 0, Math.PI * 2);
+          }
           ctx.fill();
+          ctx.strokeStyle = SELECT_RING;
+          ctx.lineWidth = SELECT_OUTLINE_PX / bounds.zoom;
           ctx.beginPath();
-          ctx.arc(n.x, n.y, selRadius, 0, Math.PI * 2);
+          for (const n of selNodes) {
+            ctx.moveTo(n.x + selRadius, n.y);
+            ctx.arc(n.x, n.y, selRadius, 0, Math.PI * 2);
+          }
           ctx.stroke();
-        });
+        }
       }
       lastVisibleNodes = visibleNodes;
     },
