@@ -77,6 +77,10 @@ export class TiledRenderer {
   /** Per-frame layer draw accounting for the slow-frame log (below). */
   private frameLayerMs = new Map<string, { ms: number; calls: number }>();
   private lastSlowLog = 0;
+  /** Where the pending render came from — the slow-frame log names it, so
+   *  CONTINUOUS re-render spam (the same tiles redrawn every frame without
+   *  any user input) has a visible owner instead of being a mystery. */
+  private lastRenderReason = "(none)";
 
   constructor(canvas: HTMLCanvasElement, options: TiledRendererOptions = {}) {
     this.canvas = canvas;
@@ -178,6 +182,17 @@ export class TiledRenderer {
   }
 
   private requestRender() {
+    // Record the LAST caller that asked for a render this frame: the
+    // slow-frame log surfaces it. `new Error().stack` per call is worth it
+    // here — renders are frame-coalesced (dozens/sec at worst), and
+    // pinpointing a pathological invalidator is otherwise guesswork.
+    const stack = new Error().stack ?? "";
+    const frames = stack
+      .split("\n")
+      .slice(2, 6)
+      .map((s) => s.trim().replace(/^at\s+/, ""))
+      .filter(Boolean);
+    this.lastRenderReason = frames.join(" <- ") || "(unknown)";
     if (this.rafId !== null || this.destroyed) return;
     this.rafId = requestAnimationFrame(() => {
       this.rafId = null;
@@ -425,7 +440,7 @@ export class TiledRenderer {
         .sort((a, b) => b[1].ms - a[1].ms)
         .map(([id, { ms, calls }]) => `${id} ${ms.toFixed(0)}ms×${calls} tiles`);
       console.info(
-        `[perf] slow frame ${frameMs.toFixed(0)}ms @zoom ${vp.zoom.toFixed(3)}: ${
+        `[perf] slow frame ${frameMs.toFixed(0)}ms @zoom ${vp.zoom.toFixed(3)} — reason: ${this.lastRenderReason}: ${
           parts.join(", ") || "compositing only"
         }`
       );
