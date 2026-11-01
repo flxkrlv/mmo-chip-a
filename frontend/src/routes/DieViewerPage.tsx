@@ -991,7 +991,7 @@ function DieViewer({ dieId }: { dieId: string }) {
               useDieViewerStore.getState().traceRegionsByDie[die.id] ?? [],
             // P2-3: blit the PREPROCESSED viewport crop under the overlay.
             getPreprocessPreview: () =>
-              useDieViewerStore.getState().vectorPreprocessPreview,
+              usePreferences.getState().vectorPreprocessPreview,
             onStatusChange: (status) =>
               useDieViewerStore.getState().setVectorStatus(status)
           })
@@ -1008,7 +1008,9 @@ function DieViewer({ dieId }: { dieId: string }) {
   const traceRegionsChanged = useDieViewerStore(
     (s) => (die ? (s.traceRegionsByDie[die.id]?.length ?? 0) : 0)
   );
-  const preprocessPreviewOn = useDieViewerStore((s) => s.vectorPreprocessPreview);
+  // P2-3 preview toggle is a PREFERENCE (persisted) — a transient store
+  // flag silently switched itself off on every reload / restart.
+  const preprocessPreviewOn = usePreferences((s) => s.vectorPreprocessPreview);
   // Sliders must repaint the preview WITHOUT any canvas interaction: the
   // preprocess JSON signature is the dependency, refresh() invalidates the
   // tiles, beginFrame sees the new preprocess key and refetches (debounced).

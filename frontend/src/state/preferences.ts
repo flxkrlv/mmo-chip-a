@@ -215,6 +215,11 @@ interface PreferencesState {
   /** Materialization filter: a net must touch at least this many DISTINCT
    *  device contacts to be created. 0 = off; 2 drops floating artifacts. */
   vectorMinContacts: 0 | 1 | 2;
+  /** P2-3: blit the PREPROCESSED viewport crop under the vector overlay.
+   *  Persisted so it survives page reloads / app restarts — a transient
+   *  flag used to silently switch OFF on every reload (the checkbox sits
+   *  inside the collapsed Preprocess section, so nothing hinted it). */
+  vectorPreprocessPreview: boolean;
   /** Materialization filter: skip octilinear traces kept raw with
    *  `irregular: true` instead of materializing non-octilinear geometry. */
   vectorDropIrregular: boolean;
@@ -535,6 +540,7 @@ interface PreferencesActions {
   setVectorLayerVisible: (hash: string, visible: boolean) => void;
   setVectorLayerColor: (hash: string, color: string) => void;
   setVectorMinContacts: (n: 0 | 1 | 2) => void;
+  setVectorPreprocessPreview: (on: boolean) => void;
   setVectorDropIrregular: (drop: boolean) => void;
   setVectorRespectUserNets: (respect: boolean) => void;
   setVectorMaxBranchLen: (px: number) => void;
@@ -664,6 +670,7 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
         vectorLayerHidden: {},
         vectorLayerColors: {},
         vectorMinContacts: 0,
+        vectorPreprocessPreview: false,
         vectorDropIrregular: false,
         vectorRespectUserNets: true,
         vectorMaxBranchLen: 0,
@@ -1013,6 +1020,7 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
       vectorLayerColors: { ...state.vectorLayerColors, [hash]: color }
     })),
         setVectorMinContacts: (n) => set({ vectorMinContacts: n }),
+        setVectorPreprocessPreview: (on) => set({ vectorPreprocessPreview: on }),
         setVectorDropIrregular: (drop) => set({ vectorDropIrregular: drop }),
         setVectorRespectUserNets: (respect) => set({ vectorRespectUserNets: respect }),
         setVectorMaxBranchLen: (px) => set({ vectorMaxBranchLen: Math.max(0, px) }),
@@ -1153,6 +1161,7 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
           vectorLayerHidden: state.vectorLayerHidden,
           vectorLayerColors: state.vectorLayerColors,
           vectorMinContacts: state.vectorMinContacts,
+          vectorPreprocessPreview: state.vectorPreprocessPreview,
           vectorDropIrregular: state.vectorDropIrregular,
           vectorRespectUserNets: state.vectorRespectUserNets,
           vectorMaxBranchLen: state.vectorMaxBranchLen,

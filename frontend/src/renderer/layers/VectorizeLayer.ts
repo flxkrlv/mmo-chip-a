@@ -70,6 +70,8 @@ export interface VectorizeDisplay {
     droppedWidth?: number;
     /** Octilinear decoder: chains kept raw with irregular=true. */
     irregular?: number;
+    /** P2-3 preview lifecycle for the panel status line. */
+    preview?: { state: "off" | "fetching" | "ok" | "fail"; failures: number; error: string | null };
   }) => void;
 }
 
@@ -228,6 +230,11 @@ export class VectorizeLayer implements Layer {
   /** Consecutive preview failures — drives the retry backoff (a restart
    *  window must not freeze the preview until some canvas movement). */
   private previewFailures = 0;
+  /** Preview lifecycle, mirrored into the panel status (the "silent dead
+   *  preview" class of bugs must be visible in the UI, not only console). */
+  private previewState: "off" | "fetching" | "ok" | "fail" = "off";
+  private previewLastError: string | null = null;
+  private lastLoading = false;
 
   constructor(dieId: string, metadata: DieMetadata, display: VectorizeDisplay = {}) {
     this.dieId = dieId;
@@ -368,15 +375,32 @@ export class VectorizeLayer implements Layer {
     irregular?: number;
   } | null = null;
 
-  private notifyStatus(loading: boolean): void {
+  private notifyStatus(loading?: boolean): void {
+    if (loading !== undefined) this.lastLoading = loading;
     this.display.onStatusChange?.({
-      loading,
+      loading: this.lastLoading,
       error: this.lastError,
       traces: this.collectTraces().length,
       ...(this.lastStats ? { droppedWidth: this.lastStats.droppedWidth } : {}),
-      ...(this.lastStats?.irregular ? { irregular: this.lastStats.irregular } : {})
+      ...(this.lastStats?.irregular ? { irregular: this.lastStats.irregular } : {}),
+      preview: {
+        state: this.previewState,
+        failures: this.previewFailures,
+        error: this.previewLastError
+      }
     });
   }
+
+  private setPreviewState(state: "off" | "fetching" | "ok" | "fail", error?: string | null): void {
+    if (this.previewState !== state || (error ?? null) !== this.previewLastError) {
+      const at = state === "ok" ? ` (${Date.now() - this.previewStartedAt} ms)` : "";
+      console.info(`[VectorizeLayer] preprocess preview: ${state}${error ? ` — ${error}` : ""}${at}`);
+    }
+    this.previewState = state;
+    this.previewLastError = error ?? null;
+    this.notifyStatus();
+  }
+  private previewStartedAt = 0;
 
   /** Every decoded trace across cached regions and pinned saved layers,
    *  deduplicated by point sequence — a trace straddling two fetched
@@ -573,6 +597,7 @@ export class VectorizeLayer implements Layer {
   ): void {
     if (!this.display.getPreprocessPreview?.()) {
       this.dropPreview();
+      this.setPreviewState("off");
       return;
     }
     const key = `${bbox.join(",")}|${overlaySource ?? ""}|${JSON.stringify(params.preprocess ?? {})}`;
@@ -583,6 +608,8 @@ export class VectorizeLayer implements Layer {
     this.previewTimer = setTimeout(async () => {
       this.previewTimer = null;
       this.previewKey = key;
+      this.previewStartedAt = Date.now();
+      this.setPreviewState("fetching");
       try {
         const blob = await fetchPreprocessPreview(
           this.dieId,
@@ -601,6 +628,7 @@ export class VectorizeLayer implements Layer {
         this.previewBitmap?.close();
         this.previewBitmap = bitmap;
         this.previewBbox = bbox;
+        this.setPreviewState("ok");
         this.invalidateCb?.({
           x: bbox[0],
           y: bbox[1],
@@ -616,10 +644,9 @@ export class VectorizeLayer implements Layer {
         // report). Instead: back off (cap 3s), clear the key, and force a
         // redraw frame so beginFrame re-schedules the fetch by itself.
         this.previewFailures++;
-        console.warn(
-          "[VectorizeLayer] preprocess preview failed — retrying:",
-          e instanceof Error ? e.message : e
-        );
+        const message = e instanceof Error ? e.message : String(e);
+        this.setPreviewState("fail", message);
+        console.warn("[VectorizeLayer] preprocess preview failed — retrying:", message);
         this.previewBitmap?.close();
         this.previewBitmap = null;
         this.previewBbox = null;

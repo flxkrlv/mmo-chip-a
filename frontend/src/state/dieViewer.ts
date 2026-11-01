@@ -94,11 +94,6 @@ interface DieViewerState {
    *  coordinates), not annotations — survives die-viewer remounts in
    *  `reset` like the undo history does. */
   traceRegionsByDie: Record<string, VectorTraceRegion[]>;
-  /** P2-3: when on, the VectorizeLayer blits the PREPROCESSED crop of the
-   *  live viewport under the vector overlay — tuning brightness/CLAHE/etc.
-   *  happens while seeing the processed pixels. Transient (resets with the
-   *  die like other view state). */
-  vectorPreprocessPreview: boolean;
   /** Tool currently selected in the sub-toolbar. */
   activeTool: ToolKind;
   /** Active analog layer for analogRect/analogPoly tools. */
@@ -147,6 +142,8 @@ interface DieViewerState {
     droppedWidth?: number;
     /** Octilinear decoder: chains kept raw with irregular=true. */
     irregular?: number;
+    /** P2-3 preview state (see VectorizeLayer). */
+    preview?: { state: "off" | "fetching" | "ok" | "fail"; failures: number; error: string | null };
   };
   /** Vector pipette (VectorSection): armed → canvas clicks sample the metal
    *  colour instead of the active tool. Samples accumulate for averaging;
@@ -186,7 +183,6 @@ interface DieViewerActions {
   /** Add / remove a vectorize trace region for the die. */
   addTraceRegion: (dieId: string, region: VectorTraceRegion) => void;
   removeTraceRegion: (dieId: string, regionId: string) => void;
-  setVectorPreprocessPreview: (on: boolean) => void;
   setActiveTool: (tool: ToolKind) => void;
   setActiveAnalogLayer: (layer: AnalogLayerId) => void;
   pushUndo: (action: AnnotationAction) => void;
@@ -213,6 +209,8 @@ setVectorStatus: (status: {
   traces: number;
   droppedWidth?: number;
   irregular?: number;
+  /** P2-3 preview state, reported by the layer on every transition. */
+  preview?: { state: "off" | "fetching" | "ok" | "fail"; failures: number; error: string | null };
 }) => void;
 setVectorPipetteArmed: (armed: boolean) => void;
 addVectorSample: (sample: { rgb: [number, number, number]; x: number; y: number }) => void;
@@ -242,7 +240,6 @@ const INITIAL_STATE: DieViewerState = {
   selectedIds: EMPTY_SELECTION,
   expandedGroups: [],
   traceRegionsByDie: {},
-  vectorPreprocessPreview: false,
   activeTool: "select",
   activeAnalogLayer: "nwell",
   undoStack: [],
@@ -326,10 +323,6 @@ export const useDieViewerStore = create<DieViewerState & DieViewerActions>()((se
         [dieId]: list.filter((r) => r.id !== regionId)
       }
     }));
-  },
-  setVectorPreprocessPreview: (on) => {
-    if (get().vectorPreprocessPreview === on) return;
-    set({ vectorPreprocessPreview: on });
   },
   // Switching to any non-select tool drops the current selection, so the
   // user never has to Escape before starting to draw.

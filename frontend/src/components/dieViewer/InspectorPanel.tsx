@@ -1542,8 +1542,10 @@ function VectorSection({
     pp.denoiseMedian <= 0
   );
   // P2-3: blit the preprocessed viewport crop under the overlay while tuning.
-  const preprocessPreview = useDieViewerStore((s) => s.vectorPreprocessPreview);
-  const setPreprocessPreview = useDieViewerStore((s) => s.setVectorPreprocessPreview);
+  // A PREFERENCE (persisted) — the transient store flag used to silently
+  // reset itself to OFF on every page reload / app restart.
+  const preprocessPreview = usePreferences((s) => s.vectorPreprocessPreview);
+  const setPreprocessPreview = usePreferences((s) => s.setVectorPreprocessPreview);
   const resetParams = usePreferences((s) => s.resetVectorParams);
   const presets = usePreferences((s) => s.vectorPresets);
   const savePreset = usePreferences((s) => s.saveVectorPreset);
@@ -1553,6 +1555,7 @@ function VectorSection({
   const outlineAlpha = usePreferences((s) => s.vectorOutlineAlpha);
   const setOutlineAlpha = usePreferences((s) => s.setVectorOutlineAlpha);
   const status = useDieViewerStore((s) => s.vectorStatus);
+  const previewStatus = status.preview;
   const pipetteArmed = useDieViewerStore((s) => s.vectorPipetteArmed);
   const setPipetteArmed = useDieViewerStore((s) => s.setVectorPipetteArmed);
   const samples = useDieViewerStore((s) => s.vectorSamples);
@@ -2108,6 +2111,17 @@ function VectorSection({
             />
             preprocess preview (live viewport)
           </label>
+          {/* Preview lifecycle, surfaced HERE so a dead preview can't be a
+              silent mystery: state + consecutive failures + last error. */}
+          {preprocessPreview && previewStatus && (
+            <div className="m" style={{ fontSize: 10, color: previewStatus.state === "fail" ? "var(--danger, #e36854)" : "var(--ink3)", marginBottom: 4 }}>
+              {previewStatus.state === "fetching" && "preview: fetching…"}
+              {previewStatus.state === "ok" && "preview: ok"}
+              {previewStatus.state === "off" && "preview: off — waiting for a viewport frame"}
+              {previewStatus.state === "fail" &&
+                `preview failed ×${previewStatus.failures} — ${previewStatus.error ?? "unknown error"} (retrying…)`}
+            </div>
+          )}
           <VSlider
             label="Brightness"
             value={pp.brightness}
