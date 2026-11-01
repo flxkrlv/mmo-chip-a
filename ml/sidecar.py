@@ -32,7 +32,7 @@ import cv2
 import numpy as np
 import torch
 import uvicorn
-from fastapi import FastAPI, File, Form, Header, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, Header, HTTPException, Response, UploadFile
 from pydantic import BaseModel
 
 from augment import normalize_only
@@ -517,6 +517,32 @@ def vectorize_mask(image: UploadFile = File(...), body: str = Form(...)) -> dict
         # [pad .. width-pad] back to its core when assembling the die mask.
         "pad": mask_pad_px(maskParams),
     }
+
+
+@app.post("/vectorize/preprocess")
+def preprocess_endpoint(image: UploadFile = File(...), preprocess: str = Form("{}")) -> Response:
+    """P2-3 preview: return ONLY the preprocessed crop as PNG. The vector
+    layer blits it under the traces/outlines over the live viewport — the
+    user tunes brightness/contrast/gamma/shadows/highlights/CLAHE/unsharp
+    while SEEING the processed pixels instead of guessing from the overlay.
+    Intentionally NOT CV-gated (like /vectorize/mask): the caller sends a
+    downscaled crop (~≤1.2 Mpx), the cascade is one LUT + cheap local ops."""
+    import json as _json
+    raw = image.file.read()
+    arr = np.frombuffer(raw, dtype=np.uint8)
+    bgr = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+    if bgr is None:
+        raise HTTPException(status_code=400, detail="could not decode image")
+    rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+    try:
+        pp = parse_preprocess(_json.loads(preprocess) if preprocess else {})
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=400, detail=f"bad preprocess params: {exc}")
+    out = apply_preprocess(rgb, pp)
+    ok, png = cv2.imencode(".png", out)
+    if not ok:
+        raise HTTPException(status_code=500, detail="preview encode failed")
+    return Response(content=png.tobytes(), media_type="image/png")
 
 
 @app.post("/vectorize/decode")

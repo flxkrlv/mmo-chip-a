@@ -25,7 +25,7 @@ import type {
   VectorSweepStatus
 } from "shared";
 import { subscribeToDie } from "./annotationsWebSocket";
-import { ApiError, apiDelete, apiGet, apiPost } from "./client";
+import { ApiError, apiDelete, apiGet, apiPost, authHeaders } from "./client";
 
 /**
  * Kick off the backend ML training-data export for a die. The backend crops
@@ -144,6 +144,39 @@ export async function vectorizeRegion(
     `/api/dies/${dieId}/vectorize?${q.toString()}`,
     signal
   );
+}
+
+/** P2-3 preview: the preprocessed crop (usually the live viewport) as a
+ *  PNG blob — the VectorizeLayer blits it under traces/outlines so tuning
+ *  brightness/CLAHE/etc. happens while SEEING the processed pixels. */
+export async function fetchPreprocessPreview(
+  dieId: string,
+  bbox: [number, number, number, number],
+  params: VectorizeParams,
+  overlaySource?: string,
+  signal?: AbortSignal
+): Promise<Blob> {
+  const response = await fetch(`/api/dies/${dieId}/vectorize/preprocess-preview`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...authHeaders() },
+    body: JSON.stringify({
+      bbox,
+      preprocess: params.preprocess ?? {},
+      ...(overlaySource ? { overlaySource } : {})
+    }),
+    signal
+  });
+  if (!response.ok) {
+    let detail = `preprocess preview failed (${response.status})`;
+    try {
+      const j = (await response.json()) as { error?: string };
+      if (j?.error) detail = j.error;
+    } catch {
+      /* not JSON */
+    }
+    throw new Error(detail);
+  }
+  return response.blob();
 }
 
 /** Pipette readout: mean RGB of a small source region (the same image the

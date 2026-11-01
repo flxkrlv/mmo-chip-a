@@ -1,7 +1,7 @@
 import type { DieMetadata, MLTracePolyline, VectorizeParams } from "shared";
 import { rectsIntersect, type Point, type Rect } from "../../lib/geometry";
 import { traceRegionBox, type TraceRegionLike } from "../../components/dieViewer/userNetFilter";
-import { fetchVectorBlocks, fetchVectorLayerBlocks, vectorizeRegion } from "../../api/ml";
+import { fetchVectorBlocks, fetchVectorLayerBlocks, fetchPreprocessPreview, vectorizeRegion } from "../../api/ml";
 import type { Layer, RenderFrame, TileBounds } from "../types";
 
 /**
@@ -55,6 +55,10 @@ export interface VectorizeDisplay {
    *  where they touch at least one region (materialization applies the same
    *  filter in the Inspector). Empty ⇒ whole die. */
   getTraceRegions?: () => TraceRegionLike[];
+  /** P2-3 preview: when true, the layer fetches the PREPROCESSED viewport
+   *  crop and blits it under traces/outlines — tuning happens while seeing
+   *  the processed pixels. */
+  getPreprocessPreview?: () => boolean;
   /** Status for the inspector: loading flag, last error, region trace count,
    *  and the last decode's width-filter drop stats. */
   onStatusChange?: (status: {
@@ -212,6 +216,13 @@ export class VectorizeLayer implements Layer {
   private readonly pinnedInflight = new Set<string>();
   private savedVisible: string[] = [];
   private savedHiddenSet: ReadonlySet<string> = new Set();
+  /** P2-3 preview state: the preprocessed viewport crop (server downscales
+   *  to ≤ 1200 px/side) blitted under the overlay for the CURRENT params. */
+  private previewTimer: ReturnType<typeof setTimeout> | null = null;
+  private previewAbort: AbortController | null = null;
+  private previewKey: string | null = null;
+  private previewBitmap: ImageBitmap | null = null;
+  private previewBbox: [number, number, number, number] | null = null;
 
   constructor(dieId: string, metadata: DieMetadata, display: VectorizeDisplay = {}) {
     this.dieId = dieId;
@@ -231,6 +242,7 @@ export class VectorizeLayer implements Layer {
     this.pinnedInflight.clear();
     this.inflightKey = null;
     this.queuedFetch = null;
+    this.dropPreview();
   }
 
   subscribe(invalidate: (worldRect?: Rect) => void): () => void {
@@ -246,6 +258,7 @@ export class VectorizeLayer implements Layer {
     this.cache.clear();
     this.snapCache.clear();
     this.blockMiss.clear();
+    this.dropPreview();
     this.invalidateCb?.();
   }
 
@@ -468,7 +481,11 @@ export class VectorizeLayer implements Layer {
     const overlaySource = this.display.getOverlaySource?.() ?? undefined;
     const key = `${bbox.join(",")}|${overlaySource ?? ""}|${JSON.stringify(params)}`;
     // Already decoded (or decoded at these exact params) → nothing to do.
-    if (this.cache.has(key) || key === this.inflightKey || key === this.pendingKey) return;
+    if (this.cache.has(key) || key === this.inflightKey || key === this.pendingKey) {
+      this.schedulePreview(bbox, overlaySource, params);
+      return;
+    }
+    this.schedulePreview(bbox, overlaySource, params);
 
     // Whole-die sweep cache first: if every block intersecting the viewport
     // is decoded for THESE params, draw from disk — no sidecar round-trip.
@@ -531,6 +548,94 @@ export class VectorizeLayer implements Layer {
     }
   }
 
+  /** P2-3 preview: debounced fetch of the preprocessed viewport crop. Own
+   *  timer/key: independent of the region-decode debounce (the preview only
+   *  depends on bbox + preprocess + source, NOT on threshold params). */
+  private schedulePreview(
+    bbox: [number, number, number, number],
+    overlaySource: string | undefined,
+    params: VectorizeParams
+  ): void {
+    if (!this.display.getPreprocessPreview?.()) {
+      this.dropPreview();
+      return;
+    }
+    const key = `${bbox.join(",")}|${overlaySource ?? ""}|${JSON.stringify(params.preprocess ?? {})}`;
+    if (key === this.previewKey) return;
+    if (this.previewTimer) clearTimeout(this.previewTimer);
+    const controller = this.previewAbort ?? new AbortController();
+    this.previewAbort = controller;
+    this.previewTimer = setTimeout(async () => {
+      this.previewTimer = null;
+      this.previewKey = key;
+      try {
+        const blob = await fetchPreprocessPreview(
+          this.dieId,
+          bbox,
+          params,
+          overlaySource,
+          controller.signal
+        );
+        if (this.destroyed || controller.signal.aborted) return;
+        const bitmap = await createImageBitmap(blob);
+        if (this.destroyed || controller.signal.aborted) {
+          bitmap.close();
+          return;
+        }
+        this.previewBitmap?.close();
+        this.previewBitmap = bitmap;
+        this.previewBbox = bbox;
+        this.invalidateCb?.({
+          x: bbox[0],
+          y: bbox[1],
+          width: bbox[2] - bbox[0],
+          height: bbox[3] - bbox[1]
+        });
+      } catch (e) {
+        if (controller.signal.aborted) return;
+        // Preview is advisory — a failure must not blank the overlay, but
+        // drop the stale bitmap so the user isn't misled.
+        this.dropPreviewKeepKey(key);
+      }
+    }, FETCH_DEBOUNCE_MS);
+  }
+
+  /** Blur out an unusable preview (error) but remember the key so a retry
+   *  happens on the next viewport/params change rather than every frame. */
+  private dropPreviewKeepKey(key: string): void {
+    this.previewBitmap?.close();
+    this.previewBitmap = null;
+    this.previewBbox = null;
+    this.previewKey = key;
+  }
+
+  private dropPreview(): void {
+    if (this.previewTimer) clearTimeout(this.previewTimer);
+    this.previewTimer = null;
+    this.previewAbort?.abort();
+    this.previewAbort = null;
+    this.previewKey = null;
+    this.previewBitmap?.close();
+    this.previewBitmap = null;
+    this.previewBbox = null;
+  }
+
+  /** Paint the preprocessed viewport crop under everything else (P2-3).
+   *  The server may have downscaled it; drawImage scales it back to the
+   *  exact bbox rect. A thin amber border marks the preview extent. */
+  private drawPreview(ctx: CanvasRenderingContext2D, zoom: number, world: Rect): void {
+    const bbox = this.previewBbox;
+    if (!this.previewBitmap || !bbox) return;
+    const [px0, py0, px1, py1] = bbox;
+    if (px1 <= world.x || px0 >= world.x + world.width || py1 <= world.y || py0 >= world.y + world.height) return;
+    ctx.drawImage(this.previewBitmap, px0, py0, px1 - px0, py1 - py0);
+    ctx.strokeStyle = "rgba(253, 224, 71, 0.55)";
+    ctx.lineWidth = Math.max(1, 1.5 / zoom);
+    ctx.setLineDash([6 / zoom, 4 / zoom]);
+    ctx.strokeRect(px0, py0, px1 - px0, py1 - py0);
+    ctx.setLineDash([]);
+  }
+
   /** Debounced + coalesced live viewport decode (the tuning path). */
   private scheduleLiveFetch(
     bbox: [number, number, number, number],
@@ -582,10 +687,13 @@ export class VectorizeLayer implements Layer {
     // the source of truth. Gating them behind the global hide switch used
     // to make the eye toggle do nothing while "Show vector overlay" was off
     // (the default!) — the exact "saved layer renders nothing" report.
+    // P2-3: the processed-pixels preview paints only while the overlay
+    // itself is on (it is a viewport underlay for tuning the DECODE).
     if (hidden || !params) {
       this.drawSaved(ctx, bounds);
       return;
     }
+    this.drawPreview(ctx, zoom, bounds.world);
     const world = bounds.world;
 
     // ── Paint every cached region overlapping the view ───────────────

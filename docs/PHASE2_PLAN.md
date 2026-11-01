@@ -87,6 +87,15 @@
 > схлопываемая секция «Preprocess» в Vector-вкладке (VSlider'ы + reset),
 > `params.json`/пресеты берут subobject автоматом. ВАЖНО: sidecar
 > трогает python-код → нужен рестарт sidecar'а.
+>
+> ✅ Превью (2026-11-01): тумблер «preview processed pixels (live viewport)»
+> в секции Preprocess — VectorizeLayer по debounce тянет
+> `POST /api/dies/:dieId/vectorize/preprocess-preview` (sharp-кроп
+> viewport'а, даунскейл ≤ 1200 px/сторона) и блиттит обработанные пиксели
+> ПОД overlay (амбер-пунктирная рамка = extent превью). ROI для подбора —
+> сам live viewport (превью требует включённого overlay — оно подложка
+> под live-декод). Sidecar: `POST /vectorize/preprocess`
+> (без CV-гейта; тот же apply_preprocess).
 
 Цель: юзер подбирает обработку, при которой металл максимально однородный и
 контрастный, и только потом крутит порог/morphology. Что Problems to Solve:

@@ -985,10 +985,13 @@ function DieViewer({ dieId }: { dieId: string }) {
               usePreferences.getState().traceConfidenceThreshold,
             getOutlineAlpha: () => usePreferences.getState().vectorOutlineAlpha,
             getSamples: () => useDieViewerStore.getState().vectorSamples,
-            // P2-2: the die's vectorize trace regions restrict rendering
+            // P2-3: the die's vectorize trace regions restrict rendering
             // (and, via the Inspector, materialization) to those areas.
             getTraceRegions: () =>
               useDieViewerStore.getState().traceRegionsByDie[die.id] ?? [],
+            // P2-3: blit the PREPROCESSED viewport crop under the overlay.
+            getPreprocessPreview: () =>
+              useDieViewerStore.getState().vectorPreprocessPreview,
             onStatusChange: (status) =>
               useDieViewerStore.getState().setVectorStatus(status)
           })
@@ -1005,9 +1008,10 @@ function DieViewer({ dieId }: { dieId: string }) {
   const traceRegionsChanged = useDieViewerStore(
     (s) => (die ? (s.traceRegionsByDie[die.id]?.length ?? 0) : 0)
   );
+  const preprocessPreviewOn = useDieViewerStore((s) => s.vectorPreprocessPreview);
   useEffect(() => {
     vectorLayer?.refresh();
-  }, [traceRegionsChanged, vectorLayer]);
+  }, [traceRegionsChanged, preprocessPreviewOn, vectorLayer]);
 
   // Vector Layers (saved whole-die payloads): fetch the die's list, keep it
   // in the store for the outline tree, and sync visibility into the layer.

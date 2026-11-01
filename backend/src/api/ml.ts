@@ -837,6 +837,81 @@ export function createMLRouter(config: {
     }
   });
 
+  // ── POST /api/dies/:dieId/vectorize/preprocess-preview (PNG) ────────
+  // P2-3 preview: the crop (usually the current viewport) sent through the
+  // SAME sidecar preprocessor the decode uses, returned as an image so the
+  // VectorizeLayer can blit the processed pixels under the overlay — the
+  // user tunes brightness/CLAHE/unsharp while SEEING the effect.
+  router.post("/api/dies/:dieId/vectorize/preprocess-preview", async (request, response, next) => {
+    try {
+      const { dieId } = request.params;
+      const record = await readDieRecord(config.dataRoot, dieId);
+      const body = (request.body ?? {}) as {
+        bbox?: unknown;
+        preprocess?: unknown;
+        overlaySource?: unknown;
+      };
+      const parts = Array.isArray(body.bbox) ? (body.bbox as unknown[]).map(Number) : [];
+      if (parts.length !== 4 || parts.some((n) => !Number.isFinite(n))) {
+        response.status(400).json({ error: "bbox must be [x0, y0, x1, y1]" });
+        return;
+      }
+      const x0 = Math.max(0, Math.min(Math.floor(parts[0]), Math.floor(parts[2])));
+      const y0 = Math.max(0, Math.min(Math.floor(parts[1]), Math.floor(parts[3])));
+      const x1 = Math.min(record.width, Math.ceil(Math.max(parts[0], parts[2])));
+      const y1 = Math.min(record.height, Math.ceil(Math.max(parts[1], parts[3])));
+      const w = x1 - x0;
+      const h = y1 - y0;
+      if (w <= 0 || h <= 0) {
+        response.status(400).json({ error: "Empty or out-of-bounds bbox" });
+        return;
+      }
+      const overlaySource = typeof body.overlaySource === "string" ? body.overlaySource : undefined;
+      const overlayPath = overlaySource
+        ? await resolveOverlayOriginalPath({
+            dataRoot: config.dataRoot,
+            dieId,
+            sourceId: overlaySource
+          })
+        : undefined;
+      if (overlaySource && !overlayPath) {
+        response.status(404).json({ error: "Visible image source not found" });
+        return;
+      }
+      // Downscale the preview crop — preprocessing semantics are per-pixel
+      // (tone LUT is resolution-independent; local ops approximate), the
+      // real decode reads full resolution. Keeps the request well under a
+      // megabyte so following the viewport stays snappy.
+      const PREVIEW_MAX_SIDE = 1200;
+      const scale = Math.min(1, PREVIEW_MAX_SIDE / Math.max(w, h));
+      let pipe = sharp(overlayPath ?? record.originalPath, { limitInputPixels: false }).extract({
+        left: x0,
+        top: y0,
+        width: w,
+        height: h
+      });
+      if (scale < 1) pipe = pipe.resize(Math.max(1, Math.round(w * scale)), Math.max(1, Math.round(h * scale)));
+      const crop = await pipe.png().toBuffer();
+
+      const fd = new FormData();
+      fd.append("image", new Blob([new Uint8Array(crop)], { type: "image/png" }), "crop.png");
+      fd.append("preprocess", JSON.stringify(parsePreprocess(body.preprocess)));
+      const res = await fetchSidecar(
+        `${config.mlSidecarUrl}/vectorize/preprocess`,
+        SIDECAR_RW_TIMEOUT_MS,
+        { method: "POST", body: fd }
+      );
+      if (!res.ok) {
+        response.status(502).json({ error: `preprocess failed (sidecar ${res.status})` });
+        return;
+      }
+      response.set("Content-Type", "image/png");
+      response.send(Buffer.from(await res.arrayBuffer()));
+    } catch (error) {
+      next(error);
+    }
+  });
+
   // ── GET /api/dies/:dieId/heatmap/tile/:z/:x/:y (cached PNG) ──────────
   router.get(
     "/api/dies/:dieId/heatmap/tile/:z/:x/:y",

@@ -1596,6 +1596,9 @@ function VectorSection({
     pp.sharpenAmount <= 0 &&
     pp.denoiseMedian <= 0
   );
+  // P2-3: blit the preprocessed viewport crop under the overlay while tuning.
+  const preprocessPreview = useDieViewerStore((s) => s.vectorPreprocessPreview);
+  const setPreprocessPreview = useDieViewerStore((s) => s.setVectorPreprocessPreview);
   const resetParams = usePreferences((s) => s.resetVectorParams);
   const presets = usePreferences((s) => s.vectorPresets);
   const savePreset = usePreferences((s) => s.saveVectorPreset);
@@ -2144,6 +2147,18 @@ function VectorSection({
           Preprocess {preprocessActive ? "· active" : "· off"}
         </summary>
         <div style={{ marginTop: 4 }}>
+          <label
+            className="u"
+            style={{ fontSize: 10, display: "flex", gap: 4, alignItems: "center", cursor: "pointer", marginBottom: 4 }}
+            title="Paint the PREPROCESSED pixels of the live viewport under the overlay (amber-dashed extent) — tune brightness/CLAHE/etc. while seeing the effect instead of guessing from traces only"
+          >
+            <input
+              type="checkbox"
+              checked={preprocessPreview}
+              onChange={(e) => setPreprocessPreview(e.target.checked)}
+            />
+            preview processed pixels (live viewport)
+          </label>
           <VSlider
             label="Brightness"
             value={pp.brightness}
