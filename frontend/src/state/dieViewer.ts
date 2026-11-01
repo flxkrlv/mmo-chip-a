@@ -6,8 +6,10 @@ import type { PinClip } from "../lib/pinClipboard";
 import type { FloorplanClip } from "../lib/floorplanClipboard";
 
 /** Which right-panel tab is showing. The ML tab also drives a render mode:
- *  traces/vias size from `mlConfig` instead of display preferences. */
-export type InspectorTab = "inspector" | "ml" | "cells" | "cv" | "ai" | "lib" | "mcp";
+ *  traces/vias size from `mlConfig` instead of display preferences. The
+ *  tab bar renders in TWO rows (Inspector/ML/Cells/CV/AI/Lib, then
+ *  Trace/MCP) — one row overflowed and produced a stray width scrollbar. */
+export type InspectorTab = "inspector" | "ml" | "cells" | "cv" | "ai" | "lib" | "mcp" | "trace";
 
 /** Mockup defaults for the ML config until a real per-die value is seeded
  *  from the annotations blob. Source-pixel units. */
@@ -47,7 +49,19 @@ export type ToolKind =
   | "comment"
   | "floorplan"
   | "analogRect"
-  | "analogPoly";
+  | "analogPoly"
+  | "traceRegionRect"
+  | "traceRegionPoly";
+
+/**
+ * P2-2: a drawn area restricting what the vectorize overlay shows and
+ * materializes ("trace region"). Coordinates are source/world px.
+ * - `poly` is closed implicitly (even-odd semantics for bbox tests —
+ *   culling is bbox-of-vertices against region bbox).
+ */
+export type VectorTraceRegion =
+  | { id: string; kind: "rect"; x: number; y: number; width: number; height: number }
+  | { id: string; kind: "poly"; points: [number, number][] };
 
 /**
  * Modes for `select`:
@@ -74,6 +88,12 @@ interface DieViewerState {
   /** Outline-tree sub-groups (e.g. cell types) currently expanded. Scoped to
    *  the current die session — not persisted because group ids are die-specific. */
   expandedGroups: string[];
+  /** Vectorize trace regions (P2-2): drawn rects/polygons restricting what
+   *  the vectorize overlay renders and "Vector → nets" materializes.
+   *  Session state keyed by die id (regions are in that die's source-px
+   *  coordinates), not annotations — survives die-viewer remounts in
+   *  `reset` like the undo history does. */
+  traceRegionsByDie: Record<string, VectorTraceRegion[]>;
   /** Tool currently selected in the sub-toolbar. */
   activeTool: ToolKind;
   /** Active analog layer for analogRect/analogPoly tools. */
@@ -112,6 +132,33 @@ interface DieViewerState {
  *  having to walk the cache itself. Partial: it's the count for tiles
  *  fetched so far this session, not a die-wide ground truth. */
   mlViasCount: number;
+  /** Live status of the classical vectorize overlay (VectorSection): loading
+   *  flag, last error, decoded-trace count across cached regions, and the
+   *  last decode's width-filter drop stats. Written by the VectorizeLayer. */
+  vectorStatus: {
+    loading: boolean;
+    error: string | null;
+    traces: number;
+    droppedWidth?: number;
+    /** Octilinear decoder: chains kept raw with irregular=true. */
+    irregular?: number;
+    /** P2-3 preview state (see VectorizeLayer). */
+    preview?: { state: "off" | "fetching" | "ok" | "fail"; failures: number; error: string | null };
+  };
+  /** Vector pipette (VectorSection): armed → canvas clicks sample the metal
+   *  colour instead of the active tool. Samples accumulate for averaging;
+   *  each keeps where it was taken (the layer draws markers). */
+  vectorPipetteArmed: boolean;
+  vectorSamples: { rgb: [number, number, number]; x: number; y: number }[];
+  /** True while a whole-die vectorize sweep runs: the live viewport decode
+   *  pauses (it would fight the sweep for the sidecar's CV gate), the
+   *  overlay comes back from the block cache when the sweep ends. */
+  vectorSweepRunning: boolean;
+  /** SAVED whole-die vecto payloads for this die (Vector layers list in the
+   *  outline tree). Refreshed from `GET .../vectorize/layers`; the bump
+   *  version invalidates the react-query after a sweep completes. */
+  savedVectorLayers: { hash: string; name?: string | null; traces: number; outlines: number; modified: string }[];
+  savedVectorVersion: number;
   /** Cell type picked in the Cells (detection) tab — from the dropdown or by
    *  selecting a placed cell on the canvas while the tab is open. */
   cellDetectionTypeId: string | null;
@@ -133,6 +180,9 @@ interface DieViewerActions {
   select: (ids: Iterable<string>, mode?: SelectMode) => void;
   clearSelection: () => void;
   toggleGroup: (id: string) => void;
+  /** Add / remove a vectorize trace region for the die. */
+  addTraceRegion: (dieId: string, region: VectorTraceRegion) => void;
+  removeTraceRegion: (dieId: string, regionId: string) => void;
   setActiveTool: (tool: ToolKind) => void;
   setActiveAnalogLayer: (layer: AnalogLayerId) => void;
   pushUndo: (action: AnnotationAction) => void;
@@ -153,6 +203,21 @@ interface DieViewerActions {
   setMlConfig: (patch: Partial<DieMLConfig>) => void;
   /** Set the live ML-via cardinality — called by the layer when tiles load. */
   setMlViasCount: (count: number) => void;
+setVectorStatus: (status: {
+  loading: boolean;
+  error: string | null;
+  traces: number;
+  droppedWidth?: number;
+  irregular?: number;
+  /** P2-3 preview state, reported by the layer on every transition. */
+  preview?: { state: "off" | "fetching" | "ok" | "fail"; failures: number; error: string | null };
+}) => void;
+setVectorPipetteArmed: (armed: boolean) => void;
+addVectorSample: (sample: { rgb: [number, number, number]; x: number; y: number }) => void;
+clearVectorSamples: () => void;
+setVectorSweepRunning: (running: boolean) => void;
+setSavedVectorLayers: (layers: { hash: string; name?: string | null; traces: number; outlines: number; modified: string }[]) => void;
+bumpSavedVectorLayers: () => void;
   setCellDetectionTypeId: (id: string | null) => void;
   setCellDetectionsCount: (count: number) => void;
   setWireMapAvailable: (available: boolean) => void;
@@ -174,6 +239,7 @@ const EMPTY_SELECTION: ReadonlySet<string> = new Set();
 const INITIAL_STATE: DieViewerState = {
   selectedIds: EMPTY_SELECTION,
   expandedGroups: [],
+  traceRegionsByDie: {},
   activeTool: "select",
   activeAnalogLayer: "nwell",
   undoStack: [],
@@ -188,6 +254,12 @@ const INITIAL_STATE: DieViewerState = {
   showRulerNm: false,
   mlConfig: { ...DEFAULT_ML_CONFIG },
   mlViasCount: 0,
+  vectorStatus: { loading: false, error: null, traces: 0 },
+  vectorPipetteArmed: false,
+  vectorSamples: [],
+  vectorSweepRunning: false,
+  savedVectorLayers: [],
+  savedVectorVersion: 0,
   cellDetectionTypeId: null,
   cellDetectionsCount: 0,
   wireMapAvailable: false,
@@ -235,6 +307,23 @@ export const useDieViewerStore = create<DieViewerState & DieViewerActions>()((se
         ? state.expandedGroups.filter((g) => g !== id)
         : [...state.expandedGroups, id]
     })),
+  addTraceRegion: (dieId, region) =>
+    set((state) => ({
+      traceRegionsByDie: {
+        ...state.traceRegionsByDie,
+        [dieId]: [...(state.traceRegionsByDie[dieId] ?? []), region]
+      }
+    })),
+  removeTraceRegion: (dieId, regionId) => {
+    const list = get().traceRegionsByDie[dieId];
+    if (!list?.some((r) => r.id === regionId)) return;
+    set((state) => ({
+      traceRegionsByDie: {
+        ...state.traceRegionsByDie,
+        [dieId]: list.filter((r) => r.id !== regionId)
+      }
+    }));
+  },
   // Switching to any non-select tool drops the current selection, so the
   // user never has to Escape before starting to draw.
   setActiveTool: (tool) =>
@@ -281,6 +370,60 @@ export const useDieViewerStore = create<DieViewerState & DieViewerActions>()((se
     if (get().mlViasCount === count) return;
     set({ mlViasCount: count });
   },
+  setVectorStatus: (status) => {
+    const cur = get().vectorStatus;
+    if (
+      cur.loading === status.loading &&
+      cur.error === status.error &&
+      cur.traces === status.traces &&
+      cur.droppedWidth === status.droppedWidth &&
+      cur.irregular === status.irregular &&
+      // The preview lifecycle MUST also pass through — backgrounding it
+      // made the panel's status line stale while decode counters stood
+      // still (the 'preview status shows nothing' report).
+      cur.preview?.state === status.preview?.state &&
+      cur.preview?.failures === status.preview?.failures &&
+      cur.preview?.error === status.preview?.error
+    )
+      return;
+    set({ vectorStatus: status });
+  },
+  setVectorPipetteArmed: (armed) => set({ vectorPipetteArmed: armed }),
+  addVectorSample: (sample) =>
+    set((state) => ({ vectorSamples: [...state.vectorSamples, sample] })),
+  clearVectorSamples: () => set({ vectorSamples: [] }),
+  setVectorSweepRunning: (running) => {
+    if (get().vectorSweepRunning === running) return;
+    set({ vectorSweepRunning: running });
+  },
+  setSavedVectorLayers: (layers) => {
+    // Idempotent: writing an identical list is a no-op. This setter runs after
+    // every die list fetch, and it used to bump `savedVectorVersion` on each
+    // write — the fetch effect depends on that version → fetch → set → bump →
+    // fetch… an infinite loop that (a) hammered the backend and (b) full-
+    // invalidated ALL canvas tiles every iteration via the vector layer sync,
+    // i.e. the "after a page reload the whole viewer crawls" report. It also
+    // went undetected for a long time because a transient fetch ERROR breaks
+    // the loop (the .catch swallows, no set → no bump) — the "two states:
+    // sometimes it flies, sometimes it crawls" mystery. Explicit re-fetches
+    // (sweep done / manual refresh) go through bumpSavedVectorLayers.
+    const cur = get().savedVectorLayers;
+    if (cur.length === layers.length && cur.every((l, i) => {
+      const n = layers[i];
+      return (
+        l.hash === n.hash &&
+        (l.name ?? null) === (n.name ?? null) &&
+        l.traces === n.traces &&
+        l.outlines === n.outlines &&
+        l.modified === n.modified
+      );
+    })) {
+      return;
+    }
+    set({ savedVectorLayers: layers });
+  },
+  bumpSavedVectorLayers: () =>
+    set((state) => ({ savedVectorVersion: state.savedVectorVersion + 1 })),
   setCellDetectionTypeId: (id) => set({ cellDetectionTypeId: id }),
   setCellDetectionsCount: (count) => {
     if (get().cellDetectionsCount === count) return;
@@ -298,15 +441,17 @@ export const useDieViewerStore = create<DieViewerState & DieViewerActions>()((se
   setPinClipboard: (pins) => set({ clipboardPins: pins }),
   setFloorplanClipboard: (regions) => set({ clipboardFloorplans: regions }),
 
-  // The undo history is left alone: it is per die (see ensureHistoryFor), and
-  // the die viewer resets on every mount — coming back from Merge / RE cell
-  // must not lose what was done there.
+  // The undo history and the per-die vectorize trace regions are left alone:
+  // both are per die (undo — see ensureHistoryFor, regions — keyed by die in
+  // traceRegionsByDie), and the die viewer resets on every mount — coming
+  // back from Merge / RE cell must not lose what was done there.
   reset: () =>
     set((state) => ({
       ...INITIAL_STATE,
       undoStack: state.undoStack,
       redoStack: state.redoStack,
-      historyDieId: state.historyDieId
+      historyDieId: state.historyDieId,
+      traceRegionsByDie: state.traceRegionsByDie
     }))
 }));
 
@@ -316,3 +461,15 @@ function setsEqual(a: ReadonlySet<string>, b: ReadonlySet<string>): boolean {
   for (const id of a) if (!b.has(id)) return false;
   return true;
 }
+
+/** Select the die's vectorize trace regions (P2-2). The empty fallback is a
+ *  STABLE module constant: zustand compares snapshots by identity, and a
+ *  fresh `[]` per selector call used to loop React into "Maximum update
+ *  depth exceeded" on any die without regions. */
+export function selectTraceRegions(dieId: string | null | undefined) {
+  return (state: { traceRegionsByDie: Record<string, VectorTraceRegion[]> }): VectorTraceRegion[] =>
+    (dieId ? state.traceRegionsByDie[dieId] : undefined) ?? NO_TRACE_REGIONS;
+}
+
+/** Shared empty list — never mutated, safe to return from selectors. */
+const NO_TRACE_REGIONS: VectorTraceRegion[] = [];

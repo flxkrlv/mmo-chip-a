@@ -33,6 +33,7 @@ import {
   isMlViaId,
   parseMlViaId
 } from "../renderer/layers/MLViasLayer";
+import { VectorizeLayer } from "../renderer/layers/VectorizeLayer";
 import { OverlayImageLayer, type OverlayViewportStats } from "../renderer/layers/OverlayImageLayer";
 import { DIE_VIEWER_HOTKEYS, DIE_VIEWER_MOD_HOTKEYS, GLOBAL_HOTKEYS, METAL_HOTKEYS, VIA_HOTKEYS } from "../lib/hotkeys";
 import { useToast } from "../components/Toast";
@@ -70,6 +71,7 @@ import { InspectorPanel } from "../components/dieViewer/InspectorPanel";
 
 import { ProblemNavigatorPanel, collectProblems } from "../components/dieViewer/ProblemNavigatorPanel";
 import { AnalogDeviceHighlights } from "../components/dieViewer/AnalogDeviceHighlights";
+import { PerfHud } from "../components/dieViewer/PerfHud";
 import { SubcircuitHighlightsOverlay } from "../components/dieViewer/SubcircuitHighlightsOverlay";
 import { DeviceInspector } from "../components/dieViewer/DeviceInspector";
 import { DeviceInstancePanel } from "../components/dieViewer/DeviceInstancePanel";
@@ -88,7 +90,7 @@ import { useDieExtraction } from "../hooks/useDieExtraction";
 import { setActiveProject, flushProjectDeviceNames } from "../state/analogDeviceNames";
 import { useExtractionProgress } from "../state/extractionProgress";
 import { loadClipper } from "../lib/extraction";
-import { useMLJob, useMLStatus } from "../api/ml";
+import { getVectorLayers, sampleDieRegion, useMLJob, useMLStatus } from "../api/ml";
 import { WireDraftOverlay } from "../components/dieViewer/WireDraftOverlay";
 import { RectDraftOverlay } from "../components/dieViewer/RectDraftOverlay";
 import { PolyDraftOverlay } from "../components/dieViewer/PolyDraftOverlay";
@@ -103,6 +105,7 @@ import {
   type WireSnap,
   type WireTool
 } from "../components/dieViewer/useWireTool";
+import type { TraceSnapTarget } from "../components/dieViewer/mlTracesToNets";
 import { buildInstanceTerminalMap } from "../lib/extraction/terminalDetect";
 import { useCellTool } from "../components/dieViewer/useCellTool";
 import { useLibraryCellTool } from "../components/dieViewer/useLibraryCellTool";
@@ -110,6 +113,8 @@ import { LibraryCellOverlay } from "../components/dieViewer/LibraryCellOverlay";
 import { useAnalogCellTool } from "../components/dieViewer/useAnalogCellTool";
 import { AnalogCellOverlay } from "../components/dieViewer/AnalogCellOverlay";
 import { useViaPolyTool } from "../components/dieViewer/useViaPolyTool";
+import { useTraceRegionPolyTool } from "../components/dieViewer/useTraceRegionPolyTool";
+import { usePreprocessPreview } from "../components/dieViewer/usePreprocessPreview";
 import {
   previewEnds,
   tipOf,
@@ -377,6 +382,9 @@ function DieViewer({ dieId }: { dieId: string }) {
 
   const activeTool = useDieViewerStore((s) => s.activeTool);
   const setActiveTool = useDieViewerStore((s) => s.setActiveTool);
+  // Vector pipette (armed from the ML tab's Vector section): canvas clicks
+  // sample the metal colour instead of driving the active tool.
+  const vectorPipetteArmed = useDieViewerStore((s) => s.vectorPipetteArmed);
 
   // Broadcast status to other users
   useUserStatus(dieId, activeTool);
@@ -405,6 +413,11 @@ function DieViewer({ dieId }: { dieId: string }) {
     []
   );
   const viaPolyPreviewLive = useMemo(
+    () => createLiveValue<Point | null>(null),
+    []
+  );
+  /** Rubber-band tip of the vectorize trace-region polygon draft (P2-2). */
+  const regionPolyPreviewLive = useMemo(
     () => createLiveValue<Point | null>(null),
     []
   );
@@ -893,6 +906,27 @@ function DieViewer({ dieId }: { dieId: string }) {
       die
         ? new MLViasLayer(die.id, die, {
             getHidden: () => usePreferences.getState().mlResultsHidden,
+            getTracesHidden: () => usePreferences.getState().mlTracesHidden,
+            getTraceConfidenceThreshold: () =>
+              usePreferences.getState().traceConfidenceThreshold,
+            // Trace endpoints snap to the same candidates the wire tool
+            // offers: extracted device electrodes, cell-instance terminals
+            // and IO pins (closures run at draw time, after these exist).
+            findSnapTarget: (world, tolWorld) => {
+              let best: { x: number; y: number; label: string } | null = null;
+              let bestD = tolWorld;
+              const consider = (x: number, y: number, label: string) => {
+                const d = Math.hypot(x - world.x, y - world.y);
+                if (d <= bestD) {
+                  bestD = d;
+                  best = { x, y, label };
+                }
+              };
+              for (const t of deviceTerminalsRef.current) consider(t.x, t.y, t.terminalId);
+              for (const t of cellTerminals) consider(t.worldX, t.worldY, t.id);
+              for (const pin of annotationsRef.current?.pins ?? []) consider(pin.x, pin.y, `pin:${pin.id}`);
+              return best;
+            },
             getViaColor: () => usePreferences.getState().viaColor,
             getViaWorldRadius: () => usePreferences.getState().viaSize,
             getConfidenceThreshold: () =>
@@ -915,6 +949,142 @@ function DieViewer({ dieId }: { dieId: string }) {
       useDieViewerStore.getState().setMlViasCount(0);
     };
   }, [mlViasLayer]);
+
+  // Classical (no-model) vectorize overlay. Lives beside the ML layer but
+  // decodes the visible viewport on demand: params come live from
+  // preferences, the fetch is debounced + coalesced inside the layer.
+  const vectorLayer = useMemo(
+    () =>
+      die
+        ? new VectorizeLayer(die.id, die, {
+            getHidden: () =>
+              usePreferences.getState().vectorOverlayHidden ||
+              useDieViewerStore.getState().vectorSweepRunning,
+            getParams: () => usePreferences.getState().vectorParams,
+            getOverlaySource: () => {
+              const layers = useOverlayLayers.getState().layers;
+              const visible = layers.find((l) => !l.hidden && l.loaded);
+              return visible?.serverFilename ?? visible?.name ?? undefined;
+            },
+            // Same endpoint snap candidates the ML trace overlay uses.
+            findSnapTarget: (world, tolWorld) => {
+              let best: { x: number; y: number; label: string } | null = null;
+              let bestD = tolWorld;
+              const consider = (x: number, y: number, label: string) => {
+                const d = Math.hypot(x - world.x, y - world.y);
+                if (d <= bestD) {
+                  bestD = d;
+                  best = { x, y, label };
+                }
+              };
+              for (const t of deviceTerminalsRef.current) consider(t.x, t.y, t.terminalId);
+              for (const t of cellTerminals) consider(t.worldX, t.worldY, t.id);
+              for (const pin of annotationsRef.current?.pins ?? []) consider(pin.x, pin.y, `pin:${pin.id}`);
+              return best;
+            },
+            getSnapTol: () => Math.max(8, usePreferences.getState().viaSize * 2),
+            getTraceConfidenceThreshold: () =>
+              usePreferences.getState().traceConfidenceThreshold,
+            getOutlineAlpha: () => usePreferences.getState().vectorOutlineAlpha,
+            getSamples: () => useDieViewerStore.getState().vectorSamples,
+            // P2-3: the die's vectorize trace regions restrict rendering
+            // (and, via the Inspector, materialization) to those areas.
+            getTraceRegions: () =>
+              useDieViewerStore.getState().traceRegionsByDie[die.id] ?? [],
+            onStatusChange: (status) =>
+              useDieViewerStore.getState().setVectorStatus(status)
+          })
+        : null,
+    [die]
+  );
+  useEffect(() => {
+    return () => {
+      vectorLayer?.destroy();
+    };
+  }, [vectorLayer]);
+
+  // Trace regions changed → repaint (region culling happens per draw).
+  const traceRegionsChanged = useDieViewerStore(
+    (s) => (die ? (s.traceRegionsByDie[die.id]?.length ?? 0) : 0)
+  );
+  // P2-3 preview toggle is a PREFERENCE (persisted) — a transient store
+  // flag silently switched itself off on every reload / restart.
+  const preprocessPreviewOn = usePreferences((s) => s.vectorPreprocessPreview);
+  // Sliders must repaint the preview WITHOUT any canvas interaction: the
+  // preprocess JSON signature is the dependency of the orchestrator chain.
+  const preprocessSignature = usePreferences((s) =>
+    JSON.stringify(s.vectorParams.preprocess ?? {})
+  );
+  // The orchestrator OWNS fetch/retry/status and pushes the decoded crop
+  // into the layer (a dumb drawable). It is rAF-independent: the old
+  // beginFrame-driven scheduling froze as soon as the app tab lost focus
+  // (rAF suspends in background tabs — the "works once after F12" report).
+  const onPreviewViewport = usePreprocessPreview({
+    dieId: die?.id ?? null,
+    dieWidth: die?.width ?? 0,
+    dieHeight: die?.height ?? 0,
+    enabled: preprocessPreviewOn,
+    preprocessSignature,
+    vectorLayer,
+    getWorldRect: useCallback(() => canvasHandle.current?.getWorldRect() ?? null, [])
+  });
+  useEffect(() => {
+    vectorLayer?.refresh();
+  }, [traceRegionsChanged, vectorLayer]);
+
+  // Vector Layers (saved whole-die payloads): fetch the die's list, keep it
+  // in the store for the outline tree, and sync visibility into the layer.
+  // The store's `savedVectorVersion` bump (sweep completes / manual refresh)
+  // triggers a re-fetch.
+  const savedVectorVersion = useDieViewerStore((s) => s.savedVectorVersion);
+  useEffect(() => {
+    if (!die) return;
+    let gone = false;
+    getVectorLayers(die.id)
+      .then((list) => {
+        if (gone) return;
+        const layers = list.map((l) => ({
+          hash: l.hash,
+          name: l.name ?? null,
+          traces: l.traces,
+          outlines: l.outlines,
+          modified: l.modified
+        }));
+        useDieViewerStore.getState().setSavedVectorLayers(layers);
+        // Visibility + colours live in preferences (persisted): a layer is
+        // visible only when explicitly enabled — fresh loads start with
+        // every Vector layer's eye off.
+        const prefs = usePreferences.getState();
+        const hidden = new Set(
+          layers.map((l) => l.hash).filter((h) => prefs.vectorLayerHidden[h] !== false)
+        );
+        const colors = new Map(
+          Object.entries(prefs.vectorLayerColors).filter(([h]) =>
+            layers.some((l) => l.hash === h)
+          )
+        );
+        vectorLayer?.setSavedLayers(layers.map((l) => l.hash), hidden, colors);
+      })
+      .catch(() => undefined);
+    return () => {
+      gone = true;
+    };
+  }, [die, savedVectorVersion, vectorLayer]);
+
+  // Per-layer visibility / colour changes re-drive the VectorizeLayer (pins
+  // survive — only eye sets and colours move, nothing refetches).
+  const vectorLayerHidden = usePreferences((s) => s.vectorLayerHidden);
+  const vectorLayerColors = usePreferences((s) => s.vectorLayerColors);
+  useEffect(() => {
+    if (!vectorLayer || !die) return;
+    const layers = useDieViewerStore.getState().savedVectorLayers;
+    if (!layers.length) return;
+    const hidden = new Set(
+      layers.map((l) => l.hash).filter((h) => vectorLayerHidden[h] !== false)
+    );
+    const colors = new Map(Object.entries(vectorLayerColors));
+    vectorLayer.setSavedLayers(layers.map((l) => l.hash), hidden, colors);
+  }, [vectorLayerHidden, vectorLayerColors, vectorLayer, die]);
 
   // Confidence-threshold pref change → re-filter the cached ML vias (recount
   // for the items list + redraw the overlay). No re-fetch: tile data already
@@ -1081,7 +1251,7 @@ function DieViewer({ dieId }: { dieId: string }) {
   // need the redraw to kick.
   useEffect(() => {
     const unsubs = (
-      ["baseImageHidden", "baseImageOpacity", "mlResultsHidden", "wireMapHidden", "wireMapOpacity"] as const
+      ["baseImageHidden", "baseImageOpacity", "mlResultsHidden", "mlTracesHidden", "traceConfidenceThreshold", "wireMapHidden", "wireMapOpacity"] as const
     ).map((key) =>
       usePreferences.subscribe(
         (s) => s[key],
@@ -1354,6 +1524,7 @@ function DieViewer({ dieId }: { dieId: string }) {
     for (const ol of overlayLayerInstances) out.push(ol);
     if (wireMapLayer) out.push(wireMapLayer);
     if (mlViasLayer) out.push(mlViasLayer);
+    if (vectorLayer) out.push(vectorLayer);
     if (proposalLayer) out.push(proposalLayer);
     if (annotationLayer) out.push(annotationLayer);
     return out;
@@ -1362,6 +1533,7 @@ function DieViewer({ dieId }: { dieId: string }) {
     wireMapLayer,
     overlayLayerInstances,
     mlViasLayer,
+    vectorLayer,
     proposalLayer,
     annotationLayer
   ]);
@@ -1374,6 +1546,15 @@ function DieViewer({ dieId }: { dieId: string }) {
     viewportLive,
     containerRef
   });
+  // Direct viewport signal for the P2-3 preview orchestrator (a synchronous
+  // pan/zoom callback — no rAF coalescing, works even in background tabs).
+  const tiledOnViewportChange = useCallback(
+    (v: Viewport) => {
+      onViewportChange(v);
+      onPreviewViewport();
+    },
+    [onViewportChange, onPreviewViewport]
+  );
 
   // Double-click on a net (select tool) → non-modal rename window anchored
   // at the cursor (NetRenamePopover). The rename itself is undoable.
@@ -1670,6 +1851,7 @@ function DieViewer({ dieId }: { dieId: string }) {
   // ── Overlay toggles (persisted in preferences) ──────────────
   const deviceOverlayOn = usePreferences((s) => s.deviceOverlayOn);
   const setDeviceOverlayOn = usePreferences((s) => s.setDeviceOverlayOn);
+  const perfHudOn = usePreferences((s) => s.perfHudOn);
   const showTermNetIds = usePreferences((s) => s.showTermNetIds);
   const setShowTermNetIds = usePreferences((s) => s.setShowTermNetIds);
   const floorplanOverlayOn = usePreferences((s) => s.floorplanOverlayOn);
@@ -1726,6 +1908,17 @@ function DieViewer({ dieId }: { dieId: string }) {
     }
     deviceTerminalsRef.current = out;
   }, [analogDevices]);
+
+  // Trace-endpoint snap candidates for the ML traces→nets materialization:
+  // the same set the wire tool snaps to (device electrodes, cell-instance
+  // terminals, IO pins).
+  const getTraceSnapTargets = useCallback(() => {
+    const out: TraceSnapTarget[] = [];
+    for (const t of deviceTerminalsRef.current) out.push({ x: t.x, y: t.y, label: t.terminalId });
+    for (const t of cellTerminals) out.push({ x: t.worldX, y: t.worldY, label: t.id });
+    for (const pin of annotationsRef.current?.pins ?? []) out.push({ x: pin.x, y: pin.y, label: `pin:${pin.id}` });
+    return out;
+  }, [cellTerminals]);
 
   // Rebuild the per-net device-electrode connection grid from the extracted
   // devices. Only terminals whose resolved netId maps to a real annotation net
@@ -1861,14 +2054,25 @@ function DieViewer({ dieId }: { dieId: string }) {
   const viaPoly = useViaPolyTool({ dispatcher, activeTool, setActiveTool });
   const viaPolyPointsRef = useRef(viaPoly.points);
   viaPolyPointsRef.current = viaPoly.points;
+  /** Die the vectorize trace regions (P2-2) are keyed by — the region
+   *  poly tool commits into the per-die record. */
+  const regionPoly = useTraceRegionPolyTool({
+    dieId: die?.id ?? null,
+    activeTool,
+    setActiveTool
+  });
+  const regionPolyPointsRef = useRef(regionPoly.points);
+  regionPolyPointsRef.current = regionPoly.points;
   /** Next vertex of the floorplan / via polygon being drawn: `world`
    *  constrained to that tool's angle mode from the previous vertex (free
    *  for the first vertex or while Shift is held). */
   const constrainPolyPoint = useCallback(
-    (tool: "floorplan" | "viaPoly", world: Point, shift: boolean): Point => {
+    (tool: "floorplan" | "viaPoly" | "traceRegionPoly", world: Point, shift: boolean): Point => {
       let last: Point | undefined;
       if (tool === "viaPoly") {
         last = viaPolyPointsRef.current[viaPolyPointsRef.current.length - 1];
+      } else if (tool === "traceRegionPoly") {
+        last = regionPolyPointsRef.current[regionPolyPointsRef.current.length - 1];
       } else {
         const d = useFloorplanStore.getState().draft;
         if (d?.kind === "poly" && d.active) last = d.points[d.points.length - 1];
@@ -2101,12 +2305,27 @@ function DieViewer({ dieId }: { dieId: string }) {
   // Commit a rubber-band rectangle from the via-rect / ROI / ignore tools
   // (rounded, normalized, min-size-guarded). One undoable upsert each.
   const commitDrawnRect = useCallback(
-    (toolKind: "viaRect" | "roi" | "ignore", r: Rect) => {
+    (toolKind: "viaRect" | "roi" | "ignore" | "traceRegionRect", r: Rect) => {
       const x = Math.round(Math.min(r.x, r.x + r.width));
       const y = Math.round(Math.min(r.y, r.y + r.height));
       const width = Math.round(Math.abs(r.width));
       const height = Math.round(Math.abs(r.height));
       if (width < 1 || height < 1) return;
+      if (toolKind === "traceRegionRect") {
+        // P2-2 regions are session state, not annotation actions — no undo.
+        const dieId = die?.id;
+        if (dieId) {
+          useDieViewerStore.getState().addTraceRegion(dieId, {
+            id: uuid(),
+            kind: "rect",
+            x,
+            y,
+            width,
+            height
+          });
+        }
+        return;
+      }
       const id = uuid();
       let action: AnnotationAction;
       if (toolKind === "viaRect") {
@@ -2142,7 +2361,7 @@ function DieViewer({ dieId }: { dieId: string }) {
       }
       void dispatcher.dispatch(action);
     },
-    [dispatcher]
+    [dispatcher, die]
   );
 
   const deleteSelectedRulers = useCallback(() => {
@@ -2316,6 +2535,9 @@ function DieViewer({ dieId }: { dieId: string }) {
       wire.computeWirePreview(world, event.shiftKey, vp.zoom);
       const tool = useDieViewerStore.getState().activeTool;
       viaPolyPreviewLive.set(tool === "viaPoly" ? constrainPolyPoint("viaPoly", world, event.shiftKey) : null);
+      regionPolyPreviewLive.set(
+        tool === "traceRegionPoly" ? constrainPolyPoint("traceRegionPoly", world, event.shiftKey) : null
+      );
       floorplanTipLive.set(tool === "floorplan" ? constrainPolyPoint("floorplan", world, event.shiftKey) : world);
       // Multi-wire preview snap. Phase 1: the halo previews the vertex /
       // via a start would snap to. Phase 2: `multiWireEndSnapLive` carries
@@ -2398,6 +2620,7 @@ function DieViewer({ dieId }: { dieId: string }) {
     cursorLive.set(null);
     hoverInfoLive.set(null);
     viaPolyPreviewLive.set(null);
+    regionPolyPreviewLive.set(null);
     multiWireSnapLive.set(null);
     multiWireEndSnapLive.set(null);
     wireSnapLive.set(null);
@@ -2405,6 +2628,7 @@ function DieViewer({ dieId }: { dieId: string }) {
     cursorLive,
     hoverInfoLive,
     viaPolyPreviewLive,
+    regionPolyPreviewLive,
     multiWireSnapLive,
     multiWireEndSnapLive,
     wireSnapLive
@@ -2642,9 +2866,10 @@ function DieViewer({ dieId }: { dieId: string }) {
         return "pan";
       }
 
-      // Via-rect / ROI / ignore: rubber-band a rectangle, commit on release
-      // (no Enter). Shares `shapeRectLive` + a generic overlay.
-      if (tool === "viaRect" || tool === "roi" || tool === "ignore") {
+      // Via-rect / ROI / ignore / vectorize trace-region: rubber-band a
+      // rectangle, commit on release (no Enter). Shares `shapeRectLive` +
+      // a generic overlay.
+      if (tool === "viaRect" || tool === "roi" || tool === "ignore" || tool === "traceRegionRect") {
         const origin = { x: e.worldPoint.x, y: e.worldPoint.y };
         // ROIs are always square (ML crops are square); the others are free.
         const rectFor = (wp: Point) =>
@@ -2728,6 +2953,7 @@ function DieViewer({ dieId }: { dieId: string }) {
         tool === "multiWire" ||
         tool === "via" ||
         tool === "viaPoly" ||
+        tool === "traceRegionPoly" ||
         tool === "cellGuideLine" ||
         tool === "cellGuideSeg" ||
         tool === "ioPoint" ||
@@ -3690,6 +3916,10 @@ function DieViewer({ dieId }: { dieId: string }) {
         viaPoly.addPoint(constrainPolyPoint("viaPoly", { x, y }, shiftRef.current));
         return;
       }
+      if (tool === "traceRegionPoly") {
+        regionPoly.addPoint(constrainPolyPoint("traceRegionPoly", { x, y }, shiftRef.current));
+        return;
+      }
       if (tool === "multiWire") {
         if (multiWire.phase === 1) {
           // Snap start points to existing net vertices first (so the bus line
@@ -3770,6 +4000,7 @@ function DieViewer({ dieId }: { dieId: string }) {
       dispatcher,
       wire,
       viaPoly,
+      regionPoly,
       multiWire,
       guide,
       annotations,
@@ -4152,8 +4383,46 @@ function DieViewer({ dieId }: { dieId: string }) {
     () => createLiveValue<{ x: number; y: number; key: number } | null>(null),
     []
   );
+  // Vector pipette sample: mean RGB of a 7×7 source patch under the click,
+  // from the SAME image the vectorize overlay decodes (base or overlay).
+  const sampleVectorPixel = useCallback(
+    (worldPoint: { x: number; y: number }) => {
+      if (!die) return;
+      const layers = useOverlayLayers.getState().layers;
+      const visible = layers.find((l) => !l.hidden && l.loaded);
+      const overlaySource = visible?.serverFilename ?? visible?.name ?? undefined;
+      const x = Math.round(worldPoint.x);
+      const y = Math.round(worldPoint.y);
+      const half = 3;
+      const bbox = [
+        Math.max(0, x - half),
+        Math.max(0, y - half),
+        Math.min(die.width, x + half + 1),
+        Math.min(die.height, y + half + 1)
+      ] as const;
+      sampleDieRegion(die.id, bbox, overlaySource)
+        .then((s) =>
+          useDieViewerStore
+            .getState()
+            .addVectorSample({ rgb: [s.r, s.g, s.b], x: worldPoint.x, y: worldPoint.y })
+        )
+        .catch((e) =>
+          useDieViewerStore.getState().setVectorStatus({
+            loading: false,
+            error: e instanceof Error ? e.message : "sample failed",
+            traces: 0
+          })
+        );
+    },
+    [die]
+  );
   const onCanvasPointerDown = useCallback(
     (e: PointerEventData): Interaction => {
+      // Vector pipette consumes the click before any tool sees it.
+      if (e.button === 0 && useDieViewerStore.getState().vectorPipetteArmed) {
+        sampleVectorPixel(e.worldPoint);
+        return "ignore";
+      }
       const result = routeCanvasPointerDown(e);
       if (typeof result !== "object" || e.button !== 0 || !annotationLayer) return result;
       if (useDieViewerStore.getState().activeTool !== "select") return result;
@@ -4201,7 +4470,7 @@ function DieViewer({ dieId }: { dieId: string }) {
         }
       };
     },
-    [routeCanvasPointerDown, annotationLayer, viewportLive, netHoldLive, focusOnIds]
+    [routeCanvasPointerDown, annotationLayer, viewportLive, netHoldLive, focusOnIds, sampleVectorPixel]
   );
 
   // ── Cross-tab focus: analog netlist → frame cell on die ──
@@ -4459,18 +4728,21 @@ function DieViewer({ dieId }: { dieId: string }) {
               minZoom={minZoom}
               maxZoom={32}
               cursor={
-                spacePan || activeTool === "pan"
-                  ? "grab"
-                  : activeTool === "select"
-                    ? (cellResizeCursor ?? "default")
-                    : "crosshair"
+                vectorPipetteArmed
+                  ? "crosshair"
+                  : spacePan || activeTool === "pan"
+                    ? "grab"
+                    : activeTool === "select"
+                      ? (cellResizeCursor ?? "default")
+                      : "crosshair"
               }
               handleRef={canvasHandle}
-              onViewportChange={onViewportChange}
+              onViewportChange={tiledOnViewportChange}
               onPointerDown={onCanvasPointerDown}
               onCanvasClick={onCanvasClick}
             />
           )}
+          {perfHudOn && <PerfHud />}
           <NetHoldRing store={netHoldLive} delayMs={NET_HOLD_RING_DELAY_MS} />
           <RulerOverlay
             rulers={visibleRulers}
@@ -4518,12 +4790,19 @@ function DieViewer({ dieId }: { dieId: string }) {
                 ? "#f5d68a"
                 : activeTool === "ignore"
                   ? "#e36854"
-                  : "#82d6a6"
+                  : activeTool === "traceRegionRect"
+                    ? "#7ec8f0"
+                    : "#82d6a6"
             }
           />
           <PolyDraftOverlay
             points={viaPoly.points}
             previewStore={viaPolyPreviewLive}
+            viewportStore={viewportLive}
+          />
+          <PolyDraftOverlay
+            points={regionPoly.points}
+            previewStore={regionPolyPreviewLive}
             viewportStore={viewportLive}
           />
           <SelectionHandlesOverlay
@@ -4661,6 +4940,8 @@ function DieViewer({ dieId }: { dieId: string }) {
             die={die}
             library={library}
             mlViasLayer={mlViasLayer}
+            vectorLayer={vectorLayer}
+            getTraceSnapTargets={getTraceSnapTargets}
             proposals={proposals}
             cellTypeCounts={cellTypeCounts}
             devices={analogDevices}
@@ -4908,6 +5189,8 @@ function DieViewer({ dieId }: { dieId: string }) {
         onClose={() => setSettingsOpen(false)}
         deviceOverlayOn={deviceOverlayOn}
         setDeviceOverlayOn={setDeviceOverlayOn}
+        perfHudOn={perfHudOn}
+        setPerfHudOn={(v) => usePreferences.getState().setPerfHudOn(v)}
         cellsLocked={cellsLocked}
         setCellsLocked={setCellsLocked}
         showTermNetIds={showTermNetIds}

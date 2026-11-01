@@ -79,6 +79,21 @@ const TOOL_GROUPS: ToolGroup[] = [
     ]
   },
   {
+    label: "vector",
+    items: [
+      {
+        kind: "traceRegionRect",
+        icon: Ic.roi,
+        label: "Vectorize trace region (rectangle) — traces render + materialize only inside region(s)"
+      },
+      {
+        kind: "traceRegionPoly",
+        icon: Ic.viaPolygon,
+        label: "Vectorize trace region (polygon) — click vertices, Enter to commit"
+      }
+    ]
+  },
+  {
     label: "tools",
     items: [
       { kind: "measure", icon: Ic.ruler, label: "Ruler — drag to measure distance" },
