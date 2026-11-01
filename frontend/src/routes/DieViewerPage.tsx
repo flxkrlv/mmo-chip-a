@@ -1009,6 +1009,15 @@ function DieViewer({ dieId }: { dieId: string }) {
     (s) => (die ? (s.traceRegionsByDie[die.id]?.length ?? 0) : 0)
   );
   const preprocessPreviewOn = useDieViewerStore((s) => s.vectorPreprocessPreview);
+  // Sliders must repaint the preview WITHOUT any canvas interaction: the
+  // preprocess JSON signature is the dependency, refresh() invalidates the
+  // tiles, beginFrame sees the new preprocess key and refetches (debounced).
+  const preprocessSignature = usePreferences((s) =>
+    JSON.stringify(s.vectorParams.preprocess ?? {})
+  );
+  useEffect(() => {
+    if (preprocessPreviewOn) vectorLayer?.refresh();
+  }, [preprocessSignature, preprocessPreviewOn, vectorLayer]);
   useEffect(() => {
     vectorLayer?.refresh();
   }, [traceRegionsChanged, preprocessPreviewOn, vectorLayer]);

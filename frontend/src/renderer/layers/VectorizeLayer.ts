@@ -25,6 +25,8 @@ const VECT_TRACE_STROKE = "rgba(253, 224, 71, 0.95)";
 const VECT_TRACE_SNAP_STROKE = "rgba(253, 224, 71, 0.7)";
 
 const FETCH_DEBOUNCE_MS = 300;
+/** P2-3 preview debounce — snappier: the user is dragging sliders. */
+const PREVIEW_DEBOUNCE_MS = 150;
 /** Below the backend's 6 Mpx cap (it rejects bigger). Beyond this the view
  *  is so zoomed out that live decoding would pin the sidecar anyway. */
 const MAX_AREA_PX = 5_000_000;
@@ -445,6 +447,22 @@ export class VectorizeLayer implements Layer {
    */
   beginFrame(frame: RenderFrame): void {
     const params = this.display.getParams?.();
+    // P2-3 preview is INDEPENDENT of the overlay hidden flag / area cap —
+    // it only needs the die's bbox + preprocess + image source.
+    if (params) {
+      const pw = frame.world;
+      const px0 = Math.max(0, Math.floor(pw.x));
+      const py0 = Math.max(0, Math.floor(pw.y));
+      const px1 = Math.min(this.metadata.width, Math.ceil(pw.x + pw.width));
+      const py1 = Math.min(this.metadata.height, Math.ceil(pw.y + pw.height));
+      if (px1 > px0 && py1 > py0 && Number.isFinite(px0 + py0 + px1 + py1)) {
+        this.schedulePreview(
+          [px0, py0, px1, py1],
+          this.display.getOverlaySource?.() ?? undefined,
+          params
+        );
+      }
+    }
     if (!params || (this.display.getHidden?.() ?? false)) return;
 
     const w = frame.world;
@@ -480,12 +498,6 @@ export class VectorizeLayer implements Layer {
 
     const overlaySource = this.display.getOverlaySource?.() ?? undefined;
     const key = `${bbox.join(",")}|${overlaySource ?? ""}|${JSON.stringify(params)}`;
-    // Already decoded (or decoded at these exact params) → nothing to do.
-    if (this.cache.has(key) || key === this.inflightKey || key === this.pendingKey) {
-      this.schedulePreview(bbox, overlaySource, params);
-      return;
-    }
-    this.schedulePreview(bbox, overlaySource, params);
 
     // Whole-die sweep cache first: if every block intersecting the viewport
     // is decoded for THESE params, draw from disk — no sidecar round-trip.
@@ -594,10 +606,13 @@ export class VectorizeLayer implements Layer {
       } catch (e) {
         if (controller.signal.aborted) return;
         // Preview is advisory — a failure must not blank the overlay, but
-        // drop the stale bitmap so the user isn't misled.
+        // drop the stale bitmap so the user isn't misled. Log loudly: a
+        // silent failure here reads as "preview draws nothing at all"
+        // (stale backend/sidecar are the usual cause).
+        console.warn("[VectorizeLayer] preprocess preview failed:", e);
         this.dropPreviewKeepKey(key);
       }
-    }, FETCH_DEBOUNCE_MS);
+    }, PREVIEW_DEBOUNCE_MS);
   }
 
   /** Blur out an unusable preview (error) but remember the key so a retry
@@ -682,18 +697,19 @@ export class VectorizeLayer implements Layer {
 
     const params = this.display.getParams?.();
     const hidden = this.display.getHidden?.() ?? false;
+    // P2-3 preview: INDEPENDENT of the overlay — draws the preprocessed
+    // viewport crop even while "Show vector overlay" is off (the user tunes
+    // the image itself, the overlay is a tuning aid they may not want).
+    this.drawPreview(ctx, zoom, bounds.world);
     // SAVED layers render regardless of the live overlay's hidden flag and
     // even without live params: their eye toggles in "Vector Layers" are
     // the source of truth. Gating them behind the global hide switch used
     // to make the eye toggle do nothing while "Show vector overlay" was off
     // (the default!) — the exact "saved layer renders nothing" report.
-    // P2-3: the processed-pixels preview paints only while the overlay
-    // itself is on (it is a viewport underlay for tuning the DECODE).
     if (hidden || !params) {
       this.drawSaved(ctx, bounds);
       return;
     }
-    this.drawPreview(ctx, zoom, bounds.world);
     const world = bounds.world;
 
     // ── Paint every cached region overlapping the view ───────────────

@@ -2150,14 +2150,14 @@ function VectorSection({
           <label
             className="u"
             style={{ fontSize: 10, display: "flex", gap: 4, alignItems: "center", cursor: "pointer", marginBottom: 4 }}
-            title="Paint the PREPROCESSED pixels of the live viewport under the overlay (amber-dashed extent) — tune brightness/CLAHE/etc. while seeing the effect instead of guessing from traces only"
+            title="Paint the PREPROCESSED pixels of the live viewport (amber-dashed extent), independent of the vector overlay — tune brightness/CLAHE/etc. and the image repaints on its own, no canvas movement needed"
           >
             <input
               type="checkbox"
               checked={preprocessPreview}
               onChange={(e) => setPreprocessPreview(e.target.checked)}
             />
-            preview processed pixels (live viewport)
+            preprocess preview (live viewport)
           </label>
           <VSlider
             label="Brightness"
