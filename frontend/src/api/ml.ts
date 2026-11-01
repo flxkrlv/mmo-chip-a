@@ -156,27 +156,41 @@ export async function fetchPreprocessPreview(
   overlaySource?: string,
   signal?: AbortSignal
 ): Promise<Blob> {
-  const response = await fetch(`/api/dies/${dieId}/vectorize/preprocess-preview`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", ...authHeaders() },
-    body: JSON.stringify({
-      bbox,
-      preprocess: params.preprocess ?? {},
-      ...(overlaySource ? { overlaySource } : {})
-    }),
-    signal
-  });
-  if (!response.ok) {
-    let detail = `preprocess preview failed (${response.status})`;
-    try {
-      const j = (await response.json()) as { error?: string };
-      if (j?.error) detail = j.error;
-    } catch {
-      /* not JSON */
-    }
-    throw new Error(detail);
+  // Client-side deadline: during a stack restart the backend accepts the
+  // request and then sits dead-silent — without this the preview would
+  // hang forever with NO console output (the "clean console, dead
+  // preview" report).
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 20_000);
+  if (signal) {
+    if (signal.aborted) controller.abort();
+    else signal.addEventListener("abort", () => controller.abort(), { once: true });
   }
-  return response.blob();
+  try {
+    const response = await fetch(`/api/dies/${dieId}/vectorize/preprocess-preview`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...authHeaders() },
+      body: JSON.stringify({
+        bbox,
+        preprocess: params.preprocess ?? {},
+        ...(overlaySource ? { overlaySource } : {})
+      }),
+      signal: controller.signal
+    });
+    if (!response.ok) {
+      let detail = `preprocess preview failed (${response.status})`;
+      try {
+        const j = (await response.json()) as { error?: string };
+        if (j?.error) detail = j.error;
+      } catch {
+        /* not JSON */
+      }
+      throw new Error(detail);
+    }
+    return response.blob();
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 /** Pipette readout: mean RGB of a small source region (the same image the

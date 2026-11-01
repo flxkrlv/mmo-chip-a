@@ -225,6 +225,9 @@ export class VectorizeLayer implements Layer {
   private previewKey: string | null = null;
   private previewBitmap: ImageBitmap | null = null;
   private previewBbox: [number, number, number, number] | null = null;
+  /** Consecutive preview failures — drives the retry backoff (a restart
+   *  window must not freeze the preview until some canvas movement). */
+  private previewFailures = 0;
 
   constructor(dieId: string, metadata: DieMetadata, display: VectorizeDisplay = {}) {
     this.dieId = dieId;
@@ -575,7 +578,7 @@ export class VectorizeLayer implements Layer {
     const key = `${bbox.join(",")}|${overlaySource ?? ""}|${JSON.stringify(params.preprocess ?? {})}`;
     if (key === this.previewKey) return;
     if (this.previewTimer) clearTimeout(this.previewTimer);
-    const controller = this.previewAbort ?? new AbortController();
+    const controller = new AbortController();
     this.previewAbort = controller;
     this.previewTimer = setTimeout(async () => {
       this.previewTimer = null;
@@ -594,6 +597,7 @@ export class VectorizeLayer implements Layer {
           bitmap.close();
           return;
         }
+        this.previewFailures = 0;
         this.previewBitmap?.close();
         this.previewBitmap = bitmap;
         this.previewBbox = bbox;
@@ -605,23 +609,28 @@ export class VectorizeLayer implements Layer {
         });
       } catch (e) {
         if (controller.signal.aborted) return;
-        // Preview is advisory — a failure must not blank the overlay, but
-        // drop the stale bitmap so the user isn't misled. Log loudly: a
-        // silent failure here reads as "preview draws nothing at all"
-        // (stale backend/sidecar are the usual cause).
-        console.warn("[VectorizeLayer] preprocess preview failed:", e);
-        this.dropPreviewKeepKey(key);
+        // Preview is advisory — a failure must not blank the overlay, and it
+        // MUST NOT freeze the preview either: a backend/sidecar that is
+        // still starting up used to lock the key and only canvas movement
+        // could retry (the "restart broke the preview, console silent"
+        // report). Instead: back off (cap 3s), clear the key, and force a
+        // redraw frame so beginFrame re-schedules the fetch by itself.
+        this.previewFailures++;
+        console.warn(
+          "[VectorizeLayer] preprocess preview failed — retrying:",
+          e instanceof Error ? e.message : e
+        );
+        this.previewBitmap?.close();
+        this.previewBitmap = null;
+        this.previewBbox = null;
+        this.previewKey = null;
+        const delay = Math.min(3000, 400 * 2 ** Math.min(4, this.previewFailures - 1));
+        this.previewTimer = setTimeout(() => {
+          this.previewTimer = null;
+          this.invalidateCb?.();
+        }, delay);
       }
     }, PREVIEW_DEBOUNCE_MS);
-  }
-
-  /** Blur out an unusable preview (error) but remember the key so a retry
-   *  happens on the next viewport/params change rather than every frame. */
-  private dropPreviewKeepKey(key: string): void {
-    this.previewBitmap?.close();
-    this.previewBitmap = null;
-    this.previewBbox = null;
-    this.previewKey = key;
   }
 
   private dropPreview(): void {
