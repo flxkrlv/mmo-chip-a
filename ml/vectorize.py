@@ -64,10 +64,28 @@ class PreprocessParams:
         )
 
 
+def _camel_to_snake(key: str) -> str:
+    """claheClip → clahe_clip (the shared TS type is camelCase; the dataclass
+    is snake_case — accept BOTH spellings so a knob can never silently fall
+    back to neutral because of a key mismatch: that is exactly what used to
+    hide CLAHE / sharpen / denoise while the tone knobs 'worked' by luck of
+    one-word names being case-insensitive)."""
+    out = []
+    for ch in key:
+        if ch.isupper():
+            out.append("_")
+            out.append(ch.lower())
+        else:
+            out.append(ch)
+    return "".join(out)
+
+
 def parse_preprocess(raw) -> PreprocessParams:
     """Clamp an untrusted preprocess dict (JSON) into the ranges below —
-    the sidecar never second-guesses the caller once these pass."""
+    the sidecar never second-guesses the caller once these pass. Accepts
+    camelCase AND snake_case keys (see _camel_to_snake)."""
     raw = raw if isinstance(raw, dict) else {}
+    raw = {_camel_to_snake(str(k)): v for k, v in raw.items()}
     def num(key, fallback, lo, hi):
         try:
             v = float(raw.get(key, fallback))
