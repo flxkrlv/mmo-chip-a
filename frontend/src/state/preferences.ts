@@ -217,6 +217,11 @@ interface PreferencesState {
   /** Materialization filter: skip octilinear traces kept raw with
    *  `irregular: true` instead of materializing non-octilinear geometry. */
   vectorDropIrregular: boolean;
+  /** Materialization filter: skip vectorized traces that duplicate (cross
+   *  or lie inside the buffer of) hand-drawn annotation nets — the decoder
+   *  re-detects wires the user already drew, materializing both makes
+   *  duplicates. Off = materialize everything raw-vectorized. */
+  vectorRespectUserNets: boolean;
   /** Max length (source px) of a contact→wire branch edge (0 = off). Caps
    *  the outline-membership connections: without it a contact inside a big
    *  pad whose centreline was width-filtered away ties to a far wire with
@@ -530,6 +535,7 @@ interface PreferencesActions {
   setVectorLayerColor: (hash: string, color: string) => void;
   setVectorMinContacts: (n: 0 | 1 | 2) => void;
   setVectorDropIrregular: (drop: boolean) => void;
+  setVectorRespectUserNets: (respect: boolean) => void;
   setVectorMaxBranchLen: (px: number) => void;
   setCellDetectionThreshold: (threshold: number) => void;
   setCellDetectionsHidden: (hidden: boolean) => void;
@@ -657,6 +663,7 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
         vectorLayerColors: {},
         vectorMinContacts: 0,
         vectorDropIrregular: false,
+        vectorRespectUserNets: true,
         vectorMaxBranchLen: 0,
         cellDetectionThreshold: 0.5,
         cellDetectionsHidden: false,
@@ -1005,6 +1012,7 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
     })),
         setVectorMinContacts: (n) => set({ vectorMinContacts: n }),
         setVectorDropIrregular: (drop) => set({ vectorDropIrregular: drop }),
+        setVectorRespectUserNets: (respect) => set({ vectorRespectUserNets: respect }),
         setVectorMaxBranchLen: (px) => set({ vectorMaxBranchLen: Math.max(0, px) }),
         setCellDetectionThreshold: (threshold) =>
           set({
@@ -1144,6 +1152,7 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
           vectorLayerColors: state.vectorLayerColors,
           vectorMinContacts: state.vectorMinContacts,
           vectorDropIrregular: state.vectorDropIrregular,
+          vectorRespectUserNets: state.vectorRespectUserNets,
           vectorMaxBranchLen: state.vectorMaxBranchLen,
           cellDetectionThreshold: state.cellDetectionThreshold,
           cellDetectionsHidden: state.cellDetectionsHidden,

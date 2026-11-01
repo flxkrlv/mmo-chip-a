@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, type ReactNode } from "react";
+import { useState, useRef, useEffect, useMemo, type ReactNode } from "react";
 import { cellInstanceScale, cellWorldRect } from "../../lib/cellFootprint";
 import { padCountByPin, renamePinActions } from "../../lib/pinClipboard";
 import { useDialog } from "../Dialog";
@@ -35,8 +35,9 @@ import {
 } from "../../renderer/layers/MLViasLayer";
 import type { VectorizeLayer } from "../../renderer/layers/VectorizeLayer";
 import { buildNetsFromTraces, type TraceSnapTarget } from "./mlTracesToNets";
+import { filterTracesByUserNets, collectUserNetPolylines, type UserNetPolyline } from "./userNetFilter";
 import { useDieViewerStore } from "../../state/dieViewer";
-import { usePreferences } from "../../state/preferences";
+import { usePreferences, selectNetWidth } from "../../state/preferences";
 import { useSession, DEFAULT_METAL_STACK } from "../../state/session";
 import { useOverlayLayers } from "../../state/overlayLayers";
 import { WireLayerSelect } from "./WireLayerSelect";
@@ -1121,9 +1122,21 @@ async function materializeTraces(
   dispatcher: ActionDispatcher,
   snapTargets: TraceSnapTarget[],
   dialog: { confirm(message: string, title?: string): Promise<boolean> },
-  outlines?: [number, number][][]
+  outlines?: [number, number][][],
+  userPolylines?: UserNetPolyline[]
 ): Promise<{ created: number } | { error: string } | null> {
   const prefs = usePreferences.getState();
+  const rawTraceCount = traces.length;
+  // P2-1: traces matching hand-drawn nets are dropped BEFORE materialization
+  // (the decoder re-detects wires the user already drew). Skipped when no
+  // hand-drawn nets exist or the toggle is off.
+  const userFilter =
+    userPolylines && userPolylines.length > 0 && prefs.vectorRespectUserNets
+      ? filterTracesByUserNets(traces, userPolylines, outlines)
+      : null;
+  if (userFilter) traces = userFilter.traces;
+  const respect = !!userFilter;
+  const droppedUserNets = userFilter?.droppedUserNets ?? 0;
   const result = buildNetsFromTraces({
     traces,
     outlines,
@@ -1142,6 +1155,10 @@ async function materializeTraces(
   if (!result.nets.length) {
     const score = prefs.traceConfidenceThreshold;
     const reasons: string[] = [];
+    if (respect && droppedUserNets > 0)
+      reasons.push(
+        `тумблером «Respect hand-drawn nets» отброшено ${droppedUserNets} трасс, совпавших с нарисованными вручную`
+      );
     if (result.filteredByScore > 0)
       reasons.push(`score-фильтром (Trace confidence = ${score.toFixed(2)}) отброшено ${result.filteredByScore}`);
     if (result.droppedLowContacts > 0)
@@ -1151,15 +1168,16 @@ async function materializeTraces(
     return {
       error:
         reasons.length > 0
-          ? `нет трасс: собрано ${traces.length}; ${reasons.join("; ")} — ослабьте фильтры или перекачайте декод`
-          : `нет трасс для материализации (собрано ${traces.length}) — проверьте width/min length и что вьюпорт декодирован`
+          ? `нет трасс: собрано ${rawTraceCount}; ${reasons.join("; ")} — ослабьте фильтры или перекачайте декод`
+          : `нет трасс для материализации (собрано ${rawTraceCount}) — проверьте width/min length и что вьюпорт декодирован`
     };
   }
     if (
       !await dialog.confirm(
-        `Создать ${result.nets.length} net(ей) из ${traces.length} трасс?\n` +
+        `Создать ${result.nets.length} net(ей) из ${rawTraceCount} трасс?\n` +
           `Концов со снапом: ${result.snappedEnds}, сшито разрывов: ${result.stitchedPairs}, ` +
           `отброшено вырожденных: ${result.droppedDegenerate}` +
+          (droppedUserNets > 0 ? `, совпадает с нарисованными вручную: ${droppedUserNets}` : "") +
           (result.filteredByScore > 0 ? `, score-фильтром: ${result.filteredByScore}` : "") +
           (result.droppedLowContacts > 0 ? `, мало контактов: ${result.droppedLowContacts}` : "") +
           (result.droppedIrregular > 0 ? `, irregular: ${result.droppedIrregular}` : "") +
@@ -1572,6 +1590,16 @@ function VectorSection({
   const setDropIrregular = usePreferences((s) => s.setVectorDropIrregular);
   const maxBranchLen = usePreferences((s) => s.vectorMaxBranchLen);
   const setMaxBranchLen = usePreferences((s) => s.setVectorMaxBranchLen);
+  // P2-1: skip decoder traces duplicating hand-drawn nets.
+  const respectUserNets = usePreferences((s) => s.vectorRespectUserNets);
+  const setRespectUserNets = usePreferences((s) => s.setVectorRespectUserNets);
+  // The buffer around a hand-drawn wire uses the effective net stroke width
+  // (global or per-die) so matching mirrors what the user actually sees.
+  const netWidth = usePreferences(selectNetWidth(dieId));
+  const userNetPolylines = useMemo(
+    () => (respectUserNets ? collectUserNetPolylines(annotations, netWidth) : []),
+    [respectUserNets, annotations, netWidth]
+  );
   // Where the Vector → nets traces come from: the cached whole-die sweep
   // payload (default — the point of the sweep) or the live viewport decodes.
   const [netsSource, setNetsSource] = useState<"whole-die" | "preview">("whole-die");
@@ -1756,7 +1784,8 @@ function VectorSection({
         dispatcher,
         getTraceSnapTargets(),
         dialog,
-        outlines
+        outlines,
+        userNetPolylines
       );
       if (outcome && "error" in outcome) setErr(outcome.error);
     } catch (e) {
@@ -2397,6 +2426,28 @@ function VectorSection({
           drop irregular
         </label>
       </div>
+      <label
+        className="u"
+        style={{
+          fontSize: 10,
+          display: "flex",
+          gap: 4,
+          alignItems: "center",
+          cursor: "pointer",
+          marginTop: 4
+        }}
+        title="Skip vectorized traces that duplicate nets you already drew by hand (a trace crossing a drawn wire or lying inside a drawn net's metal). The dropped count shows in the materialize dialog."
+      >
+        <input
+          type="checkbox"
+          checked={respectUserNets}
+          onChange={(e) => setRespectUserNets(e.target.checked)}
+        />
+        respect hand-drawn nets
+        <span style={{ color: "var(--ink3)" }}>
+          {userNetPolylines.length > 0 ? ` · ${annotations?.nets?.length ?? 0} drawn` : " · none drawn"}
+        </span>
+      </label>
       <VSlider
         label={umPerPx > 0 ? "Max branch len (contact → wire)" : "Max branch len (px)"}
         value={umPerPx > 0 ? umPerPx * maxBranchLen : maxBranchLen}
