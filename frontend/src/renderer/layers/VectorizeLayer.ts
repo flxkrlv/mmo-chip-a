@@ -675,8 +675,10 @@ export class VectorizeLayer implements Layer {
   draw(ctx: CanvasRenderingContext2D, bounds: TileBounds): void {
     const { zoom } = bounds;
 
-    // Pipette markers: one amber cross per accumulated sample — drawn even
-    // while the overlay itself is hidden, so sampling stays visible.
+    // Pipette markers: one amber cross per accumulated sample, each with a
+    // small value label (that sample's shade on the current channel) —
+    // drawn even while the overlay itself is hidden, so sampling stays
+    // visible and readable without hovering the panel.
     const samples = this.display.getSamples?.() ?? [];
     if (samples.length > 0) {
       const r = Math.max(4 / zoom, 3);
@@ -692,6 +694,25 @@ export class VectorizeLayer implements Layer {
         ctx.beginPath();
         ctx.arc(s.x, s.y, r * 0.4, 0, Math.PI * 2);
         ctx.stroke();
+      }
+      // Value pills above each cross, in screen-constant size.
+      const fs = Math.max(9 / zoom, 9);
+      ctx.font = `${fs}px ui-monospace, monospace`;
+      ctx.textAlign = "left";
+      ctx.textBaseline = "bottom";
+      const padX = 2 / zoom;
+      const padY = 1 / zoom;
+      for (const s of samples) {
+        const [sr, sg, sb] = s.rgb;
+        const v = Math.round(0.299 * sr + 0.587 * sg + 0.114 * sb);
+        const text = String(v);
+        const tw = ctx.measureText(text).width;
+        const lx = s.x + r + 2 / zoom;
+        const ly = s.y - r - 2 / zoom;
+        ctx.fillStyle = "rgba(16, 18, 24, 0.78)";
+        ctx.fillRect(lx - padX, ly - fs - padY, tw + padX * 2, fs + padY * 2);
+        ctx.fillStyle = "rgba(253, 224, 71, 0.95)";
+        ctx.fillText(text, lx, ly);
       }
     }
 

@@ -907,39 +907,8 @@ function TracePanel({
   vectorLayer: VectorizeLayer | null;
   getTraceSnapTargets?: () => TraceSnapTarget[];
 }) {
-  // Duplicated from the ML tab ON PURPOSE — it is shared state (it filters
-  // vector traces by their brightness margin too), so both sliders drive
-  // the same preference.
-  const traceConfidence = usePreferences((s) => s.traceConfidenceThreshold);
-  const setTraceConfidence = usePreferences((s) => s.setTraceConfidenceThreshold);
   return (
     <div>
-      <div
-        className="row"
-        style={{ justifyContent: "space-between", margin: "8px 10px 4px" }}
-      >
-        <span className="u" style={{ fontSize: 10 }}>
-          Trace confidence
-        </span>
-        <span className="m" style={{ fontSize: 11, color: "var(--ink2)" }}>
-          {traceConfidence.toFixed(2)}
-        </span>
-      </div>
-      <div style={{ padding: "0 10px" }}>
-        <input
-          type="range"
-          min={0}
-          max={1}
-          step={0.01}
-          value={traceConfidence}
-          style={{ width: "100%" }}
-          onChange={(e) => setTraceConfidence(Number(e.target.value))}
-        />
-        <div className="m" style={{ fontSize: 10, color: "var(--ink3)", marginTop: 4 }}>
-          Shared with ML traces: hides traces whose score (brightness margin
-          for vector decodes, model probability for ML) is below this. 0 = off.
-        </div>
-      </div>
       <VectorSection
         dieId={dieId}
         annotations={annotations}
@@ -1169,46 +1138,49 @@ async function materializeTraces(
     const score = prefs.traceConfidenceThreshold;
     const reasons: string[] = [];
     if (droppedOutsideRegion > 0)
-      reasons.push(`trace-region-фильтром отброшено ${droppedOutsideRegion} трасс вне нарисованных областей`);
+      reasons.push(`trace-region filter dropped ${droppedOutsideRegion} outside the drawn regions`);
     if (respect && droppedUserNets > 0)
-      reasons.push(
-        `тумблером «Respect hand-drawn nets» отброшено ${droppedUserNets} трасс, совпавших с нарисованными вручную`
-      );
+      reasons.push(`Respect hand-drawn nets dropped ${droppedUserNets} matching your drawn nets`);
     if (result.filteredByScore > 0)
-      reasons.push(`score-фильтром (Trace confidence = ${score.toFixed(2)}) отброшено ${result.filteredByScore}`);
+      reasons.push(`score filter (${score.toFixed(2)}) dropped ${result.filteredByScore}`);
     if (result.droppedLowContacts > 0)
-      reasons.push(`фильтром «мин. контактов на net» (${prefs.vectorMinContacts}) отброшено ${result.droppedLowContacts}`);
+      reasons.push(`min contacts/net = ${prefs.vectorMinContacts} dropped ${result.droppedLowContacts}`);
     if (result.droppedIrregular > 0)
-      reasons.push(`drop-irregular отброшено ${result.droppedIrregular}`);
+      reasons.push(`drop irregular dropped ${result.droppedIrregular}`);
     return {
       error:
         reasons.length > 0
-          ? `нет трасс: собрано ${rawTraceCount}; ${reasons.join("; ")} — ослабьте фильтры или перекачайте декод`
-          : `нет трасс для материализации (собрано ${rawTraceCount}) — проверьте width/min length и что вьюпорт декодирован`
+          ? `no traces left: collected ${rawTraceCount}; ${reasons.join("; ")} — loosen the filters or re-decode`
+          : `nothing to materialize (collected ${rawTraceCount}) — check width/min length and that the viewport is decoded`
     };
   }
-    if (
-      !await dialog.confirm(
-        `Создать ${result.nets.length} net(ей) из ${rawTraceCount} трасс?\n` +
-          `Концов со снапом: ${result.snappedEnds}, сшито разрывов: ${result.stitchedPairs}, ` +
-          `отброшено вырожденных: ${result.droppedDegenerate}` +
-          (droppedOutsideRegion > 0 ? `, вне trace region: ${droppedOutsideRegion}` : "") +
-          (droppedUserNets > 0 ? `, совпадает с нарисованными вручную: ${droppedUserNets}` : "") +
-          (result.filteredByScore > 0 ? `, score-фильтром: ${result.filteredByScore}` : "") +
-          (result.droppedLowContacts > 0 ? `, мало контактов: ${result.droppedLowContacts}` : "") +
-          (result.droppedIrregular > 0 ? `, irregular: ${result.droppedIrregular}` : "") +
-          (result.outlineConnected > 0 ? `, по контуру металла: ${result.outlineConnected}` : "") +
-          (result.outlineDropped > 0
-            ? `, отброшено длиннее Max branch len: ${result.outlineDropped}`
-            : "") +
-          (result.droppedTwins > 0 ? `, дублей-скелетонов: ${result.droppedTwins}` : "") +
-          `.\nДействие уйдёт в Undo.` +
-          (result.warnings.length
-            ? `\n\nВНИМАНИЕ:\n${result.warnings.join("\n")}`
-            : "")
-      )
-    )
-      return null;
+  // Structured summary: result block + every drop counter on its own line
+  // (0-counters omitted) + warnings last. Plain text for dialog.confirm.
+  const dropLines: string[] = [];
+  if (droppedOutsideRegion > 0) dropLines.push(`  outside trace regions:        ${droppedOutsideRegion}`);
+  if (droppedUserNets > 0) dropLines.push(`  matching hand-drawn nets:    ${droppedUserNets}`);
+  if (result.filteredByScore > 0) dropLines.push(`  score filter:                ${result.filteredByScore}`);
+  if (result.droppedLowContacts > 0) dropLines.push(`  low contacts (< ${prefs.vectorMinContacts}):      ${result.droppedLowContacts}`);
+  if (result.droppedIrregular > 0) dropLines.push(`  irregular (non-octilinear):  ${result.droppedIrregular}`);
+  if (result.outlineDropped > 0) dropLines.push(`  branch len > Max branch len: ${result.outlineDropped}`);
+  if (result.droppedTwins > 0) dropLines.push(`  skeleton duplicates:         ${result.droppedTwins}`);
+  if (result.droppedDegenerate > 0) dropLines.push(`  degenerate:                  ${result.droppedDegenerate}`);
+  const msg =
+    `Create ${result.nets.length} nets from ${rawTraceCount} traces?\n` +
+    `\nAttachments\n` +
+    `  ends snapped to contacts:    ${result.snappedEnds}\n` +
+    `  gaps stitched:               ${result.stitchedPairs}\n` +
+    (result.outlineConnected > 0
+      ? `  joined via metal outline:    ${result.outlineConnected}\n`
+      : "") +
+    (dropLines.length > 0
+      ? `\nDropped traces\n${dropLines.join("\n")}\n`
+      : "") +
+    `\nThe action goes to Undo.` +
+    (result.warnings.length
+      ? `\n\nWarnings:\n${result.warnings.join("\n").split("\n").map((w) => `  ${w}`).join("\n")}`
+      : "");
+  if (!(await dialog.confirm(msg, "Vector → nets"))) return null;
   await dispatcher.dispatch({
     kind: "batch",
     actions: result.nets.map((net) => ({ kind: "upsertNet", net, prevNet: null }))
@@ -1234,8 +1206,6 @@ function InferenceSection({
   const job = useMLJob(dieId);
   const confidence = usePreferences((s) => s.viaConfidenceThreshold);
   const setConfidence = usePreferences((s) => s.setViaConfidenceThreshold);
-  const traceConfidence = usePreferences((s) => s.traceConfidenceThreshold);
-  const setTraceConfidence = usePreferences((s) => s.setTraceConfidenceThreshold);
   const [busy, setBusy] = useState<null | "model" | "job" | "traces">(null);
   const [err, setErr] = useState<string | null>(null);
 
@@ -1415,35 +1385,6 @@ function InferenceSection({
         Filters ML vias below this model confidence.
       </div>
 
-      {/* Trace confidence threshold (noise filter) */}
-      <div
-        className="row"
-        style={{ justifyContent: "space-between", marginBottom: 4, marginTop: 12 }}
-      >
-        <span className="u" style={{ fontSize: 10 }}>
-          Trace confidence
-        </span>
-        <span className="m" style={{ fontSize: 11, color: "var(--ink2)" }}>
-          {traceConfidence.toFixed(2)}
-        </span>
-      </div>
-      <input
-        type="range"
-        min={0}
-        max={1}
-        step={0.01}
-        value={traceConfidence}
-        style={{ width: "100%" }}
-        onChange={(e) => setTraceConfidence(Number(e.target.value))}
-      />
-      <div
-        className="m"
-        style={{ fontSize: 10, color: "var(--ink3)", marginTop: 4 }}
-      >
-        Hides ML trace contours whose mean model probability is below this.
-        Run a fresh inference after raising it — cached tiles predate scoring.
-      </div>
-
       {/* Traces → nets materialization */}
       <button
         type="button"
@@ -1471,7 +1412,7 @@ function InferenceSection({
           }
         }}
       >
-        {busy === "traces" ? "Создаю nets…" : "Traces → nets"}
+        {busy === "traces" ? "Creating nets…" : "Traces → nets"}
       </button>
     </div>
   );
@@ -1485,6 +1426,7 @@ function VSlider({
   max,
   step = 1,
   format,
+  title,
   onChange
 }: {
   label: string;
@@ -1493,10 +1435,13 @@ function VSlider({
   max: number;
   step?: number;
   format?: (v: number) => string;
+  /** Extended tooltip on the label + slider (longer explanations move
+   *  here instead of a visible hint paragraph). */
+  title?: string;
   onChange: (v: number) => void;
 }) {
   return (
-    <>
+    <div title={title}>
       <div
         className="row"
         style={{ justifyContent: "space-between", marginBottom: 2, marginTop: 8 }}
@@ -1517,7 +1462,7 @@ function VSlider({
         style={{ width: "100%" }}
         onChange={(e) => onChange(Number(e.target.value))}
       />
-    </>
+    </div>
   );
 }
 
@@ -1738,10 +1683,11 @@ function VectorSection({
     }
   };
 
-  // Pipette maths: channel value of the accumulated mean. Gray matches the
-  // decoder's Rec.601 luma; a raw channel reads its own plane.
-  const vOfMean = (() => {
-    if (samples.length === 0) return -1;
+  // Pipette maths: channel value + mean RGB of the accumulated samples.
+  // Gray matches the decoder's Rec.601 luma; a raw channel reads its own
+  // plane. The RGB triple also feeds the mean colour swatch.
+  const pipetteMean = (() => {
+    if (samples.length === 0) return null;
     let r = 0;
     let g = 0;
     let b = 0;
@@ -1753,11 +1699,20 @@ function VectorSection({
     r /= samples.length;
     g /= samples.length;
     b /= samples.length;
-    if (params.channel === "r") return r;
-    if (params.channel === "g") return g;
-    if (params.channel === "b") return b;
-    return 0.299 * r + 0.587 * g + 0.114 * b;
+    const v =
+      params.channel === "r"
+        ? r
+        : params.channel === "g"
+          ? g
+          : params.channel === "b"
+            ? b
+            : 0.299 * r + 0.587 * g + 0.114 * b;
+    return { r, g, b, v };
   })();
+  const vOfMean = pipetteMean?.v ?? -1;
+  const meanSwatch =
+    pipetteMean &&
+    `rgb(${Math.round(pipetteMean.r)}, ${Math.round(pipetteMean.g)}, ${Math.round(pipetteMean.b)})`;
 
   const saveAsPreset = async () => {
     const name = await dialog.prompt(
@@ -1919,6 +1874,7 @@ function VectorSection({
           disabled={hidden}
           onChange={(e) => patch({ channel: e.target.value as VectorizeParams["channel"] })}
           style={{ flex: 1, minWidth: 0 }}
+          title="brightness = pixel luma (SEM / monochrome shots); R/G/B = raw colour planes (optical shots). Pipette samples keep RGB — switching the channel needs no re-sampling."
         >
           <option value="gray">brightness (luma)</option>
           <option value="r">R plane</option>
@@ -1937,12 +1893,6 @@ function VectorSection({
           />
           dark metal
         </label>
-      </div>
-      <div className="m" style={{ fontSize: 10, color: "var(--ink3)", marginBottom: 4 }}>
-        brightness = luminance (luma) of the pixel — the usual choice for SEM
-        and monochrome die photos. R/G/B = raw colour planes (optical shots).
-        Pipette samples keep RGB: after switching the channel just press
-        Apply again — no re-sampling needed.
       </div>
 
       {params.adaptive ? (
@@ -2011,13 +1961,9 @@ function VectorSection({
             max={10}
             step={umPerPx}
             format={fmtUm}
+            title="Minimum wire spacing — gaps smaller than this are relief breaks in ONE wire and get merged. 0 = off."
             onChange={(um) => patch({ bridgePx: Math.round(um / umPerPx / 2) })}
           />
-          <div className="m" style={{ fontSize: 10, color: "var(--ink3)", marginTop: 2 }}>
-            Process minimum wire spacing — gaps smaller than this can't be two
-            separate wires, they are relief breaks in ONE wire and get merged.
-            0 = off.
-          </div>
           <VSlider
             label="Min length"
             value={umPerPx * params.minLength}
@@ -2025,6 +1971,7 @@ function VectorSection({
             max={umPerPx * 120}
             step={umPerPx}
             format={fmtUm}
+            title="Skeleton branches shorter than this are dropped."
             onChange={(um) => patch({ minLength: Math.round(um / umPerPx) })}
           />
           <VSlider
@@ -2034,6 +1981,7 @@ function VectorSection({
             max={50}
             step={umPerPx * 0.5}
             format={fmtUm}
+            title="Keep branches with median corridor width ≥ this — width filtering drops pads, text and halos out of the traces."
             onChange={(um) => patch({ widthMin: Math.round((um / umPerPx) * 2) / 2 })}
           />
           <VSlider
@@ -2043,6 +1991,7 @@ function VectorSection({
             max={50}
             step={umPerPx * 0.5}
             format={fmtUm}
+            title="Keep branches with median corridor width ≤ this. Raise it if fat buses lose their centreline."
             onChange={(um) => patch({ widthMax: Math.round((um / umPerPx) * 2) / 2 })}
           />
         </>
@@ -2053,6 +2002,7 @@ function VectorSection({
             value={params.bridgePx}
             min={0}
             max={8}
+            title="Minimum wire spacing — gaps smaller than this are relief breaks in ONE wire and get merged. 0 = off."
             onChange={(v) => patch({ bridgePx: v })}
           />
           <VSlider
@@ -2061,6 +2011,7 @@ function VectorSection({
             min={2}
             max={120}
             format={(v) => `${v} px`}
+            title="Skeleton branches shorter than this are dropped."
             onChange={(v) => patch({ minLength: v })}
           />
           <VSlider
@@ -2070,6 +2021,7 @@ function VectorSection({
             max={30}
             step={0.5}
             format={(v) => (v === 0 ? "off" : `${v} px`)}
+            title="Keep branches with median corridor width ≥ this — width filtering drops pads, text and halos out of the traces."
             onChange={(v) => patch({ widthMin: v })}
           />
           <VSlider
@@ -2079,6 +2031,7 @@ function VectorSection({
             max={60}
             step={0.5}
             format={(v) => (v === 0 ? "off" : `${v} px`)}
+            title="Keep branches with median corridor width ≤ this. Raise it if fat buses lose their centreline."
             onChange={(v) => patch({ widthMax: v })}
           />
           <div className="m" style={{ fontSize: 10, color: "var(--ink3)", marginTop: 4 }}>
@@ -2087,10 +2040,6 @@ function VectorSection({
           </div>
         </>
       )}
-      <div className="m" style={{ fontSize: 10, color: "var(--ink3)", marginTop: 4 }}>
-        Width filters fat blobs (pads, text, halos) out of the traces. Trace
-        confidence slider above also applies (brightness margin).
-      </div>
 
       <label
         className="row"
@@ -2254,9 +2203,7 @@ function VectorSection({
             onChange={(v) => patchPP({ denoiseMedian: Math.round(v) })}
           />
           <div className="m" style={{ fontSize: 10, color: "var(--ink3)", marginTop: 2 }}>
-            Applied to the crop before the threshold (tone LUT → denoise →
-            CLAHE → sharpen). Goal: uniform, high-contrast metal FIRST; tune
-            Thresh/Width on the preprocessed result. Any change re-decodes.
+            Applied before the threshold; any change re-decodes.
           </div>
           {preprocessActive && (
             <button
@@ -2340,9 +2287,8 @@ function VectorSection({
       {/* Whole-die sweep: decode every block, cache, overlay reads blocks */}
       <div style={{ borderTop: "1px solid var(--l1)", margin: "12px 0 10px" }} />
       <div className="m" style={{ fontSize: 10.5, color: "var(--ink3)", marginBottom: 6 }}>
-        Live mode decodes the visible viewport only. Run a whole-die decode to
-        cover the entire crystal with the current parameters — then panning is
-        instant (blocks come from cache).
+        Decode every block of the die with the current parameters — panning is
+        instant afterwards (blocks come from cache).
       </div>
       {sweep.status === "running" ? (
         <>
@@ -2449,90 +2395,121 @@ function VectorSection({
         </div>
       )}
 
-      {/* Pipette: sample the metal colour on the canvas, average, apply */}
-      <div style={{ borderTop: "1px solid var(--l1)", margin: "12px 0 10px" }} />
-      <button
-        type="button"
-        className="btn"
-        style={{
-          width: "100%",
-          cursor: "pointer",
-          ...(pipetteArmed
-            ? { background: "var(--accent, #7fb2ff)", color: "#101418" }
-            : {})
-        }}
-        title="Arm the pipette, then click the metal on the canvas — each click samples a 7×7 px patch of the source image (base or overlay). Apply sets the threshold from the mean."
-        onClick={() => {
-          const next = !pipetteArmed;
-          setPipetteArmed(next);
-          if (next) clearSamples();
-        }}
-      >
-        {pipetteArmed ? "Pipette: ON — click the metal" : "Pipette"}
-      </button>
+      {/* Pipette: sample the metal colour on the canvas, average, apply.
+          A compact instrument row: icon toggle → live status with the mean
+          swatch → tolerance + Apply/Clear. */}
+      <div style={{ borderTop: "1px solid var(--l1)", margin: "12px 0 8px" }} />
+      <div className="row" style={{ gap: 6, alignItems: "center" }}>
+        <button
+          type="button"
+          className="btn"
+          style={{
+            width: 30,
+            height: 24,
+            padding: 0,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            cursor: "pointer",
+            ...(pipetteArmed
+              ? { background: "var(--accent, #7fb2ff)", color: "#101418" }
+              : {})
+          }}
+          title="Pipette — click the metal on the canvas; each click samples a 7×7 px patch (markers show their shade value). Apply sets the threshold from the mean."
+          onClick={() => {
+            const next = !pipetteArmed;
+            setPipetteArmed(next);
+            if (next) clearSamples();
+          }}
+        >
+          {Ic.pipette}
+        </button>
+        <span className="u" style={{ fontSize: 10 }}>
+          Pipette
+        </span>
+        <span
+          className="m"
+          style={{ fontSize: 10.5, color: "var(--ink2)", display: "flex", gap: 4, alignItems: "center", minWidth: 0 }}
+        >
+          {samples.length === 0
+            ? pipetteArmed
+              ? "click the metal…"
+              : "off"
+            : pipetteArmed
+              ? `on · ${samples.length} click(s)`
+              : `${samples.length} sample(s)`}
+          {samples.length > 0 && pipetteMean && (
+            <>
+              <span style={{ color: "var(--ink3)" }}>mean</span>
+              <span
+                style={{
+                  width: 10,
+                  height: 10,
+                  background: meanSwatch as string,
+                  border: "1px solid rgba(0,0,0,0.2)",
+                  borderRadius: 2,
+                  flex: "0 0 auto",
+                  display: "inline-block"
+                }}
+              />
+              <span style={{ fontVariantNumeric: "tabular-nums" }}>
+                {Math.round(vOfMean)}/255
+              </span>
+            </>
+          )}
+        </span>
+      </div>
       {pipetteArmed && (
-        <>
-          <div
-            className="m"
-            style={{ fontSize: 10.5, color: "var(--ink2)", margin: "8px 0 4px" }}
-          >
-            {samples.length === 0
-              ? "click the metal on the canvas…"
-              : `${samples.length} sample(s) · mean ${
-                  vOfMean >= 0 ? Math.round(vOfMean) : "—"
-                }/255`}
-          </div>
-          <div className="row" style={{ gap: 6, alignItems: "center" }}>
-            <span className="u" style={{ fontSize: 10 }}>
-              Tol ±
-            </span>
-            <input
-              type="number"
-              min={0}
-              max={100}
-              step={5}
-              value={tol}
-              style={{ width: 56 }}
-              onChange={(e) => setTol(Math.max(0, Math.min(100, Number(e.target.value) || 0)))}
-            />
-            <button
-              type="button"
-              className="btn"
-              style={{ flex: 1, cursor: "pointer" }}
-              disabled={samples.length === 0}
-              title={
-                params.invert
-                  ? "Set Thresh high = mean + tolerance (selects this colour and darker)"
-                  : "Set Thresh low = mean − tolerance (selects this colour and brighter)"
+        <div className="row" style={{ gap: 6, alignItems: "center", marginTop: 6 }}>
+          <span className="u" style={{ fontSize: 10 }}>
+            Tol ±
+          </span>
+          <input
+            type="number"
+            min={0}
+            max={100}
+            step={5}
+            value={tol}
+            style={{ width: 56 }}
+            onChange={(e) => setTol(Math.max(0, Math.min(100, Number(e.target.value) || 0)))}
+          />
+          <button
+            type="button"
+            className="btn"
+            style={{ flex: 1, cursor: "pointer" }}
+            disabled={samples.length === 0}
+            title={
+              params.invert
+                ? "Set Thresh high = mean + tolerance (selects this colour and darker)"
+                : "Set Thresh low = mean − tolerance (selects this colour and brighter)"
+            }
+            onClick={() => {
+              if (samples.length === 0) return;
+              const v = Math.round(
+                Math.max(0, Math.min(255, vOfMean))
+              );
+              if (params.invert) {
+                patch({ threshHigh: Math.min(255, v + tol) });
+              } else {
+                patch({ threshLow: Math.max(0, v - tol) });
               }
-              onClick={() => {
-                if (samples.length === 0) return;
-                const v = Math.round(
-                  Math.max(0, Math.min(255, vOfMean))
-                );
-                if (params.invert) {
-                  patch({ threshHigh: Math.min(255, v + tol) });
-                } else {
-                  patch({ threshLow: Math.max(0, v - tol) });
-                }
-                clearSamples();
-                setPipetteArmed(false);
-              }}
-            >
-              {params.invert ? "Apply → thresh high" : "Apply → thresh low"}
-            </button>
-            <button
-              type="button"
-              className="btn"
-              style={{ cursor: "pointer" }}
-              disabled={samples.length === 0}
-              title="Drop the accumulated samples"
-              onClick={() => clearSamples()}
-            >
-              Clear
-            </button>
-          </div>
-        </>
+              clearSamples();
+              setPipetteArmed(false);
+            }}
+          >
+            {params.invert ? "Apply → thresh high" : "Apply → thresh low"}
+          </button>
+          <button
+            type="button"
+            className="btn"
+            style={{ cursor: "pointer" }}
+            disabled={samples.length === 0}
+            title="Drop the accumulated samples"
+            onClick={() => clearSamples()}
+          >
+            Clear
+          </button>
+        </div>
       )}
 
       {err && (
@@ -2632,14 +2609,9 @@ function VectorSection({
         max={umPerPx > 0 ? 50 : 200}
         step={umPerPx > 0 ? umPerPx * 0.5 : 1}
         format={umPerPx > 0 ? fmtUm : (v) => (v === 0 ? "off" : `${v} px`)}
+        title="Cap on the contact → wire branch edge (0 = off). A contact inside a big pad whose centreline was width-filtered away otherwise ties to a far wire with a long straight line."
         onChange={(v) => setMaxBranchLen(umPerPx > 0 ? Math.round((v / umPerPx) * 2) / 2 : Math.round(v))}
       />
-      <div className="m" style={{ fontSize: 10, color: "var(--ink3)", marginTop: 2 }}>
-        Cap on the contact → wire branch (0 = off). A contact inside a big
-        pad whose centreline was width-filtered away otherwise ties to a far
-        wire with a long straight line — raise Wire width max instead if the
-        fat buses lose their centreline.
-      </div>
       <button
         type="button"
         className="btn"
@@ -2657,7 +2629,7 @@ function VectorSection({
         title="Materialize decoded vector traces into real annotation nets (ends snapped to device contacts / terminals / pins; a contact lying ON the wire splits it and connects mid-wire). Undoable."
         onClick={() => void vectorToNets()}
       >
-        {busy === "nets" ? "Создаю nets…" : "Vector → nets"}
+        {busy === "nets" ? "Creating nets…" : "Vector → nets"}
       </button>
     </div>
   );
