@@ -396,8 +396,32 @@ export const useDieViewerStore = create<DieViewerState & DieViewerActions>()((se
     if (get().vectorSweepRunning === running) return;
     set({ vectorSweepRunning: running });
   },
-  setSavedVectorLayers: (layers) =>
-    set({ savedVectorLayers: layers, savedVectorVersion: get().savedVectorVersion + 1 }),
+  setSavedVectorLayers: (layers) => {
+    // Idempotent: writing an identical list is a no-op. This setter runs after
+    // every die list fetch, and it used to bump `savedVectorVersion` on each
+    // write — the fetch effect depends on that version → fetch → set → bump →
+    // fetch… an infinite loop that (a) hammered the backend and (b) full-
+    // invalidated ALL canvas tiles every iteration via the vector layer sync,
+    // i.e. the "after a page reload the whole viewer crawls" report. It also
+    // went undetected for a long time because a transient fetch ERROR breaks
+    // the loop (the .catch swallows, no set → no bump) — the "two states:
+    // sometimes it flies, sometimes it crawls" mystery. Explicit re-fetches
+    // (sweep done / manual refresh) go through bumpSavedVectorLayers.
+    const cur = get().savedVectorLayers;
+    if (cur.length === layers.length && cur.every((l, i) => {
+      const n = layers[i];
+      return (
+        l.hash === n.hash &&
+        (l.name ?? null) === (n.name ?? null) &&
+        l.traces === n.traces &&
+        l.outlines === n.outlines &&
+        l.modified === n.modified
+      );
+    })) {
+      return;
+    }
+    set({ savedVectorLayers: layers });
+  },
   bumpSavedVectorLayers: () =>
     set((state) => ({ savedVectorVersion: state.savedVectorVersion + 1 })),
   setCellDetectionTypeId: (id) => set({ cellDetectionTypeId: id }),

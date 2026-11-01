@@ -334,11 +334,25 @@ export class VectorizeLayer implements Layer {
    *  stay rendered regardless of the live params. `colors` maps hash → hex
    *  (absent = the default amber); a changed colour drops the layer's baked
    *  bitmaps so the next draw re-bakes in the new colour. */
+  /** Signature of the last setSavedLayers inputs — repeated identical syncs
+   *  (prefs-store churn, effect re-runs) return instead of full-invalidating
+   *  every canvas tile each time ("after-reload crawl" class of bugs). */
+  private savedSig: string | null = null;
+
   setSavedLayers(
     visibleHashes: string[],
     hiddenHashes: ReadonlySet<string>,
     colors?: ReadonlyMap<string, string>
   ): void {
+    const sig = [
+      visibleHashes.join(","),
+      [...hiddenHashes].sort().join(","),
+      ...(colors
+        ? [...colors.entries()].sort().map(([h, c]) => `${h}=${c}`)
+        : [])
+    ].join("|");
+    if (sig === this.savedSig) return;
+    this.savedSig = sig;
     this.savedVisible = visibleHashes;
     this.savedHiddenSet = hiddenHashes;
     this.bumpTraces(); // pin set / hidden set feed collectTraces
