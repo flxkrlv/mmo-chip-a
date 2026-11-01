@@ -23,6 +23,10 @@ export interface AnnotationDrawState {
    *  stamping) that would otherwise never match any pass and stay
    *  invisible forever. */
   layerFilter?: string;
+  /** Fast false-ness flag for `isSelected`: nothing is selected at all. Lets
+   *  heavy per-edge/per-node membership lookups (× per tile × per pass) be
+   *  skipped outright in the common empty-selection case. */
+  selectedEmpty?: boolean;
   /** Render pass for vias: "body" = shape only (drawn before nets),
    *  "label" = text only (drawn after nets). */
   pass?: "body" | "label";
@@ -373,7 +377,11 @@ export class AnnotationLayer implements Layer {
     const isVisible = (a: Annotation) => this.isAnnotationVisible(a);
     const selected = this.selectedIds;
     const isSelected = (id: string) => selected.has(id);
-    const state: AnnotationDrawState = { selected: false, isSelected };
+    const state: AnnotationDrawState = {
+      selected: false,
+      isSelected,
+      selectedEmpty: selected.size === 0
+    };
 
     // Separate hits: non-nets (cells, pins, rois, ignores), vias, and nets.
     const nonNets: typeof hits = [];

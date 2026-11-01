@@ -224,6 +224,12 @@ export function buildNetAnnotation(
     nodeDegree.set(e.from, (nodeDegree.get(e.from) ?? 0) + 1);
     nodeDegree.set(e.to, (nodeDegree.get(e.to) ?? 0) + 1);
   }
+  // Conductor layers this net actually has edges on (UNTAGGED counts as a
+  // "layer"). The AnnotationLayer replays EVERY net in EVERY conductor pass;
+  // a net without edges on the current pass used to be queried cell by cell
+  // just to skip every candidate — now the whole pass is skipped outright.
+  const layersPresent = new Set<string>();
+  for (const e of net.edges) layersPresent.add(e.layer ?? UNTAGGED_LAYER);
 
 
   // Composite drawOrder = (min_layer + 1) * 100 + (max_layer + 1).
@@ -272,6 +278,20 @@ export function buildNetAnnotation(
       ctx.lineCap = "round";
       ctx.lineJoin = "round";
 
+      // The AnnotationLayer replays EVERY net in EVERY conductor pass. A net
+      // without edges on the current pass used to pay a cell-bucket query per
+      // pass just to skip every candidate. Edge sections now early-out; node
+      // dots keep painting in every pass (they painted above higher-layer
+      // wires before — rerouting them under other nets' metal2 edges would
+      // change cross-net stacking). With sub-part selection live, selected
+      // edges paint unfiltered in every pass — same as before.
+      const passSkipsEdges =
+        !whole &&
+        state.selectedEmpty &&
+        !!state.layerFilter &&
+        state.layerFilter !== UNTAGGED_LAYER &&
+        !layersPresent.has(state.layerFilter);
+
       const nodeMult = getNodeRadiusMult?.() ?? NET_NODE_RADIUS_MULT;
       const showNodes = nodeMult > 0;
       const nodeRadius = netNodeWorldRadius(
@@ -318,7 +338,7 @@ export function buildNetAnnotation(
       // restricts which edges to draw in the current pass.
       const netOverrideColor = getNetOverrideColor?.(netId);
       const byColor = new Map<string, EdgeHit[]>();
-      if (!whole) {
+      if (!whole && !passSkipsEdges) {
         forEdgesInRect(cull, (h) => {
           const e = h.e;
           if (edgeSel(e)) return; // drawn in the selection pass below
@@ -353,12 +373,12 @@ export function buildNetAnnotation(
           const b = nodeIndex.get(e.to);
           if (a && b) selectedHits.push({ e, a, b });
         }
-      } else {
+      } else if (!passSkipsEdges) {
         forEdgesInRect(cull, (h) => {
           if (state.isSelected(edgeSubId(h.e.id))) selectedHits.push(h);
         });
       }
-      if (selectedHits.length > 0) {
+      if (selectedHits.length > 0 && !passSkipsEdges) {
         ctx.strokeStyle = SELECT_COLOR;
         ctx.lineWidth = worldWidth * SELECT_WIDTH_MULT;
         ctx.beginPath();
