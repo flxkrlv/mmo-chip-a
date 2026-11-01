@@ -238,3 +238,72 @@ describe("contrastColor", () => {
     expect(contrastColor("rgba(255, 255, 255, 0.8)")).toBe("#000000");
   });
 });
+
+describe("die-wide meganet spatial index", () => {
+  // A 40×40 grid over a 4.7k × 4.7k px "die" — the size class the Trace
+  // pipeline materializes. This used to scan the WHOLE net on every cursor
+  // move (the net bbox always contains the cursor) and stroke it in full
+  // into every overlapping tile — the "vectorize → sluggish UI" report.
+  function megaNet(): AnnotationNet {
+    const nodes: AnnotationNet["nodes"] = [];
+    const edges: AnnotationNet["edges"] = [];
+    const nid = (r: number, c: number) => `n${r * 40 + c}`;
+    for (let r = 0; r < 40; r++) {
+      for (let c = 0; c < 40; c++) {
+        nodes.push({ id: nid(r, c), x: c * 120, y: r * 120 });
+        if (c > 0) edges.push({ id: `e${edges.length}`, from: nid(r, c - 1), to: nid(r, c), layer: "metal1" });
+        if (r > 0) edges.push({ id: `e${edges.length}`, from: nid(r - 1, c), to: nid(r, c) });
+      }
+    }
+    return { id: "mega", name: "Mega", nodes, edges };
+  }
+
+  const mega = buildNetAnnotation(megaNet(), () => 4, () => "#fff");
+
+  it("hit-tests vertices and edges with the same results as before", () => {
+    // Exact node (600, 600) = row 5, col 5.
+    expect(mega.hitTest?.({ x: 600, y: 600 }, 5)).toBe("net:mega/node:n205");
+    // Mid-edge of the row-5 horizontal segment 600→720.
+    const edge = mega.hitTest?.({ x: 660, y: 600 }, 4);
+    expect(edge).toMatch(/^net:mega\/edge:/);
+    // Far beyond the net's extent (broad phase misses) → no hit.
+    expect(mega.hitTest?.({ x: 90000, y: 90000 }, 5)).toBeNull();
+  });
+
+  it("finds the un-bucketed long jumper edge", () => {
+    // One edge spanning ~8000 grid cells → routed to the `longEdges` list
+    // (not bucketed); the midpoint probe must still hit it. Nodes are kept
+    // far from the probe so the always-wins vertex pass can't shadow it.
+    const longOnly: AnnotationNet = {
+      id: "lone", name: "Lone",
+      nodes: [
+        { id: "p1", x: 0, y: 0 },
+        { id: "p2", x: 4800, y: 4800 }
+      ],
+      edges: [{ id: "eLong", from: "p1", to: "p2", layer: "metal1" }]
+    };
+    const a = buildNetAnnotation(longOnly, () => 4, () => "#fff");
+    expect(a.hitTest?.({ x: 2400, y: 2400 }, 6)).toBe("net:lone/edge:eLong");
+    // And the whole span still picks in a marquee (rect deliberately NOT a
+    // diagonal square — that one meets the line exactly at its corners).
+    expect(
+      a.rectPickParts?.({ x: 100, y: 60, width: 4400, height: 4600 }, false)
+    ).toEqual(["net:lone/edge:eLong"]);
+  });
+
+  it("strokes only the tile-visible fraction of the net", () => {
+    let lineTo = 0;
+    const ctx = {
+      lineCap: "", lineJoin: "", lineWidth: 0, strokeStyle: "", fillStyle: "",
+      beginPath() {}, moveTo() {}, lineTo() { lineTo++; }, stroke() {}, fill() {}, arc() {},
+    } as unknown as CanvasRenderingContext2D;
+    // A 240×240 world-unit tile in the middle of the 4.7k die (padding grows
+    // it slightly) — far fewer segments than the net's ~3120.
+    mega.draw(ctx, { zoom: 1, world: { x: 600, y: 600, width: 240, height: 240 } } as never, {
+      selected: false,
+      isSelected: () => false
+    });
+    expect(lineTo).toBeGreaterThan(0);
+    expect(lineTo).toBeLessThan(200);
+  });
+});
