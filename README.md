@@ -458,18 +458,9 @@ This is an alignment and bond-mapping tool, not a complete package design or mec
 
 ## LLM-Assisted Analysis
 
-The optional AI Assistant analyzes the extracted netlist and generates ranked hypothesis cards for possible circuit functions, device roles, or suspicious connectivity. Cards include confidence, reasoning, evidence, affected devices, and suggested checks. Hypotheses are locally checked for valid device references and connectivity before becoming interactive cards; this does not prove the electrical function.
+The optional read-only AI Assistant generates ranked hypothesis cards from the extracted netlist (confidence, evidence, affected devices, suggested checks) with per-card discussion chats.
 
-The assistant is read-only. It can display hypotheses on the die, open them in Net Graph, and show netlist or schematic fragments.
-
-During finding discussions, the model can use controlled tool calls when enabled:
-
-- **`mmochip_lvs_check`** — compare a candidate subcircuit with the `analog-circuits-sky130` reference LVS library using topology matching. The active library can be selected, and users can add custom reference cells from SPICE/Spectre subcircuits.
-- **`mmochip_vision`** — request rendered die crops and overlay layers for multimodal models to inspect device geometry and terminal connectivity.
-- **`mmochip_spice_sim`** - run a server-side ngspice check of a hypothesis and return simulation measurements. The model writes only the testbench (the tool adds the extracted circuit itself), the tool normalises the netlist for ngspice, runs every requested analysis, and returns the node voltages plus the `.measure` results; a run that produced no data is reported as a failure instead of an empty success. The run is shown as a card in the discussion thread (netlist, measurements, warnings) with a button that opens it in the SPICE simulator.
-- **`mmochip_card_update`** — propose a structured update to an existing hypothesis card.
-
-Tool access is explicitly controlled by the user. The model proposes hypotheses and evidence; the user reviews and verifies the result.
+Honest status: the in-app assistant flow is **clunky and verbose**; the plan is to move this analysis experience entirely to the **MCP server** (an LLM client working with the same data through per-die approved tools, see the section above). The hypothesis **"cards + per-card chats"** concept is the part worth keeping, so the feature stays for now — cards can display hypotheses on the die and open them in Net Graph, and LVS / vision / ngspice checks remain available as in-chat tools.
 
 ---
 
