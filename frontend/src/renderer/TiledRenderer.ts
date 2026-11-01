@@ -74,6 +74,9 @@ export class TiledRenderer {
   /** A snapshot is rendering: live frames pause so image layers keep the
    *  snapshot's tile requests instead of cancelling them as off-screen. */
   private snapshotting = false;
+  /** Per-frame layer draw accounting for the slow-frame log (below). */
+  private frameLayerMs = new Map<string, { ms: number; calls: number }>();
+  private lastSlowLog = 0;
 
   constructor(canvas: HTMLCanvasElement, options: TiledRendererOptions = {}) {
     this.canvas = canvas;
@@ -338,6 +341,8 @@ export class TiledRenderer {
     if (this.destroyed || this.snapshotting) return;
     const { tileSize, dpr, viewport: vp, ctx } = this;
     if (vp.zoom <= 0) return;
+    const frameT0 = performance.now();
+    this.frameLayerMs.clear();
 
     const tw = tileSize / vp.zoom;
     const visW = this.cssWidth;
@@ -408,6 +413,23 @@ export class TiledRenderer {
     }
 
     this.evictIfNeeded();
+
+    // Slow-frame diagnostics — the "floating performance" class of bugs is
+    // invisible in a busy UI but trivial when each offending frame names its
+    // layer, tile count and zoom. Fires only when a frame consumed ~2 fps
+    // budgets, and at most once per 2 s, so real gestures never spam.
+    const frameMs = performance.now() - frameT0;
+    if (frameMs > 32 && performance.now() - this.lastSlowLog > 2000) {
+      this.lastSlowLog = performance.now();
+      const parts = [...this.frameLayerMs.entries()]
+        .sort((a, b) => b[1].ms - a[1].ms)
+        .map(([id, { ms, calls }]) => `${id} ${ms.toFixed(0)}ms×${calls} tiles`);
+      console.info(
+        `[perf] slow frame ${frameMs.toFixed(0)}ms @zoom ${vp.zoom.toFixed(3)}: ${
+          parts.join(", ") || "compositing only"
+        }`
+      );
+    }
   }
 
   private renderTile(i: number, j: number) {
@@ -445,10 +467,19 @@ export class TiledRenderer {
 
     for (const layer of this.layers) {
       tileCtx.save();
+      // Slow-frame accounting: when the whole frame overshoots a couple of
+      // 60fps budgets, the composite log names which layer ate the time.
+      const t0 = performance.now();
       try {
         layer.draw(tileCtx, bounds);
       } catch (error) {
         console.error(`[renderer] layer "${layer.id}" draw failed`, error);
+      } finally {
+        const ms = performance.now() - t0;
+        if (ms > 0) {
+          const acc = this.frameLayerMs.get(layer.id);
+          this.frameLayerMs.set(layer.id, { ms: (acc?.ms ?? 0) + ms, calls: (acc?.calls ?? 0) + 1 });
+        }
       }
       tileCtx.restore();
     }

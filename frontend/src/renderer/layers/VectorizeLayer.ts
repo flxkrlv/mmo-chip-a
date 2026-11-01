@@ -224,6 +224,16 @@ export class VectorizeLayer implements Layer {
   /** Consecutive preview failures — drives the retry backoff (a restart
    *  window must not freeze the preview until some canvas movement). */
   private previewFailures = 0;
+  /** collectTraces/collectOutlines memo — recomputed ONLY when a decode
+   *  region, pin, or hidden-set changes. Their callers run per status tick
+   *  (every preview retry fires one) and used to re-stringify EVERY point
+   *  of EVERY cached trace each time — a whole-die decode paid tens to
+   *  hundreds of ms on the main thread every retry beat (the "floating
+   *  performance" report: perfectly fast when idle, laggy right after a
+   *  page refresh while the preview retry loop spins). */
+  private tracesDirty = true;
+  private tracesMemo: MLTracePolyline[] | null = null;
+  private outlinesMemo: [number, number][][] | null = null;
   /** Preview lifecycle, mirrored into the panel status (the "silent dead
    *  preview" class of bugs must be visible in the UI, not only console). */
   private previewState: "off" | "fetching" | "ok" | "fail" = "off";
@@ -243,6 +253,7 @@ export class VectorizeLayer implements Layer {
     this.abort?.abort();
     this.abort = null;
     this.cache.clear();
+    this.bumpTraces();
     this.snapCache.clear();
     this.pinned.clear();
     this.pinnedInflight.clear();
@@ -262,6 +273,7 @@ export class VectorizeLayer implements Layer {
   /** Drop everything (params semantics changed / die switched). */
   clearCache(): void {
     this.cache.clear();
+    this.bumpTraces();
     this.snapCache.clear();
     this.blockMiss.clear();
     this.invalidateCb?.();
@@ -329,6 +341,7 @@ export class VectorizeLayer implements Layer {
   ): void {
     this.savedVisible = visibleHashes;
     this.savedHiddenSet = hiddenHashes;
+    this.bumpTraces(); // pin set / hidden set feed collectTraces
     // Evict pins no longer wanted at all.
     const wanted = new Set(visibleHashes);
     for (const h of [...this.pinned.keys()]) {
@@ -349,6 +362,7 @@ export class VectorizeLayer implements Layer {
             const outlines = resp.blocks.flatMap((b) => b.outlines);
             if (traces.length + outlines.length === 0) {
               this.pinned.delete(h);
+              this.bumpTraces();
               return;
             }
             this.pinned.set(h, {
@@ -361,6 +375,7 @@ export class VectorizeLayer implements Layer {
               groupBase: (this.nextGroupBase++) * 1_000_000,
               color: colors?.get(h) ?? VECT_LAYER_DEFAULT_COLOR
             });
+            this.bumpTraces();
             this.invalidateCb?.();
           })
           .catch(() => undefined)
@@ -406,12 +421,22 @@ export class VectorizeLayer implements Layer {
     });
   }
 
+  /** Mutation hook for the traces memo (see the field comment). */
+  private bumpTraces(): void {
+    this.tracesDirty = true;
+  }
+
   /** Every decoded trace across cached regions and pinned saved layers,
    *  deduplicated by point sequence — a trace straddling two fetched
    *  regions appears in both. `group` ids are NAMESPACED per region/pin:
    *  each decode numbers its groups from 0, so raw ids collide across
-   *  decodes and materialization would merge unrelated wires into one net. */
+   *  decodes and materialization would merge unrelated wires into one net.
+   *  Memoized: deduplication stringifies every point of every trace, so a
+   *  whole-die decode costs tens-to-hundreds of ms per call on the main
+   *  thread; calls (the status panel asks per status tick) must reuse it. */
   collectTraces(): MLTracePolyline[] {
+    if (!this.tracesDirty && this.tracesMemo) return this.tracesMemo;
+    const t0 = performance.now();
     const seen = new Set<string>();
     const out: MLTracePolyline[] = [];
     for (const region of this.cache.values()) {
@@ -441,6 +466,12 @@ export class VectorizeLayer implements Layer {
         );
       }
     }
+    const ms = performance.now() - t0;
+    if (ms > 10) {
+      console.info(`[VectorizeLayer] collectTraces rebuilt in ${ms.toFixed(0)}ms — ${out.length} traces (only on decode/pin changes)`);
+    }
+    this.tracesMemo = out;
+    this.tracesDirty = false;
     return out;
   }
 
@@ -450,6 +481,7 @@ export class VectorizeLayer implements Layer {
    *  ON the metal" test (point-in-polygon), which the centreline+width
    *  proxy only approximates. */
   collectOutlines(): [number, number][][] {
+    if (!this.tracesDirty && this.outlinesMemo) return this.outlinesMemo;
     const seen = new Set<string>();
     const out: [number, number][][] = [];
     const push = (pts: [number, number][]) => {
@@ -465,6 +497,10 @@ export class VectorizeLayer implements Layer {
       if (this.savedHiddenSet.has(hash)) continue;
       for (const o of pin.outlines) push(o);
     }
+    this.outlinesMemo = out;
+    // Shared dirty flag with collectTraces — both fold the same sources and
+    // are invalidated together.
+    this.tracesDirty = false;
     return out;
   }
 
@@ -550,6 +586,7 @@ export class VectorizeLayer implements Layer {
               if (oldest === undefined) break;
               this.cache.delete(oldest);
             }
+            this.bumpTraces();
             this.notifyStatus(false);
             this.invalidateCb?.({
               x: bbox[0],
@@ -950,6 +987,7 @@ export class VectorizeLayer implements Layer {
         if (oldest === undefined) break;
         this.cache.delete(oldest);
       }
+      this.bumpTraces();
       this.notifyStatus(false);
       this.invalidateCb?.({
         x: target.bbox[0],
