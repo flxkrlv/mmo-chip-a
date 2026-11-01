@@ -429,8 +429,8 @@ function startSidecar() {
   if (!plugin) {
     // The plugin is optional — ML works with any sidecar ALREADY listening
     // on the configured port (e.g. the dev repo's `npm run sidecar` during
-    // binary testing, or a remote one in --connect mode is Not Applicable
-    // here). Probe quickly so the log says what ML actually relies on.
+    // binary testing). Probe quickly so the log says what ML actually
+    // relies on.
     waitForUrl(`http://127.0.0.1:${port}/health`, 3000)
       .then(() => log(`ml sidecar: плагин не установлен — использую уже работающий sidecar на 127.0.0.1:${port}`))
       .catch(() => log(`ml sidecar: плагин не установлен и на 127.0.0.1:${port} никто не слушает — ML-запросы будут падать (fetch failed / sidecar unreachable). Установите плагин: setup_ml.ps1 / setup_ml.bat рядом с mmo-chip.exe`));

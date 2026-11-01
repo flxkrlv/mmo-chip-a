@@ -54,7 +54,7 @@ if (-not $AppDir) {
 # $AppDir is absolute both in the in-bundle branch above and in the common
 # -AppDir case; only JOIN when it is relative (Join-Path silently builds
 # "F:\root\F:\path" out of an absolute child and GetFullPath then rejects
-# the format — the in-bundle default branch had never been exercised).
+# the format - the in-bundle default branch had never been exercised).
 if ([System.IO.Path]::IsPathRooted($AppDir)) {
   $AppDir = [System.IO.Path]::GetFullPath($AppDir)
 } else {
