@@ -989,9 +989,6 @@ function DieViewer({ dieId }: { dieId: string }) {
             // (and, via the Inspector, materialization) to those areas.
             getTraceRegions: () =>
               useDieViewerStore.getState().traceRegionsByDie[die.id] ?? [],
-            // P2-3: blit the PREPROCESSED viewport crop under the overlay.
-            getPreprocessPreview: () =>
-              usePreferences.getState().vectorPreprocessPreview,
             onStatusChange: (status) =>
               useDieViewerStore.getState().setVectorStatus(status)
           })
@@ -1017,9 +1014,16 @@ function DieViewer({ dieId }: { dieId: string }) {
   const preprocessSignature = usePreferences((s) =>
     JSON.stringify(s.vectorParams.preprocess ?? {})
   );
+  // Push the (persisted) toggle into the layer as a METHOD call — the layer
+  // keeps one private flag; per-frame store reads used to diverge from the
+  // checkbox and silently pin the preview at "off".
+  useEffect(() => {
+    vectorLayer?.setPreprocessPreviewEnabled(preprocessPreviewOn);
+    if (preprocessPreviewOn) vectorLayer?.refresh();
+  }, [preprocessPreviewOn, vectorLayer]);
   useEffect(() => {
     if (preprocessPreviewOn) vectorLayer?.refresh();
-  }, [preprocessSignature, preprocessPreviewOn, vectorLayer]);
+  }, [preprocessSignature, vectorLayer]);
   useEffect(() => {
     vectorLayer?.refresh();
   }, [traceRegionsChanged, preprocessPreviewOn, vectorLayer]);

@@ -57,10 +57,6 @@ export interface VectorizeDisplay {
    *  where they touch at least one region (materialization applies the same
    *  filter in the Inspector). Empty ⇒ whole die. */
   getTraceRegions?: () => TraceRegionLike[];
-  /** P2-3 preview: when true, the layer fetches the PREPROCESSED viewport
-   *  crop and blits it under traces/outlines — tuning happens while seeing
-   *  the processed pixels. */
-  getPreprocessPreview?: () => boolean;
   /** Status for the inspector: loading flag, last error, region trace count,
    *  and the last decode's width-filter drop stats. */
   onStatusChange?: (status: {
@@ -230,6 +226,12 @@ export class VectorizeLayer implements Layer {
   /** Consecutive preview failures — drives the retry backoff (a restart
    *  window must not freeze the preview until some canvas movement). */
   private previewFailures = 0;
+  /** P2-3 preview toggle: SET EXPLICITLY by the page through
+   *  `setPreprocessPreviewEnabled()` — deliberately NOT read from a store
+   *  inside the layer. A display getter used to re-read the store per frame
+   *  and DIVERGE from the checkbox (two readers, one stale → the permanent
+   *  'off — waiting for a viewport frame' state, nothing in console). */
+  private preProcessPreviewEnabled = false;
   /** Preview lifecycle, mirrored into the panel status (the "silent dead
    *  preview" class of bugs must be visible in the UI, not only console). */
   private previewState: "off" | "fetching" | "ok" | "fail" = "off";
@@ -271,6 +273,18 @@ export class VectorizeLayer implements Layer {
     this.snapCache.clear();
     this.blockMiss.clear();
     this.dropPreview();
+    this.invalidateCb?.();
+  }
+
+  /** P2-3: the page pushes the (persisted) toggle here — one source of
+   *  truth on the layer, no per-frame store reads. */
+  setPreprocessPreviewEnabled(on: boolean): void {
+    if (this.preProcessPreviewEnabled === on) return;
+    this.preProcessPreviewEnabled = on;
+    if (!on) {
+      this.dropPreview();
+      this.setPreviewState("off");
+    }
     this.invalidateCb?.();
   }
 
@@ -595,7 +609,7 @@ export class VectorizeLayer implements Layer {
     overlaySource: string | undefined,
     params: VectorizeParams
   ): void {
-    if (!this.display.getPreprocessPreview?.()) {
+    if (!this.preProcessPreviewEnabled) {
       this.dropPreview();
       this.setPreviewState("off");
       return;
