@@ -36,6 +36,10 @@ export interface TracesToNetsInput {
   outlines?: [number, number][][];
   /** Drop traces scoring below this (the trace-confidence slider value). */
   minScore: number;
+  /** Max length (source px) of a contact→wire branch edge. 0 = off. Caps
+   *  the outline-membership connections (a contact inside a big pad with
+   *  no nearby centreline would otherwise tie to a far wire). */
+  maxBranchLen?: number;
   snapTargets: TraceSnapTarget[];
   /** Snap tolerance in world (source-px) units. */
   snapTol: number;
@@ -55,10 +59,6 @@ export interface TracesToNetsInput {
    *  (the raw axis could not be snapped within delta) instead of
    *  materializing their non-octilinear geometry. */
   dropIrregular?: boolean;
-  /** Max length (source px) of a contact→wire branch edge. 0 = off. Caps
-   *  the outline-membership connections (a contact inside a big pad with
-   *  no nearby centreline would otherwise tie to a far wire). */
-  maxBranchLen?: number;
 }
 
 export interface TracesToNetsResult {
@@ -83,6 +83,9 @@ export interface TracesToNetsResult {
    *  LONGER than maxBranchLen — the snap dropped per the phase-1c budget
    *  spec (no chord across the pad; the contact stays unattached). */
   outlineDropped: number;
+  /** Twin-raIL traces dropped by the outlines-based double-centreline
+   *  dedupe (same metal contour, ~parallel, overlapping spans). */
+  droppedTwins: number;
   /** Suspicious merges: a "group" union holding hundreds of traces usually
    *  means the MASK over-bridged wires (band too wide / Min gap too high) —
    *  the netlist is technically connected but is not what the user drew. */
@@ -232,8 +235,86 @@ export function buildNetsFromTraces(input: TracesToNetsInput): TracesToNetsResul
      *  wire keeps its shape (no more last-edge yanked to the contact). */
     endBranches: { end: 0 | 1; target: TraceSnapTarget }[];
   }
+  // 1.2. TWIN-RAIL dedupe (needs outlines): a fat / double-ridged bus
+  //      decodes as TWO ~parallel centreline rails INSIDE ONE metal contour
+  //      (live-data offsets 9..40 px, near-equal spans; block seams of the
+  //      whole-die sweep re-decode a wire the same way). Both rails sit in
+  //      the SAME conductor — one of them is the phantom "net running past
+  //      the bus" the user reported, duplicated by the correct in-metal
+  //      trace. Keep the LONGER rail, drop the other. Real neighbouring
+  //      wires never match: their contour polygons differ (a gap between
+  //      conductors), so the shared-contour requirement protects them —
+  //      an over-bridged mask merges real neighbours into one contour, but
+  //      they are electrically one blob there anyway.
+  const outlines = input.outlines ?? [];
+  const droppedTwins = new Set<number>();
+  if (outlines.length > 0) {
+    const MIN_TWIN_LEN = 64;
+    const TWIN_ANGLE_COS = 0.9988; // 0.05 rad ≈ 2.9°
+    const TWIN_OFFSET_MAX = 60;
+    interface LongTrace { idx: number; pts: [number, number][]; len: number; dx: number; dy: number }
+    const lake: LongTrace[] = [];
+    for (let i = 0; i < traces.length; i++) {
+      const pts = traces[i].points;
+      if (pts.length < 2) continue;
+      const dx = pts[pts.length - 1][0] - pts[0][0];
+      const dy = pts[pts.length - 1][1] - pts[0][1];
+      const len = Math.hypot(dx, dy);
+      if (len < MIN_TWIN_LEN) continue;
+      lake.push({ idx: i, pts, len, dx: dx / len, dy: dy / len });
+    }
+    // Contour membership (any vertex inside) — lazy per trace, cached.
+    const outlineBoxes = outlines.map((o) => pointsBoxOf(o));
+    const contourCache = new Map<number, Set<number>>();
+    const contoursOf = (idx: number, trace: MLTracePolyline): Set<number> => {
+      const cached = contourCache.get(idx);
+      if (cached) return cached;
+      const hits = new Set<number>();
+      for (const [x, y] of trace.points) {
+        for (let oi = 0; oi < outlines.length; oi++) {
+          const b = outlineBoxes[oi];
+          if (x < b.minX || x > b.maxX || y < b.minY || y > b.maxY) continue;
+          if (pointInPolygon(x, y, outlines[oi])) hits.add(oi);
+        }
+      }
+      contourCache.set(idx, hits);
+      return hits;
+    };
+    for (let a = 0; a < lake.length; a++) {
+      const A = lake[a];
+      for (let b = a + 1; b < lake.length; b++) {
+        const B = lake[b];
+        if (droppedTwins.has(A.idx) && droppedTwins.has(B.idx)) continue;
+        const cosT = A.dx * B.dx + A.dy * B.dy;
+        if (cosT < TWIN_ANGLE_COS && cosT > -TWIN_ANGLE_COS) continue;
+        const longer = A.len >= B.len ? A : B;
+        const shorter = longer === A ? B : A;
+        // Perpendicular offset of the shorter rail's midpoint from the
+        // longer rail's line:
+        const mx = shorter.pts[0][0] + (shorter.pts[shorter.pts.length - 1][0] - shorter.pts[0][0]) / 2;
+        const my = shorter.pts[0][1] + (shorter.pts[shorter.pts.length - 1][1] - shorter.pts[0][1]) / 2;
+        const vmx = longer.pts[0][0] + (longer.pts[longer.pts.length - 1][0] - longer.pts[0][0]) / 2;
+        const vmy = longer.pts[0][1] + (longer.pts[longer.pts.length - 1][1] - longer.pts[0][1]) / 2;
+        const along = (mx - vmx) * longer.dx + (my - vmy) * longer.dy;
+        if (Math.abs(along) > 0.5 * Math.max(A.len, B.len)) continue;
+        const off = Math.abs(-(mx - vmx) * longer.dy + (my - vmy) * longer.dx);
+        if (off > TWIN_OFFSET_MAX) continue;
+        // Same conductor: at least ONE contour that contains BOTH rails.
+        const ca = contoursOf(A.idx, traces[A.idx]);
+        const cb = contoursOf(B.idx, traces[B.idx]);
+        let shared = false;
+        for (const oi of ca) if (cb.has(oi)) { shared = true; break; }
+        if (!shared) continue;
+        // Drop the SHORTER (the second on ties — seam re-decodes agree).
+        droppedTwins.add(shorter.idx);
+      }
+    }
+  }
+
   const pending: PendingTrace[] = [];
-  for (const t of traces) {
+  for (let traceIndex = 0; traceIndex < traces.length; traceIndex++) {
+    const t = traces[traceIndex];
+    if (droppedTwins.has(traceIndex)) continue;
     if (dropIrregular && t.irregular === true) {
       droppedIrregular += 1;
       continue;
@@ -342,7 +423,6 @@ export function buildNetsFromTraces(input: TracesToNetsInput): TracesToNetsResul
   //          contact's own metal.
   let outlineConnected = 0;
   let outlineDropped = 0;
-  const outlines = input.outlines ?? [];
   if (outlines.length > 0) {
     const outlineBoxes = outlines.map((o) => pointsBoxOf(o));
     for (const s of snapTargets) {
@@ -711,6 +791,7 @@ export function buildNetsFromTraces(input: TracesToNetsInput): TracesToNetsResul
     droppedIrregular,
     outlineConnected,
     outlineDropped,
+    droppedTwins: droppedTwins.size,
     warnings
   };
 }

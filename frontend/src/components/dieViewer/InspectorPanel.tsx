@@ -1167,6 +1167,7 @@ async function materializeTraces(
           (result.outlineDropped > 0
             ? `, отброшено длиннее Max branch len: ${result.outlineDropped}`
             : "") +
+          (result.droppedTwins > 0 ? `, дублей-скелетонов: ${result.droppedTwins}` : "") +
           `.\nДействие уйдёт в Undo.` +
           (result.warnings.length
             ? `\n\nВНИМАНИЕ:\n${result.warnings.join("\n")}`

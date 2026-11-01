@@ -214,4 +214,48 @@ describe("contact branch attach (mlTracesToNets)", () => {
       }
     }
   });
+
+  it("twin rails inside ONE contour collapse to the longer one", () => {
+    const pad = [[[0, 0], [400, 0], [400, 100], [0, 100]]];
+    const rails: MLTracePolyline[] = [
+      { points: [[3293 - 3100, 364 - 300], [4055 - 3100, 365 - 300]], score: 1 }, // 762 px, y≈64
+      { points: [[3322 - 3100, 375 - 300], [4034 - 3100, 374 - 300]], score: 1 } // 712 px, y≈74
+    ];
+    const result = buildNetsFromTraces({
+      traces: rails,
+      outlines: pad,
+      minScore: 0,
+      snapTargets: [],
+      snapTol: 12,
+      stitchTol: 6,
+      layer: "metal1"
+    });
+    expect(result.droppedTwins).toBe(1); // the shorter rail dropped
+    expect(result.nets).toHaveLength(1); // ONE rail, not two
+    const net = result.nets[0];
+    expect(net.nodes.some(near(193, 64))).toBe(true); // longer rail kept
+    expect(net.nodes.some(near(222, 75))).toBe(false); // shorter rail gone
+  });
+
+  it("real parallel neighbours in DIFFERENT contours are never deduped", () => {
+    const outlines = [
+      [[0, 0], [400, 0], [400, 20], [0, 20]], // bus 1 band y 0..20
+      [[0, 60], [400, 60], [400, 80], [0, 80]] // bus 2 band y 60..80 (gap)
+    ];
+    const buses: MLTracePolyline[] = [
+      { points: [[10, 10], [390, 10]], score: 1 },
+      { points: [[10, 70], [390, 70]], score: 1 }
+    ];
+    const result = buildNetsFromTraces({
+      traces: buses,
+      outlines,
+      minScore: 0,
+      snapTargets: [],
+      snapTol: 12,
+      stitchTol: 6,
+      layer: "metal1"
+    });
+    expect(result.droppedTwins).toBe(0); // different conductors → untouched
+    expect(result.nets).toHaveLength(2);
+  });
 });
