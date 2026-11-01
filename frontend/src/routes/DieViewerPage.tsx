@@ -113,6 +113,7 @@ import { useAnalogCellTool } from "../components/dieViewer/useAnalogCellTool";
 import { AnalogCellOverlay } from "../components/dieViewer/AnalogCellOverlay";
 import { useViaPolyTool } from "../components/dieViewer/useViaPolyTool";
 import { useTraceRegionPolyTool } from "../components/dieViewer/useTraceRegionPolyTool";
+import { usePreprocessPreview } from "../components/dieViewer/usePreprocessPreview";
 import {
   previewEnds,
   tipOf,
@@ -1009,24 +1010,26 @@ function DieViewer({ dieId }: { dieId: string }) {
   // flag silently switched itself off on every reload / restart.
   const preprocessPreviewOn = usePreferences((s) => s.vectorPreprocessPreview);
   // Sliders must repaint the preview WITHOUT any canvas interaction: the
-  // preprocess JSON signature is the dependency, refresh() invalidates the
-  // tiles, beginFrame sees the new preprocess key and refetches (debounced).
+  // preprocess JSON signature is the dependency of the orchestrator chain.
   const preprocessSignature = usePreferences((s) =>
     JSON.stringify(s.vectorParams.preprocess ?? {})
   );
-  // Push the (persisted) toggle into the layer as a METHOD call — the layer
-  // keeps one private flag; per-frame store reads used to diverge from the
-  // checkbox and silently pin the preview at "off".
-  useEffect(() => {
-    vectorLayer?.setPreprocessPreviewEnabled(preprocessPreviewOn);
-    if (preprocessPreviewOn) vectorLayer?.refresh();
-  }, [preprocessPreviewOn, vectorLayer]);
-  useEffect(() => {
-    if (preprocessPreviewOn) vectorLayer?.refresh();
-  }, [preprocessSignature, vectorLayer]);
+  // The orchestrator OWNS fetch/retry/status and pushes the decoded crop
+  // into the layer (a dumb drawable). It is rAF-independent: the old
+  // beginFrame-driven scheduling froze as soon as the app tab lost focus
+  // (rAF suspends in background tabs — the "works once after F12" report).
+  const onPreviewViewport = usePreprocessPreview({
+    dieId: die?.id ?? null,
+    dieWidth: die?.width ?? 0,
+    dieHeight: die?.height ?? 0,
+    enabled: preprocessPreviewOn,
+    preprocessSignature,
+    vectorLayer,
+    getWorldRect: useCallback(() => canvasHandle.current?.getWorldRect() ?? null, [])
+  });
   useEffect(() => {
     vectorLayer?.refresh();
-  }, [traceRegionsChanged, preprocessPreviewOn, vectorLayer]);
+  }, [traceRegionsChanged, vectorLayer]);
 
   // Vector Layers (saved whole-die payloads): fetch the die's list, keep it
   // in the store for the outline tree, and sync visibility into the layer.
@@ -1542,6 +1545,15 @@ function DieViewer({ dieId }: { dieId: string }) {
     viewportLive,
     containerRef
   });
+  // Direct viewport signal for the P2-3 preview orchestrator (a synchronous
+  // pan/zoom callback — no rAF coalescing, works even in background tabs).
+  const tiledOnViewportChange = useCallback(
+    (v: Viewport) => {
+      onViewportChange(v);
+      onPreviewViewport();
+    },
+    [onViewportChange, onPreviewViewport]
+  );
 
   // Double-click on a net (select tool) → non-modal rename window anchored
   // at the cursor (NetRenamePopover). The rename itself is undoable.
@@ -4723,7 +4735,7 @@ function DieViewer({ dieId }: { dieId: string }) {
                       : "crosshair"
               }
               handleRef={canvasHandle}
-              onViewportChange={onViewportChange}
+              onViewportChange={tiledOnViewportChange}
               onPointerDown={onCanvasPointerDown}
               onCanvasClick={onCanvasClick}
             />
