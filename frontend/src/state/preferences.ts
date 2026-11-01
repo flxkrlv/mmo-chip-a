@@ -322,6 +322,8 @@ interface PreferencesState {
   pinNamesVisible: boolean;
   /** Die viewer: show the analog devices overlay (extracted instances + highlights). */
   deviceOverlayOn: boolean;
+  /** Die viewer: FPS/render-ms HUD strip in the canvas corner (diagnostics). */
+  perfHudOn: boolean;
   /** Die viewer: render net IDs next to terminals/wires instead of just net colors. */
   showTermNetIds: boolean;
   /** Die viewer: render the floorplan regions overlay. */
@@ -457,6 +459,8 @@ interface PreferencesActions {
   setPinNamesVisible: (visible: boolean) => void;
   /** Toggle analog devices overlay on the die viewer canvas. */
   setDeviceOverlayOn: (visible: boolean) => void;
+  /** Toggle the FPS/render diagnostic HUD on the die viewer canvas. */
+  setPerfHudOn: (visible: boolean) => void;
   /** Toggle net ID overlay on the die viewer canvas. */
   setShowTermNetIds: (visible: boolean) => void;
   /** Toggle floorplan overlay on the die viewer canvas. */
@@ -701,6 +705,7 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
         viaLabelsVisible: true,
         pinNamesVisible: true,
         deviceOverlayOn: true,
+        perfHudOn: false,
         showTermNetIds: false,
         floorplanOverlayOn: true,
         showFloorplanIO: false,
@@ -758,6 +763,7 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
         setViaLabelsVisible: (visible) => set({ viaLabelsVisible: visible }),
         setPinNamesVisible: (visible) => set({ pinNamesVisible: visible }),
         setDeviceOverlayOn: (visible) => set({ deviceOverlayOn: visible }),
+        setPerfHudOn: (visible) => set({ perfHudOn: visible }),
         setShowTermNetIds: (visible) => set({ showTermNetIds: visible }),
         setFloorplanOverlayOn: (visible) => set({ floorplanOverlayOn: visible }),
         setShowFloorplanIO: (visible) => set({ showFloorplanIO: visible }),
@@ -1188,6 +1194,7 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
           viaLabelsVisible: state.viaLabelsVisible,
           pinNamesVisible: state.pinNamesVisible,
           deviceOverlayOn: state.deviceOverlayOn,
+          perfHudOn: state.perfHudOn,
           showTermNetIds: state.showTermNetIds,
           floorplanOverlayOn: state.floorplanOverlayOn,
           showFloorplanIO: state.showFloorplanIO,

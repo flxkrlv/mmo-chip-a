@@ -193,6 +193,18 @@ export class TiledRenderer {
       .map((s) => s.trim().replace(/^at\s+/, ""))
       .filter(Boolean);
     this.lastRenderReason = frames.join(" <- ") || "(unknown)";
+    // Short HUD label: first stack frame past the TiledRenderer internals,
+    // URLs stripped.
+    for (const f of frames) {
+      const stripped = f
+        .replace(/\((?:https?|file):[^)]*\)/g, "")
+        .replace(/(?:https?|file):\S*/g, "")
+        .trim();
+      if (stripped && !stripped.startsWith("TiledRenderer.")) {
+        rendererPerfStats.lastReason = stripped;
+        break;
+      }
+    }
     if (this.rafId !== null || this.destroyed) return;
     this.rafId = requestAnimationFrame(() => {
       this.rafId = null;
@@ -434,6 +446,7 @@ export class TiledRenderer {
     // layer, tile count and zoom. Fires only when a frame consumed ~2 fps
     // budgets, and at most once per 2 s, so real gestures never spam.
     const frameMs = performance.now() - frameT0;
+    rendererPerfStats.lastFrameMs = frameMs;
     if (frameMs > 32 && performance.now() - this.lastSlowLog > 2000) {
       this.lastSlowLog = performance.now();
       const parts = [...this.frameLayerMs.entries()]
@@ -509,3 +522,13 @@ export class TiledRenderer {
     }
   }
 }
+
+/** Live renderer stats for the optional on-screen HUD (PerfHud) — a tiny
+ *  mutable module store; the HUD polls it, the renderer pushes into it. */
+export const rendererPerfStats = {
+  /** Wall time of the last completed render pass (tile draws + composite), ms. */
+  lastFrameMs: 0,
+  /** Short label of who asked for the last render ("setViewport" gesture,
+   *  "VectorizeLayer.setSavedLayers", …). */
+  lastReason: "(idle)" as string,
+};

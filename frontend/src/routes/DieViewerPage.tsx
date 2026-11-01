@@ -71,6 +71,7 @@ import { InspectorPanel } from "../components/dieViewer/InspectorPanel";
 
 import { ProblemNavigatorPanel, collectProblems } from "../components/dieViewer/ProblemNavigatorPanel";
 import { AnalogDeviceHighlights } from "../components/dieViewer/AnalogDeviceHighlights";
+import { PerfHud } from "../components/dieViewer/PerfHud";
 import { SubcircuitHighlightsOverlay } from "../components/dieViewer/SubcircuitHighlightsOverlay";
 import { DeviceInspector } from "../components/dieViewer/DeviceInspector";
 import { DeviceInstancePanel } from "../components/dieViewer/DeviceInstancePanel";
@@ -1850,6 +1851,7 @@ function DieViewer({ dieId }: { dieId: string }) {
   // ── Overlay toggles (persisted in preferences) ──────────────
   const deviceOverlayOn = usePreferences((s) => s.deviceOverlayOn);
   const setDeviceOverlayOn = usePreferences((s) => s.setDeviceOverlayOn);
+  const perfHudOn = usePreferences((s) => s.perfHudOn);
   const showTermNetIds = usePreferences((s) => s.showTermNetIds);
   const setShowTermNetIds = usePreferences((s) => s.setShowTermNetIds);
   const floorplanOverlayOn = usePreferences((s) => s.floorplanOverlayOn);
@@ -4740,6 +4742,7 @@ function DieViewer({ dieId }: { dieId: string }) {
               onCanvasClick={onCanvasClick}
             />
           )}
+          {perfHudOn && <PerfHud />}
           <NetHoldRing store={netHoldLive} delayMs={NET_HOLD_RING_DELAY_MS} />
           <RulerOverlay
             rulers={visibleRulers}
@@ -5186,6 +5189,8 @@ function DieViewer({ dieId }: { dieId: string }) {
         onClose={() => setSettingsOpen(false)}
         deviceOverlayOn={deviceOverlayOn}
         setDeviceOverlayOn={setDeviceOverlayOn}
+        perfHudOn={perfHudOn}
+        setPerfHudOn={(v) => usePreferences.getState().setPerfHudOn(v)}
         cellsLocked={cellsLocked}
         setCellsLocked={setCellsLocked}
         showTermNetIds={showTermNetIds}
