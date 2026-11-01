@@ -51,7 +51,15 @@ if (-not $AppDir) {
     $AppDir = Join-Path $here "..\desktop\build\dist\win-unpacked"
   }
 }
-$AppDir = [System.IO.Path]::GetFullPath((Join-Path $PWD $AppDir))
+# $AppDir is absolute both in the in-bundle branch above and in the common
+# -AppDir case; only JOIN when it is relative (Join-Path silently builds
+# "F:\root\F:\path" out of an absolute child and GetFullPath then rejects
+# the format — the in-bundle default branch had never been exercised).
+if ([System.IO.Path]::IsPathRooted($AppDir)) {
+  $AppDir = [System.IO.Path]::GetFullPath($AppDir)
+} else {
+  $AppDir = [System.IO.Path]::GetFullPath((Join-Path $PWD $AppDir))
+}
 $mlDir = Join-Path $AppDir "resources\app\ml"
 
 if (-not (Test-Path (Join-Path $mlDir "sidecar.py"))) {
