@@ -91,6 +91,39 @@ function endpointKey(x: number, y: number): string {
   return `${Math.round(x / 2)}:${Math.round(y / 2)}`;
 }
 
+/** Branch-attach geometry: WHERE a contact's branch leaves the wire.
+ *  Normally AT THE PROJECTION (the nearest point on the polyline — a
+ *  collinear split, a T-junction; the wire never bends). Only when the
+ *  projection sits essentially ON a trace END vertex (< 1 px along the
+ *  segment) does the branch leave from that end vertex without a split.
+ *  HISTORY: this used to be index-thresholded (`at < 0.5` = "at the start",
+ *  `at > len-1-0.5` = "at the end"). For runs-decoder fragments — long
+ *  straight 2-POINT polylines — EVERY contact fell past the threshold, so
+ *  the branch left from vertex 0 or 1, up to HALF A SEGMENT away from the
+ *  projection: electrically the same net, visually attached at some far
+ *  wrong vertex instead of the nearest point. */
+const BRANCH_ATTACH_EPS = 1;
+
+function branchAt(pts: [number, number][], at: number): { end?: 0 | 1; at: number } {
+  const i = Math.min(Math.floor(at), pts.length - 2);
+  const u = at - i;
+  const segLen = Math.hypot(pts[i + 1][0] - pts[i][0], pts[i + 1][1] - pts[i][1]);
+  const dStart = u * segLen;
+  const dEnd = (1 - u) * segLen;
+  if (dStart <= BRANCH_ATTACH_EPS) {
+    // Projection sits on vertex i: branch from it as-is. For an interior
+    // vertex push an integer `at` — the realize pass' near-integer check
+    // branches from the existing vertex without a split.
+    if (i === 0) return { end: 0, at };
+    return { at: i };
+  }
+  if (dEnd <= BRANCH_ATTACH_EPS) {
+    if (i + 1 === pts.length - 1) return { end: 1, at };
+    return { at: i + 1 };
+  }
+  return { at };
+}
+
 /** Axis-aligned bbox of a polyline — cheap reject before point-in-polygon. */
 function pointsBoxOf(points: [number, number][]): {
   minX: number;
@@ -182,6 +215,10 @@ export function buildNetsFromTraces(input: TracesToNetsInput): TracesToNetsResul
   interface PendingTrace {
     points: [number, number][];
     score: number;
+    /** Runs-decoder connectivity group — переносим из входного trace,
+     *  чтобы group-union ниже читал его у ВЫЖИВШИХ трасс (pending/snapped
+     *  1:1), а не по сместившемуся индексу сырого массива. */
+    group?: number;
     /** Deferred mid-wire contact splits (splice from the end AFTER phase
      *  1c, so 1c's projection indices stay valid against the original
      *  points). The split inserts the PROJECTION point — collinear, the
@@ -266,17 +303,19 @@ export function buildNetsFromTraces(input: TracesToNetsInput): TracesToNetsResul
         }
       }
       if (bestAt >= 0) {
-        const isEnd =
-          bestAt < 0.5 || bestAt > pts.length - 1 - 0.5;
-        if (isEnd) {
-          endBranches.push({ end: bestAt < 0.5 ? 0 : 1, target: s });
+        // Branch leaves AT the nearest point on the wire (collinear split);
+        // the trace end vertex only when the projection sits essentially on
+        // it — never "half a long segment away" (see branchAt history).
+        const ba = branchAt(pts, bestAt);
+        if (ba.end !== undefined) {
+          endBranches.push({ end: ba.end, target: s });
         } else {
-          insertions.push({ at: bestAt, target: s });
+          insertions.push({ at: ba.at, target: s });
         }
         snappedLabels.add(s.label);
       }
     }
-    pending.push({ points: pts, score: t.score ?? 1, insertions, endBranches });
+    pending.push({ points: pts, score: t.score ?? 1, insertions, endBranches, group: t.group });
   }
 
   // 1c. OUTLINE-MEMBERSHIP connect (the authoritative "on metal" test): a
@@ -371,15 +410,14 @@ export function buildNetsFromTraces(input: TracesToNetsInput): TracesToNetsResul
         }
       }
       if (bestTrace >= 0 && (maxBranchLen <= 0 || bestD <= maxBranchLen)) {
-        // Branch off an end vertex when the projection lands there;
-        // otherwise a collinear split + branch from the wire point.
-        const ptsLen = pending[bestTrace].points.length;
-        if (bestAt < 0.5) {
-          pending[bestTrace].endBranches.push({ end: 0, target: s });
-        } else if (bestAt > ptsLen - 1 - 0.5) {
-          pending[bestTrace].endBranches.push({ end: 1, target: s });
+        // Branch AT the projection (the nearest point on the wire — the
+        // T-junction the user asked for); the trace end vertex only when
+        // the projection sits essentially on it (branchAt, 1 px eps).
+        const ba = branchAt(pending[bestTrace].points, bestAt);
+        if (ba.end !== undefined) {
+          pending[bestTrace].endBranches.push({ end: ba.end, target: s });
         } else {
-          pending[bestTrace].insertions.push({ at: bestAt, target: s });
+          pending[bestTrace].insertions.push({ at: ba.at, target: s });
         }
         snappedLabels.add(s.label);
         outlineConnected += 1;
@@ -492,12 +530,10 @@ export function buildNetsFromTraces(input: TracesToNetsInput): TracesToNetsResul
     const rb = find(b);
     if (ra !== rb) parent.set(rb, ra);
   };
-  const groupOf: string[] = [];
   const endsByKey = new Map<string, number[]>();
   snapped.forEach((t, i) => {
     const k = `t${i}`;
     parent.set(k, k);
-    groupOf.push(k);
     for (const end of [t.points[0], t.points[t.points.length - 1]]) {
       const ek = endpointKey(end[0], end[1]);
       const list = endsByKey.get(ek);
@@ -513,10 +549,14 @@ export function buildNetsFromTraces(input: TracesToNetsInput): TracesToNetsResul
   // 1.6 Runs-decoder grouping: traces sharing a `group` belong to ONE
   //     physical wire / closed contour (the decoder already dissolved noise
   //     junctions) — union them even when no endpoints coincide.
-  const rawTraces = traces;
+  //     `pending`/`snapped` are 1:1 (survivors of the score/degenerate/
+  //     irregular filters); reading `group` off the RAW `traces` array by
+  //     the same index was wrong whenever any trace was filtered out —
+  //     unions then hit FOREIGN groups and glued unrelated wires into one
+  //     net.
   const groupIds = new Map<number, string>();
   snapped.forEach((_, i) => {
-    const g = rawTraces[i]?.group;
+    const g = pending[i].group;
     if (typeof g !== "number") return;
     const key = `g${g}`;
     const prev = groupIds.get(g);
