@@ -376,7 +376,14 @@ export const useDieViewerStore = create<DieViewerState & DieViewerActions>()((se
       cur.loading === status.loading &&
       cur.error === status.error &&
       cur.traces === status.traces &&
-      cur.droppedWidth === status.droppedWidth
+      cur.droppedWidth === status.droppedWidth &&
+      cur.irregular === status.irregular &&
+      // The preview lifecycle MUST also pass through — backgrounding it
+      // made the panel's status line stale while decode counters stood
+      // still (the 'preview status shows nothing' report).
+      cur.preview?.state === status.preview?.state &&
+      cur.preview?.failures === status.preview?.failures &&
+      cur.preview?.error === status.preview?.error
     )
       return;
     set({ vectorStatus: status });

@@ -1810,7 +1810,9 @@ function VectorSection({
         {hidden ? "Show vector overlay" : "Hide vector overlay"}
       </button>
 
-      {/* Live status */}
+      {/* Live status — ALWAYS visible, incl. the preview lifecycle: a dead
+          preview must never be silent mystery #2 (the error text lives at
+          the top-level line, not only in the collapsed section). */}
       <div
         className="m"
         style={{ fontSize: 10.5, color: "var(--ink2)", margin: "8px 0 4px" }}
@@ -1824,6 +1826,21 @@ function VectorSection({
               : `${status.traces} trace(s) decoded` +
                 (status.droppedWidth ? ` · width-filtered: ${status.droppedWidth}` : "") +
                 (status.irregular ? ` · irregular: ${status.irregular}` : "")}
+        {preprocessPreview && status.preview && (
+          <span
+            style={{
+              color:
+                status.preview.state === "fail"
+                  ? "var(--danger, #e36854)"
+                  : "var(--ink3)"
+            }}
+          >
+            {" · preview "}
+            {status.preview.state === "fail"
+              ? `failed ×${status.preview.failures} — ${status.preview.error ?? "unknown"}`
+              : status.preview.state}
+          </span>
+        )}
       </div>
       {scoreFilter > 0 && (
         <div className="m" style={{ fontSize: 10, color: "var(--warn, #d9a441)", marginBottom: 4 }}>
@@ -2097,6 +2114,12 @@ function VectorSection({
           }}
         >
           Preprocess {preprocessActive ? "· active" : "· off"}
+          {preprocessPreview && status.preview && (
+            <span style={{ color: status.preview.state === "fail" ? "var(--danger, #e36854)" : "var(--ink3)" }}>
+              {" · preview "}
+              {status.preview.state}
+            </span>
+          )}
         </summary>
         <div style={{ marginTop: 4 }}>
           <label
