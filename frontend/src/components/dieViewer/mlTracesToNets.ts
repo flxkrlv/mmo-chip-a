@@ -560,6 +560,13 @@ export function buildNetsFromTraces(input: TracesToNetsInput): TracesToNetsResul
   for (const p of pending) {
     const branches: SnappedTrace["branches"] = [];
     p.insertions.sort((a, b) => b.at - a.at);
+    // Pristine polyline: earlier (higher-at) splices shift `p.points`, so the
+    // interpolation anchors for later splits MUST come from the original
+    // array — otherwise a split lands at a biased position (the collinear
+    // parametrization u is meant against the ORIGINAL vertices). The splice
+    // index itself still goes against `p.points`, with branches above the
+    // shift bumped below.
+    const orig = p.points.slice();
     for (const ins of p.insertions) {
       // Insert the PROJECTION point (on the segment — collinear split, the
       // wire geometry does not bend) and branch from it to the contact.
@@ -575,13 +582,23 @@ export function buildNetsFromTraces(input: TracesToNetsInput): TracesToNetsResul
         continue;
       }
       const idx = Math.ceil(ins.at);
-      const seg = Math.min(Math.floor(ins.at), p.points.length - 2);
+      const seg = Math.min(Math.floor(ins.at), orig.length - 2);
       const u = ins.at - seg;
-      const ax = p.points[seg][0];
-      const ay = p.points[seg][1];
-      const bx = p.points[seg + 1][0];
-      const by = p.points[seg + 1][1];
+      const ax = orig[seg][0];
+      const ay = orig[seg][1];
+      const bx = orig[seg + 1][0];
+      const by = orig[seg + 1][1];
       p.points.splice(idx, 0, [ax + u * (bx - ax), ay + u * (by - ay)]);
+      // Multiple contacts can split the SAME segment with EQUAL ceil(at):
+      // each later splice at the same idx shifts the earlier branch's point
+      // one slot right — bump every already-recorded vertex accordingly, or
+      // the branch ends up attached at the OTHER contact's split point (the
+      // reported "phantom rail chord to the contact": a worst case drew a
+      // 230 px branch where the cap was 23 px). The wire points themselves
+      // stay honest — collinear inserts use pristine anchors.
+      for (const br of branches) {
+        if (br.vertex >= idx) br.vertex += 1;
+      }
       branches.push({
         vertex: idx,
         label: ins.target.label,

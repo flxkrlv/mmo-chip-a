@@ -216,7 +216,9 @@ describe("contact branch attach (mlTracesToNets)", () => {
   });
 
   it("twin rails inside ONE contour collapse to the longer one", () => {
-    const pad = [[[0, 0], [400, 0], [400, 100], [0, 100]]];
+    const pad: [number, number][][] = [
+      [[0, 0], [400, 0], [400, 100], [0, 100]]
+    ];
     const rails: MLTracePolyline[] = [
       { points: [[3293 - 3100, 364 - 300], [4055 - 3100, 365 - 300]], score: 1 }, // 762 px, y≈64
       { points: [[3322 - 3100, 375 - 300], [4034 - 3100, 374 - 300]], score: 1 } // 712 px, y≈74
@@ -238,7 +240,7 @@ describe("contact branch attach (mlTracesToNets)", () => {
   });
 
   it("real parallel neighbours in DIFFERENT contours are never deduped", () => {
-    const outlines = [
+    const outlines: [number, number][][] = [
       [[0, 0], [400, 0], [400, 20], [0, 20]], // bus 1 band y 0..20
       [[0, 60], [400, 60], [400, 80], [0, 80]] // bus 2 band y 60..80 (gap)
     ];
@@ -257,5 +259,45 @@ describe("contact branch attach (mlTracesToNets)", () => {
     });
     expect(result.droppedTwins).toBe(0); // different conductors → untouched
     expect(result.nets).toHaveLength(2);
+  });
+
+  it("two contacts splitting the SAME segment each branch at their own point", () => {
+    // Regressed as the user's 'phantom rail': insertions with EQUAL ceil(at)
+    // shifted each other's recorded vertex — the later (smaller-at) splice
+    // displaced the earlier branch's point, and it drew a chord from the
+    // OTHER contact's split to the contact (e.g. 230 px branch at a 23 px cap).
+    const trace: MLTracePolyline = {
+      points: [[0, 0], [1000, 0]],
+      score: 1,
+      widthPx: 4
+    };
+    const result = buildNetsFromTraces({
+      traces: [trace],
+      outlines: [[[0, -30], [1000, -30], [1000, 30], [0, 30]]],
+      minScore: 0,
+      snapTargets: [
+        { x: 300, y: 5.9, label: "A" }, // proj at=0.3, ceil=1
+        { x: 899, y: 5.9, label: "B" } // proj at=0.899, ceil=1 → collision
+      ],
+      snapTol: 4,
+      stitchTol: 6,
+      layer: "metal1",
+      maxBranchLen: 30
+    });
+    expect(result.nets).toHaveLength(1);
+    const net = result.nets[0];
+    for (const label of ["A", "B"]) {
+      const cx = label === "A" ? 300 : 899;
+      const edges = net.edges.filter((e) => {
+        const [na, nb] = edgeNodes(net, e);
+        const tgt = net.nodes.find(near(cx, 5.9));
+        return tgt && [na.id, nb.id].includes(tgt.id);
+      });
+      expect(edges).toHaveLength(1);
+      const [na, nb] = edgeNodes(net, edges[0]);
+      const other = [na, nb].find((n) => !near(cx, 5.9)(n))!;
+      // The branch leaves at ITS OWN projection, never the other's:
+      expect(near(cx, 0)(other)).toBe(true);
+    }
   });
 });
