@@ -178,6 +178,10 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
   const localFileInputRef = useRef<HTMLInputElement>(null);
   const serverFileInputRef = useRef<HTMLInputElement>(null);
 
+  // Multi-select anchor for Shift+click range selection in the Nets list —
+  // set by every non-Shift selection click, read by the next Shift+click.
+  const lastNetAnchorRef = useRef<string | null>(null);
+
   // ── Search ──────────────────────────────────────────────────────
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
@@ -442,9 +446,29 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
                 onLongPress: () => focus([id], { tight: true })
               }}
               selected={selectedIds.has(id)}
-              onSelect={(e) =>
-                select([id], e.shiftKey || e.metaKey || e.ctrlKey ? "toggle" : "replace")
-              }
+              onSelect={(e) => {
+                // Classic list selection: a plain click replaces + sets the
+                // range ANCHOR; Shift+click selects everything between the
+                // anchor and this row (inclusive) in VISIBLE (search-filtered)
+                // order; Ctrl/Cmd+click toggles. Without this, selecting a
+                // stack of nets one by one is a click per net.
+                if (e.shiftKey) {
+                  const visibleIds = filteredNets.map((n) => `net:${n.id}`);
+                  const anchor = lastNetAnchorRef.current ?? id;
+                  const ai = visibleIds.indexOf(anchor);
+                  const ci = visibleIds.indexOf(id);
+                  if (ai >= 0 && ci >= 0) {
+                    const [lo, hi] = ai <= ci ? [ai, ci] : [ci, ai];
+                    select(visibleIds.slice(lo, hi + 1), "replace");
+                    lastNetAnchorRef.current = anchor;
+                    return;
+                  }
+                }
+                select([id], e.metaKey || e.ctrlKey ? "toggle" : "replace");
+                // Anchor follows every non-Shift interaction (plain AND
+                // ctrl/cmd), matching the wire-tool/explorer convention.
+                lastNetAnchorRef.current = id;
+              }}
               onDoubleClick={() => focus([id])}
             />
           );
