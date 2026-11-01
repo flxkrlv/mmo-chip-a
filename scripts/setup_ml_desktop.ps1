@@ -187,7 +187,7 @@ Write-Host "Install variant: $mode" -ForegroundColor Green
 # Non-torch packages (the non-torch subset of ml/requirements.txt) — installed
 # first so a torch-variant failure never blocks the base stack.
 Write-Host "Installing base ML packages..." -ForegroundColor Green
-Invoke-Install @("opencv-contrib-python-headless", "numpy", "scipy", "pillow", "tqdm", "fastapi", "uvicorn[standard]", "python-multipart")
+Invoke-Install @("opencv-contrib-python-headless", "numpy", "scipy", "scikit-image", "pillow", "tqdm", "fastapi", "uvicorn[standard]", "python-multipart")
 
 # segmentation-models-pytorch pins torch indirectly; install it after torch.
 function Install-TorchExtras {
