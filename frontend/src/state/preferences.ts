@@ -200,6 +200,10 @@ interface PreferencesState {
   vectorPresets: Record<string, VectorizeParams>;
   /** Die-viewer: hide the vectorize overlay entirely (traces + outlines). */
   vectorOverlayHidden: boolean;
+  /** Die-viewer: show the committed vectorize trace regions / blockages
+   *  drawn on the die. OFF by default (a fresh load starts uncluttered);
+   *  persisted so the choice survives reloads. */
+  traceShapesVisible: boolean;
   /** Per-saved-vector-layer visibility. Absent or true = HIDDEN (a fresh
    *  page load starts with every Vector layer's eye off — whole-die rasters
    *  are heavy and rarely what you want on open); an explicit `false` means
@@ -540,6 +544,7 @@ interface PreferencesActions {
   saveVectorPreset: (name: string, params: VectorizeParams) => void;
   deleteVectorPreset: (name: string) => void;
   setVectorOverlayHidden: (hidden: boolean) => void;
+  setTraceShapesVisible: (visible: boolean) => void;
   setVectorOutlineAlpha: (a: number) => void;
   setVectorLayerVisible: (hash: string, visible: boolean) => void;
   setVectorLayerColor: (hash: string, color: string) => void;
@@ -670,6 +675,7 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
         vectorParams: { ...DEFAULT_VECTOR_PARAMS },
         vectorPresets: {},
         vectorOverlayHidden: true,
+        traceShapesVisible: false,
         vectorOutlineAlpha: 0.3,
         vectorLayerHidden: {},
         vectorLayerColors: {},
@@ -1015,6 +1021,7 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
             return { vectorPresets: next };
           }),
         setVectorOverlayHidden: (hidden) => set({ vectorOverlayHidden: hidden }),
+        setTraceShapesVisible: (visible) => set({ traceShapesVisible: visible }),
   setVectorOutlineAlpha: (a) => set({ vectorOutlineAlpha: Math.min(1, Math.max(0, a)) }),
   setVectorLayerVisible: (hash, visible) =>
     set((state) => ({
@@ -1163,6 +1170,7 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
           vectorParams: state.vectorParams,
           vectorPresets: state.vectorPresets,
           vectorOverlayHidden: state.vectorOverlayHidden,
+          traceShapesVisible: state.traceShapesVisible,
           vectorOutlineAlpha: state.vectorOutlineAlpha,
           vectorLayerHidden: state.vectorLayerHidden,
           vectorLayerColors: state.vectorLayerColors,

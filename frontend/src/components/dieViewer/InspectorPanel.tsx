@@ -37,7 +37,7 @@ import {
 import type { VectorizeLayer } from "../../renderer/layers/VectorizeLayer";
 import { buildNetsFromTraces, type TraceSnapTarget } from "./mlTracesToNets";
 import { filterTracesByUserNets, filterTracesByRegions, collectUserNetPolylines, type UserNetPolyline, type TraceRegionLike } from "./userNetFilter";
-import { useDieViewerStore, selectTraceRegions } from "../../state/dieViewer";
+import { useDieViewerStore } from "../../state/dieViewer";
 import { usePreferences, selectNetWidth } from "../../state/preferences";
 import { useSession, DEFAULT_METAL_STACK } from "../../state/session";
 import { useOverlayLayers } from "../../state/overlayLayers";
@@ -1094,21 +1094,24 @@ async function materializeTraces(
   dialog: { confirm(message: string, title?: string): Promise<boolean> },
   outlines?: [number, number][][],
   userPolylines?: UserNetPolyline[],
-  traceRegions?: TraceRegionLike[]
+  traceRegions?: TraceRegionLike[],
+  traceBlockages?: { x: number; y: number; width: number; height: number }[]
 ): Promise<{ created: number } | { error: string } | null> {
   const prefs = usePreferences.getState();
   const rawTraceCount = traces.length;
-  // P2-2: traces AND outlines outside every drawn trace region are dropped
-  // (no regions = whole die). Runs before the hand-drawn filter.
+  // P2-2: traces AND outlines outside every drawn trace region are dropped,
+  // then anything inside a trace blockage (no regions = whole die). Blockage
+  // wins over regions. Runs before the hand-drawn filter.
   const regionFilter =
-    traceRegions && traceRegions.length > 0
-      ? filterTracesByRegions(traces, outlines ?? [], traceRegions)
+    (traceRegions && traceRegions.length > 0) || (traceBlockages && traceBlockages.length > 0)
+      ? filterTracesByRegions(traces, outlines ?? [], traceRegions ?? [], traceBlockages ?? [])
       : null;
   if (regionFilter) {
     traces = regionFilter.traces;
     outlines = regionFilter.outlines;
   }
   const droppedOutsideRegion = regionFilter?.droppedOutsideRegion ?? 0;
+  const droppedInBlockage = regionFilter?.droppedInBlockage ?? 0;
   // P2-1: traces matching hand-drawn nets are dropped BEFORE materialization
   // (the decoder re-detects wires the user already drew). Skipped when no
   // hand-drawn nets exist or the toggle is off.
@@ -1139,6 +1142,8 @@ async function materializeTraces(
     const reasons: string[] = [];
     if (droppedOutsideRegion > 0)
       reasons.push(`trace-region filter dropped ${droppedOutsideRegion} outside the drawn regions`);
+    if (droppedInBlockage > 0)
+      reasons.push(`trace-blockage filter dropped ${droppedInBlockage} inside the blockages`);
     if (respect && droppedUserNets > 0)
       reasons.push(`Respect hand-drawn nets dropped ${droppedUserNets} matching your drawn nets`);
     if (result.filteredByScore > 0)
@@ -1157,8 +1162,9 @@ async function materializeTraces(
   // Structured summary: result block + every drop counter on its own line
   // (0-counters omitted) + warnings last. Plain text for dialog.confirm.
   const dropLines: string[] = [];
-  if (droppedOutsideRegion > 0) dropLines.push(`  outside trace regions:        ${droppedOutsideRegion}`);
-  if (droppedUserNets > 0) dropLines.push(`  matching hand-drawn nets:    ${droppedUserNets}`);
+    if (droppedOutsideRegion > 0) dropLines.push(`  outside trace regions:        ${droppedOutsideRegion}`);
+    if (droppedInBlockage > 0) dropLines.push(`  inside trace blockages:      ${droppedInBlockage}`);
+    if (droppedUserNets > 0) dropLines.push(`  matching hand-drawn nets:    ${droppedUserNets}`);
   if (result.filteredByScore > 0) dropLines.push(`  score filter:                ${result.filteredByScore}`);
   if (result.droppedLowContacts > 0) dropLines.push(`  low contacts (< ${prefs.vectorMinContacts}):      ${result.droppedLowContacts}`);
   if (result.droppedIrregular > 0) dropLines.push(`  irregular (non-octilinear):  ${result.droppedIrregular}`);
@@ -1582,8 +1588,16 @@ function VectorSection({
     () => (respectUserNets ? collectUserNetPolylines(annotations, netWidth) : []),
     [respectUserNets, annotations, netWidth]
   );
-  // P2-2: the die's drawn trace regions restrict what materializes.
-  const traceRegions = useDieViewerStore(selectTraceRegions(dieId));
+  // P2-2: the die's drawn trace regions restrict what materializes, and
+  // blockages cut holes out of them (persisted in the annotations blob).
+  const traceRegions = useMemo(
+    () => annotations?.traceRegions ?? [],
+    [annotations]
+  );
+  const traceBlockages = useMemo(
+    () => annotations?.traceBlockages ?? [],
+    [annotations]
+  );
   // Where the Vector → nets traces come from: the cached whole-die sweep
   // payload (default — the point of the sweep) or the live viewport decodes.
   const [netsSource, setNetsSource] = useState<"whole-die" | "preview">("whole-die");
@@ -1780,7 +1794,8 @@ function VectorSection({
         dialog,
         outlines,
         userNetPolylines,
-        traceRegions
+        traceRegions,
+        traceBlockages
       );
       if (outcome && "error" in outcome) setErr(outcome.error);
     } catch (e) {

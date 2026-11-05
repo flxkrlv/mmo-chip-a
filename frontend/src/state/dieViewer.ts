@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import type { AnnotationRect, DieMLConfig } from "shared";
+import type { AnnotationRect, DieMLConfig, TraceRegion } from "shared";
 import type { AnnotationAction } from "../api/actions";
 import type { WireClipboard } from "../lib/wireClipboard";
 import type { PinClip } from "../lib/pinClipboard";
@@ -51,17 +51,15 @@ export type ToolKind =
   | "analogRect"
   | "analogPoly"
   | "traceRegionRect"
-  | "traceRegionPoly";
+  | "traceRegionPoly"
+  | "traceBlockage";
 
 /**
- * P2-2: a drawn area restricting what the vectorize overlay shows and
- * materializes ("trace region"). Coordinates are source/world px.
- * - `poly` is closed implicitly (even-odd semantics for bbox tests —
- *   culling is bbox-of-vertices against region bbox).
+ * P2-2: a committed vectorize trace region (now persisted per die in
+ * `annotations.traceRegions`, see shared/types `TraceRegion`). Kept as an
+ * alias so existing call sites keep working.
  */
-export type VectorTraceRegion =
-  | { id: string; kind: "rect"; x: number; y: number; width: number; height: number }
-  | { id: string; kind: "poly"; points: [number, number][] };
+export type VectorTraceRegion = TraceRegion;
 
 /**
  * Modes for `select`:
@@ -88,12 +86,6 @@ interface DieViewerState {
   /** Outline-tree sub-groups (e.g. cell types) currently expanded. Scoped to
    *  the current die session — not persisted because group ids are die-specific. */
   expandedGroups: string[];
-  /** Vectorize trace regions (P2-2): drawn rects/polygons restricting what
-   *  the vectorize overlay renders and "Vector → nets" materializes.
-   *  Session state keyed by die id (regions are in that die's source-px
-   *  coordinates), not annotations — survives die-viewer remounts in
-   *  `reset` like the undo history does. */
-  traceRegionsByDie: Record<string, VectorTraceRegion[]>;
   /** Tool currently selected in the sub-toolbar. */
   activeTool: ToolKind;
   /** Active analog layer for analogRect/analogPoly tools. */
@@ -180,9 +172,6 @@ interface DieViewerActions {
   select: (ids: Iterable<string>, mode?: SelectMode) => void;
   clearSelection: () => void;
   toggleGroup: (id: string) => void;
-  /** Add / remove a vectorize trace region for the die. */
-  addTraceRegion: (dieId: string, region: VectorTraceRegion) => void;
-  removeTraceRegion: (dieId: string, regionId: string) => void;
   setActiveTool: (tool: ToolKind) => void;
   setActiveAnalogLayer: (layer: AnalogLayerId) => void;
   pushUndo: (action: AnnotationAction) => void;
@@ -239,7 +228,6 @@ const EMPTY_SELECTION: ReadonlySet<string> = new Set();
 const INITIAL_STATE: DieViewerState = {
   selectedIds: EMPTY_SELECTION,
   expandedGroups: [],
-  traceRegionsByDie: {},
   activeTool: "select",
   activeAnalogLayer: "nwell",
   undoStack: [],
@@ -307,23 +295,6 @@ export const useDieViewerStore = create<DieViewerState & DieViewerActions>()((se
         ? state.expandedGroups.filter((g) => g !== id)
         : [...state.expandedGroups, id]
     })),
-  addTraceRegion: (dieId, region) =>
-    set((state) => ({
-      traceRegionsByDie: {
-        ...state.traceRegionsByDie,
-        [dieId]: [...(state.traceRegionsByDie[dieId] ?? []), region]
-      }
-    })),
-  removeTraceRegion: (dieId, regionId) => {
-    const list = get().traceRegionsByDie[dieId];
-    if (!list?.some((r) => r.id === regionId)) return;
-    set((state) => ({
-      traceRegionsByDie: {
-        ...state.traceRegionsByDie,
-        [dieId]: list.filter((r) => r.id !== regionId)
-      }
-    }));
-  },
   // Switching to any non-select tool drops the current selection, so the
   // user never has to Escape before starting to draw.
   setActiveTool: (tool) =>
@@ -441,17 +412,16 @@ export const useDieViewerStore = create<DieViewerState & DieViewerActions>()((se
   setPinClipboard: (pins) => set({ clipboardPins: pins }),
   setFloorplanClipboard: (regions) => set({ clipboardFloorplans: regions }),
 
-  // The undo history and the per-die vectorize trace regions are left alone:
-  // both are per die (undo — see ensureHistoryFor, regions — keyed by die in
-  // traceRegionsByDie), and the die viewer resets on every mount — coming
-  // back from Merge / RE cell must not lose what was done there.
+  // The undo history is left alone: it is per die (see ensureHistoryFor),
+  // and the die viewer resets on every mount — coming back from Merge /
+  // RE cell must not lose what was done there. Trace regions/blockages are
+  // persisted annotation collections now, so they need no special case.
   reset: () =>
     set((state) => ({
       ...INITIAL_STATE,
       undoStack: state.undoStack,
       redoStack: state.redoStack,
-      historyDieId: state.historyDieId,
-      traceRegionsByDie: state.traceRegionsByDie
+      historyDieId: state.historyDieId
     }))
 }));
 
@@ -461,15 +431,3 @@ function setsEqual(a: ReadonlySet<string>, b: ReadonlySet<string>): boolean {
   for (const id of a) if (!b.has(id)) return false;
   return true;
 }
-
-/** Select the die's vectorize trace regions (P2-2). The empty fallback is a
- *  STABLE module constant: zustand compares snapshots by identity, and a
- *  fresh `[]` per selector call used to loop React into "Maximum update
- *  depth exceeded" on any die without regions. */
-export function selectTraceRegions(dieId: string | null | undefined) {
-  return (state: { traceRegionsByDie: Record<string, VectorTraceRegion[]> }): VectorTraceRegion[] =>
-    (dieId ? state.traceRegionsByDie[dieId] : undefined) ?? NO_TRACE_REGIONS;
-}
-
-/** Shared empty list — never mutated, safe to return from selectors. */
-const NO_TRACE_REGIONS: VectorTraceRegion[] = [];

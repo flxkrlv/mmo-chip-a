@@ -3,6 +3,7 @@ import type { Point } from "../../lib/geometry";
 import { isTypingTarget } from "../../lib/keyboard";
 import { useDieViewerStore, type ToolKind } from "../../state/dieViewer";
 import { uuid } from "../../lib/uuid";
+import type { ActionDispatcher } from "../../api/actions";
 
 export interface TraceRegionPolyTool {
   /** Committed-so-far polygon points (drives the draft overlay). */
@@ -18,22 +19,23 @@ export interface TraceRegionPolyTool {
 /**
  * The "trace region polygon" tool (P2-2): click to drop vertices, Enter to
  * confirm (≥3), Esc to abort. Same transient draft discipline as the via
- * polygon tool, but the result is SESSION state (dieViewer store), not an
- * annotation action — regions are a viewport aid with network semantics,
- * there is nothing to undo against the annotation history.
+ * polygon tool; the result is a persisted `upsertTraceRegion` annotation
+ * action (undoable), not session state.
  */
 export function useTraceRegionPolyTool(opts: {
   dieId: string | null;
+  dispatcher: ActionDispatcher;
   activeTool: ToolKind;
   setActiveTool: (tool: ToolKind) => void;
 }): TraceRegionPolyTool {
-  const { dieId, activeTool, setActiveTool } = opts;
+  const { dieId, dispatcher, activeTool, setActiveTool } = opts;
   const [points, setPoints] = useState<Point[]>([]);
   const pointsRef = useRef(points);
   pointsRef.current = points;
   const redoRef = useRef<Point[]>([]);
+  const dispatcherRef = useRef(dispatcher);
+  dispatcherRef.current = dispatcher;
   const setUndoOverride = useDieViewerStore((s) => s.setUndoOverride);
-  const addTraceRegion = useDieViewerStore((s) => s.addTraceRegion);
 
   const addPoint = useCallback((world: Point) => {
     redoRef.current = [];
@@ -57,16 +59,20 @@ export function useTraceRegionPolyTool(opts: {
   const commit = useCallback(() => {
     const pts = pointsRef.current;
     if (dieId && pts.length >= 3) {
-      addTraceRegion(dieId, {
+      const region = {
         id: uuid(),
-        kind: "poly",
+        kind: "poly" as const,
         points: pts.map((p) => [p.x, p.y] as [number, number])
-      });
-      setActiveTool("select");
+      };
+      void dispatcherRef.current.dispatch({
+        kind: "upsertTraceRegion",
+        region,
+        prevRegion: null
+      }).then(() => setActiveTool("select"));
     }
     redoRef.current = [];
     setPoints([]);
-  }, [addTraceRegion, dieId, setActiveTool]);
+  }, [dieId, setActiveTool]);
 
   const cancel = useCallback(() => {
     redoRef.current = [];

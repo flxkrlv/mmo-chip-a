@@ -1,6 +1,6 @@
 import type { DieMetadata, MLTracePolyline, VectorizeParams } from "shared";
 import { rectsIntersect, type Point, type Rect } from "../../lib/geometry";
-import { traceRegionBox, type TraceRegionLike } from "../../components/dieViewer/userNetFilter";
+import { polylineEntersRect, traceRegionBox, type TraceRegionLike } from "../../components/dieViewer/userNetFilter";
 import { fetchVectorBlocks, fetchVectorLayerBlocks, vectorizeRegion } from "../../api/ml";
 import type { Layer, RenderFrame, TileBounds } from "../types";
 
@@ -55,6 +55,9 @@ export interface VectorizeDisplay {
    *  where they touch at least one region (materialization applies the same
    *  filter in the Inspector). Empty ⇒ whole die. */
   getTraceRegions?: () => TraceRegionLike[];
+  /** Trace blockages: no traces/outlines render inside them even when they
+   *  sit inside a region (blockages win). Applied independently of regions. */
+  getTraceBlockages?: () => { x: number; y: number; width: number; height: number }[];
   /** Status for the inspector: loading flag, last error, region trace count,
    *  and the last decode's width-filter drop stats. */
   onStatusChange?: (status: {
@@ -314,6 +317,10 @@ export class VectorizeLayer implements Layer {
     return regions.map((r) => traceRegionBox(r));
   }
 
+  private traceBlockageRects(): Rect[] {
+    return this.display.getTraceBlockages?.() ?? [];
+  }
+
   private static inAnyRegion(box: Rect, regions: Rect[]): boolean {
     if (regions.length === 0) return true;
     for (const r of regions) {
@@ -327,6 +334,19 @@ export class VectorizeLayer implements Layer {
       }
     }
     return false;
+  }
+
+  /** Blockage cull: the shape's ACTUAL centreline entering a blockage must
+   *  not render — blockages take priority over trace regions (and apply
+   *  even when there are no regions at all). Bbox tests would wrongly eat
+   *  neighbouring traces whose bbox merely spans the blockage (a diagonal
+   *  trace passing beside it never enters), so this is a geometric test
+   *  guarded by a per-blockage bbox reject. */
+  private static inNoBlockage(points: [number, number][], blockages: Rect[]): boolean {
+    for (const b of blockages) {
+      if (polylineEntersRect(points, b)) return false;
+    }
+    return true;
   }
 
   /** Saved layers list from the outline tree (Vector layers): pinned, eye
@@ -728,8 +748,9 @@ export class VectorizeLayer implements Layer {
     const strokeW = 1 / zoom;
     const minScore = this.display.getTraceConfidenceThreshold?.() ?? 0;
     const snapTol = this.display.getSnapTol?.() ?? 12;
-    // P2-2: trace regions restrict what renders at all.
+    // P2-2: trace regions restrict what renders at all; blockages cut holes.
     const regionRects = this.traceRegionRects();
+    const blockageRects = this.traceBlockageRects();
     // Outline opacity (user slider): fill takes α, the edge stroke reads
     // slightly stronger so the contour line stays defined even at low α.
     const outlineAlpha = Math.min(1, Math.max(0, this.display.getOutlineAlpha?.() ?? 0.3));
@@ -748,6 +769,7 @@ export class VectorizeLayer implements Layer {
         if (!rectsIntersect(box, world)) continue;
         if (!VectorizeLayer.inAnyRegion(box, regionRects)) continue;
         const pts = region.outlines[index];
+        if (!VectorizeLayer.inNoBlockage(pts, blockageRects)) continue;
         if (pts.length < 3) continue;
         const path = (region.outlinePaths[index] ??= buildPath(pts, true));
         // The fill is the rasterization hog (hundreds of large polygons per
@@ -766,6 +788,7 @@ export class VectorizeLayer implements Layer {
         if (!rectsIntersect(box, world)) continue;
         if (!VectorizeLayer.inAnyRegion(box, regionRects)) continue;
         const t = region.traces[index];
+        if (!VectorizeLayer.inNoBlockage(t.points, blockageRects)) continue;
         if ((t.score ?? 1) < minScore) continue;
         const pts = t.points;
         if (pts.length < 2) continue;
@@ -816,9 +839,11 @@ export class VectorizeLayer implements Layer {
     const snapTol = this.display.getSnapTol?.() ?? 12;
     const strokeW = 1 / zoom;
     const outlineAlpha = Math.min(1, Math.max(0, this.display.getOutlineAlpha?.() ?? 0.3));
-    // P2-2: with trace regions active the pre-baked die-sized bitmaps can't
-    // be culled per shape — fall back to the vector path, which can.
+    // P2-2: with trace regions (or blockages) active the pre-baked die-sized
+    // bitmaps can't be culled per shape — fall back to the vector path,
+    // which can.
     const regionRects = this.traceRegionRects();
+    const blockageRects = this.traceBlockageRects();
     for (const [hash, pin] of this.pinned) {
       if (this.savedHiddenSet.has(hash)) {
         // Free the (large) bitmaps of a hidden layer — they are rebuilt from
@@ -831,7 +856,7 @@ export class VectorizeLayer implements Layer {
       const [r, g, b] = hexToRgb(pin.color) ?? hexToRgb(VECT_LAYER_DEFAULT_COLOR)!;
       const outlineFill = `rgba(${r}, ${g}, ${b}, ${outlineAlpha.toFixed(3)})`;
       const outlineEdge = `rgba(${r}, ${g}, ${b}, ${Math.min(1, outlineAlpha * 1.6).toFixed(3)})`;
-      if (zoom < SAVED_BITMAP_MAX_ZOOM && regionRects.length === 0) {
+      if (zoom < SAVED_BITMAP_MAX_ZOOM && regionRects.length === 0 && blockageRects.length === 0) {
         const ob = this.ensureOutlineBitmap(pin);
         const tb = this.ensureTraceBitmap(pin);
         if (ob && tb) {
@@ -874,6 +899,7 @@ export class VectorizeLayer implements Layer {
         if (!rectsIntersect(box, world)) continue;
         if (!VectorizeLayer.inAnyRegion(box, regionRects)) continue;
         const t = pin.traces[index];
+        if (!VectorizeLayer.inNoBlockage(t.points, blockageRects)) continue;
         if ((t.score ?? 1) < minScore) continue;
         const pts = t.points;
         if (pts.length < 2) continue;
@@ -888,6 +914,7 @@ export class VectorizeLayer implements Layer {
         if (!rectsIntersect(box, world)) continue;
         if (!VectorizeLayer.inAnyRegion(box, regionRects)) continue;
         const pts = pin.outlines[index];
+        if (!VectorizeLayer.inNoBlockage(pts, blockageRects)) continue;
         if (pts.length < 3) continue;
         const path = (pin.outlinePaths[index] ??= buildPath(pts, true));
         if (zoom < OUTLINE_FILL_MAX_ZOOM) {

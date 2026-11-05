@@ -746,6 +746,31 @@ export interface IgnoreRect {
   height: number;
 }
 
+/** Vectorize trace region: traces are rendered + materialized only inside
+ *  region(s). `kind:"rect"` uses the x/y/width/height fields, `kind:"poly"`
+ *  uses the (implicitly closed) `points` vertex list. Coordinates are the
+ *  die's source px. */
+export interface TraceRegion {
+  id: string;
+  kind: "rect" | "poly";
+  x?: number;
+  y?: number;
+  width?: number;
+  height?: number;
+  points?: [number, number][];
+}
+
+/** Vectorize trace blockage: the inverse of a trace region — no traces are
+ *  rendered or materialized inside it, even when it sits inside a region
+ *  (blockage wins). A source-px rectangle, like `IgnoreRect`. */
+export interface TraceBlockage {
+  id: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
 export interface DieMLConfig {
   /** Via radius in source px → Gaussian sigma = radius * 0.5. Chip-global. */
   pointViaSize: number;
@@ -844,6 +869,12 @@ export interface DieAnnotations {
   annotations?: HumanAnnotation[];
   rois?: ROIRectangle[];
   ignores?: IgnoreRect[];
+  /** Vectorize trace regions (rects/polygons) — traces render + materialize
+   *  only inside them. Absent ⇒ whole die. */
+  traceRegions?: TraceRegion[];
+  /** Vectorize trace blockages — no traces render/materialize inside them
+   *  (they take priority over regions). Absent ⇒ none. */
+  traceBlockages?: TraceBlockage[];
   /** Cell-placement guides (RE aid, not ML). Absent ⇒ none. */
   guides?: Guide[];
   /** Die-level analog/mixed-signal layer annotations (Phase 1).

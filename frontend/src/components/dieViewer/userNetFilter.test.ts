@@ -3,6 +3,7 @@ import {
   filterTracesByUserNets,
   filterTracesByRegions,
   traceRegionBox,
+  polylineEntersRect,
   collectUserNetPolylines,
   USER_NET_DEFAULT_TOL
 } from "./userNetFilter";
@@ -172,5 +173,52 @@ describe("filterTracesByUserNets", () => {
     expect(r.traces).toBe(traces);
     expect(r.outlines).toBe(outlines);
     expect(r.droppedOutsideRegion).toBe(0);
+  });
+
+  // Regression: the blockage used to cull on per-trace BBOX overlap, so a
+  // chain whose bbox merely SPANS the blockage (an L-shaped trace that bends
+  // around it — exactly what the decoder emits) was dropped although its
+  // centreline never entered the rect.
+  it("blockage drops only traces whose geometry actually enters it", () => {
+    const blockage = { x: 100, y: 100, width: 50, height: 50 };
+    const traces = [
+      t([[110, 110], [130, 130]]), // inside → dropped
+      t([[50, 125], [200, 125]]), // straight through the middle → dropped
+      t([[0, 50], [80, 50], [80, 160], [200, 160]]), // L-shaped, bends around; bbox spans the blockage → kept
+      t([[10, 10], [90, 90]]) // far away → kept
+    ];
+    const r = filterTracesByRegions(traces, [], [], [blockage]);
+    expect(r.traces.map((x) => x.points)).toEqual([
+      [[0, 50], [80, 50], [80, 160], [200, 160]],
+      [[10, 10], [90, 90]]
+    ]);
+    expect(r.droppedInBlockage).toBe(2);
+    expect(r.droppedOutsideRegion).toBe(0);
+  });
+
+  it("blockage wins over a region that contains it", () => {
+    const traces = [
+      t([[110, 110], [130, 130]]), // inside the blockage, inside the region
+      t([[10, 10], [50, 50]]) // in the region, outside the blockage
+    ];
+    const r = filterTracesByRegions(
+      traces,
+      [],
+      [{ kind: "rect", x: 0, y: 0, width: 300, height: 300 }],
+      [{ x: 100, y: 100, width: 50, height: 50 }]
+    );
+    expect(r.traces).toHaveLength(1);
+    expect(r.traces[0].points).toEqual([[10, 10], [50, 50]]);
+    expect(r.droppedInBlockage).toBe(1);
+  });
+
+  it("polylineEntersRect distinguishes entering from bbox-spanning", () => {
+    const r = { x: 100, y: 100, width: 50, height: 50 };
+    expect(polylineEntersRect([[120, 120]], r)).toBe(true); // vertex inside
+    expect(polylineEntersRect([[0, 125], [200, 125]], r)).toBe(true); // crosses
+    expect(polylineEntersRect([[0, 50], [80, 50], [80, 160], [200, 160]], r)).toBe(false); // L-shape; bbox spans
+    expect(polylineEntersRect([[0, 99], [200, 99]], r)).toBe(false); // below the rect
+    expect(polylineEntersRect([[101, 100], [101, 160]], r)).toBe(true); // rides the left edge in and out
+    expect(polylineEntersRect([], r)).toBe(false);
   });
 });

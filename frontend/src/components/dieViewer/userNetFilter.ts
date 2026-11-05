@@ -271,10 +271,11 @@ export function collectUserNetPolylines(
   return out;
 }
 
-// ── P2-2: trace regions ─────────────────────────────────────────────
+// ── P2-2: trace regions + blockages ─────────────────────────────────
 
 export interface TraceRegionLike {
   kind: "rect" | "poly";
+  id?: string;
   x?: number;
   y?: number;
   width?: number;
@@ -304,30 +305,99 @@ function rectsIntersectBox(
   );
 }
 
-/** Keep only traces / outlines that touch at least ONE region. When no
- *  regions exist the input passes through unchanged — "whole die". Runs
- *  BEFORE the hand-drawn-nets filter (P2-1) in the materialize pipeline. */
+/** Does an axis-aligned segment pair (a→b) cross the rect's interior? An
+ *  endpoint fully INSIDE is also a hit; a segment that merely skirts the
+ *  edge (T-touch) is not. Cheap AABB precheck per segment. */
+function segEntersRect(a: Pt, b: Pt, r: { x: number; y: number; width: number; height: number }): boolean {
+  // AABB of the segment vs the rect — rejects most segments in one test.
+  if (Math.max(a[0], b[0]) < r.x || Math.min(a[0], b[0]) > r.x + r.width) return false;
+  if (Math.max(a[1], b[1]) < r.y || Math.min(a[1], b[1]) > r.y + r.height) return false;
+  const inside = (p: Pt) =>
+    p[0] > r.x && p[0] < r.x + r.width && p[1] > r.y && p[1] < r.y + r.height;
+  if (inside(a) || inside(b)) return true;
+  const c0: Pt = [r.x, r.y];
+  const c1: Pt = [r.x + r.width, r.y];
+  const c2: Pt = [r.x + r.width, r.y + r.height];
+  const c3: Pt = [r.x, r.y + r.height];
+  return (
+    segsIntersect(a, b, c0, c1) ||
+    segsIntersect(a, b, c1, c2) ||
+    segsIntersect(a, b, c2, c3) ||
+    segsIntersect(a, b, c3, c0)
+  );
+}
+
+/**
+ * Does the polyline ACTUALLY enter the rect — a vertex strictly inside, or
+ * any segment crossing the interior? Bbox-only tests wrongly cull traces
+ * that merely pass NEAR the rect (a diagonal trace's bbox spans it without
+ * the centreline getting close) — the "blockage eats neighbouring traces"
+ * bug. Bbox reject keeps the common miss case O(1) for the draw loop.
+ */
+export function polylineEntersRect(
+  points: Pt[],
+  r: { x: number; y: number; width: number; height: number }
+): boolean {
+  if (points.length === 0) return false;
+  const [x0, y0, x1, y1] = bboxOf(points);
+  if (x1 < r.x || x0 > r.x + r.width || y1 < r.y || y0 > r.y + r.height) return false;
+  for (const p of points) {
+    if (p[0] > r.x && p[0] < r.x + r.width && p[1] > r.y && p[1] < r.y + r.height) return true;
+  }
+  for (let i = 0; i < points.length - 1; i++) {
+    if (segEntersRect(points[i], points[i + 1], r)) return true;
+  }
+  return false;
+}
+
+/** Keep only traces / outlines that touch at least ONE region, then drop
+ *  everything inside a blockage (blockages win over regions — a trace in a
+ *  blockage must not materialize even when the blockage sits inside a
+ *  region). When no regions AND no blockages exist the input passes through
+ *  unchanged — "whole die". Runs BEFORE the hand-drawn-nets filter (P2-1)
+ *  in the materialize pipeline. */
 export function filterTracesByRegions(
   traces: MLTracePolyline[],
   outlines: [number, number][][],
-  regions: TraceRegionLike[]
+  regions: TraceRegionLike[],
+  blockages: { x: number; y: number; width: number; height: number }[] = []
 ): {
   traces: MLTracePolyline[];
   outlines: [number, number][][];
   droppedOutsideRegion: number;
+  droppedInBlockage: number;
 } {
-  if (regions.length === 0) return { traces, outlines, droppedOutsideRegion: 0 };
+  if (regions.length === 0 && blockages.length === 0) {
+    return { traces, outlines, droppedOutsideRegion: 0, droppedInBlockage: 0 };
+  }
   const boxes = regions.map(traceRegionBox);
-  const inRegion = (pts: [number, number][]) => {
-    const [x0, y0, x1, y1] = bboxOf(pts);
-    const box = { x: x0, y: y0, width: x1 - x0, height: y1 - y0 };
-    return boxes.some((r) => rectsIntersectBox(box, r));
+  const classify = (pts: [number, number][]): "keep" | "outside" | "blockage" => {
+    if (blockages.length > 0) {
+      for (const b of blockages) {
+        // Precise geometry, not the bbox: a trace whose bbox merely spans a
+        // blockage never entered it and must stay.
+        if (polylineEntersRect(pts, b)) return "blockage";
+      }
+    }
+    if (boxes.length > 0) {
+      const [x0, y0, x1, y1] = bboxOf(pts);
+      const box = { x: x0, y: y0, width: x1 - x0, height: y1 - y0 };
+      if (!boxes.some((r) => rectsIntersectBox(box, r))) return "outside";
+    }
+    return "keep";
   };
-  const tracesKept = traces.filter((t) => inRegion(t.points));
-  const outlinesKept = outlines.filter((o) => inRegion(o));
+  const tracesKept: MLTracePolyline[] = [];
+  let droppedInBlockage = 0;
+  for (const t of traces) {
+    const verdict = classify(t.points);
+    if (verdict === "keep") tracesKept.push(t);
+    else if (verdict === "blockage") droppedInBlockage++;
+  }
+  const outlinesKept = outlines.filter((o) => classify(o) === "keep");
   return {
     traces: tracesKept,
     outlines: outlinesKept,
-    droppedOutsideRegion: traces.length - tracesKept.length
+    droppedOutsideRegion: traces.length - tracesKept.length - droppedInBlockage,
+    droppedInBlockage
   };
 }

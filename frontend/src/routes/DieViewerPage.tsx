@@ -989,8 +989,9 @@ function DieViewer({ dieId }: { dieId: string }) {
             getSamples: () => useDieViewerStore.getState().vectorSamples,
             // P2-3: the die's vectorize trace regions restrict rendering
             // (and, via the Inspector, materialization) to those areas.
-            getTraceRegions: () =>
-              useDieViewerStore.getState().traceRegionsByDie[die.id] ?? [],
+            // Blockages cut holes out of those regions.
+            getTraceRegions: () => annotationsRef.current?.traceRegions ?? [],
+            getTraceBlockages: () => annotationsRef.current?.traceBlockages ?? [],
             onStatusChange: (status) =>
               useDieViewerStore.getState().setVectorStatus(status)
           })
@@ -1003,9 +1004,12 @@ function DieViewer({ dieId }: { dieId: string }) {
     };
   }, [vectorLayer]);
 
-  // Trace regions changed → repaint (region culling happens per draw).
-  const traceRegionsChanged = useDieViewerStore(
-    (s) => (die ? (s.traceRegionsByDie[die.id]?.length ?? 0) : 0)
+  // Trace regions/blockages changed → repaint the vector layer (their culling
+  // happens per draw, so no canvas-tile bumps are needed; a stable signature
+  // keeps unrelated annotation edits from needlessly invalidating the layer).
+  const traceShapesSig = useMemo(
+    () => JSON.stringify([annotations?.traceRegions ?? [], annotations?.traceBlockages ?? []]),
+    [annotations]
   );
   // P2-3 preview toggle is a PREFERENCE (persisted) — a transient store
   // flag silently switched itself off on every reload / restart.
@@ -1030,7 +1034,7 @@ function DieViewer({ dieId }: { dieId: string }) {
   });
   useEffect(() => {
     vectorLayer?.refresh();
-  }, [traceRegionsChanged, vectorLayer]);
+  }, [traceShapesSig, vectorLayer]);
 
   // Vector Layers (saved whole-die payloads): fetch the die's list, keep it
   // in the store for the outline tree, and sync visibility into the layer.
@@ -1346,11 +1350,17 @@ function DieViewer({ dieId }: { dieId: string }) {
   }, []);
 
   const hiddenKinds = usePreferences((s) => s.hiddenKinds);
+  // Trace region/blockage contours default OFF (de-cluttered die) — they're
+  // organized under their own persisted preference, not `hiddenKinds`.
+  const traceShapesVisible = usePreferences((s) => s.traceShapesVisible);
   useEffect(() => {
     if (!annotationLayer) return;
-    const visible = ANNOTATION_KIND_VALUES.filter((k) => !hiddenKinds.includes(k));
+    const TRACE_KINDS = new Set(["traceRegion", "traceBlockage"]);
+    const visible = ANNOTATION_KIND_VALUES.filter(
+      (k) => !hiddenKinds.includes(k) && (!TRACE_KINDS.has(k) || traceShapesVisible)
+    );
     annotationLayer.setVisibleKinds(new Set(visible));
-  }, [annotationLayer, hiddenKinds]);
+  }, [annotationLayer, hiddenKinds, traceShapesVisible]);
 
   // Individually-hidden nets and cell types — layered on top of the "net"/
   // "cell" kinds' all-or-nothing toggles above. Cell types aren't their own
@@ -2058,6 +2068,7 @@ function DieViewer({ dieId }: { dieId: string }) {
    *  poly tool commits into the per-die record. */
   const regionPoly = useTraceRegionPolyTool({
     dieId: die?.id ?? null,
+    dispatcher,
     activeTool,
     setActiveTool
   });
@@ -2305,25 +2316,26 @@ function DieViewer({ dieId }: { dieId: string }) {
   // Commit a rubber-band rectangle from the via-rect / ROI / ignore tools
   // (rounded, normalized, min-size-guarded). One undoable upsert each.
   const commitDrawnRect = useCallback(
-    (toolKind: "viaRect" | "roi" | "ignore" | "traceRegionRect", r: Rect) => {
+    (toolKind: "viaRect" | "roi" | "ignore" | "traceRegionRect" | "traceBlockage", r: Rect) => {
       const x = Math.round(Math.min(r.x, r.x + r.width));
       const y = Math.round(Math.min(r.y, r.y + r.height));
       const width = Math.round(Math.abs(r.width));
       const height = Math.round(Math.abs(r.height));
       if (width < 1 || height < 1) return;
       if (toolKind === "traceRegionRect") {
-        // P2-2 regions are session state, not annotation actions — no undo.
-        const dieId = die?.id;
-        if (dieId) {
-          useDieViewerStore.getState().addTraceRegion(dieId, {
-            id: uuid(),
-            kind: "rect",
-            x,
-            y,
-            width,
-            height
-          });
-        }
+        void dispatcher.dispatch({
+          kind: "upsertTraceRegion",
+          region: { id: uuid(), kind: "rect", x, y, width, height },
+          prevRegion: null
+        });
+        return;
+      }
+      if (toolKind === "traceBlockage") {
+        void dispatcher.dispatch({
+          kind: "upsertTraceBlockage",
+          blockage: { id: uuid(), x, y, width, height },
+          prevBlockage: null
+        });
         return;
       }
       const id = uuid();
@@ -2869,7 +2881,7 @@ function DieViewer({ dieId }: { dieId: string }) {
       // Via-rect / ROI / ignore / vectorize trace-region: rubber-band a
       // rectangle, commit on release (no Enter). Shares `shapeRectLive` +
       // a generic overlay.
-      if (tool === "viaRect" || tool === "roi" || tool === "ignore" || tool === "traceRegionRect") {
+      if (tool === "viaRect" || tool === "roi" || tool === "ignore" || tool === "traceRegionRect" || tool === "traceBlockage") {
         const origin = { x: e.worldPoint.x, y: e.worldPoint.y };
         // ROIs are always square (ML crops are square); the others are free.
         const rectFor = (wp: Point) =>
@@ -4705,6 +4717,14 @@ function DieViewer({ dieId }: { dieId: string }) {
                 if (ct) void dispatcher.dispatch({ kind: "upsertCellType", cellType: { ...ct, color }, prevCellType: ct });
               }}
               foreignTypeOwners={foreignTypeOwners}
+              onDeleteTraceRegion={(region) => {
+                const cur = annotations?.traceRegions?.find((r) => r.id === region.id);
+                if (cur) void dispatcher.dispatch({ kind: "removeTraceRegion", region: cur });
+              }}
+              onDeleteTraceBlockage={(blockage) => {
+                const cur = annotations?.traceBlockages?.find((b) => b.id === blockage.id);
+                if (cur) void dispatcher.dispatch({ kind: "removeTraceBlockage", blockage: cur });
+              }}
             />
           </aside>
         )}
@@ -4788,11 +4808,9 @@ function DieViewer({ dieId }: { dieId: string }) {
             color={
               activeTool === "roi"
                 ? "#f5d68a"
-                : activeTool === "ignore"
+                : activeTool === "ignore" || activeTool === "traceBlockage"
                   ? "#e36854"
-                  : activeTool === "traceRegionRect"
-                    ? "#7ec8f0"
-                    : "#82d6a6"
+                  : "#7ec8f0"
             }
           />
           <PolyDraftOverlay

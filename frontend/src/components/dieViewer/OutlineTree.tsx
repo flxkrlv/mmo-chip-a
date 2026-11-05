@@ -31,7 +31,7 @@ import {
   ANNOTATION_KIND_VALUES,
   type AnnotationKind
 } from "../../state/annotationKinds";
-import { useDieViewerStore, type VectorTraceRegion } from "../../state/dieViewer";
+import { useDieViewerStore } from "../../state/dieViewer";
 import { usePreferences, selectNetWidth } from "../../state/preferences";
 import { TreeRow, TreeSep } from "../tree/TreeRow";
 import { NetColorPickerBody } from "./NetColorPickerBody";
@@ -64,6 +64,10 @@ type Props = {
   /** Cell types owned by another die of the cell library ⇒ that die's
    *  name (badged in the cell list). */
   foreignTypeOwners?: ReadonlyMap<string, string>;
+  /** Delete a vectorize trace region (undoable, via the page's dispatcher). */
+  onDeleteTraceRegion?: (region: { id: string }) => void;
+  /** Delete a vectorize trace blockage (undoable, via the page's dispatcher). */
+  onDeleteTraceBlockage?: (blockage: { id: string }) => void;
 };
 
 /** Session-group key for the "ML Regions" parent (it spans two annotation
@@ -89,9 +93,8 @@ const OVERLAY_LAYERS_KEY = "overlay-layers";
 const VECTOR_LAYERS_KEY = "vector-layers";
 /** Outline-tree group key for the P2-2 vectorize trace regions. */
 const TRACE_REGIONS_KEY = "vector-trace-regions";
-const EMPTY_TRACE_REGIONS: VectorTraceRegion[] = [];
 
-export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabels, onDeviceSelect, onOpenInRE, searchOpenRef, onSetCellTypeColor, foreignTypeOwners }: Props) {
+export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabels, onDeviceSelect, onOpenInRE, searchOpenRef, onSetCellTypeColor, foreignTypeOwners, onDeleteTraceRegion, onDeleteTraceBlockage }: Props) {
   const toast = useToast();
   const dialog = useDialog();
   const expandedSections = usePreferences((s) => s.expandedSections);
@@ -213,11 +216,19 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
   const matchCell = useCallback((name: string) => !q || name.toLowerCase().includes(q), [q]);
 
   const dieId = useSession((s) => s.dieId);
-  // P2-2: the die's vectorize trace regions + their list management.
-  const traceRegions = useDieViewerStore((s) =>
-    dieId ? (s.traceRegionsByDie[dieId] ?? EMPTY_TRACE_REGIONS) : EMPTY_TRACE_REGIONS
+  // P2-2: the die's vectorize trace regions + blockages (persisted in the
+  // annotations blob) + their list management. Deletes route through the
+  // page's action dispatcher (prop) so they land on the undo stack.
+  const traceRegions = useMemo(
+    () => (annotations?.traceRegions ?? []).map((r) => r),
+    [annotations]
   );
-  const removeTraceRegion = useDieViewerStore((s) => s.removeTraceRegion);
+  const traceBlockages = useMemo(
+    () => (annotations?.traceBlockages ?? []).map((b) => b),
+    [annotations]
+  );
+  const traceShapesVisible = usePreferences((s) => s.traceShapesVisible);
+  const setTraceShapesVisible = usePreferences((s) => s.setTraceShapesVisible);
   const [uploadingLegacy, setUploadingLegacy] = useState(false);
   const onLocalFilePick = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -1222,12 +1233,18 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
 
       <TreeSep />
 
-      {/* Vectorize trace regions (P2-2) — drawn rects/polygons restricting
-          what the vectorize overlay renders and "Vector → nets" materializes. */}
+      {/* Vectorize trace regions + blockages (P2-2) — drawn rects/polygons
+          restricting what the vectorize overlay renders and "Vector → nets"
+          materializes. The eye toggles WHETHER the committed contours render
+          on the die (persisted, default off). */}
       <TreeRow
         expand={expandedGroups.includes(TRACE_REGIONS_KEY) ? "open" : "closed"}
         label="Trace Regions"
-        meta={traceRegions.length}
+        meta={traceRegions.length + traceBlockages.length}
+        visibility={{
+          visible: traceShapesVisible,
+          onToggle: () => setTraceShapesVisible(!traceShapesVisible)
+        }}
         onToggleExpand={() => toggleGroup(TRACE_REGIONS_KEY)}
         onSelect={() => toggleGroup(TRACE_REGIONS_KEY)}
       />
@@ -1241,8 +1258,8 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
               <span style={{ display: "inline-flex", gap: 6, alignItems: "center", minWidth: 0 }}>
                 <span style={{ fontSize: 10, overflow: "hidden", textOverflow: "ellipsis" }}>
                   {region.kind === "rect"
-                    ? `rect (x≈${region.x}, y≈${region.y}) ${region.width}×${region.height}`
-                    : `poly · ${region.points.length} pts`}
+                    ? `rect (x≈${region.x ?? 0}, y≈${region.y ?? 0}) ${region.width ?? 0}×${region.height ?? 0}`
+                    : `poly · ${region.points?.length ?? 0} pts`}
                 </span>
                 <span
                   style={{ display: "inline-flex", marginLeft: 2 }}
@@ -1261,16 +1278,61 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
                       border: "1px solid var(--l1, #333)",
                       borderRadius: 3
                     }}
-                    onClick={() => dieId && removeTraceRegion(dieId, region.id)}
+                    onClick={() => onDeleteTraceRegion?.(region)}
                   >
                     🗑
                   </button>
                 </span>
               </span>
             }
+            selected={selectedIds.has(`traceRegion:${region.id}`)}
+            onSelect={() => select([`traceRegion:${region.id}`])}
+            onDoubleClick={() => focus([`traceRegion:${region.id}`])}
           />
         ))}
-      {expandedGroups.includes(TRACE_REGIONS_KEY) && traceRegions.length === 0 && (
+      {expandedGroups.includes(TRACE_REGIONS_KEY) &&
+        traceBlockages.map((blockage) => (
+          <TreeRow
+            key={blockage.id}
+            depth={1}
+            icon={Ic.mlExclude}
+            label={
+              <span style={{ display: "inline-flex", gap: 6, alignItems: "center", minWidth: 0 }}>
+                <span style={{ fontSize: 10, overflow: "hidden", textOverflow: "ellipsis" }}>
+                  blockage (x≈{blockage.x}, y≈{blockage.y}) {blockage.width}×{blockage.height}
+                </span>
+                <span
+                  style={{ display: "inline-flex", marginLeft: 2 }}
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  <button
+                    type="button"
+                    title="Delete trace blockage"
+                    style={{
+                      fontSize: 9,
+                      lineHeight: 1,
+                      padding: "1px 3px",
+                      cursor: "pointer",
+                      background: "transparent",
+                      color: "var(--ink2)",
+                      border: "1px solid var(--l1, #333)",
+                      borderRadius: 3
+                    }}
+                    onClick={() => onDeleteTraceBlockage?.(blockage)}
+                  >
+                    🗑
+                  </button>
+                </span>
+              </span>
+            }
+            selected={selectedIds.has(`traceBlockage:${blockage.id}`)}
+            onSelect={() => select([`traceBlockage:${blockage.id}`])}
+            onDoubleClick={() => focus([`traceBlockage:${blockage.id}`])}
+          />
+        ))}
+      {expandedGroups.includes(TRACE_REGIONS_KEY) &&
+        traceRegions.length === 0 &&
+        traceBlockages.length === 0 && (
         <div
           style={{
             padding: "6px 10px 6px 20px",
