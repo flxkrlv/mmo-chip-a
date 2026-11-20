@@ -59,6 +59,22 @@ export function RnlSchematicPanel({
   onOpenSchematic,
 }: Props) {
   const frameRef = useRef<HTMLIFrameElement | null>(null);
+  const fullViewerRef = useRef<{
+    window: Window;
+    token: string;
+    ready: boolean;
+  } | null>(null);
+  const textRef = useRef(text);
+  textRef.current = text;
+  const moduleRef = useRef(moduleName);
+  moduleRef.current = moduleName;
+  /** WebCrypto (package SHA-256) exists only in a secure context. A page
+   *  served over HTTP on a LAN address makes the embedded viewer's
+   *  `crypto.subtle` undefined, so the full HTTPS viewer is the fallback. */
+  const secure = useMemo(
+    () => typeof window === "undefined" || window.isSecureContext,
+    [],
+  );
   const [ready, setReady] = useState(false);
   const viewerUrl = useMemo(() => {
     const url = new URL(VIEWER_URL);
@@ -95,13 +111,61 @@ export function RnlSchematicPanel({
     [moduleName],
   );
 
+  const payloadFor = useCallback(
+    (value: string) => ({
+      rnl: 1,
+      type: "open",
+      name: `${moduleRef.current}.sp`,
+      text: value,
+      requestId: `rnl-${Date.now().toString(36)}`,
+      packages: [{ name: PACKAGE_NAME, version: packageVersion(value) }],
+    }),
+    [],
+  );
+
+  /** Open the complete (not canvas-only) viewer in a top-level HTTPS tab. */
+  const openFullViewer = useCallback(() => {
+    const existing = fullViewerRef.current;
+    if (existing && !existing.window.closed) {
+      existing.window.focus();
+      if (existing.ready)
+        existing.window.postMessage(payloadFor(textRef.current), VIEWER_ORIGIN);
+      return;
+    }
+    // Math.random, not crypto.randomUUID: the correlation token must also
+    // exist on an insecure page, where crypto.randomUUID is unavailable.
+    const token = `rnl-${Date.now().toString(36)}-${Math.random()
+      .toString(36)
+      .slice(2, 10)}`;
+    const url = new URL(`${VIEWER_ORIGIN}/rnl/viewer/`);
+    url.searchParams.set("api", "1");
+    url.searchParams.set("origin", window.location.origin);
+    url.searchParams.set("token", token);
+    const viewer = window.open(url.toString(), "rnl-viewer");
+    if (!viewer) {
+      setViewerError("Allow pop-ups to open the full RNL viewer.");
+      return;
+    }
+    fullViewerRef.current = { window: viewer, token, ready: false };
+  }, [payloadFor]);
+
   useEffect(() => {
-    const onMessage = (event: MessageEvent<ViewerMessage>) => {
+    const onMessage = (event: MessageEvent<ViewerMessage & { token?: string }>) => {
       if (event.origin !== VIEWER_ORIGIN) return;
-      if (event.source !== frameRef.current?.contentWindow) return;
       if (event.data?.rnl !== 1) return;
+      const full = fullViewerRef.current;
+      const fromFullViewer = full && event.source === full.window;
+      const fromFrame = event.source === frameRef.current?.contentWindow;
+      if (!fromFullViewer && !fromFrame) return;
+      if (fromFullViewer && event.data.token && event.data.token !== full.token)
+        return;
       if (event.data.type === "ready") {
-        setReady(true);
+        if (fromFullViewer) {
+          full.ready = true;
+          full.window.postMessage(payloadFor(textRef.current), VIEWER_ORIGIN);
+        } else {
+          setReady(true);
+        }
         return;
       }
       if (event.data.type === "loaded") {
@@ -121,7 +185,7 @@ export function RnlSchematicPanel({
     };
     window.addEventListener("message", onMessage);
     return () => window.removeEventListener("message", onMessage);
-  }, []);
+  }, [payloadFor]);
 
   useEffect(() => {
     if (ready) sendOpen(text);
@@ -237,6 +301,15 @@ export function RnlSchematicPanel({
         <button type="button" className="btn sm" onClick={copy} disabled={!text.trim()}>
           Copy
         </button>
+        <button
+          type="button"
+          className="btn sm"
+          onClick={openFullViewer}
+          disabled={!text.trim()}
+          title="Open the complete RNL editor (syntax highlighting, hierarchy, Problems) in a separate HTTPS tab"
+        >
+          Full viewer ↗
+        </button>
         <button type="button" className="btn sm" onClick={download} disabled={!text.trim()}>
           Download
         </button>
@@ -292,13 +365,39 @@ export function RnlSchematicPanel({
             }}
             aria-label="RNL netlist text"
           />
-          <iframe
-            ref={frameRef}
-            title="RNL schematic"
-            src={viewerUrl}
-            style={{ flex: 1, minWidth: 0, border: 0, background: "#fff" }}
-            sandbox="allow-scripts allow-same-origin allow-downloads"
-          />
+          {secure ? (
+            <iframe
+              ref={frameRef}
+              title="RNL schematic"
+              src={viewerUrl}
+              style={{ flex: 1, minWidth: 0, border: 0, background: "#fff" }}
+              sandbox="allow-scripts allow-same-origin allow-downloads"
+            />
+          ) : (
+            <div
+              style={{
+                flex: 1,
+                minWidth: 0,
+                padding: 24,
+                fontSize: 11,
+                lineHeight: 1.6,
+                color: "var(--ink2)",
+                background: "var(--l0, #11151b)",
+              }}
+            >
+              <p style={{ marginTop: 0 }}>
+                The embedded viewer needs a <strong>secure page</strong>{" "}
+                (<code>localhost</code> or HTTPS): it verifies the
+                <code> analog-canvas-extensions</code> package with WebCrypto,
+                and this page is served over plain HTTP. Open the complete
+                viewer in a separate HTTPS tab — it has the same drawing plus
+                the netlist editor, hierarchy and Problems.
+              </p>
+              <button type="button" className="btn sm" onClick={openFullViewer}>
+                Open full RNL viewer ↗
+              </button>
+            </div>
+          )}
         </div>
       ) : (
         <div

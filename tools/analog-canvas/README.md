@@ -104,6 +104,19 @@ official MIT RNL viewer (embedded, `embed=1`, text sent by `postMessage`).
 The netlist stays authoritative; the RNL comments are the drawing, so an agent
 can redraw without touching connectivity.
 
+The embedded viewer verifies the `analog-canvas-extensions` package with
+SHA-256 through WebCrypto. WebCrypto exists only in a **secure context**, so
+the embed works on `localhost` and HTTPS but not on a plain-HTTP LAN address
+(`http://192.168.x.x:…`): there the tab shows the text and a **Full viewer ↗**
+button instead. That button opens the complete viewer (netlist editor,
+highlighting, hierarchy, Problems) in a top-level HTTPS tab through its
+`api=1` message API; it works from an HTTP page because the new tab is secure.
+
+Copying the viewer's static site into this app is allowed (viewer MIT, fonts
+OFL) but does not fix the secure-context rule and adds a 20 MB Rust/WASM app
+to maintain. The embed plus the full-viewer link gives the same UI without a
+fork.
+
 The generator is analog-canvas's own Netlist-panel export. It runs as a
 **separate local process** (the analog-canvas MCP in `--local` mode), not as a
 linked library: this MIT app never copies AGPL-3.0 code.
@@ -145,7 +158,13 @@ Schematic → RNL button
   → SPICE+RNL saved beside the project (rnl/<module>.rnl)
   → RNL tab: text editor + official viewer
   → MCP rnl_read / rnl_write: the agent edits the same file
+  → RNL tab Reload: show the agent's drawing
 ```
+
+`rnl_read` and `rnl_write` take `moduleName` (default `schematic`); they are
+registered with the die's MCP tools, next to `get_annotations` and
+`export_netlist`. The agent should keep every netlist statement and edit only
+RNL records.
 
 The backend endpoints are `POST /api/dies/:id/rnl/export`,
 `GET /api/dies/:id/rnl?moduleName=…` and `PUT /api/dies/:id/rnl`. The RNL
