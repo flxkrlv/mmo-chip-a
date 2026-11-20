@@ -36,6 +36,11 @@ export async function importDieShot(params: {
   targetDir?: string;
   /** Project id to use when targeting a folder (already registered as a shortcut). */
   targetId?: string;
+  /** Convert PNG/JPEG originals into a lossless tiled pyramidal TIFF so lazy
+   *  tiles and crops read stored levels instead of re-decoding the whole
+   *  image per request (upstream 40da967, adapted to the fork's lazy-tile
+   *  pipeline). Default true; TIFF originals are always kept as-is. */
+  tiledOriginal?: boolean;
   onProgress?: (update: ImportProgressUpdate) => Promise<void> | void;
   logger?: (message: string) => void;
 }): Promise<DieRecord> {
@@ -76,13 +81,39 @@ export async function importDieShot(params: {
   await fs.mkdir(tilesDir, { recursive: true });
 
   const sanitizedBase = sanitizeName(path.parse(params.originalFilename).name) || "die-shot";
-  const originalPath = path.join(originalDir, `${sanitizedBase}.${extension}`);
-  await fs.copyFile(params.filePath, originalPath);
 
   const maxDimension = Math.max(metadata.width, metadata.height);
   const maxZoomLevel = Math.max(0, Math.ceil(Math.log2(maxDimension / params.tileSize)));
   const levels = buildLevels(metadata.width, metadata.height, params.tileSize, maxZoomLevel);
   const totalTiles = levels.reduce((sum, level) => sum + level.columns * level.rows, 0);
+
+  // PNG/JPEG originals are converted to a lossless tiled pyramidal TIFF in one
+  // decode, so ensureTileForRecord cuts tiles from stored levels instead of
+  // re-decoding the whole source for every tile or crop request (gigapixel
+  // JPEGs made the lazy pipeline unusable). TIFF originals are already
+  // random-access (and possibly pyramidal) — kept byte-for-byte.
+  const convert = metadata.format !== "tiff" && params.tiledOriginal !== false;
+  const originalPath = path.join(
+    originalDir,
+    convert ? `${sanitizedBase}.tif` : `${sanitizedBase}.${extension}`
+  );
+  if (convert) {
+    await params.onProgress?.({
+      phase: "analyzing",
+      message: "Converting original to tiled pyramidal TIFF",
+      totalLevels: levels.length,
+      completedLevels: 0,
+      currentLevel: null,
+      currentLevelTiles: 0,
+      currentLevelProcessedTiles: 0,
+      totalTiles,
+      processedTiles: 0
+    });
+    await convertToPyramidalTiff(params.filePath, originalPath);
+    params.logger?.("original stored as a tiled pyramidal TIFF");
+  } else {
+    await fs.copyFile(params.filePath, originalPath);
+  }
 
   await params.onProgress?.({
     phase: "analyzing",
@@ -294,6 +325,29 @@ async function pipelineToFileAtomic(pipeline: sharp.Sharp, finalPath: string) {
     await fs.rm(tempPath, { force: true }).catch(() => {});
     throw error;
   }
+}
+
+/**
+ * Store a source image as a lossless tiled pyramidal TIFF (one full decode):
+ * random-access tiles for crops, extra pages as downscale levels for coarse
+ * tiles. LZW is lossless, so pixels are exactly the decoded source's.
+ * (sharp can only write page-based pyramids — `subifd` is ignored — which the
+ * fork's tiffPyramid reader handles the same.)
+ */
+async function convertToPyramidalTiff(sourcePath: string, destPath: string): Promise<void> {
+  await pipelineToFileAtomic(
+    sharp(sourcePath, {
+      limitInputPixels: false,
+      sequentialRead: true
+    }).tiff({
+      compression: "lzw",
+      pyramid: true,
+      tile: true,
+      tileWidth: 512,
+      tileHeight: 512
+    }),
+    destPath
+  );
 }
 
 function sanitizeName(input: string): string {

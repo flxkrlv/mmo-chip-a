@@ -7,6 +7,11 @@ import sharp from "sharp";
 import { createTileScheduler } from "./tileScheduler.js";
 import type { DieRecord } from "./types.js";
 
+// Match backend/src/index.ts: never cache open input files, or a pyramidal
+// TIFF read through a stored level stays locked (fs.rm hangs / EBUSY on
+// cleanup) on Windows.
+sharp.cache({ memory: 256, files: 0, items: 200 });
+
 const tempRoots: string[] = [];
 
 afterEach(async () => {

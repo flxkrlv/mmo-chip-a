@@ -12,17 +12,54 @@ import {
 const EMPTY_DIE_INDEX: DieIndex = { dies: [] };
 const EMPTY_JOB_INDEX: ImportJobIndex = { jobs: [] };
 
+// One write at a time per target path: concurrent writers (job progress
+// persisting without awaiting) must not race their tmp+rename sequences, or
+// an older body could land after a newer one and resurrect stale content.
+const jsonWriteLocks = new Map<string, Promise<unknown>>();
+
 /**
  * Write to a unique sibling tmp file, then rename over the target. A plain
  * writeFile truncates first, so a crash or `tsx watch` restart mid-write
  * leaves a cut-off file that no longer parses; rename replaces the file in
  * one step, so readers see either the old or the new complete file.
+ * Writes to the same path are serialized (see jsonWriteLocks), and the
+ * rename is retried: on Windows a replace can fail transiently with
+ * EPERM/EACCES/EBUSY when the target is being read (or scanned) right then.
  */
 export async function writeJsonAtomic(filePath: string, value: unknown): Promise<void> {
+  const key = path.resolve(filePath);
+  const previous = jsonWriteLocks.get(key) ?? Promise.resolve();
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => (release = resolve));
+  jsonWriteLocks.set(key, gate);
+  await previous;
+  try {
+    await writeJsonAtomicNow(filePath, value);
+  } finally {
+    release();
+    if (jsonWriteLocks.get(key) === gate) {
+      // Keep the map bounded: drop the entry once the queue drains.
+      jsonWriteLocks.delete(key);
+    }
+  }
+}
+
+async function writeJsonAtomicNow(filePath: string, value: unknown): Promise<void> {
   const tmp = `${filePath}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2)}.tmp`;
   try {
     await fs.writeFile(tmp, `${JSON.stringify(value, null, 2)}\n`, "utf8");
-    await fs.rename(tmp, filePath);
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        await fs.rename(tmp, filePath);
+        return;
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        if (attempt >= 4 || (code !== "EPERM" && code !== "EACCES" && code !== "EBUSY")) {
+          throw error;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 25 * (attempt + 1)));
+      }
+    }
   } catch (error) {
     await fs.rm(tmp, { force: true }).catch(() => {});
     throw error;

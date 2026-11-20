@@ -86,7 +86,11 @@ export function createImportJobManager(config: {
     const persistProgress = async (update: ImportProgressUpdate) => {
       job = {
         ...job,
-        status: update.phase === "completed" ? "completed" : "running",
+        // Progress writes stay "running": the "completed" phase of the import
+        // itself precedes die registration, and marking the job completed
+        // here would expose a window where the job reads as completed but has
+        // no dieId yet. Only the final write below completes the job.
+        status: "running",
         updatedAt: new Date().toISOString(),
         progress: createProgress(update)
       };

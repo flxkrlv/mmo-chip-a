@@ -7,6 +7,11 @@ import test, { afterEach } from "node:test";
 import sharp from "sharp";
 import request from "supertest";
 import type { CellDetectionResult, DieAnnotations, MLPrediction } from "shared";
+
+// Match backend/src/index.ts: never cache open input files, or a pyramidal
+// TIFF read through a stored level stays locked (fs.rm hangs / EBUSY on
+// cleanup) on Windows.
+sharp.cache({ memory: 256, files: 0, items: 200 });
 import { createApp } from "../app.js";
 import { ensureDataStore } from "../store.js";
 
@@ -23,7 +28,19 @@ afterEach(async () => {
     )
   );
   tempServers.length = 0;
-  await Promise.all(tempRoots.map((root) => fs.rm(root, { recursive: true, force: true })));
+  // Freshly written TIFFs can stay briefly locked on Windows (AV / indexer);
+  // retry the cleanup so teardown never masks a real result.
+  await Promise.all(tempRoots.map(async (root) => {
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+      try {
+        await fs.rm(root, { recursive: true, force: true });
+        return;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "EBUSY" || attempt === 9) return;
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+    }
+  }));
   tempRoots.length = 0;
 });
 
