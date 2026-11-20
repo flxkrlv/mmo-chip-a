@@ -110,7 +110,9 @@ the embed works on `localhost` and HTTPS but not on a plain-HTTP LAN address
 (`http://192.168.x.x:…`): there the tab shows the text and a **Full viewer ↗**
 button instead. That button opens the complete viewer (netlist editor,
 highlighting, hierarchy, Problems) in a top-level HTTPS tab through its
-`api=1` message API; it works from an HTTP page because the new tab is secure.
+`api=1` message API and sends the current netlist automatically once the
+viewer reports `ready` — no clipboard step. It works from an HTTP page because
+the new tab itself is secure.
 
 Copying the viewer's static site into this app is allowed (viewer MIT, fonts
 OFL) but does not fix the secure-context rule and adds a 20 MB Rust/WASM app

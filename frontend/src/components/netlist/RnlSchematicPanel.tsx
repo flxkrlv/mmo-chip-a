@@ -36,6 +36,7 @@ interface ViewerMessage {
   errors?: number;
   warnings?: number;
   violations?: number;
+  features?: string[];
   message?: string;
   reason?: string;
 }
@@ -112,9 +113,10 @@ export function RnlSchematicPanel({
   );
 
   const payloadFor = useCallback(
-    (value: string) => ({
+    (value: string, token?: string) => ({
       rnl: 1,
       type: "open",
+      ...(token ? { token } : {}),
       name: `${moduleRef.current}.sp`,
       text: value,
       requestId: `rnl-${Date.now().toString(36)}`,
@@ -123,13 +125,22 @@ export function RnlSchematicPanel({
     [],
   );
 
+  const sendFullOpen = useCallback(
+    (full: { window: Window; token: string }) => {
+      const value = textRef.current;
+      if (!value.trim()) return;
+      full.window.postMessage(payloadFor(value, full.token), VIEWER_ORIGIN);
+    },
+    [payloadFor],
+  );
+
   /** Open the complete (not canvas-only) viewer in a top-level HTTPS tab. */
   const openFullViewer = useCallback(() => {
     const existing = fullViewerRef.current;
     if (existing && !existing.window.closed) {
       existing.window.focus();
-      if (existing.ready)
-        existing.window.postMessage(payloadFor(textRef.current), VIEWER_ORIGIN);
+      // Before its `ready`, the queued open is sent by the message handler.
+      if (existing.ready) sendFullOpen(existing);
       return;
     }
     // Math.random, not crypto.randomUUID: the correlation token must also
@@ -147,7 +158,7 @@ export function RnlSchematicPanel({
       return;
     }
     fullViewerRef.current = { window: viewer, token, ready: false };
-  }, [payloadFor]);
+  }, [sendFullOpen]);
 
   useEffect(() => {
     const onMessage = (event: MessageEvent<ViewerMessage & { token?: string }>) => {
@@ -161,8 +172,18 @@ export function RnlSchematicPanel({
         return;
       if (event.data.type === "ready") {
         if (fromFullViewer) {
+          const features = event.data.features ?? [];
+          if (
+            !features.includes("requestId") ||
+            !features.includes("packages")
+          ) {
+            setViewerError(
+              "This RNL Viewer is too old to import a netlist. Update it and retry.",
+            );
+            return;
+          }
           full.ready = true;
-          full.window.postMessage(payloadFor(textRef.current), VIEWER_ORIGIN);
+          sendFullOpen(full);
         } else {
           setReady(true);
         }
@@ -185,7 +206,7 @@ export function RnlSchematicPanel({
     };
     window.addEventListener("message", onMessage);
     return () => window.removeEventListener("message", onMessage);
-  }, [payloadFor]);
+  }, [sendFullOpen]);
 
   useEffect(() => {
     if (ready) sendOpen(text);
@@ -353,14 +374,14 @@ export function RnlSchematicPanel({
               minWidth: 260,
               resize: "none",
               border: 0,
-              borderRight: "1px solid var(--l2)",
+              borderRight: "1px solid var(--l1)",
               outline: "none",
-              background: "var(--l0, #11151b)",
-              color: "var(--ink, #d8e0ea)",
+              background: "var(--card)",
+              color: "var(--ink)",
               fontFamily: "var(--mono, monospace)",
-              fontSize: 10,
-              lineHeight: 1.45,
-              padding: 8,
+              fontSize: 13,
+              lineHeight: 1.55,
+              padding: 10,
               tabSize: 2,
             }}
             aria-label="RNL netlist text"
@@ -382,7 +403,7 @@ export function RnlSchematicPanel({
                 fontSize: 11,
                 lineHeight: 1.6,
                 color: "var(--ink2)",
-                background: "var(--l0, #11151b)",
+                background: "var(--card)",
               }}
             >
               <p style={{ marginTop: 0 }}>
