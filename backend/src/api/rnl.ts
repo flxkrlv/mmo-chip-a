@@ -12,6 +12,10 @@ import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { Router } from "express";
+import {
+  analogCanvasSetupHint,
+  resolveAnalogCanvasPaths,
+} from "../analogCanvas.js";
 import { readRnl, rnlModuleName, writeRnl } from "../rnlStore.js";
 
 export interface RnlRouterOptions {
@@ -22,6 +26,8 @@ export interface RnlRouterOptions {
   headlessPath?: string;
   /** A CLI run's time limit (default 120 s). */
   timeoutMs?: number;
+  /** Keep the search to the paths above and the environment (tests). */
+  discover?: boolean;
 }
 
 class RnlError extends Error {
@@ -38,12 +44,6 @@ interface RnlExport {
   format: "spice" | "spectre";
   documentId?: string;
   status: string;
-}
-
-function setting(options: RnlRouterOptions, key: "mcpPath" | "headlessPath"): string {
-  const envKey =
-    key === "mcpPath" ? "CHIPTOOL_ANALOG_CANVAS_MCP" : "CHIPTOOL_ANALOG_CANVAS_HEADLESS";
-  return (options[key] ?? process.env[envKey] ?? "").trim();
 }
 
 function cliCommand(entry: string): { command: string; args: string[] } {
@@ -121,18 +121,15 @@ async function exportRnl(
   format: "spice" | "spectre",
   options: RnlRouterOptions,
 ): Promise<RnlExport> {
-  const entry = setting(options, "mcpPath");
-  if (!entry)
-    throw new RnlError(
-      503,
-      "RNL export is not configured. Set CHIPTOOL_ANALOG_CANVAS_MCP to an analog-canvas MCP entry (apps/mcp-server/dist/main.js) and CHIPTOOL_ANALOG_CANVAS_HEADLESS to its headless bundle.",
-    );
-  const headless = setting(options, "headlessPath");
-  if (!headless)
-    throw new RnlError(
-      503,
-      "RNL export needs the analog-canvas headless bundle: set CHIPTOOL_ANALOG_CANVAS_HEADLESS (analog-canvas-headless.mjs).",
-    );
+  const paths = resolveAnalogCanvasPaths({
+    mcpPath: options.mcpPath,
+    headlessPath: options.headlessPath,
+    discover: options.discover,
+  });
+  if (!paths.mcpPath || !paths.headlessPath)
+    throw new RnlError(503, analogCanvasSetupHint(paths));
+  const entry = paths.mcpPath;
+  const headless = paths.headlessPath;
 
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "mmo-rnl-"));
   try {
@@ -199,6 +196,26 @@ async function exportRnl(
 
 export function createRnlRouter(options: RnlRouterOptions) {
   const router = Router();
+
+  /** What the RNL tab needs to say before a first export. */
+  router.get("/api/rnl/status", (_request, response) => {
+    const paths = resolveAnalogCanvasPaths({
+      mcpPath: options.mcpPath,
+      headlessPath: options.headlessPath,
+      discover: options.discover,
+    });
+    const ready = !!paths.mcpPath && !!paths.headlessPath;
+    return response.json({
+      ok: ready,
+      ready,
+      mcpPath: paths.mcpPath,
+      headlessPath: paths.headlessPath,
+      home: paths.home,
+      ignored: paths.ignored,
+      searched: paths.searched,
+      ...(ready ? {} : { hint: analogCanvasSetupHint(paths) }),
+    });
+  });
 
   router.post("/api/dies/:dieId/rnl/export", async (request, response) => {
     const dieId = String(request.params.dieId ?? "");

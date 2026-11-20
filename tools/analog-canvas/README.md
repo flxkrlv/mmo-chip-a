@@ -106,19 +106,35 @@ can redraw without touching connectivity.
 
 The generator is analog-canvas's own Netlist-panel export. It runs as a
 **separate local process** (the analog-canvas MCP in `--local` mode), not as a
-linked library: this MIT app never copies AGPL-3.0 code. The backend needs:
+linked library: this MIT app never copies AGPL-3.0 code.
+
+The backend finds the checkout by itself: `CHIPTOOL_ANALOG_CANVAS_HOME` /
+`ANALOG_CANVAS_HOME`, then `_refs/analog-canvas` beside the repository (and
+`../_refs/analog-canvas`). A stale or placeholder path in the environment is
+ignored, not fatal. To see what was found:
 
 ```powershell
-$env:CHIPTOOL_ANALOG_CANVAS_MCP = "F:\...\analog-canvas\apps\mcp-server\dist\main.js"
-$env:CHIPTOOL_ANALOG_CANVAS_HEADLESS = "F:\...\analog-canvas\output\headless\analog-canvas-headless.mjs"
+npm run analog:rnl:setup
 ```
 
-Build those in the analog-canvas checkout with `pnpm build`,
-`pnpm headless:package`, and `pnpm --filter @icm/mcp-server build`. The
-`netlist_code` tool must accept `rnl:true`; that is the headless-export change
-proposed upstream (the local `feature/headless-rnl-export` branch has it).
-Without the change the RNL tab reports the missing capability instead of
-inventing a drawing.
+It prints the exact `CHIPTOOL_ANALOG_CANVAS_MCP` /
+`CHIPTOOL_ANALOG_CANVAS_HEADLESS` lines for another machine; `-- --build`
+builds the checkout first. The two artifacts are:
+
+```
+<checkout>/apps/mcp-server/dist/main.js
+<checkout>/output/headless/analog-canvas-headless.mjs
+```
+
+Build them with `pnpm build`, `pnpm headless:package`, and
+`pnpm --filter @icm/mcp-server build`. The `netlist_code` tool must accept
+`rnl:true`; that is the headless-export change proposed upstream (the local
+`feature/headless-rnl-export` branch has it). Without the change the RNL tab
+reports the missing capability instead of inventing a drawing.
+
+`GET /api/rnl/status` reports the resolved paths (and the search list when
+nothing was found), so a misconfigured deployment can be diagnosed without a
+drawing attempt.
 
 Flow:
 

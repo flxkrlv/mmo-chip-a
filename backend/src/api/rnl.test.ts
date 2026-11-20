@@ -5,6 +5,7 @@ import path from "node:path";
 import test, { afterEach } from "node:test";
 import express from "express";
 import request from "supertest";
+import { resolveAnalogCanvasPaths } from "../analogCanvas.js";
 import { createRnlRouter } from "./rnl.js";
 
 const tempRoots: string[] = [];
@@ -106,14 +107,72 @@ test("exports RNL through the analog-canvas MCP and stores it", async () => {
   assert.equal(missing.status, 404);
 });
 
+test("reports the resolved paths before a drawing attempt", async () => {
+  const root = await createRoot("mmo-rnl-");
+  const mcpPath = await fakeMcp(root);
+  const headlessPath = path.join(root, "headless.mjs");
+  const app = appWith({ dataRoot: root, mcpPath, headlessPath });
+  const response = await request(app).get("/api/rnl/status");
+  assert.equal(response.status, 200);
+  assert.equal(response.body.ok, true);
+  assert.equal(response.body.mcpPath, mcpPath);
+  assert.equal(response.body.headlessPath, headlessPath);
+});
+
 test("answers 503 with setup instructions when the writer is not configured", async () => {
   const root = await createRoot("mmo-rnl-");
-  const app = appWith({ dataRoot: root, mcpPath: "", headlessPath: "" });
+  const app = appWith({
+    dataRoot: root,
+    mcpPath: "",
+    headlessPath: "",
+    discover: false,
+  });
   const response = await request(app)
     .post("/api/dies/die-1/rnl/export")
     .send({ project: {} });
   assert.equal(response.status, 503);
   assert.match(response.body.error, /CHIPTOOL_ANALOG_CANVAS_MCP/);
+});
+
+test("ignores a placeholder env path and finds the checkout by its home", async () => {
+  const root = await createRoot("mmo-rnl-home-");
+  const checkout = path.join(root, "analog-canvas");
+  const mcp = path.join(checkout, "apps", "mcp-server", "dist", "main.js");
+  const headless = path.join(
+    checkout,
+    "output",
+    "headless",
+    "analog-canvas-headless.mjs",
+  );
+  await fs.mkdir(path.dirname(mcp), { recursive: true });
+  await fs.mkdir(path.dirname(headless), { recursive: true });
+  await fs.writeFile(mcp, "");
+  await fs.writeFile(headless, "");
+
+  const saved = {
+    home: process.env.CHIPTOOL_ANALOG_CANVAS_HOME,
+    mcp: process.env.CHIPTOOL_ANALOG_CANVAS_MCP,
+    headless: process.env.CHIPTOOL_ANALOG_CANVAS_HEADLESS,
+  };
+  process.env.CHIPTOOL_ANALOG_CANVAS_HOME = checkout;
+  process.env.CHIPTOOL_ANALOG_CANVAS_MCP = "F:\\...\\missing\\main.js";
+  process.env.CHIPTOOL_ANALOG_CANVAS_HEADLESS = "F:\\...\\missing\\headless.mjs";
+  try {
+    const paths = resolveAnalogCanvasPaths();
+    assert.equal(paths.mcpPath, mcp);
+    assert.equal(paths.headlessPath, headless);
+    assert.equal(paths.home, path.resolve(checkout));
+    assert.equal(paths.ignored.length, 2);
+  } finally {
+    for (const [key, value] of [
+      ["CHIPTOOL_ANALOG_CANVAS_HOME", saved.home],
+      ["CHIPTOOL_ANALOG_CANVAS_MCP", saved.mcp],
+      ["CHIPTOOL_ANALOG_CANVAS_HEADLESS", saved.headless],
+    ] as const) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
 });
 
 test("refuses a failed CLI run without saving a file", async () => {
