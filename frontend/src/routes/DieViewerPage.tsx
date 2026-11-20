@@ -10,7 +10,7 @@ import { useCellLibrary } from "../api/cellLibrary";
 import { routeLibraryAction, withLibraryTypes } from "../lib/cellLibrary";
 import { useWireMapInfo, wireTileUrl } from "../api/cellImaging";
 import { useCellDetections } from "../api/cellDetection";
-import { proposalsFor, type Proposal } from "../lib/cellDetection";
+import { floorplanEnclosure, proposalsFor, type Proposal } from "../lib/cellDetection";
 import { populateCellDetectionLayer } from "../renderer/annotations/cellDetections";
 import { AppShell } from "../components/shell/AppShell";
 import { StatusBar } from "../components/shell/StatusBar";
@@ -4128,6 +4128,20 @@ function DieViewer({ dieId }: { dieId: string }) {
       const picks = extractAnchorPointsFromSelection(
         useDieViewerStore.getState().selectedIds
       );
+
+      // "Make floorplan around…" encloses the selected cells (or the cell
+      // under the cursor). Same selection rule as copy/orient: the whole
+      // selection when the clicked cell is part of it, else just that cell.
+      const selectedCellIds = [...useDieViewerStore.getState().selectedIds]
+        .filter((id) => id.startsWith("cell:"))
+        .map((id) => id.slice(5));
+      const enclosure = floorplanEnclosure(
+        annotationsRef.current?.cells ?? [],
+        annotationsRef.current?.cellTypes ?? [],
+        selectedCellIds,
+        hitCellId
+      );
+
       setContextMenu({
         screenX: event.clientX,
         screenY: event.clientY,
@@ -4138,7 +4152,9 @@ function DieViewer({ dieId }: { dieId: string }) {
         hitCellId,
         hitPartId,
         canSplitNetAtNode,
-        hitRulerId
+        hitRulerId,
+        floorplanRect: enclosure?.rect ?? null,
+        floorplanLabel: enclosure?.label
       });
     },
     [annotationLayer, mlViasLayer, wire, extractAnchorPointsFromSelection]
@@ -5179,6 +5195,35 @@ function DieViewer({ dieId }: { dieId: string }) {
             // Like cells: the whole selection when the pad is part of it.
             const selected = useDieViewerStore.getState().selectedIds;
             copySelectionToClipboard(ann, selected.has(partId) ? selected : new Set([partId]));
+          }}
+          onMakeFloorplan={() => {
+            const rect = contextMenu.floorplanRect;
+            if (!rect) return;
+            // A rect region enclosing the footprint bbox (same shape the
+            // floorplan tool commits; popover opens so it can be named).
+            const au = useAuth.getState();
+            const region: import("shared").FloorplanRegion = {
+              id: uuid(),
+              name: "",
+              kind: "rect",
+              geometry: [
+                { x: Math.round(rect.x), y: Math.round(rect.y) },
+                { x: Math.round(rect.x + rect.width), y: Math.round(rect.y + rect.height) }
+              ],
+              color: "#4dabf7",
+              createdBy: au.userId ?? null,
+              createdByName: au.username ?? null,
+              createdAt: new Date().toISOString(),
+              reservedBy: null,
+              reservedByName: null,
+              reservedAt: null,
+            };
+            const fs = useFloorplanStore.getState();
+            fs.upsertRegion(region);
+            fs.openRegion(region.id);
+            void dispatcher
+              .dispatch({ kind: "upsertFloorplan", region, prevRegion: null })
+              .then((ok) => { if (!ok) toast.error("Failed to save floorplan"); });
           }}
         />
       )}
