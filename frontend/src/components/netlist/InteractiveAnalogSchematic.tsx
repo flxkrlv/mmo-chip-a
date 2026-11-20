@@ -51,6 +51,7 @@ import {
   type InteractiveLayoutResult,
   type DeviceOrientationLike,
   type HierarchyBlock,
+  type HierarchyCellInput,
   type Point,
   type WireData,
 } from "../../lib/schematic/interactiveAnalogLayout";
@@ -65,6 +66,11 @@ import type {
   CompactionLevel,
 } from "../../lib/schematic/netlist2svgSkin";
 import { computeJunctions } from "../../lib/schematic/netlist";
+import {
+  buildLayoutExchange,
+  type LayoutExchangeCell,
+} from "../../lib/schematic/layoutExchange";
+import { convertLayoutToProject } from "../../lib/schematic/analogCanvasProject";
 
 // ── Props ────────────────────────────────────────────────────────
 
@@ -94,6 +100,8 @@ interface Props {
   dragMode?: "surgical" | "full";
   /** Hierarchy blocks (floorplan regions as subcircuit rectangles). */
   blocks?: HierarchyBlock[];
+  /** Child Cells the hierarchy blocks stand for, for the export. */
+  blockCells?: HierarchyCellInput[];
   /** Double-click on a hierarchy block — drill into that region's schematic. */
   onOpenBlock?: (regionId: string) => void;
   /** Boundary pins for the currently-open region (shown as labeled pins at edges). */
@@ -126,6 +134,8 @@ interface RenderNode {
   device?: AnalogDevice;
   /** io net label */
   label?: string;
+  /** Cell-pin direction of an io node (block boundary pin). */
+  ioDirection?: "input" | "output";
   /** For power nodes: which rail symbol to draw/color. */
   powerKind?: "vcc" | "gnd";
   /** Hierarchy block name (kind: "block"). */
@@ -134,12 +144,55 @@ interface RenderNode {
   blockPorts?: Array<{ terminal: string; netName: string; dx: number; dy: number; isInput: boolean }>;
 }
 
+/**
+ * A deterministic first drawing for a hierarchy Cell no one has opened yet:
+ * devices in a grid, input pins down the left edge, outputs down the right,
+ * supplies above and grounds below. Stored region positions replace it.
+ */
+function autoPlaceCellNodes(nodes: RenderNode[]): Record<string, Point> {
+  const positions: Record<string, Point> = {};
+  const columns = 4;
+  const columnWidth = 160;
+  const rowHeight = 110;
+  const devices = nodes.filter((node) => node.kind === "device");
+  devices.forEach((node, index) => {
+    positions[node.key] = {
+      x: 60 + (index % columns) * columnWidth,
+      y: 60 + Math.floor(index / columns) * rowHeight,
+    };
+  });
+  const rows = Math.ceil(Math.max(1, devices.length) / columns);
+  const right = 60 + columns * columnWidth;
+  const bottom = 60 + rows * rowHeight;
+  let inputRow = 0;
+  let outputRow = 0;
+  for (const node of nodes) {
+    if (node.kind !== "io") continue;
+    const input = node.ioDirection !== "output";
+    positions[node.key] = {
+      x: input ? 0 : right,
+      y: 60 + (input ? inputRow++ : outputRow++) * 40,
+    };
+  }
+  let powerIndex = 0;
+  for (const node of nodes) {
+    if (node.kind !== "power") continue;
+    const ground = node.template?.type === "gnd";
+    positions[node.key] = {
+      x: 60 + powerIndex * 60,
+      y: ground ? bottom + 40 : 10,
+    };
+    powerIndex += 1;
+  }
+  return positions;
+}
+
 // ── Component ────────────────────────────────────────────────────
 
 export function InteractiveAnalogSchematic({
   devices, namedNets, ioNetIds, scopeKey, vdd, gnd,
   layoutStrategy = "BRANDES_KOEPF", layoutDirection = "DOWN", compactionLevel = 2,
-  nodeNode, betweenLayers, edgeEdge, edgeNode, favorStraightEdges, dragMode = "surgical", blocks, onOpenBlock, regionPins,
+  nodeNode, betweenLayers, edgeEdge, edgeNode, favorStraightEdges, dragMode = "surgical", blocks, blockCells, onOpenBlock, regionPins,
 }: Props) {
   const opts = useMemo(
     () => ({
@@ -184,7 +237,11 @@ export function InteractiveAnalogSchematic({
   // ── Layout load ──────────────────────────────────────────────
   const [elkResult, setElkResult] = useState<InteractiveLayoutResult | null>(null);
   const [laying, setLaying] = useState(true);
+  /** Notes from the last analog-canvas export, shown until dismissed. */
+  const [exportNotes, setExportNotes] = useState<string[]>([]);
   const layoutSeq = useRef(0);
+  const capDensity = usePreferences((s) => s.capDensity);
+  const sheetR = usePreferences((s) => s.sheetR);
 
   // Wires: ELK routes patched by local re-routes (drag / position overrides).
   const [wires, setWires] = useState<Map<number, WireData>>(new Map());
@@ -335,6 +392,9 @@ export function InteractiveAnalogSchematic({
         template: table.byKey.get(isInput ? "outputExt" : "inputExt"),
         size: elkResult.sizes[key] ?? { w: 30, h: 20 },
         label: bp.name,
+        // The art points into the block; the Cell pin keeps the net's own
+        // direction (input stays input).
+        ioDirection: bp.direction,
       });
     }
 
@@ -1247,6 +1307,115 @@ export function InteractiveAnalogSchematic({
     img.src = url;
   }, [buildExportSvg, downloadBlob, scopeKey]);
 
+  /** Export the current scene as an analog-canvas project file. The neutral
+   *  layout document is converted in-place (same code as
+   *  `tools/analog-canvas/convert.mjs`), so the downloaded `.icproj.json`
+   *  opens directly in the stock editor. */
+  const exportLayout = useCallback(() => {
+    const blockTerms = new Map(
+      blockDevices(blocks ?? []).map((d) => [deviceKey(d), d.terminals]),
+    );
+
+    // Each hierarchy block becomes a real child Cell. Its drawing starts from
+    // the region's own saved layout (if the user opened it) and a deterministic
+    // grid otherwise; wires are left to the converter, which links every Net.
+    const cells: LayoutExchangeCell[] = [];
+    for (const cell of blockCells ?? []) {
+      const cellPowers = powerDevices(cell.devices, namedNets, opts);
+      const cellNodes: RenderNode[] = [];
+      for (const device of cell.devices) {
+        const template = templateForDevice(table, device);
+        cellNodes.push({
+          key: deviceKey(device),
+          kind: "device",
+          template,
+          size: template
+            ? { w: template.width, h: template.height }
+            : { w: 30, h: 40 },
+          device,
+        });
+      }
+      for (const power of cellPowers) {
+        const key = deviceKey(power);
+        const powerKind: "vcc" | "gnd" =
+          key.startsWith("GND") || key.startsWith("Gnd") || key.startsWith("gnd")
+            ? "gnd"
+            : "vcc";
+        cellNodes.push({
+          key,
+          kind: "power",
+          template: table.byKey.get(powerKind),
+          size: { w: 20, h: 30 },
+          device: power,
+          powerKind,
+        });
+      }
+      for (const pin of cell.pins) {
+        const isInput = pin.direction === "input";
+        cellNodes.push({
+          key: `bp:${pin.netId}`,
+          kind: "io",
+          template: table.byKey.get(isInput ? "outputExt" : "inputExt"),
+          size: { w: 30, h: 20 },
+          label: pin.name,
+          ioDirection: pin.direction,
+        });
+      }
+      const stored = store.getState().layouts[cell.layoutScopeKey];
+      const cellPositions: Record<string, Point> = {
+        ...autoPlaceCellNodes(cellNodes),
+        ...(stored?.positions ?? {}),
+      };
+      const cellDoc = buildLayoutExchange({
+        scopeKey: cell.layoutScopeKey,
+        title: cell.name,
+        table,
+        nodes: cellNodes,
+        positions: cellPositions,
+        orientations: stored?.orientation ?? {},
+        // No remembered wires: the converter links every Net member.
+        wires: new Map(),
+        namedNets,
+        values: { capDensity, sheetR },
+      });
+      cells.push({
+        id: cell.id,
+        name: cell.name,
+        netlistName: cell.name,
+        document: cellDoc,
+      });
+    }
+
+    const doc = buildLayoutExchange({
+      scopeKey,
+      title: scopeKey,
+      table,
+      nodes: nodes.map((n) => ({
+        ...n,
+        terminals: n.kind === "block" ? blockTerms.get(n.key) : undefined,
+        cellId: n.kind === "block" ? n.key.slice("blk:".length) : undefined,
+      })),
+      positions,
+      orientations,
+      wires,
+      namedNets,
+      cells,
+      values: { capDensity, sheetR },
+    });
+    const { project, warnings } = convertLayoutToProject(doc);
+    if (warnings.length > 0) {
+      console.warn("[analog-canvas export] " + warnings.join("\n"));
+    }
+    setExportNotes(warnings);
+    const blob = new Blob([JSON.stringify(project, null, 2)], {
+      type: "application/json;charset=utf-8",
+    });
+    downloadBlob(blob, `${scopeKey.replace(/[^\w.-]+/g, "_")}.icproj.json`);
+  }, [
+    scopeKey, table, nodes, positions, orientations, wires, namedNets, blocks, blockCells,
+    opts, store, downloadBlob, capDensity, sheetR,
+  ]);
+
   const onReset = useCallback(() => {
     store.getState().resetScope(scopeKey);
     runLayout(true);
@@ -1302,8 +1471,7 @@ export function InteractiveAnalogSchematic({
         </div>
       )}
       {/* Toolbar */}
-      <div style={{ position: "absolute", top: 6, left: 6, zIndex: 1, display: "flex", gap: 4, alignItems: "center" }}>
-        <button type="button" className="btn sm" onClick={onRelayout} title="ELK re-layout — fills positions for unplaced devices; your arrangement is kept">
+      <div style={{ position: "absolute", top: 6, left: 6, zIndex: 1, display: "flex", gap: 4, alignItems: "center" }}>        <button type="button" className="btn sm" onClick={onRelayout} title="ELK re-layout — fills positions for unplaced devices; your arrangement is kept">
           Re-layout
         </button>
         <button type="button" className="btn sm" onClick={onAutoArrange} title="ELK re-layout of ALL unlocked devices (locks are kept)">
@@ -1400,6 +1568,9 @@ export function InteractiveAnalogSchematic({
         <button type="button" className="btn sm" onClick={exportSvg} title="Export the current schematic as a standalone SVG (white background, dark elements)" disabled={!elkResult}>
           Export SVG
         </button>
+        <button type="button" className="btn sm" onClick={exportLayout} title="Download the current layout as an analog-canvas project (.icproj.json) — opens directly in the stock editor" disabled={!elkResult}>
+          Export to analog-canvas
+        </button>
         {elkResult?.usedFallback && (
           <span style={{ fontSize: 10, color: "var(--warn)", marginLeft: 4 }}>grid fallback</span>
         )}
@@ -1420,6 +1591,45 @@ export function InteractiveAnalogSchematic({
             )
         )}
       </div>
+
+      {exportNotes.length > 0 && (
+        <div
+          style={{
+            position: "absolute",
+            top: 40,
+            left: 6,
+            zIndex: 2,
+            maxWidth: 520,
+            maxHeight: 180,
+            overflowY: "auto",
+            padding: "6px 8px",
+            border: "1px solid var(--line)",
+            borderRadius: 4,
+            background: "var(--bg1)",
+            color: "var(--ink2)",
+            fontSize: 11,
+            lineHeight: 1.45,
+          }}
+        >
+          <div style={{ display: "flex", justifyContent: "space-between", gap: 8, marginBottom: 4 }}>
+            <strong>analog-canvas export notes</strong>
+            <button
+              type="button"
+              className="btn sm"
+              style={{ padding: "0 4px", fontSize: 11 }}
+              onClick={() => setExportNotes([])}
+              title="Dismiss"
+            >
+              ×
+            </button>
+          </div>
+          <ul style={{ margin: 0, paddingLeft: 16 }}>
+            {exportNotes.map((note) => (
+              <li key={note}>{note}</li>
+            ))}
+          </ul>
+        </div>
+      )}
 
       <svg
         ref={svgRef}

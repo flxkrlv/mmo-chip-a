@@ -162,6 +162,24 @@ export interface HierarchyBlock {
   nets: Array<{ netId: number; name: string; direction: "input" | "output" }>;
 }
 
+/**
+ * A hierarchy block whose child Cell the exporter can emit. The block node
+ * only names what it stands for; the region keeps its own devices, its
+ * external nets (the Cell's ports) and the layout slot of its canvas view.
+ */
+export interface HierarchyCellInput {
+  /** Stable id shared with the block's `blk:<id>` node key. */
+  id: string;
+  /** Display name of the block. */
+  name: string;
+  /** Devices the region contains. */
+  devices: AnalogDevice[];
+  /** External nets: one Cell pin per entry. */
+  pins: HierarchyBlock["nets"];
+  /** Persisted layout slot of the region view (`scopeKey(...)`). */
+  layoutScopeKey: string;
+}
+
 /** Layout height of a block with `n` ports (rows stacked 18px). */
 function blockHeight(portCount: number): number {
   return Math.max(48, 22 + portCount * 20);

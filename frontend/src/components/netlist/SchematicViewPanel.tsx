@@ -26,7 +26,11 @@ import { NetlistSettingsPanel } from "./NetlistSettingsPanel";
 import { collectDieWideAnalogDevices, getRenameVersion } from "../../api/dieWideAnalog";
 import { useAnalogNamesVersion } from "../../state/analogDeviceNames";
 import { matchGeometry } from "../../lib/export/matching";
-import { regionExternalNets, type HierarchyBlock } from "../../lib/schematic/interactiveAnalogLayout";
+import {
+  regionExternalNets,
+  type HierarchyBlock,
+  type HierarchyCellInput,
+} from "../../lib/schematic/interactiveAnalogLayout";
 import { InteractiveAnalogSchematic } from "./InteractiveAnalogSchematic";
 import { scopeKey as interactiveScopeKey } from "../../state/interactiveSchematic";
 import { useSession } from "../../state/session";
@@ -414,6 +418,25 @@ useEffect(() => {
       regionNames,
     );
   }, [isManual, showHierarchy, hierarchical, floorplanRegions, n2sData, spiceConfig]);
+
+  // ── Hierarchy child Cells (for the analog-canvas export) ──────
+  // Each block carries the devices it collapses, so the exporter can emit a
+  // real subcircuit document instead of dropping the block. The region's own
+  // canvas slot supplies its saved positions/orientations when it has them.
+  const hierarchyCells: HierarchyCellInput[] | undefined = useMemo(() => {
+    if (!hierarchyBlocks) return undefined;
+    return hierarchyBlocks.map((block) => ({
+      id: block.regionId,
+      name: block.name,
+      devices: n2sData.floorplanDevices?.get(block.regionId) ?? [],
+      pins: block.nets,
+      layoutScopeKey: interactiveScopeKey(
+        dieId,
+        moduleName,
+        `region:${block.regionId}`,
+      ),
+    }));
+  }, [hierarchyBlocks, n2sData, dieId, moduleName]);
 
   // ── Region boundary pins (shown when viewing a subcircuit) ─────
   // When a region is selected (subcircuit view) and hierarchy overview is off,
@@ -878,6 +901,7 @@ useEffect(() => {
               favorStraightEdges={favorStraightEdges}
               dragMode={dragMode}
               blocks={hierarchyBlocks}
+              blockCells={hierarchyCells}
               onOpenBlock={handleOpenBlock}
               regionPins={regionPins}
             />
