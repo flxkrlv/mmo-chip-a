@@ -26,7 +26,7 @@ import {
   preGenerateFullPyramid,
   type OverlayImageManifest
 } from "./overlayImages.js";
-import { listDieRecords, readDieRecord, writeDieRecord } from "../store.js";
+import { listDieRecords, readDieRecord, writeDieRecord, writeJsonAtomic } from "../store.js";
 import { prepareFolderProject, resolveProjectDir, unregisterFolderShortcut } from "../projectLayout.js";
 import type { createTileScheduler } from "../tileScheduler.js";
 import type { DieRecord } from "../types.js";
@@ -542,20 +542,15 @@ async function syncFolderManifest(dieDir: string, record: DieRecord): Promise<vo
   } catch {
     // fresh marker — use the record's createdAt
   }
-  await fs.writeFile(
+  await writeJsonAtomic(
     manifestPath,
-    `${JSON.stringify(
-      {
-        version: 1,
-        id: record.id,
-        name: record.name,
-        createdAt,
-        updatedAt: record.updatedAt
-      },
-      null,
-      2
-    )}\n`,
-    "utf8"
+    {
+      version: 1,
+      id: record.id,
+      name: record.name,
+      createdAt,
+      updatedAt: record.updatedAt
+    }
   );
 }
 

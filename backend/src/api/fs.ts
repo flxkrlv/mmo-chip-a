@@ -21,7 +21,7 @@ import type {
   FsEntry,
   OpenFolderResponse
 } from "shared";
-import { listDieRecords, readDieRecord, writeDieRecord } from "../store.js";
+import { listDieRecords, readDieRecord, writeDieRecord, writeJsonAtomic } from "../store.js";
 import {
   PROJECT_MANIFEST_FILE,
   PROJECT_MANIFEST_VERSION,
@@ -95,14 +95,9 @@ async function repairFolderMetadata(folderPath: string): Promise<void> {
   ) {
     return;
   }
-  await fs.writeFile(
+  await writeJsonAtomic(
     metadataPath,
-    `${JSON.stringify(
-      { ...record, location: "folder", folderPath: resolved, originalPath: correctedOriginal },
-      null,
-      2
-    )}\n`,
-    "utf8"
+    { ...record, location: "folder", folderPath: resolved, originalPath: correctedOriginal }
   );
 }
 
