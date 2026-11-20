@@ -20,6 +20,7 @@ import {
   type Registration
 } from "./pixels.js";
 import type { TileReader } from "./tileReader.js";
+import { checkImagingRegion, imagingLimits } from "./limits.js";
 
 /**
  * Padding around each crop, which is also the largest placement error the
@@ -34,6 +35,23 @@ export function marginFor(W: number, H: number): number {
 /** Instances stacked per type. The median converges long before this; the
  *  cap bounds memory (N × W × H × 3 floats) and time on huge types. */
 export const MAX_INSTANCES = 128;
+
+/**
+ * How many instances may be stacked for one type within the float-buffer
+ * budget. Big types on high-magnification dies stack fewer instances instead
+ * of exhausting memory (upstream deeff76); at least one instance always
+ * stacks. Crop is the type's own W×H; padding is included like buildSpecimen
+ * allocates it.
+ */
+export function stackInstanceCap(
+  cropW: number,
+  cropH: number,
+  budgetBytes: number = imagingLimits.specimenBudgetBytes
+): number {
+  const margin = marginFor(cropW, cropH);
+  const perInstanceBytes = (cropW + 2 * margin) * (cropH + 2 * margin) * 3 * 4;
+  return Math.max(1, Math.min(MAX_INSTANCES, Math.floor(budgetBytes / perInstanceBytes)));
+}
 
 /** The display specimen is reconstructed at this multiple of the source
  *  resolution. Instances land at random sub-pixel phases, so once each is
@@ -113,19 +131,23 @@ export async function buildSpecimen(
   const W = Math.round(cellType.cropRect.width);
   const H = Math.round(cellType.cropRect.height);
   if (W < 8 || H < 8) return null;
+  // Whole-cell crops on a high-magnification die can outgrow any reasonable
+  // bound: fail this type alone (jobs soft-skip and name it at completion).
   const MARGIN = marginFor(W, H);
+  checkImagingRegion(W + 2 * MARGIN, H + 2 * MARGIN);
   const SHIFT_RADIUS = MARGIN;
   const percentile = options.percentile ?? 50;
   const tick = hooks.yieldToLoop ?? (() => Promise.resolve());
 
+  const stackCap = stackInstanceCap(W, H);
   const padded: Float32Array[] = [];
   /** Cell behind each entry of `padded` (instances leaving the die are skipped). */
   const used: Cell[] = [];
   // This die's instances first; the rest of the budget goes to other dies',
   // sharper photos (smaller k) ahead of coarser ones.
-  const own = pickInstances(members, MAX_INSTANCES).map((cell) => ({ cell, reader, k: 1 }));
+  const own = pickInstances(members, stackCap).map((cell) => ({ cell, reader, k: 1 }));
   const others = [...(options.foreign ?? [])].sort((a, b) => a.k - b.k);
-  const picked = [...own, ...pickInstances(others, MAX_INSTANCES - own.length)];
+  const picked = [...own, ...pickInstances(others, stackCap - own.length)];
   const ownIds = new Set(members.map((c) => c.id));
   for (let i = 0; i < picked.length; i++) {
     if (hooks.shouldCancel?.()) return null;
