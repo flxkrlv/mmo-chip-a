@@ -21,6 +21,7 @@ import { createProjectIORouter } from "./api/projectIO.js";
 import { createFsRouter } from "./api/fs.js";
 import { createAssistantRouter } from "./api/assistant.js";
 import { createSpiceHandoffRouter } from "./api/spiceHandoff.js";
+import { createRnlRouter } from "./api/rnl.js";
 import { createTilesRouter } from "./api/tiles.js";
 import { createMcpRouter } from "./api/mcp.js";
 import { enqueueOverlayPrebuilds } from "./api/overlayImages.js";
@@ -147,6 +148,7 @@ export function createApp(config: {
     })
   );
   app.use(createSpiceHandoffRouter({ dataRoot: config.dataRoot }));
+  app.use(createRnlRouter({ dataRoot: config.dataRoot }));
   app.use(createDebugRouter({ dataRoot: config.dataRoot }));
 
   // Resume/create the complete overlay disk cache for every known project.

@@ -137,7 +137,8 @@ export type AnalogNetlistAction =
   | "viewCode"        // Alt+1 — Code view
   | "viewGraph"       // Alt+2 — Graph view
   | "viewSchematic"   // Alt+3 — Schematic view
-  | "viewLvs";        // Alt+4 — LVS compare view
+  | "viewLvs"         // Alt+4 — LVS compare view
+  | "viewRnl";        // Alt+5 — RNL drawing view
 
 export const ANALOG_NETLIST_HOTKEYS: Record<string, AnalogNetlistAction> = {
   "g": "toggleGraph",
@@ -156,6 +157,7 @@ export const ANALOG_NETLIST_ALT_HOTKEYS: Record<string, AnalogNetlistAction> = {
   "2": "viewGraph",
   "3": "viewSchematic",
   "4": "viewLvs",
+  "5": "viewRnl",
 };
 
 // ── Die Viewer modifier-action hotkeys (Ctrl/Shift combos) ──────

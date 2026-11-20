@@ -9,6 +9,7 @@
   ],
   "scripts": {
     "sidecar": "node scripts/run_sidecar.js",
+    "analog:rnl:setup": "node scripts/analog-canvas-rnl-setup.mjs",
     "dev": "concurrently -n be,fe,sc \"npm run dev -w backend\" \"npm run dev -w frontend\" \"npm run sidecar\"",
     "build": "npm run build -w backend && npm run build -w frontend",
     "mcpb": "npx -y @anthropic-ai/mcpb pack tools/mcpb dist/mmo-chip.mcpb",
