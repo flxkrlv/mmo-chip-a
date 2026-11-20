@@ -18,6 +18,7 @@ import { compareByName } from "../lib/compareByName.js";
 import { extractNetlist } from "../netlistExtraction.js";
 import { resolveProjectDir } from "../projectLayout.js";
 import { readAnnotations, readDieRecord } from "../store.js";
+import { readRnl, writeRnl } from "../rnlStore.js";
 import { buildBlockSubcircuit, parseCdlDevices, selectedModels } from "./mcpBlock.js";
 import {
   cap,
@@ -804,6 +805,59 @@ const editPins: ToolDef = {
   }
 };
 
+const rnlRead: ToolDef = {
+  name: "rnl_read",
+  title: "Read the RNL schematic",
+  description:
+    "Read the saved SPICE+RNL drawing of a module (RNL 0.4 comments inside the SPICE netlist). Export it from the Analog Netlist → RNL tab first. The netlist is authoritative; edit only the RNL records.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      moduleName: { type: "string", description: "Module whose RNL file to read (default: schematic)" }
+    },
+    additionalProperties: false
+  },
+  annotations: { readOnlyHint: true },
+  run: async (ctx, args) => {
+    const moduleName = str(args, "moduleName", true) ?? "schematic";
+    const saved = await readRnl(ctx.dataRoot, ctx.dieId, moduleName);
+    if (!saved)
+      return errorResult(
+        `No RNL file for module "${moduleName}". Export it from the Analog Netlist → RNL tab first.`
+      );
+    return textResult(saved.text);
+  }
+};
+
+const rnlWrite: ToolDef = {
+  name: "rnl_write",
+  title: "Write the RNL schematic",
+  description:
+    "Replace the saved SPICE+RNL drawing of a module. Use rnl_read first, keep every netlist statement unchanged, and edit only RNL records (positions, wires, labels). The Analog Netlist → RNL tab reloads the text.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      moduleName: { type: "string", description: "Module whose RNL file to write (default: schematic)" },
+      text: { type: "string", description: "The complete SPICE+RNL text" }
+    },
+    required: ["text"],
+    additionalProperties: false
+  },
+  annotations: { readOnlyHint: false, destructiveHint: true },
+  run: async (ctx, args) => {
+    const moduleName = str(args, "moduleName", true) ?? "schematic";
+    const text = nonEmpty(str(args, "text"), "text");
+    const file = await writeRnl(ctx.dataRoot, ctx.dieId, moduleName, text);
+    return textResult({
+      ok: true,
+      moduleName,
+      file,
+      bytes: Buffer.byteLength(text, "utf8"),
+      lines: text.split(/\r\n?|\n/).length
+    });
+  }
+};
+
 export const EXTENDED_TOOLS: ToolDef[] = [
   listOverlayLayers,
   getRegionSummary,
@@ -817,5 +871,7 @@ export const EXTENDED_TOOLS: ToolDef[] = [
   mlJob,
   cellDetection,
   editCells,
-  editPins
+  editPins,
+  rnlRead,
+  rnlWrite
 ];

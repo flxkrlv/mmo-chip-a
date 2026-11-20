@@ -106,6 +106,8 @@ interface Props {
   onOpenBlock?: (regionId: string) => void;
   /** Boundary pins for the currently-open region (shown as labeled pins at edges). */
   regionPins?: Array<{ netId: number; name: string; direction: "input" | "output" }>;
+  /** Hand the built analog-canvas project to the RNL tab. */
+  onRnlExport?: (project: unknown, projectName: string) => void | Promise<void>;
 }
 
 // ── Constants ────────────────────────────────────────────────────
@@ -192,7 +194,7 @@ function autoPlaceCellNodes(nodes: RenderNode[]): Record<string, Point> {
 export function InteractiveAnalogSchematic({
   devices, namedNets, ioNetIds, scopeKey, vdd, gnd,
   layoutStrategy = "BRANDES_KOEPF", layoutDirection = "DOWN", compactionLevel = 2,
-  nodeNode, betweenLayers, edgeEdge, edgeNode, favorStraightEdges, dragMode = "surgical", blocks, blockCells, onOpenBlock, regionPins,
+  nodeNode, betweenLayers, edgeEdge, edgeNode, favorStraightEdges, dragMode = "surgical", blocks, blockCells, onOpenBlock, regionPins, onRnlExport,
 }: Props) {
   const opts = useMemo(
     () => ({
@@ -1307,11 +1309,11 @@ export function InteractiveAnalogSchematic({
     img.src = url;
   }, [buildExportSvg, downloadBlob, scopeKey]);
 
-  /** Export the current scene as an analog-canvas project file. The neutral
-   *  layout document is converted in-place (same code as
-   *  `tools/analog-canvas/convert.mjs`), so the downloaded `.icproj.json`
-   *  opens directly in the stock editor. */
-  const exportLayout = useCallback(() => {
+  /** Build the analog-canvas project of the current scene. The neutral layout
+   *  document is converted in-place (same code as
+   *  `tools/analog-canvas/convert.mjs`), so both the file download and the RNL
+   *  export see exactly the same project. */
+  const buildProject = useCallback(() => {
     const blockTerms = new Map(
       blockDevices(blocks ?? []).map((d) => [deviceKey(d), d.terminals]),
     );
@@ -1406,15 +1408,30 @@ export function InteractiveAnalogSchematic({
     if (warnings.length > 0) {
       console.warn("[analog-canvas export] " + warnings.join("\n"));
     }
+    return { project, warnings };
+  }, [
+    scopeKey, table, nodes, positions, orientations, wires, namedNets, blocks, blockCells,
+    opts, store, capDensity, sheetR,
+  ]);
+
+  /** Download the current scene as an analog-canvas project file. */
+  const exportLayout = useCallback(() => {
+    const { project, warnings } = buildProject();
     setExportNotes(warnings);
     const blob = new Blob([JSON.stringify(project, null, 2)], {
       type: "application/json;charset=utf-8",
     });
     downloadBlob(blob, `${scopeKey.replace(/[^\w.-]+/g, "_")}.icproj.json`);
-  }, [
-    scopeKey, table, nodes, positions, orientations, wires, namedNets, blocks, blockCells,
-    opts, store, downloadBlob, capDensity, sheetR,
-  ]);
+  }, [buildProject, downloadBlob, scopeKey]);
+
+  /** Hand the same project to the RNL tab, which asks analog-canvas for the
+   *  SPICE+RNL drawing through the backend. */
+  const exportRnl = useCallback(() => {
+    if (!onRnlExport) return;
+    const { project, warnings } = buildProject();
+    setExportNotes(warnings);
+    void onRnlExport(project, scopeKey);
+  }, [buildProject, onRnlExport, scopeKey]);
 
   const onReset = useCallback(() => {
     store.getState().resetScope(scopeKey);
@@ -1571,6 +1588,17 @@ export function InteractiveAnalogSchematic({
         <button type="button" className="btn sm" onClick={exportLayout} title="Download the current layout as an analog-canvas project (.icproj.json) — opens directly in the stock editor" disabled={!elkResult}>
           Export to analog-canvas
         </button>
+        {onRnlExport && (
+          <button
+            type="button"
+            className="btn sm"
+            onClick={exportRnl}
+            title="Write the same project as SPICE+RNL (through the local analog-canvas MCP) and open the RNL tab"
+            disabled={!elkResult}
+          >
+            RNL
+          </button>
+        )}
         {elkResult?.usedFallback && (
           <span style={{ fontSize: 10, color: "var(--warn)", marginLeft: 4 }}>grid fallback</span>
         )}

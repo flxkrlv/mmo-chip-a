@@ -58,6 +58,8 @@ interface Props {
    * results. Hierarchy/regions don't apply to a flat hand-typed netlist.
    */
   manualSource?: string | null;
+  /** Hand the built analog-canvas project to the RNL tab. */
+  onRnlExport?: (project: unknown, projectName: string) => void | Promise<void>;
 }
 
 // ── Component ───────────────────────────────────────────────────
@@ -72,6 +74,7 @@ export function SchematicViewPanel({
   onSelectRegion,
   selectedDeviceNames = [],
   manualSource = null,
+  onRnlExport,
 }: Props) {
   const [renderMode, setRenderMode] = useState<"analog" | "functional">("analog");
   /** Schematic engine: static netlist2svg SVG or interactive draggable canvas.
@@ -902,6 +905,7 @@ useEffect(() => {
               dragMode={dragMode}
               blocks={hierarchyBlocks}
               blockCells={hierarchyCells}
+              onRnlExport={onRnlExport}
               onOpenBlock={handleOpenBlock}
               regionPins={regionPins}
             />

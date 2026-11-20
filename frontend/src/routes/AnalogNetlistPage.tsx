@@ -12,7 +12,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { NetGraphView } from "../components/netlist/NetGraphView";
 import { SchematicViewPanel } from "../components/netlist/SchematicViewPanel";
+import { RnlSchematicPanel } from "../components/netlist/RnlSchematicPanel";
 import LVSComparePanel from "../components/netlist/LVSComparePanel";
+import { exportRnl, readRnl, saveRnl } from "../api/rnl";
 import type { SpiceConfig, SpiceDialect } from "shared";
 import { AppShell } from "../components/shell/AppShell";
 import { StatusBar } from "../components/shell/StatusBar";
@@ -44,12 +46,12 @@ import { exportLayout, renderLayoutCsv } from "../lib/export/layoutExport";
 // ── Global (program-wide) view persistence ───────────────────────
 
 const RIGHT_VIEW_KEY = "analog.rightView";
-type RightView = "code" | "graph" | "schematic" | "lvs";
+type RightView = "code" | "graph" | "schematic" | "lvs" | "rnl";
 
 function readRightView(): RightView {
   try {
     const v = localStorage.getItem(RIGHT_VIEW_KEY);
-    return v === "code" || v === "graph" || v === "schematic" || v === "lvs" ? v : "code";
+    return v === "code" || v === "graph" || v === "schematic" || v === "lvs" || v === "rnl" ? v : "code";
   } catch {
     return "code";
   }
@@ -251,6 +253,60 @@ function AnalogNetlist({ dieId }: { dieId: string }) {
   // so a tentative circuit can be sketched before real extraction exists.
   const [manualNetlist, setManualNetlist] = useState<string | null>(null);
   const [codeEditing, setCodeEditing] = useState(false);
+
+  // ── RNL drawing (SPICE+RNL, written by the external analog-canvas MCP) ──
+  const [rnlText, setRnlText] = useState("");
+  const [rnlGenerating, setRnlGenerating] = useState(false);
+  const [rnlError, setRnlError] = useState<string | null>(null);
+  const rnlLoadedFor = useRef<string | null>(null);
+
+  const loadRnl = useCallback(async () => {
+    setRnlGenerating(true);
+    setRnlError(null);
+    try {
+      const saved = await readRnl(dieId, moduleName);
+      setRnlText(saved.text);
+    } catch (error) {
+      // No saved export yet is an empty tab, not an error.
+      if ((error as { status?: number }).status !== 404)
+        setRnlError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setRnlGenerating(false);
+    }
+  }, [dieId, moduleName]);
+
+  const generateRnl = useCallback(
+    async (project: unknown) => {
+      setRightView("rnl");
+      setRnlGenerating(true);
+      setRnlError(null);
+      try {
+        const result = await exportRnl(dieId, project, moduleName);
+        setRnlText(result.text);
+        rnlLoadedFor.current = `${dieId}:${moduleName}`;
+      } catch (error) {
+        setRnlError(error instanceof Error ? error.message : String(error));
+      } finally {
+        setRnlGenerating(false);
+      }
+    },
+    [dieId, moduleName],
+  );
+
+  useEffect(() => {
+    if (rightView !== "rnl") return;
+    const key = `${dieId}:${moduleName}`;
+    if (rnlLoadedFor.current === key) return;
+    rnlLoadedFor.current = key;
+    void loadRnl();
+  }, [rightView, dieId, moduleName, loadRnl]);
+
+  const saveRnlText = useCallback(
+    async (text: string) => {
+      await saveRnl(dieId, moduleName, text);
+    },
+    [dieId, moduleName],
+  );
   const editorSource = manualNetlist ?? netlist.data?.source ?? "";
   const assistantFragment = useMemo(
     () => assistantInstances.length > 0 && netlist.data?.source
@@ -301,7 +357,14 @@ function AnalogNetlist({ dieId }: { dieId: string }) {
         const altAction = ANALOG_NETLIST_ALT_HOTKEYS[e.key];
         if (altAction) {
           e.preventDefault();
-          setRightView(altAction === "viewCode" ? "code" : altAction === "viewGraph" ? "graph" : altAction === "viewSchematic" ? "schematic" : "lvs");
+          const views: Record<string, RightView> = {
+            viewCode: "code",
+            viewGraph: "graph",
+            viewSchematic: "schematic",
+            viewLvs: "lvs",
+            viewRnl: "rnl",
+          };
+          setRightView(views[altAction] ?? "schematic");
           return;
         }
       }
@@ -515,6 +578,15 @@ function AnalogNetlist({ dieId }: { dieId: string }) {
                 title="LVS compare (Alt+4)"
               >
                 LVS
+              </button>
+              <button
+                type="button"
+                className={"btn sm" + (rightView === "rnl" ? " on" : "")}
+                onClick={() => setRightView("rnl")}
+                style={{ fontSize: 10, fontWeight: 600 }}
+                title="RNL drawing — SPICE+RNL written by analog-canvas (Alt+5)"
+              >
+                RNL
               </button>
             </div>
             {/* Edit toggle — turns the Code tab into an editable sketch that
@@ -752,7 +824,18 @@ function AnalogNetlist({ dieId }: { dieId: string }) {
             gridColumn: 2,
           }}
         >
-          {rightView === "lvs" ? (
+          {rightView === "rnl" ? (
+            <RnlSchematicPanel
+              moduleName={moduleName}
+              text={rnlText}
+              generating={rnlGenerating}
+              error={rnlError}
+              onTextChange={setRnlText}
+              onSave={saveRnlText}
+              onReload={() => void loadRnl()}
+              onOpenSchematic={() => setRightView("schematic")}
+            />
+          ) : rightView === "lvs" ? (
             <LVSComparePanel
               dieId={dieId}
               layoutNetlist={netlist.data?.source ?? null}
@@ -771,6 +854,7 @@ function AnalogNetlist({ dieId }: { dieId: string }) {
               onSelectRegion={setSelectedRegion}
               selectedDeviceNames={assistantInstances}
               manualSource={manualNetlist}
+              onRnlExport={generateRnl}
             />
           ) : rightView === "graph" && annotations && netlist.data ? (
             <NetGraphView

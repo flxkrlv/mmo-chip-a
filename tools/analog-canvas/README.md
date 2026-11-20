@@ -97,14 +97,45 @@ just not prettified. Blocks whose Cell data is missing (an old `.layout.json`
 exported before this feature) still fall back to the old behaviour: the block
 is reported and left out.
 
-## RNL
+## RNL drawing (RNL tab)
 
-Once open, analog-canvas can export the project as **RNL** (SPICE/Spectre plus
-a drawing transaction). That is a second, independent interchange path: the
-netlist stays authoritative while an AI agent or a person edits only the
-drawing ops, and RNL-aware tools can consume the result. This repository never
-implements RNL and gains no dependency on it — the `.icproj.json` export is
-the only contract.
+The **RNL** tab writes the same project as **SPICE+RNL** and shows it in the
+official MIT RNL viewer (embedded, `embed=1`, text sent by `postMessage`).
+The netlist stays authoritative; the RNL comments are the drawing, so an agent
+can redraw without touching connectivity.
+
+The generator is analog-canvas's own Netlist-panel export. It runs as a
+**separate local process** (the analog-canvas MCP in `--local` mode), not as a
+linked library: this MIT app never copies AGPL-3.0 code. The backend needs:
+
+```powershell
+$env:CHIPTOOL_ANALOG_CANVAS_MCP = "F:\...\analog-canvas\apps\mcp-server\dist\main.js"
+$env:CHIPTOOL_ANALOG_CANVAS_HEADLESS = "F:\...\analog-canvas\output\headless\analog-canvas-headless.mjs"
+```
+
+Build those in the analog-canvas checkout with `pnpm build`,
+`pnpm headless:package`, and `pnpm --filter @icm/mcp-server build`. The
+`netlist_code` tool must accept `rnl:true`; that is the headless-export change
+proposed upstream (the local `feature/headless-rnl-export` branch has it).
+Without the change the RNL tab reports the missing capability instead of
+inventing a drawing.
+
+Flow:
+
+```
+Schematic → RNL button
+  → backend writes project.icproj.json to a temp dir
+  → analog-canvas MCP --local --http netlist_code {action:"read", rnl:true}
+  → SPICE+RNL saved beside the project (rnl/<module>.rnl)
+  → RNL tab: text editor + official viewer
+  → MCP rnl_read / rnl_write: the agent edits the same file
+```
+
+The backend endpoints are `POST /api/dies/:id/rnl/export`,
+`GET /api/dies/:id/rnl?moduleName=…` and `PUT /api/dies/:id/rnl`. The RNL
+viewer fetches `analog-canvas-extensions` from the public RNL package catalog,
+so the tab needs network access for the drawing; the text and diagnostics work
+offline.
 
 ## Wires
 
