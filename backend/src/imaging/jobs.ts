@@ -26,6 +26,7 @@ import {
   writeWireMapInfo
 } from "./store.js";
 import { createTileReader } from "./tileReader.js";
+import { ImagingLimitError } from "./limits.js";
 import {
   buildWirePyramid,
   cellWireLikelihood,
@@ -75,7 +76,8 @@ export function createCellImagingJobManager(config: {
     job: CellImagingJob,
     progress: (phase: string, f: number) => void,
     cancelled: () => boolean,
-    allDies: boolean
+    allDies: boolean,
+    tooLarge: string[] = []
   ) {
     const record = await readDieRecord(dataRoot, job.dieId);
     const annotations = await readAnnotations(dataRoot, job.dieId);
@@ -119,11 +121,19 @@ export function createCellImagingJobManager(config: {
     let done = 0;
     for (const w of work) {
       if (cancelled()) return;
-      const res = await buildSpecimen(w.t, w.members, reader, { percentile: 50, foreign: w.extra }, {
-        onProgress: (f) => progress(`specimen · ${w.t.name}`, (done + f * cost(w)) / total),
-        shouldCancel: cancelled,
-        yieldToLoop
-      });
+      let res: Awaited<ReturnType<typeof buildSpecimen>>;
+      try {
+        res = await buildSpecimen(w.t, w.members, reader, { percentile: 50, foreign: w.extra }, {
+          onProgress: (f) => progress(`specimen · ${w.t.name}`, (done + f * cost(w)) / total),
+          shouldCancel: cancelled,
+          yieldToLoop
+        });
+      } catch (error) {
+        if (!(error instanceof ImagingLimitError)) throw error;
+        console.warn(`[imaging:${job.dieId}] skipped specimen for ${w.t.name}: ${error.message}`);
+        tooLarge.push(w.t.name);
+        res = null;
+      }
       done += cost(w);
       if (!res) continue;
       const raw = { raw: { width: res.width, height: res.height, channels: 3 as const } };
@@ -277,11 +287,15 @@ export function createCellImagingJobManager(config: {
       emit(false);
     };
     try {
-      if (job.kind === "specimens") await runSpecimens(job, progress, () => flag.cancel, allDies);
+      // Types whose whole-cell crop is over the imaging region bound are
+      // skipped and named at completion, instead of failing every type
+      // (upstream deeff76).
+      const tooLarge: string[] = [];
+      if (job.kind === "specimens") await runSpecimens(job, progress, () => flag.cancel, allDies, tooLarge);
       else await runWireMap(job, progress, () => flag.cancel);
       job.status = flag.cancel ? "stopped" : "completed";
       if (!flag.cancel) {
-        job.phase = "done";
+        job.phase = tooLarge.length > 0 ? `skipped ${tooLarge.join(", ")}: over the region limit` : "done";
         job.percentage = 100;
       }
     } catch (error) {

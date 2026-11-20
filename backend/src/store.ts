@@ -12,6 +12,60 @@ import {
 const EMPTY_DIE_INDEX: DieIndex = { dies: [] };
 const EMPTY_JOB_INDEX: ImportJobIndex = { jobs: [] };
 
+// One write at a time per target path: concurrent writers (job progress
+// persisting without awaiting) must not race their tmp+rename sequences, or
+// an older body could land after a newer one and resurrect stale content.
+const jsonWriteLocks = new Map<string, Promise<unknown>>();
+
+/**
+ * Write to a unique sibling tmp file, then rename over the target. A plain
+ * writeFile truncates first, so a crash or `tsx watch` restart mid-write
+ * leaves a cut-off file that no longer parses; rename replaces the file in
+ * one step, so readers see either the old or the new complete file.
+ * Writes to the same path are serialized (see jsonWriteLocks), and the
+ * rename is retried: on Windows a replace can fail transiently with
+ * EPERM/EACCES/EBUSY when the target is being read (or scanned) right then.
+ */
+export async function writeJsonAtomic(filePath: string, value: unknown): Promise<void> {
+  const key = path.resolve(filePath);
+  const previous = jsonWriteLocks.get(key) ?? Promise.resolve();
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => (release = resolve));
+  jsonWriteLocks.set(key, gate);
+  await previous;
+  try {
+    await writeJsonAtomicNow(filePath, value);
+  } finally {
+    release();
+    if (jsonWriteLocks.get(key) === gate) {
+      // Keep the map bounded: drop the entry once the queue drains.
+      jsonWriteLocks.delete(key);
+    }
+  }
+}
+
+async function writeJsonAtomicNow(filePath: string, value: unknown): Promise<void> {
+  const tmp = `${filePath}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2)}.tmp`;
+  try {
+    await fs.writeFile(tmp, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        await fs.rename(tmp, filePath);
+        return;
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        if (attempt >= 4 || (code !== "EPERM" && code !== "EACCES" && code !== "EBUSY")) {
+          throw error;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 25 * (attempt + 1)));
+      }
+    }
+  } catch (error) {
+    await fs.rm(tmp, { force: true }).catch(() => {});
+    throw error;
+  }
+}
+
 // ─── User CRUD ────────────────────────────────────────────────
 
 export async function listUsers(dataRoot: string): Promise<UserRecord[]> {
@@ -31,7 +85,7 @@ export async function findUserById(dataRoot: string, userId: string): Promise<Us
 export async function createUser(dataRoot: string, record: UserRecord): Promise<void> {
   const users = await listUsers(dataRoot);
   users.push(record);
-  await fs.writeFile(path.join(dataRoot, "users.json"), JSON.stringify(users, null, 2) + "\n", "utf8");
+  await writeJsonAtomic(path.join(dataRoot, "users.json"), users);
 }
 
 // ─── Die CRUD ─────────────────────────────────────────────────
@@ -99,11 +153,7 @@ export async function readDieRecord(dataRoot: string, dieId: string): Promise<Di
 export async function writeDieRecord(dataRoot: string, record: DieRecord) {
   const resolved = await resolveProjectDir(dataRoot, record.id);
   await fs.mkdir(resolved.dir, { recursive: true });
-  await fs.writeFile(
-    path.join(resolved.dir, "metadata.json"),
-    `${JSON.stringify(record, null, 2)}\n`,
-    "utf8"
-  );
+  await writeJsonAtomic(path.join(resolved.dir, "metadata.json"), record);
 
   if (resolved.kind === "folder") {
     // Folder projects are tracked by a local shortcut, not the managed index.
@@ -123,7 +173,7 @@ export async function writeDieRecord(dataRoot: string, record: DieRecord) {
   const index = await readJson<DieIndex>(indexPath, EMPTY_DIE_INDEX);
   if (!index.dies.includes(record.id)) {
     index.dies.push(record.id);
-    await fs.writeFile(indexPath, `${JSON.stringify(index, null, 2)}\n`, "utf8");
+    await writeJsonAtomic(indexPath, index);
   }
 }
 
@@ -144,7 +194,7 @@ export async function deleteDieRecord(dataRoot: string, dieId: string) {
   const index = await readJson<DieIndex>(indexPath, EMPTY_DIE_INDEX);
   const nextDies = index.dies.filter((id) => id !== dieId);
   if (nextDies.length !== index.dies.length) {
-    await fs.writeFile(indexPath, `${JSON.stringify({ dies: nextDies }, null, 2)}\n`, "utf8");
+    await writeJsonAtomic(indexPath, { dies: nextDies });
   }
 }
 
@@ -165,17 +215,13 @@ export async function readImportJob(
 }
 
 export async function writeImportJob(dataRoot: string, job: ImportJobRecord) {
-  await fs.writeFile(
-    path.join(dataRoot, "jobs", `${job.id}.json`),
-    `${JSON.stringify(job, null, 2)}\n`,
-    "utf8"
-  );
+  await writeJsonAtomic(path.join(dataRoot, "jobs", `${job.id}.json`), job);
 
   const indexPath = path.join(dataRoot, "jobs", "index.json");
   const index = await readJson<ImportJobIndex>(indexPath, EMPTY_JOB_INDEX);
   if (!index.jobs.includes(job.id)) {
     index.jobs.push(job.id);
-    await fs.writeFile(indexPath, `${JSON.stringify(index, null, 2)}\n`, "utf8");
+    await writeJsonAtomic(indexPath, index);
   }
 }
 
@@ -198,10 +244,9 @@ export async function deleteImportJobsForDie(dataRoot: string, dieId: string) {
     const remainingJobs = index.jobs.filter(
       (jobId) => !jobsToDelete.some((job) => job.jobId === jobId)
     );
-    await fs.writeFile(
+    await writeJsonAtomic(
       indexPath,
-      `${JSON.stringify({ jobs: remainingJobs }, null, 2)}\n`,
-      "utf8"
+      { jobs: remainingJobs }
     );
   }
 }
@@ -242,13 +287,9 @@ export async function writeMLJob(
   job: MLInferenceJob
 ): Promise<void> {
   await fs.mkdir(path.join(dataRoot, "ml-jobs"), { recursive: true });
-  // Atomic (tmp + rename): a sweep persists progress on every tick without
-  // awaiting, so plain writeFile calls can interleave and a concurrent
-  // reader would see one body partially overwritten by another.
-  const file = path.join(dataRoot, "ml-jobs", `${job.dieId}.json`);
-  const tmp = `${file}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2)}.tmp`;
-  await fs.writeFile(tmp, `${JSON.stringify(job, null, 2)}\n`, "utf8");
-  await fs.rename(tmp, file);
+  // A sweep persists progress on every tick without awaiting, so the writes
+  // must be atomic or one body could be partially overwritten by another.
+  await writeJsonAtomic(path.join(dataRoot, "ml-jobs", `${job.dieId}.json`), job);
 }
 
 /** Drop every persisted ML job — used when the model changes (the old jobs'
@@ -288,15 +329,14 @@ export async function writeAnnotations(
   const stamped: DieAnnotations = { ...annotations, rev: nextRev };
   const { dir } = await resolveProjectDir(dataRoot, dieId);
   await fs.mkdir(dir, { recursive: true });
-  const filePath = path.join(dir, "annotations.json");
-  await fs.writeFile(filePath, `${JSON.stringify(stamped, null, 2)}\n`, "utf8");
+  await writeJsonAtomic(path.join(dir, "annotations.json"), stamped);
   return nextRev;
 }
 
 // Per-die mutex: serializes any read-modify-write cycle on a die's files.
 // In-process only (single Node instance). Reads via readAnnotations are not
-// gated since fs.writeFile is atomic at the OS level — a concurrent reader
-// sees either pre- or post-write content, never torn JSON.
+// gated since writes go through writeJsonAtomic — a concurrent reader sees
+// either pre- or post-write content, never torn JSON.
 const dieLocks = new Map<string, Promise<unknown>>();
 
 export async function withDieLock<T>(dieId: string, fn: () => Promise<T>): Promise<T> {
@@ -364,6 +404,6 @@ async function writeJsonIfMissing(filePath: string, value: unknown) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
       throw error;
     }
-    await fs.writeFile(filePath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+    await writeJsonAtomic(filePath, value);
   }
 }

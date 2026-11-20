@@ -6,6 +6,10 @@ import path from "node:path";
 import test, { afterEach } from "node:test";
 import sharp from "sharp";
 import request from "supertest";
+
+// Match backend/src/index.ts: never cache open input files, or a pyramidal
+// TIFF read through a stored level stays locked (EBUSY on cleanup) on Windows.
+sharp.cache({ memory: 256, files: 0, items: 200 });
 import { createApp } from "./app.js";
 import { resolveOverlayOriginalPath } from "./api/overlayImages.js";
 import { ensureDataStore } from "./store.js";

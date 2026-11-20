@@ -4,13 +4,30 @@ import os from "node:os";
 import path from "node:path";
 import test, { afterEach } from "node:test";
 import sharp from "sharp";
-import { buildLevels, ensureTileForRecord } from "./importer.js";
+import { buildLevels, ensureTileForRecord, importDieShot } from "./importer.js";
+import { detectSourceLevels } from "./tiffPyramid.js";
 import type { DieRecord } from "../types.js";
+
+// Match backend/src/index.ts: never cache open input files, or a pyramidal
+// TIFF read through a stored level stays locked (EBUSY on cleanup) on Windows.
+sharp.cache({ memory: 256, files: 0, items: 200 });
 
 const tempRoots: string[] = [];
 
 afterEach(async () => {
-  await Promise.all(tempRoots.splice(0).map((root) => fs.rm(root, { recursive: true, force: true })));
+  // Windows can hold a lock on freshly-written TIFFs for a moment (AV /
+  // indexer); retry the cleanup before giving up.
+  await Promise.all(tempRoots.splice(0).map(async (root) => {
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      try {
+        await fs.rm(root, { recursive: true, force: true });
+        return;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "EBUSY" || attempt === 4) throw error;
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+    }
+  }));
 });
 
 async function createRoot(prefix: string): Promise<string> {
@@ -72,4 +89,56 @@ test("ensureTileForRecord uses the project-folder original over a stale original
   assert.equal(tilePath, path.join(projectDir, "tiles", "0", "0_0.jpg"));
   const stat = await fs.stat(tilePath);
   assert.ok(stat.size > 0, "tile must be generated from the folder copy");
+});
+
+// Upstream 40da967 adapted: PNG/JPEG originals are converted to a lossless
+// tiled pyramidal TIFF at import so lazy tiles read stored levels.
+test("importDieShot converts a JPEG original to a tiled pyramidal TIFF", async () => {
+  const root = await createRoot("chip-import-conv-");
+  const upload = path.join(root, "shot.jpg");
+  await sharp({
+    create: { width: 900, height: 600, channels: 3, background: { r: 2, g: 4, b: 8 } }
+  }).jpeg().toFile(upload);
+
+  const record = await importDieShot({
+    dataRoot: root,
+    filePath: upload,
+    originalFilename: "shot.jpg",
+    mimeType: "image/jpeg",
+    tileSize: 512,
+    limitInputPixels: false,
+    tileConcurrency: 2
+  });
+
+  assert.equal(record.originalPath, path.join(root, "dies", record.id, "original", "shot.tif"));
+  await fs.access(record.originalPath);
+  const levels = await detectSourceLevels(record.originalPath);
+  assert.ok(levels.length > 1, "stored TIFF must be pyramidal");
+
+  // A tile is cut from the stored levels (tile + its coarse level exist).
+  const tilePath = await ensureTileForRecord({
+    dataRoot: root,
+    record,
+    z: 0,
+    x: 0,
+    y: 0
+  });
+  await fs.access(tilePath);
+
+  // --keep-original equivalence: no conversion stores the file as-is.
+  const raw = path.join(root, "raw.png");
+  await sharp({
+    create: { width: 100, height: 100, channels: 3, background: { r: 1, g: 2, b: 3 } }
+  }).png().toFile(raw);
+  const kept = await importDieShot({
+    dataRoot: root,
+    filePath: raw,
+    originalFilename: "raw.png",
+    mimeType: "image/png",
+    tileSize: 512,
+    limitInputPixels: false,
+    tileConcurrency: 2,
+    tiledOriginal: false
+  });
+  assert.ok(kept.originalPath.endsWith(".png"));
 });

@@ -8,8 +8,12 @@ if (!process.env.UV_THREADPOOL_SIZE) {
 async function main() {
   const os = await import("node:os");
   const sharp = (await import("sharp")).default;
-  // Cache decoded image data between tile generation calls for the same file.
-  sharp.cache({ memory: 256, files: 100, items: 200 });
+  // Cache decoded image data between tile generation calls for the same file,
+  // but never cache open input files: the file cache keeps a source handle
+  // alive after the pipeline finishes, and a pyramidal TIFF read through a
+  // stored level then stays locked on Windows (EBUSY on delete/rename) until
+  // the process exits.
+  sharp.cache({ memory: 256, files: 0, items: 200 });
   // Use half of available cores — leave the rest for Express, die tiles, ML.
   sharp.concurrency(Math.max(1, Math.floor((os.availableParallelism?.() ?? 4) / 2)));
 

@@ -97,11 +97,9 @@ async function readShortcuts(dataRoot: string): Promise<FolderShortcut[]> {
 async function writeShortcuts(dataRoot: string, list: FolderShortcut[]): Promise<void> {
   shortcutCache.set(path.resolve(dataRoot), list);
   await fs.mkdir(dataRoot, { recursive: true });
-  await fs.writeFile(
-    shortcutsPath(dataRoot),
-    `${JSON.stringify(list, null, 2)}\n`,
-    "utf8"
-  );
+  const tmp = `${shortcutsPath(dataRoot)}.${process.pid}.tmp`;
+  await fs.writeFile(tmp, `${JSON.stringify(list, null, 2)}\n`, "utf8");
+  await fs.rename(tmp, shortcutsPath(dataRoot));
 }
 
 /** Remember (or update) a folder project so it stays in the library list. */
@@ -192,11 +190,10 @@ export async function writeProjectManifest(
   manifest: ProjectManifest
 ): Promise<void> {
   await fs.mkdir(folderPath, { recursive: true });
-  await fs.writeFile(
-    path.join(folderPath, PROJECT_MANIFEST_FILE),
-    `${JSON.stringify(manifest, null, 2)}\n`,
-    "utf8"
-  );
+  const manifestPath = path.join(folderPath, PROJECT_MANIFEST_FILE);
+  const tmp = `${manifestPath}.${process.pid}.tmp`;
+  await fs.writeFile(tmp, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
+  await fs.rename(tmp, manifestPath);
 }
 
 /** A fresh identity for a project that lives in an independent folder. */

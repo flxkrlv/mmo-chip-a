@@ -92,6 +92,37 @@ export function overlapFraction(a: Rect, b: Rect): number {
   return (w * h) / own;
 }
 
+/** Bounding box for the "Make floorplan around…" context-menu item: the
+ *  selected cells when there are any, else the cell under the cursor. Cells
+ *  with a missing type are skipped; null when nothing would be enclosed. */
+export function floorplanEnclosure(
+  cells: ReadonlyArray<Cell>,
+  cellTypes: ReadonlyArray<CellType>,
+  selectedCellIds: ReadonlyArray<string>,
+  hitCellId?: string | null
+): { rect: Rect; label: "selection" | "cell" } | null {
+  const targets = selectedCellIds.length > 0
+    ? cells.filter((c) => selectedCellIds.includes(c.id))
+    : hitCellId
+      ? cells.filter((c) => c.id === hitCellId)
+      : [];
+  const typesById = new Map(cellTypes.map((t) => [t.id, t]));
+  const footprints: Rect[] = [];
+  for (const cell of targets) {
+    const type = typesById.get(cell.cellTypeId);
+    if (type) footprints.push(cellFootprint(cell, type));
+  }
+  if (footprints.length === 0) return null;
+  const minX = Math.min(...footprints.map((r) => r.x));
+  const minY = Math.min(...footprints.map((r) => r.y));
+  const maxX = Math.max(...footprints.map((r) => r.x + r.width));
+  const maxY = Math.max(...footprints.map((r) => r.y + r.height));
+  return {
+    rect: { x: minX, y: minY, width: maxX - minX, height: maxY - minY },
+    label: selectedCellIds.length > 0 ? "selection" : "cell"
+  };
+}
+
 /** A proposal overlapping an existing cell by more than this fraction of its
  *  own footprint is hidden (mirrors the backend's run-time exclusion). When a
  *  run allowed overlaps, only near-duplicates of the type's own placed cells

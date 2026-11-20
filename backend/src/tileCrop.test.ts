@@ -5,6 +5,11 @@ import path from "node:path";
 import test from "node:test";
 import sharp from "sharp";
 import { buildLevels } from "./dieImport/importer.js";
+
+// Match backend/src/index.ts: never cache open input files, or a pyramidal
+// TIFF read through a stored level stays locked (fs.rm hangs / EBUSY on
+// cleanup) on Windows.
+sharp.cache({ memory: 256, files: 0, items: 200 });
 import {
   levelRegion,
   pickCropScale,

@@ -1,4 +1,5 @@
 import { useEffect, useRef } from "react";
+import type { Rect } from "../../lib/geometry";
 import type { DieOrientOp } from "../../lib/mergeCells";
 
 /**
@@ -30,6 +31,11 @@ export interface DieContextMenuState {
   canSplitNetAtNode?: boolean;
   /** If the right-click landed on a ruler, its id. */
   hitRulerId?: string;
+  /** Bounds of what "Make floorplan around…" would enclose (the selected
+   *  cells, else the cell under the cursor). Null ⇒ item hidden. */
+  floorplanRect?: Rect | null;
+  /** What `floorplanRect` encloses, for the item label. */
+  floorplanLabel?: "selection" | "cell";
 }
 
 interface Props {
@@ -56,6 +62,8 @@ interface Props {
   onDeleteRuler?: () => void;
   onSetScaleFromRuler?: () => void;
   onSplitNetAtNode?: () => void;
+  /** Create a floorplan region around `menu.floorplanRect`. */
+  onMakeFloorplan?: () => void;
 }
 
 const ORIENT_ITEMS: [DieOrientOp, string][] = [
@@ -87,7 +95,8 @@ export function DieContextMenu({
   cellsLocked,
   onDeleteRuler,
   onSetScaleFromRuler,
-  onSplitNetAtNode
+  onSplitNetAtNode,
+  onMakeFloorplan
 }: Props) {
   const ref = useRef<HTMLDivElement | null>(null);
 
@@ -154,6 +163,21 @@ export function DieContextMenu({
           </button>
           <button className="menu-item" onClick={() => { onDeleteRuler?.(); onClose(); }}>
             Delete ruler <span style={{ marginLeft: "auto", color: "var(--ink3)" }}>Del</span>
+          </button>
+        </>
+      )}
+      {menu.floorplanRect && onMakeFloorplan && (
+        <>
+          <div className="menu-sep" />
+          <button
+            className="menu-item"
+            title="Draws a floorplan region enclosing this — rename it in the popover"
+            onClick={() => {
+              onMakeFloorplan();
+              onClose();
+            }}
+          >
+            Make floorplan around {menu.floorplanLabel ?? "selection"}
           </button>
         </>
       )}
