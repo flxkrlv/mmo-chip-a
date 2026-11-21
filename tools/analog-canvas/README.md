@@ -99,10 +99,16 @@ is reported and left out.
 
 ## RNL drawing (RNL tab)
 
-The **RNL** tab writes the same project as **SPICE+RNL** and shows it in the
-official MIT RNL viewer (embedded, `embed=1`, text sent by `postMessage`).
-The netlist stays authoritative; the RNL comments are the drawing, so an agent
-can redraw without touching connectivity.
+The **RNL** tab writes the same project as **SPICE+RNL (or Spectre+RNL)** and
+shows it in the official MIT RNL viewer (embedded, `embed=1`, text sent by
+`postMessage`). The netlist stays authoritative; the RNL comments are the
+drawing, so an agent can redraw without touching connectivity.
+
+The tab's **dialect** select switches between SPICE and Spectre. It re-exports
+the same analog-canvas project through `netlist_code {format:"spectre"}`; the
+saved file keeps the same `rnl/<module>.rnl` name, and the viewer is told the
+right format by sending it as `<module>.scs` (it chooses the parser by the file
+name; a Spectre file named `.sp` fails with “subckt is defined twice”).
 
 The embedded viewer verifies the `analog-canvas-extensions` package with
 SHA-256 through WebCrypto. WebCrypto exists only in a **secure context**, so
@@ -158,9 +164,10 @@ Flow:
 ```
 Schematic → RNL button
   → backend writes project.icproj.json to a temp dir
-  → analog-canvas MCP --local --http netlist_code {action:"read", rnl:true}
-  → SPICE+RNL saved beside the project (rnl/<module>.rnl)
-  → RNL tab: text editor + official viewer
+  → analog-canvas MCP --local --http netlist_code
+      {action:"read", format:"spice"|"spectre", rnl:true}
+  → SPICE+RNL or Spectre+RNL saved beside the project (rnl/<module>.rnl)
+  → RNL tab: text editor + dialect select + official viewer
   → MCP rnl_read / rnl_write: the agent edits the same file
   → RNL tab Reload: show the agent's drawing
 ```
@@ -169,6 +176,12 @@ Schematic → RNL button
 registered with the die's MCP tools, next to `get_annotations` and
 `export_netlist`. The agent should keep every netlist statement and edit only
 RNL records.
+
+analog-canvas wraps long records (a `@TEXT` device-name note, for one) onto the
+next comment line, while the RNL parser reads one record per line. The backend
+joins those continuations in `normalizeRnlText` on both read and write, so an
+exported or agent-written file builds in the viewer without a manual cleanup.
+Everything outside the `@RNL` comment blocks is left byte for byte.
 
 The backend endpoints are `POST /api/dies/:id/rnl/export`,
 `GET /api/dies/:id/rnl?moduleName=…` and `PUT /api/dies/:id/rnl`. The RNL

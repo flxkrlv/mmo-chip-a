@@ -1,10 +1,12 @@
 import { apiGet, apiPost, apiPut } from "./client";
 
+export type RnlFormat = "spice" | "spectre";
+
 export interface RnlExportResult {
   ok: true;
   moduleName: string;
   text: string;
-  format: "spice" | "spectre";
+  format: RnlFormat;
   diagnostics: Array<{ severity?: string; code?: string; message?: string }>;
   documentId?: string;
   status: string;
@@ -15,7 +17,7 @@ export function exportRnl(
   dieId: string,
   project: unknown,
   moduleName: string,
-  format: "spice" | "spectre" = "spice",
+  format: RnlFormat = "spice",
 ): Promise<RnlExportResult> {
   return apiPost<RnlExportResult>(
     `/api/dies/${encodeURIComponent(dieId)}/rnl/export`,

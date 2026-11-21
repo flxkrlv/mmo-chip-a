@@ -15,16 +15,35 @@ The endpoint is shown in the die viewer's **MCP** tab. For local development it 
 `http://127.0.0.1:3001/mcp`.
 
 - **Claude Code**: `claude mcp add --transport http mmo-chip http://127.0.0.1:3001/mcp`
-- **opencode**: `opencode.json` in the repo root already points at it as a remote server.
+- **opencode**: `opencode.json` in the repo root already points at it as a remote server
+  (`mmo-chip` → `:3001`, the dev backend; `mmo-chip-desktop` → `:3101`, the packaged app —
+  enable the one that is running).
 - **Claude Desktop**: `npm run mcpb` builds `dist/mmo-chip.mcpb`; install it and paste the
   endpoint into the extension settings.
 - **Auth**: only needed when the backend runs with `JWT_SECRET`. Send the login token as
-  `Authorization: Bearer …` (MCPB asks for it, Claude Code accepts headers).
+  `Authorization: Bearer …` (MCPB asks for it, Claude Code accepts headers). The repo
+  `opencode.json` reads the token from the `MMOCHIP_TOKEN` environment variable, so set it
+  (see *If MCP fails* below) and restart opencode.
 
 The first call on a die nobody approved yet becomes **pending** and waits up to 50 seconds
 for a user decision in the GUI (`McpAccessPrompt`). Approve/Deny is per die and persists in
 `<dataRoot>/mcp-access.json`. `list_dies` reports `not_requested`, `pending`, `approved` or
 `denied`.
+
+### If MCP fails
+
+`ECONNREFUSED` means nothing listens on the configured port. Check which backend is
+running (`netstat -ano | findstr :3001` and `:3101`) and enable the matching entry:
+`:3001` = `npm run dev`, `:3101` = the packaged desktop app. Only one backend should hold
+the data at a time.
+
+`401 Authentication required` means the backend has `JWT_SECRET` set: log in, copy the
+token from the die viewer's **MCP** tab (or sign one), export it as `MMOCHIP_TOKEN`, and
+restart the MCP client so it re-reads the environment:
+
+```powershell
+[Environment]::SetEnvironmentVariable("MMOCHIP_TOKEN", "<token>", "User")
+```
 
 ## Tools (36)
 

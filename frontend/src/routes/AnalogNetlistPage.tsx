@@ -14,7 +14,7 @@ import { NetGraphView } from "../components/netlist/NetGraphView";
 import { SchematicViewPanel } from "../components/netlist/SchematicViewPanel";
 import { RnlSchematicPanel } from "../components/netlist/RnlSchematicPanel";
 import LVSComparePanel from "../components/netlist/LVSComparePanel";
-import { exportRnl, readRnl, saveRnl } from "../api/rnl";
+import { exportRnl, readRnl, saveRnl, type RnlFormat } from "../api/rnl";
 import type { SpiceConfig, SpiceDialect } from "shared";
 import { AppShell } from "../components/shell/AppShell";
 import { StatusBar } from "../components/shell/StatusBar";
@@ -258,6 +258,11 @@ function AnalogNetlist({ dieId }: { dieId: string }) {
   const [rnlText, setRnlText] = useState("");
   const [rnlGenerating, setRnlGenerating] = useState(false);
   const [rnlError, setRnlError] = useState<string | null>(null);
+  const [rnlFormat, setRnlFormat] = useState<RnlFormat>("spice");
+  // The analog-canvas project the drawing was generated from, so the RNL tab
+  // can export the same schematic as Spectre (or back to SPICE) without
+  // returning to the schematic view.
+  const lastRnlProject = useRef<{ key: string; project: unknown } | null>(null);
   const rnlLoadedFor = useRef<string | null>(null);
 
   const loadRnl = useCallback(async () => {
@@ -276,12 +281,13 @@ function AnalogNetlist({ dieId }: { dieId: string }) {
   }, [dieId, moduleName]);
 
   const generateRnl = useCallback(
-    async (project: unknown) => {
+    async (project: unknown, dialect: RnlFormat = rnlFormat) => {
+      lastRnlProject.current = { key: `${dieId}:${moduleName}`, project };
       setRightView("rnl");
       setRnlGenerating(true);
       setRnlError(null);
       try {
-        const result = await exportRnl(dieId, project, moduleName);
+        const result = await exportRnl(dieId, project, moduleName, dialect);
         setRnlText(result.text);
         rnlLoadedFor.current = `${dieId}:${moduleName}`;
       } catch (error) {
@@ -290,7 +296,18 @@ function AnalogNetlist({ dieId }: { dieId: string }) {
         setRnlGenerating(false);
       }
     },
-    [dieId, moduleName],
+    [dieId, moduleName, rnlFormat],
+  );
+
+  const changeRnlFormat = useCallback(
+    (dialect: RnlFormat) => {
+      if (dialect === rnlFormat) return;
+      setRnlFormat(dialect);
+      const saved = lastRnlProject.current;
+      if (saved && saved.key === `${dieId}:${moduleName}`)
+        void generateRnl(saved.project, dialect);
+    },
+    [dieId, generateRnl, moduleName, rnlFormat],
   );
 
   useEffect(() => {
@@ -830,6 +847,11 @@ function AnalogNetlist({ dieId }: { dieId: string }) {
               text={rnlText}
               generating={rnlGenerating}
               error={rnlError}
+              format={rnlFormat}
+              canExport={
+                lastRnlProject.current?.key === `${dieId}:${moduleName}`
+              }
+              onFormatChange={changeRnlFormat}
               onTextChange={setRnlText}
               onSave={saveRnlText}
               onReload={() => void loadRnl()}
@@ -854,7 +876,7 @@ function AnalogNetlist({ dieId }: { dieId: string }) {
               onSelectRegion={setSelectedRegion}
               selectedDeviceNames={assistantInstances}
               manualSource={manualNetlist}
-              onRnlExport={generateRnl}
+              onRnlExport={(project) => generateRnl(project)}
             />
           ) : rightView === "graph" && annotations && netlist.data ? (
             <NetGraphView

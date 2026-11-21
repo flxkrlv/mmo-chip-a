@@ -8,6 +8,7 @@
  * copied here. The text is the artifact the MCP edits.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { RnlFormat } from "../../api/rnl";
 
 type SaveState = "idle" | "saving" | "saved" | "error";
 
@@ -20,6 +21,9 @@ interface Props {
   text: string;
   generating: boolean;
   error: string | null;
+  format: RnlFormat;
+  canExport: boolean;
+  onFormatChange: (format: RnlFormat) => void;
   onTextChange: (text: string) => void;
   onSave: (text: string) => Promise<void>;
   onReload: () => void;
@@ -41,6 +45,12 @@ interface ViewerMessage {
   reason?: string;
 }
 
+/** The viewer picks the dialect from the file name; Spectre files end in .scs. */
+function viewerFileName(moduleName: string, text: string): string {
+  const spectre = /^\s*simulator\s+lang\s*=\s*spectre/m.test(text);
+  return `${moduleName}.${spectre ? "scs" : "sp"}`;
+}
+
 function packageVersion(text: string): string {
   return (
     /@USE-PACKAGE\(name="analog-canvas-extensions",\s*version="([^"]+)"\)/.exec(
@@ -54,6 +64,9 @@ export function RnlSchematicPanel({
   text,
   generating,
   error,
+  format,
+  canExport,
+  onFormatChange,
   onTextChange,
   onSave,
   onReload,
@@ -102,7 +115,7 @@ export function RnlSchematicPanel({
         {
           rnl: 1,
           type: "open",
-          name: `${moduleName}.sp`,
+          name: viewerFileName(moduleName, value),
           text: value,
           packages: [{ name: PACKAGE_NAME, version: packageVersion(value) }],
         },
@@ -117,7 +130,7 @@ export function RnlSchematicPanel({
       rnl: 1,
       type: "open",
       ...(token ? { token } : {}),
-      name: `${moduleRef.current}.sp`,
+      name: viewerFileName(moduleRef.current, value),
       text: value,
       requestId: `rnl-${Date.now().toString(36)}`,
       packages: [{ name: PACKAGE_NAME, version: packageVersion(value) }],
@@ -293,6 +306,34 @@ export function RnlSchematicPanel({
           </span>
         )}
         <span style={{ flex: 1 }} />
+        <label
+          className="chip"
+          style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 9 }}
+          title={
+            canExport
+              ? "Netlist dialect of the export: SPICE or Spectre. Changing it exports the schematic again with the same drawing."
+              : "Generate the export from the schematic first; then this switches between SPICE and Spectre."
+          }
+        >
+          <span>dialect</span>
+          <select
+            value={format}
+            onChange={(event) => onFormatChange(event.target.value as RnlFormat)}
+            disabled={generating || !canExport}
+            style={{
+              font: "inherit",
+              fontSize: 9,
+              padding: "1px 2px",
+              color: "var(--ink)",
+              background: "var(--bg)",
+              border: "1px solid var(--l2)",
+              borderRadius: 4,
+            }}
+          >
+            <option value="spice">SPICE</option>
+            <option value="spectre">Spectre</option>
+          </select>
+        </label>
         <button
           type="button"
           className="btn sm"
