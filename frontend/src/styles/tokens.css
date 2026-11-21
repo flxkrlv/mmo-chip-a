@@ -21,6 +21,10 @@
   --err: #a8453a;
   --errBg: #f1ddd9;
 
+  /* Scrollbars: gray, matching the theme instead of the browser default. */
+  --sb-thumb: #b4b1a7;
+  --sb-thumb-hover: #8a877f;
+
   --canvas-bg: #0c0c08;
   --canvas-amber: #f5d68a;
   --canvas-wire: #82d6a6;
@@ -46,4 +50,8 @@
   --warnBg: #332a14;
   --err: #e36854;
   --errBg: #3a201b;
+
+  /* Scrollbars: gray, matching the theme instead of the browser default. */
+  --sb-thumb: #4a4740;
+  --sb-thumb-hover: #6b675c;
 }
