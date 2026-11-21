@@ -6,6 +6,11 @@
  * MIT application does not link or copy AGPL-3.0 code: the backend writes the
  * project file, asks the process for `netlist_code` with `rnl:true`, and keeps
  * the returned SPICE+RNL text beside the project.
+ *
+ * The saved file is a snapshot, not a live view: a schematic export replaces
+ * it, so it asks first when the drawing has edits, and it refuses while the
+ * user pinned the drawing. Every write is also a version in `rnl/history`,
+ * so an overwrite stays recoverable.
  */
 import { spawn } from "node:child_process";
 import { promises as fs } from "node:fs";
@@ -16,7 +21,15 @@ import {
   analogCanvasSetupHint,
   resolveAnalogCanvasPaths,
 } from "../analogCanvas.js";
-import { readRnl, rnlModuleName, writeRnl } from "../rnlStore.js";
+import {
+  readRnl,
+  readRnlRevision,
+  readRnlStatus,
+  restoreRnlRevision,
+  rnlModuleName,
+  setRnlFrozen,
+  writeRnl,
+} from "../rnlStore.js";
 
 export interface RnlRouterOptions {
   dataRoot: string;
@@ -219,18 +232,62 @@ export function createRnlRouter(options: RnlRouterOptions) {
 
   router.post("/api/dies/:dieId/rnl/export", async (request, response) => {
     const dieId = String(request.params.dieId ?? "");
-    const project = (request.body as { project?: unknown } | undefined)?.project;
+    const body = request.body as
+      | {
+          project?: unknown;
+          moduleName?: unknown;
+          format?: unknown;
+          sourceHash?: unknown;
+          confirmOverwrite?: unknown;
+        }
+      | undefined;
+    const project = body?.project;
     if (!project || typeof project !== "object")
       return response.status(400).json({ error: '"project" must be a project object' });
-    const moduleName = rnlModuleName(
-      (request.body as { moduleName?: unknown }).moduleName,
-    );
+    const moduleName = rnlModuleName(body?.moduleName);
     const format =
-      (request.body as { format?: unknown }).format === "spectre" ? "spectre" : "spice";
+      body?.format === "spectre" ? "spectre" : "spice";
+    const sourceHash = typeof body?.sourceHash === "string" ? body.sourceHash : null;
     try {
+      const status = await readRnlStatus(options.dataRoot, dieId, moduleName);
+      if (status.state.frozen) {
+        return response.status(409).json({
+          error:
+            "The RNL drawing is pinned as a fixed snapshot. Unpin it on the RNL tab before regenerating it from the schematic.",
+          code: "frozen",
+          state: status.state,
+        });
+      }
+      if (status.exists && status.state.edited && body?.confirmOverwrite !== true) {
+        return response.status(409).json({
+          error:
+            status.state.revisionCount === 0
+              ? "The saved RNL file has no history, so it may contain edits. Regenerating it from the schematic replaces the drawing; the current text is kept as the first history version."
+              : "The saved RNL drawing has edits (by an MCP agent or by hand). Regenerating it from the schematic replaces the drawing; the current version stays in the RNL history and can be restored.",
+          code: "agent-edits",
+          state: status.state,
+        });
+      }
       const result = await exportRnl(project, format, options);
-      const file = await writeRnl(options.dataRoot, dieId, moduleName, result.text);
-      return response.json({ ok: true, moduleName, file, ...result });
+      const write = await writeRnl(options.dataRoot, dieId, moduleName, result.text, {
+        author: "schematic",
+        note: `exported from the schematic (${result.format})`,
+        format: result.format,
+        sourceHash,
+        forceRevision: true,
+      });
+      return response.json({
+        ok: true,
+        moduleName,
+        file: write.file,
+        text: write.text,
+        revision: write.revision,
+        state: write.state,
+        diagnostics: result.diagnostics,
+        format: result.format,
+        status: result.status,
+        ...(result.documentId ? { documentId: result.documentId } : {}),
+      });
     } catch (error) {
       const status = error instanceof RnlError ? error.status : 502;
       return response.status(status).json({
@@ -239,6 +296,77 @@ export function createRnlRouter(options: RnlRouterOptions) {
     }
   });
 
+  router.get("/api/dies/:dieId/rnl/history", async (request, response) => {
+    const dieId = String(request.params.dieId ?? "");
+    const moduleName = rnlModuleName(request.query.moduleName);
+    try {
+      const status = await readRnlStatus(options.dataRoot, dieId, moduleName);
+      return response.json({
+        ok: true,
+        moduleName,
+        exists: status.exists,
+        state: status.state,
+        revisions: status.revisions,
+      });
+    } catch (error) {
+      return response
+        .status(500)
+        .json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
+  router.get("/api/dies/:dieId/rnl/history/:revisionId", async (request, response) => {
+    const dieId = String(request.params.dieId ?? "");
+    const moduleName = rnlModuleName(request.query.moduleName);
+    try {
+      const detail = await readRnlRevision(
+        options.dataRoot,
+        dieId,
+        moduleName,
+        String(request.params.revisionId ?? ""),
+      );
+      if (!detail)
+        return response.status(404).json({ error: "No such RNL version" });
+      return response.json({ ok: true, moduleName, ...detail });
+    } catch (error) {
+      return response
+        .status(500)
+        .json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
+  router.post(
+    "/api/dies/:dieId/rnl/history/:revisionId/restore",
+    async (request, response) => {
+      const dieId = String(request.params.dieId ?? "");
+      const moduleName = rnlModuleName(
+        (request.body as { moduleName?: unknown } | undefined)?.moduleName,
+      );
+      try {
+        const restored = await restoreRnlRevision(
+          options.dataRoot,
+          dieId,
+          moduleName,
+          String(request.params.revisionId ?? ""),
+        );
+        if (!restored)
+          return response.status(404).json({ error: "No such RNL version" });
+        return response.json({
+          ok: true,
+          moduleName,
+          file: restored.file,
+          text: restored.text,
+          revision: restored.revision,
+          state: restored.state,
+        });
+      } catch (error) {
+        return response
+          .status(500)
+          .json({ error: error instanceof Error ? error.message : String(error) });
+      }
+    },
+  );
+
   router.get("/api/dies/:dieId/rnl", async (request, response) => {
     const dieId = String(request.params.dieId ?? "");
     const moduleName = rnlModuleName(request.query.moduleName);
@@ -246,7 +374,13 @@ export function createRnlRouter(options: RnlRouterOptions) {
       const saved = await readRnl(options.dataRoot, dieId, moduleName);
       if (!saved)
         return response.status(404).json({ error: "No RNL export for this module" });
-      return response.json({ ok: true, moduleName, text: saved.text });
+      const status = await readRnlStatus(options.dataRoot, dieId, moduleName);
+      return response.json({
+        ok: true,
+        moduleName,
+        text: saved.text,
+        state: status.state,
+      });
     } catch (error) {
       return response
         .status(500)
@@ -256,13 +390,48 @@ export function createRnlRouter(options: RnlRouterOptions) {
 
   router.put("/api/dies/:dieId/rnl", async (request, response) => {
     const dieId = String(request.params.dieId ?? "");
-    const body = request.body as { moduleName?: unknown; text?: unknown } | undefined;
+    const body = request.body as
+      | { moduleName?: unknown; text?: unknown; note?: unknown }
+      | undefined;
     if (typeof body?.text !== "string")
       return response.status(400).json({ error: '"text" must be a string' });
     const moduleName = rnlModuleName(body.moduleName);
     try {
-      const file = await writeRnl(options.dataRoot, dieId, moduleName, body.text);
-      return response.json({ ok: true, moduleName, file });
+      const write = await writeRnl(options.dataRoot, dieId, moduleName, body.text, {
+        author: "user",
+        ...(typeof body.note === "string" ? { note: body.note } : {}),
+      });
+      return response.json({
+        ok: true,
+        moduleName,
+        file: write.file,
+        text: write.text,
+        revision: write.revision,
+        state: write.state,
+      });
+    } catch (error) {
+      return response
+        .status(500)
+        .json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
+  router.put("/api/dies/:dieId/rnl/state", async (request, response) => {
+    const dieId = String(request.params.dieId ?? "");
+    const body = request.body as
+      | { moduleName?: unknown; frozen?: unknown }
+      | undefined;
+    if (typeof body?.frozen !== "boolean")
+      return response.status(400).json({ error: '"frozen" must be a boolean' });
+    const moduleName = rnlModuleName(body.moduleName);
+    try {
+      const state = await setRnlFrozen(
+        options.dataRoot,
+        dieId,
+        moduleName,
+        body.frozen,
+      );
+      return response.json({ ok: true, moduleName, state });
     } catch (error) {
       return response
         .status(500)

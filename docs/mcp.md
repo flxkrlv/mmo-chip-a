@@ -45,7 +45,7 @@ restart the MCP client so it re-reads the environment:
 [Environment]::SetEnvironmentVariable("MMOCHIP_TOKEN", "<token>", "User")
 ```
 
-## Tools (36)
+## Tools (37)
 
 **Read**
 
@@ -85,11 +85,17 @@ restart the MCP client so it re-reads the environment:
 | `export_project` | Portable ZIP (`light`/`full`) written to a local temp path. |
 | `ml_job` | `status` / `start` / `stop` the ML via sweep. |
 | `cell_detection` | `status` / `start` / `stop` / `list` cell-placement proposals. |
+| `rnl_read`, `rnl_write`, `rnl_history` | Saved SPICE/Spectre+RNL drawing: read it, replace it (with a history note), list versions and user rollbacks. |
 
 `edit_nets` is deliberately not a separate tool: the wire/via tools above cover nets with
 stricter ownership and graph rules. `set_scale` and `get_crop(cellId/cellTypeId)` are not
 exposed by design: scaling is a user action, and `get_die_image` by rect + `overlayId`
 covers crops. `get_metal_stack` is not separate either — `get_die_info.metalStack` has it.
+
+The RNL drawing is a saved snapshot, so `rnl_write` never touches the netlist and every
+write becomes a version (pass `note`). Call `rnl_history` before rewriting: a user rollback
+appears as a `user` version with `restores`. A pinned snapshot is still writable through
+MCP; the pin only blocks regenerating it from the schematic in the GUI.
 
 ## Write access
 

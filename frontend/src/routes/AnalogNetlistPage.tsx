@@ -14,7 +14,14 @@ import { NetGraphView } from "../components/netlist/NetGraphView";
 import { SchematicViewPanel } from "../components/netlist/SchematicViewPanel";
 import { RnlSchematicPanel } from "../components/netlist/RnlSchematicPanel";
 import LVSComparePanel from "../components/netlist/LVSComparePanel";
-import { exportRnl, readRnl, saveRnl, type RnlFormat } from "../api/rnl";
+import {
+  exportRnl,
+  readRnl,
+  saveRnl,
+  type RnlFormat,
+  type RnlState,
+} from "../api/rnl";
+import { ApiError } from "../api/client";
 import type { SpiceConfig, SpiceDialect } from "shared";
 import { AppShell } from "../components/shell/AppShell";
 import { StatusBar } from "../components/shell/StatusBar";
@@ -254,16 +261,30 @@ function AnalogNetlist({ dieId }: { dieId: string }) {
   const [manualNetlist, setManualNetlist] = useState<string | null>(null);
   const [codeEditing, setCodeEditing] = useState(false);
 
-  // ── RNL drawing (SPICE+RNL, written by the external analog-canvas MCP) ──
+  // ── RNL drawing (saved file + version history, written by the analog MCP) ──
   const [rnlText, setRnlText] = useState("");
   const [rnlGenerating, setRnlGenerating] = useState(false);
   const [rnlError, setRnlError] = useState<string | null>(null);
   const [rnlFormat, setRnlFormat] = useState<RnlFormat>("spice");
+  const [rnlState, setRnlState] = useState<RnlState | null>(null);
+  // The export endpoint refused because the drawing has edits; the panel
+  // shows the warning and asks before replacing it.
+  const [rnlNotice, setRnlNotice] = useState<string | null>(null);
+  const [rnlOverwritePending, setRnlOverwritePending] = useState(false);
+  const rnlPendingExport = useRef<{
+    project: unknown;
+    format: RnlFormat;
+  } | null>(null);
   // The analog-canvas project the drawing was generated from, so the RNL tab
-  // can export the same schematic as Spectre (or back to SPICE) without
-  // returning to the schematic view.
+  // can regenerate it (or switch the dialect) without returning to the
+  // schematic view.
   const lastRnlProject = useRef<{ key: string; project: unknown } | null>(null);
   const rnlLoadedFor = useRef<string | null>(null);
+
+  const handleRnlState = useCallback((next: RnlState) => {
+    setRnlState(next);
+    setRnlFormat(next.format);
+  }, []);
 
   const loadRnl = useCallback(async () => {
     setRnlGenerating(true);
@@ -271,33 +292,82 @@ function AnalogNetlist({ dieId }: { dieId: string }) {
     try {
       const saved = await readRnl(dieId, moduleName);
       setRnlText(saved.text);
+      handleRnlState(saved.state);
     } catch (error) {
       // No saved export yet is an empty tab, not an error.
-      if ((error as { status?: number }).status !== 404)
+      if ((error as { status?: number }).status === 404) {
+        setRnlText("");
+        setRnlState(null);
+      } else {
         setRnlError(error instanceof Error ? error.message : String(error));
+      }
     } finally {
       setRnlGenerating(false);
     }
-  }, [dieId, moduleName]);
+  }, [dieId, handleRnlState, moduleName]);
 
   const generateRnl = useCallback(
-    async (project: unknown, dialect: RnlFormat = rnlFormat) => {
+    async (
+      project: unknown,
+      dialect: RnlFormat = rnlFormat,
+      options: { confirmOverwrite?: boolean } = {},
+    ) => {
       lastRnlProject.current = { key: `${dieId}:${moduleName}`, project };
       setRightView("rnl");
       setRnlGenerating(true);
       setRnlError(null);
+      if (!options.confirmOverwrite) {
+        setRnlNotice(null);
+        setRnlOverwritePending(false);
+        rnlPendingExport.current = null;
+      }
       try {
-        const result = await exportRnl(dieId, project, moduleName, dialect);
+        const result = await exportRnl(dieId, project, moduleName, dialect, {
+          sourceHash: netlist.data?.circuitHash ?? null,
+          confirmOverwrite: options.confirmOverwrite,
+        });
         setRnlText(result.text);
+        handleRnlState(result.state);
+        setRnlNotice(null);
+        setRnlOverwritePending(false);
+        rnlPendingExport.current = null;
         rnlLoadedFor.current = `${dieId}:${moduleName}`;
       } catch (error) {
+        if (error instanceof ApiError && error.status === 409) {
+          const body = error.body as
+            | { code?: string; state?: RnlState }
+            | null;
+          if (body?.state) handleRnlState(body.state);
+          if (body?.code === "agent-edits") {
+            rnlPendingExport.current = { project, format: dialect };
+            setRnlOverwritePending(true);
+            setRnlNotice(error.message);
+            return;
+          }
+        }
         setRnlError(error instanceof Error ? error.message : String(error));
       } finally {
         setRnlGenerating(false);
       }
     },
-    [dieId, moduleName, rnlFormat],
+    [dieId, handleRnlState, moduleName, netlist.data?.circuitHash, rnlFormat],
   );
+
+  const confirmRnlOverwrite = useCallback(() => {
+    const pending = rnlPendingExport.current;
+    if (!pending) return;
+    rnlPendingExport.current = null;
+    void generateRnl(pending.project, pending.format, {
+      confirmOverwrite: true,
+    });
+  }, [generateRnl]);
+
+  const cancelRnlOverwrite = useCallback(() => {
+    rnlPendingExport.current = null;
+    setRnlOverwritePending(false);
+    setRnlNotice(null);
+    setRnlError(null);
+  }, []);
 
   const changeRnlFormat = useCallback(
     (dialect: RnlFormat) => {
@@ -310,6 +380,23 @@ function AnalogNetlist({ dieId }: { dieId: string }) {
     [dieId, generateRnl, moduleName, rnlFormat],
   );
 
+  const regenerateRnl = useCallback(() => {
+    const saved = lastRnlProject.current;
+    if (saved && saved.key === `${dieId}:${moduleName}`)
+      void generateRnl(saved.project, rnlFormat);
+  }, [dieId, generateRnl, moduleName, rnlFormat]);
+
+  const handleRnlRestored = useCallback(
+    (nextText: string, next: RnlState) => {
+      setRnlText(nextText);
+      handleRnlState(next);
+      setRnlError(null);
+      setRnlNotice(null);
+      setRnlOverwritePending(false);
+    },
+    [handleRnlState],
+  );
+
   useEffect(() => {
     if (rightView !== "rnl") return;
     const key = `${dieId}:${moduleName}`;
@@ -320,9 +407,17 @@ function AnalogNetlist({ dieId }: { dieId: string }) {
 
   const saveRnlText = useCallback(
     async (text: string) => {
-      await saveRnl(dieId, moduleName, text);
+      const result = await saveRnl(
+        dieId,
+        moduleName,
+        text,
+        "saved in the RNL tab",
+      );
+      setRnlText(result.text);
+      handleRnlState(result.state);
+      return result;
     },
-    [dieId, moduleName],
+    [dieId, handleRnlState, moduleName],
   );
   const editorSource = manualNetlist ?? netlist.data?.source ?? "";
   const assistantFragment = useMemo(
@@ -843,6 +938,7 @@ function AnalogNetlist({ dieId }: { dieId: string }) {
         >
           {rightView === "rnl" ? (
             <RnlSchematicPanel
+              dieId={dieId}
               moduleName={moduleName}
               text={rnlText}
               generating={rnlGenerating}
@@ -851,11 +947,24 @@ function AnalogNetlist({ dieId }: { dieId: string }) {
               canExport={
                 lastRnlProject.current?.key === `${dieId}:${moduleName}`
               }
+              state={rnlState}
+              sourceHash={netlist.data?.circuitHash ?? null}
+              notice={rnlNotice}
+              pendingOverwrite={rnlOverwritePending}
               onFormatChange={changeRnlFormat}
               onTextChange={setRnlText}
               onSave={saveRnlText}
-              onReload={() => void loadRnl()}
+              onReload={loadRnl}
               onOpenSchematic={() => setRightView("schematic")}
+              onStateChange={handleRnlState}
+              onRestored={handleRnlRestored}
+              onConfirmOverwrite={confirmRnlOverwrite}
+              onCancelOverwrite={cancelRnlOverwrite}
+              onRegenerate={
+                lastRnlProject.current?.key === `${dieId}:${moduleName}`
+                  ? regenerateRnl
+                  : undefined
+              }
             />
           ) : rightView === "lvs" ? (
             <LVSComparePanel

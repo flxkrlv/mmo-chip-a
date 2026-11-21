@@ -172,10 +172,44 @@ Schematic → RNL button
   → RNL tab Reload: show the agent's drawing
 ```
 
-`rnl_read` and `rnl_write` take `moduleName` (default `schematic`); they are
-registered with the die's MCP tools, next to `get_annotations` and
-`export_netlist`. The agent should keep every netlist statement and edit only
-RNL records.
+`rnl_read`, `rnl_write` and `rnl_history` take `moduleName` (default
+`schematic`); they are registered with the die's MCP tools, next to
+`get_annotations` and `export_netlist`. The agent should keep every netlist
+statement and edit only RNL records; `rnl_write` takes a `note` that the user
+sees in the history, and `rnl_history` reports the state and every version
+(including a user rollback, which appears as a `user` version whose `restores`
+names the old one).
+
+### The saved file is a snapshot, not a live view
+
+The RNL tab always shows the file on disk. The schematic is not streamed into
+it: a drawing can be redrawn by an agent, so regenerating it from the
+schematic is a separate, deliberate action.
+
+- **Pin snapshot** (persisted in `rnl/<module>.state.json`) makes the drawing
+  a fixed snapshot. While it is on, `POST …/rnl/export` is refused with
+  `code:"frozen"`; agent saves still work. This is the switch to use while an
+  agent iterates on the drawing.
+- Without the pin, pressing **RNL** on the schematic first checks whether the
+  saved drawing has edits. If it does (or if the file predates the history),
+  the backend answers `409 code:"agent-edits"` and the RNL tab shows an
+  **Overwrite drawing / Cancel** banner. The old drawing stays in the history,
+  so accepting does not destroy it.
+- The tab marks the drawing **may be stale** when the circuit fingerprint
+  stored at the last schematic export differs from the current one. The
+  fingerprint covers instances, terminals and named nets only: calculated
+  values and preferences do not make the drawing stale, and a rename or a
+  moved connection does.
+- A file written before this feature is adopted into the history on the first
+  write (`author:"saved"`), so even the first overwrite is recoverable.
+
+The history is the bottom third of the RNL tab: every schematic export, agent
+save, manual save and rollback, newest first, with the author, note, line
+counts and an expandable line diff. **Restore this version** writes that text
+as a new version (`author:"user"`, `restores:<id>`), so a rollback is itself
+undoable. Versions live in `rnl/history/<module>/` (one file per version plus
+`index.json`); the last 100 are kept and the schematic baseline is never
+pruned.
 
 analog-canvas wraps long records (a `@TEXT` device-name note, for one) onto the
 next comment line, while the RNL parser reads one record per line. The backend
@@ -184,10 +218,13 @@ exported or agent-written file builds in the viewer without a manual cleanup.
 Everything outside the `@RNL` comment blocks is left byte for byte.
 
 The backend endpoints are `POST /api/dies/:id/rnl/export`,
-`GET /api/dies/:id/rnl?moduleName=…` and `PUT /api/dies/:id/rnl`. The RNL
-viewer fetches `analog-canvas-extensions` from the public RNL package catalog,
-so the tab needs network access for the drawing; the text and diagnostics work
-offline.
+`GET /api/dies/:id/rnl?moduleName=…`, `PUT /api/dies/:id/rnl`,
+`PUT /api/dies/:id/rnl/state` (pin/unpin),
+`GET /api/dies/:id/rnl/history?moduleName=…`,
+`GET /api/dies/:id/rnl/history/:revisionId?moduleName=…` and
+`POST /api/dies/:id/rnl/history/:revisionId/restore`. The RNL viewer fetches
+`analog-canvas-extensions` from the public RNL package catalog, so the tab
+needs network access for the drawing; the text and diagnostics work offline.
 
 ## Wires
 
