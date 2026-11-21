@@ -580,7 +580,14 @@ async function writeLocked(
   }
 
   const at = new Date().toISOString();
-  const diff = diffRnlLines(current ?? "", text);
+  const baseRevisionId =
+    state.latestRevisionId ?? revisions[revisions.length - 1]?.id ?? null;
+  // The file may have been changed outside the app; the version it is based
+  // on is still the newest recorded one, so diff against that text.
+  const baseText = baseRevisionId
+    ? await readText(revisionFile(dir, moduleName, baseRevisionId))
+    : null;
+  const diff = diffRnlLines(baseText ?? current ?? "", text);
   const revision: RnlRevisionMeta = {
     id: newRevisionId(),
     at,
@@ -591,7 +598,7 @@ async function writeLocked(
     lines: linesOf(text).length,
     added: diff.added,
     removed: diff.removed,
-    baseRevisionId: state.latestRevisionId ?? revisions[revisions.length - 1]?.id ?? null,
+    baseRevisionId,
     restores: options.restores ?? null,
     sourceHash:
       options.sourceHash !== undefined ? options.sourceHash : state.sourceHash,
