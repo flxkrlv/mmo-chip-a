@@ -142,10 +142,12 @@ builds the checkout first. The two artifacts are:
 ```
 
 Build them with `pnpm build`, `pnpm headless:package`, and
-`pnpm --filter @icm/mcp-server build`. The `netlist_code` tool must accept
-`rnl:true`; that is the headless-export change proposed upstream (the local
-`feature/headless-rnl-export` branch has it). Without the change the RNL tab
-reports the missing capability instead of inventing a drawing.
+`pnpm --filter @icm/mcp-server build`. `netlist_code` accepts `rnl:true` in
+current analog-canvas: the headless export was merged upstream in
+[#2405](https://github.com/cascode-ai/analog-canvas/pull/2405), so a stock
+`main` checkout (or any release containing it) is enough — no fork is needed.
+An older checkout reports the missing capability instead of inventing a
+drawing.
 
 `GET /api/rnl/status` reports the resolved paths (and the search list when
 nothing was found), so a misconfigured deployment can be diagnosed without a
