@@ -18,7 +18,12 @@ import { compareByName } from "../lib/compareByName.js";
 import { extractNetlist } from "../netlistExtraction.js";
 import { resolveProjectDir } from "../projectLayout.js";
 import { readAnnotations, readDieRecord } from "../store.js";
-import { readRnl, writeRnl } from "../rnlStore.js";
+import {
+  readRnl,
+  readRnlRevision,
+  readRnlStatus,
+  writeRnl,
+} from "../rnlStore.js";
 import { buildBlockSubcircuit, parseCdlDevices, selectedModels } from "./mcpBlock.js";
 import {
   cap,
@@ -809,7 +814,7 @@ const rnlRead: ToolDef = {
   name: "rnl_read",
   title: "Read the RNL schematic",
   description:
-    "Read the saved SPICE+RNL drawing of a module (RNL 0.4 comments inside the SPICE netlist). Export it from the Analog Netlist → RNL tab first. The netlist is authoritative; edit only the RNL records.",
+    "Read the saved SPICE+RNL drawing of a module (RNL 0.4 comments inside the SPICE or Spectre netlist). Export it from the Analog Netlist → RNL tab first. The netlist is authoritative; edit only the RNL records. Call rnl_history before a rewrite: the user may have rolled the drawing back.",
   inputSchema: {
     type: "object",
     properties: {
@@ -833,12 +838,13 @@ const rnlWrite: ToolDef = {
   name: "rnl_write",
   title: "Write the RNL schematic",
   description:
-    "Replace the saved SPICE+RNL drawing of a module. Use rnl_read first, keep every netlist statement unchanged, and edit only RNL records (positions, wires, labels). The Analog Netlist → RNL tab reloads the text.",
+    "Replace the saved SPICE+RNL drawing of a module and add it to the module's version history. Use rnl_read first, keep every netlist statement unchanged, and edit only RNL records (positions, wires, labels). The Analog Netlist → RNL tab reloads the text and lists the version. `note` is shown to the user in the history, so describe the change.",
   inputSchema: {
     type: "object",
     properties: {
       moduleName: { type: "string", description: "Module whose RNL file to write (default: schematic)" },
-      text: { type: "string", description: "The complete SPICE+RNL text" }
+      text: { type: "string", description: "The complete SPICE+RNL text" },
+      note: { type: "string", description: "Short note shown in the RNL history, e.g. \"redrew the bandgap\"" }
     },
     required: ["text"],
     additionalProperties: false
@@ -847,13 +853,58 @@ const rnlWrite: ToolDef = {
   run: async (ctx, args) => {
     const moduleName = str(args, "moduleName", true) ?? "schematic";
     const text = nonEmpty(str(args, "text"), "text");
-    const file = await writeRnl(ctx.dataRoot, ctx.dieId, moduleName, text);
+    const note = str(args, "note", true);
+    const write = await writeRnl(ctx.dataRoot, ctx.dieId, moduleName, text, {
+      author: "agent",
+      ...(note ? { note } : {})
+    });
+    const status = await readRnlStatus(ctx.dataRoot, ctx.dieId, moduleName);
     return textResult({
       ok: true,
       moduleName,
-      file,
-      bytes: Buffer.byteLength(text, "utf8"),
-      lines: text.split(/\r\n?|\n/).length
+      file: write.file,
+      bytes: Buffer.byteLength(write.text, "utf8"),
+      lines: write.text.split(/\r\n?|\n/).length,
+      ...(write.revision ? {} : { unchanged: true }),
+      revision: write.revision,
+      state: write.state,
+      recentRevisions: status.revisions.slice(0, 5)
+    });
+  }
+};
+
+const rnlHistory: ToolDef = {
+  name: "rnl_history",
+  title: "Read the RNL change history",
+  description:
+    "List the saved versions of a module's RNL drawing, newest first, with the author (schematic, agent, user), the note and the line counts. Without `revisionId` it returns the state and the list; with `revisionId` it returns that version's full text and its diff against the version it was based on. A user rollback appears as a new version with author \"user\" and `restores` naming the old one, so call this before rnl_write to see the current direction.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      moduleName: { type: "string", description: "Module whose history to read (default: schematic)" },
+      revisionId: { type: "string", description: "Read one version's text and diff instead of the list" }
+    },
+    additionalProperties: false
+  },
+  annotations: { readOnlyHint: true },
+  run: async (ctx, args) => {
+    const moduleName = str(args, "moduleName", true) ?? "schematic";
+    const revisionId = str(args, "revisionId", true);
+    if (revisionId) {
+      const detail = await readRnlRevision(ctx.dataRoot, ctx.dieId, moduleName, revisionId);
+      if (!detail) return errorResult(`No RNL version "${revisionId}" for module "${moduleName}".`);
+      return textResult({ moduleName, ...detail });
+    }
+    const status = await readRnlStatus(ctx.dataRoot, ctx.dieId, moduleName);
+    if (!status.exists && status.revisions.length === 0)
+      return errorResult(
+        `No RNL drawing for module "${moduleName}". Export it from the Analog Netlist → RNL tab first.`
+      );
+    return textResult({
+      moduleName,
+      exists: status.exists,
+      state: status.state,
+      revisions: status.revisions
     });
   }
 };
@@ -873,5 +924,6 @@ export const EXTENDED_TOOLS: ToolDef[] = [
   editCells,
   editPins,
   rnlRead,
-  rnlWrite
+  rnlWrite,
+  rnlHistory
 ];

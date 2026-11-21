@@ -17,6 +17,7 @@ import {
 } from "../lib/export/spice";
 import { matchGeometry } from "../lib/export/matching";
 import { collectDieWideAnalogDevices, getRenameVersion } from "./dieWideAnalog";
+import { circuitFingerprint } from "../lib/export/circuitFingerprint";
 import { getDeviceRecord, getLegacyOverrides, setLegacyOverrides, useRegistryVersion } from "../state/deviceRegistry";
 import { useAnalogNamesVersion } from "../state/analogDeviceNames";
 
@@ -59,6 +60,12 @@ export interface AnalogNetlistResult {
   totalCells: number;
   /** Total annotation nets on the die. */
   totalNets: number;
+  /**
+   * Stable fingerprint of the circuit (devices, terminals, values, nets),
+   * independent of the output dialect. Used to tell whether a saved RNL
+   * drawing predates the current schematic.
+   */
+  circuitHash: string;
 }
 
 // ── Helpers ───────────────────────────────────────────────────────
@@ -300,6 +307,7 @@ function buildAnalogNetlist(
     unconnectedCount,
     totalCells,
     totalNets,
+    circuitHash: circuitFingerprint(named, namedNets),
   };
 }
 

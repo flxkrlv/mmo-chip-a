@@ -15,18 +15,37 @@ The endpoint is shown in the die viewer's **MCP** tab. For local development it 
 `http://127.0.0.1:3001/mcp`.
 
 - **Claude Code**: `claude mcp add --transport http mmo-chip http://127.0.0.1:3001/mcp`
-- **opencode**: `opencode.json` in the repo root already points at it as a remote server.
+- **opencode**: `opencode.json` in the repo root already points at it as a remote server
+  (`mmo-chip` → `:3001`, the dev backend; `mmo-chip-desktop` → `:3101`, the packaged app —
+  enable the one that is running).
 - **Claude Desktop**: `npm run mcpb` builds `dist/mmo-chip.mcpb`; install it and paste the
   endpoint into the extension settings.
 - **Auth**: only needed when the backend runs with `JWT_SECRET`. Send the login token as
-  `Authorization: Bearer …` (MCPB asks for it, Claude Code accepts headers).
+  `Authorization: Bearer …` (MCPB asks for it, Claude Code accepts headers). The repo
+  `opencode.json` reads the token from the `MMOCHIP_TOKEN` environment variable, so set it
+  (see *If MCP fails* below) and restart opencode.
 
 The first call on a die nobody approved yet becomes **pending** and waits up to 50 seconds
 for a user decision in the GUI (`McpAccessPrompt`). Approve/Deny is per die and persists in
 `<dataRoot>/mcp-access.json`. `list_dies` reports `not_requested`, `pending`, `approved` or
 `denied`.
 
-## Tools (36)
+### If MCP fails
+
+`ECONNREFUSED` means nothing listens on the configured port. Check which backend is
+running (`netstat -ano | findstr :3001` and `:3101`) and enable the matching entry:
+`:3001` = `npm run dev`, `:3101` = the packaged desktop app. Only one backend should hold
+the data at a time.
+
+`401 Authentication required` means the backend has `JWT_SECRET` set: log in, copy the
+token from the die viewer's **MCP** tab (or sign one), export it as `MMOCHIP_TOKEN`, and
+restart the MCP client so it re-reads the environment:
+
+```powershell
+[Environment]::SetEnvironmentVariable("MMOCHIP_TOKEN", "<token>", "User")
+```
+
+## Tools (37)
 
 **Read**
 
@@ -66,11 +85,17 @@ for a user decision in the GUI (`McpAccessPrompt`). Approve/Deny is per die and 
 | `export_project` | Portable ZIP (`light`/`full`) written to a local temp path. |
 | `ml_job` | `status` / `start` / `stop` the ML via sweep. |
 | `cell_detection` | `status` / `start` / `stop` / `list` cell-placement proposals. |
+| `rnl_read`, `rnl_write`, `rnl_history` | Saved SPICE/Spectre+RNL drawing: read it, replace it (with a history note), list versions and user rollbacks. |
 
 `edit_nets` is deliberately not a separate tool: the wire/via tools above cover nets with
 stricter ownership and graph rules. `set_scale` and `get_crop(cellId/cellTypeId)` are not
 exposed by design: scaling is a user action, and `get_die_image` by rect + `overlayId`
 covers crops. `get_metal_stack` is not separate either — `get_die_info.metalStack` has it.
+
+The RNL drawing is a saved snapshot, so `rnl_write` never touches the netlist and every
+write becomes a version (pass `note`). Call `rnl_history` before rewriting: a user rollback
+appears as a `user` version with `restores`. A pinned snapshot is still writable through
+MCP; the pin only blocks regenerating it from the schematic in the GUI.
 
 ## Write access
 

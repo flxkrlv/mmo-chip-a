@@ -26,15 +26,31 @@ test("the agent reads and writes the RNL file the tab uses", async () => {
   const saved = await tool("rnl_write").run(context, {
     moduleName: "bandgap",
     text: '* @RNL(type="header") {}\n',
+    note: "first drawing",
   });
   assert.equal(saved.isError, undefined);
+  const savedBody = JSON.parse(saved.content[0]?.text ?? "{}");
+  assert.equal(savedBody.revision.author, "agent");
+  assert.equal(savedBody.revision.note, "first drawing");
 
   const read = await tool("rnl_read").run(context, { moduleName: "bandgap" });
   assert.equal(read.content[0]?.text, '* @RNL(type="header") {}\n');
-  assert.equal(
-    read.content[0]?.type,
-    "text",
-  );
+  assert.equal(read.content[0]?.type, "text");
+
+  const history = await tool("rnl_history").run(context, {
+    moduleName: "bandgap",
+  });
+  const historyBody = JSON.parse(history.content[0]?.text ?? "{}");
+  assert.equal(historyBody.revisions.length, 1);
+  assert.equal(historyBody.revisions[0].author, "agent");
+  assert.equal(historyBody.state.edited, true);
+
+  const detail = await tool("rnl_history").run(context, {
+    moduleName: "bandgap",
+    revisionId: historyBody.revisions[0].id,
+  });
+  const detailBody = JSON.parse(detail.content[0]?.text ?? "{}");
+  assert.equal(detailBody.text, '* @RNL(type="header") {}\n');
 
   const missing = await tool("rnl_read").run(context, {
     moduleName: "absent",

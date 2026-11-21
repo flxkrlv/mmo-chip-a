@@ -99,10 +99,16 @@ is reported and left out.
 
 ## RNL drawing (RNL tab)
 
-The **RNL** tab writes the same project as **SPICE+RNL** and shows it in the
-official MIT RNL viewer (embedded, `embed=1`, text sent by `postMessage`).
-The netlist stays authoritative; the RNL comments are the drawing, so an agent
-can redraw without touching connectivity.
+The **RNL** tab writes the same project as **SPICE+RNL (or Spectre+RNL)** and
+shows it in the official MIT RNL viewer (embedded, `embed=1`, text sent by
+`postMessage`). The netlist stays authoritative; the RNL comments are the
+drawing, so an agent can redraw without touching connectivity.
+
+The tab's **dialect** select switches between SPICE and Spectre. It re-exports
+the same analog-canvas project through `netlist_code {format:"spectre"}`; the
+saved file keeps the same `rnl/<module>.rnl` name, and the viewer is told the
+right format by sending it as `<module>.scs` (it chooses the parser by the file
+name; a Spectre file named `.sp` fails with “subckt is defined twice”).
 
 The embedded viewer verifies the `analog-canvas-extensions` package with
 SHA-256 through WebCrypto. WebCrypto exists only in a **secure context**, so
@@ -142,10 +148,12 @@ builds the checkout first. The two artifacts are:
 ```
 
 Build them with `pnpm build`, `pnpm headless:package`, and
-`pnpm --filter @icm/mcp-server build`. The `netlist_code` tool must accept
-`rnl:true`; that is the headless-export change proposed upstream (the local
-`feature/headless-rnl-export` branch has it). Without the change the RNL tab
-reports the missing capability instead of inventing a drawing.
+`pnpm --filter @icm/mcp-server build`. `netlist_code` accepts `rnl:true` in
+current analog-canvas: the headless export was merged upstream in
+[#2405](https://github.com/cascode-ai/analog-canvas/pull/2405), so a stock
+`main` checkout (or any release containing it) is enough — no fork is needed.
+An older checkout reports the missing capability instead of inventing a
+drawing.
 
 `GET /api/rnl/status` reports the resolved paths (and the search list when
 nothing was found), so a misconfigured deployment can be diagnosed without a
@@ -156,23 +164,67 @@ Flow:
 ```
 Schematic → RNL button
   → backend writes project.icproj.json to a temp dir
-  → analog-canvas MCP --local --http netlist_code {action:"read", rnl:true}
-  → SPICE+RNL saved beside the project (rnl/<module>.rnl)
-  → RNL tab: text editor + official viewer
+  → analog-canvas MCP --local --http netlist_code
+      {action:"read", format:"spice"|"spectre", rnl:true}
+  → SPICE+RNL or Spectre+RNL saved beside the project (rnl/<module>.rnl)
+  → RNL tab: text editor + dialect select + official viewer
   → MCP rnl_read / rnl_write: the agent edits the same file
   → RNL tab Reload: show the agent's drawing
 ```
 
-`rnl_read` and `rnl_write` take `moduleName` (default `schematic`); they are
-registered with the die's MCP tools, next to `get_annotations` and
-`export_netlist`. The agent should keep every netlist statement and edit only
-RNL records.
+`rnl_read`, `rnl_write` and `rnl_history` take `moduleName` (default
+`schematic`); they are registered with the die's MCP tools, next to
+`get_annotations` and `export_netlist`. The agent should keep every netlist
+statement and edit only RNL records; `rnl_write` takes a `note` that the user
+sees in the history, and `rnl_history` reports the state and every version
+(including a user rollback, which appears as a `user` version whose `restores`
+names the old one).
+
+### The saved file is a snapshot, not a live view
+
+The RNL tab always shows the file on disk. The schematic is not streamed into
+it: a drawing can be redrawn by an agent, so regenerating it from the
+schematic is a separate, deliberate action.
+
+- **Pin snapshot** (persisted in `rnl/<module>.state.json`) makes the drawing
+  a fixed snapshot. While it is on, `POST …/rnl/export` is refused with
+  `code:"frozen"`; agent saves still work. This is the switch to use while an
+  agent iterates on the drawing.
+- Without the pin, pressing **RNL** on the schematic first checks whether the
+  saved drawing has edits. If it does (or if the file predates the history),
+  the backend answers `409 code:"agent-edits"` and the RNL tab shows an
+  **Overwrite drawing / Cancel** banner. The old drawing stays in the history,
+  so accepting does not destroy it.
+- The tab marks the drawing **may be stale** when the circuit fingerprint
+  stored at the last schematic export differs from the current one. The
+  fingerprint covers instances, terminals and named nets only: calculated
+  values and preferences do not make the drawing stale, and a rename or a
+  moved connection does.
+- A file written before this feature is adopted into the history on the first
+  write (`author:"saved"`), so even the first overwrite is recoverable.
+
+The history is the bottom third of the RNL tab: every schematic export, agent
+save, manual save and rollback, newest first, with the author, note, line
+counts and an expandable line diff. **Restore this version** writes that text
+as a new version (`author:"user"`, `restores:<id>`), so a rollback is itself
+undoable. Versions live in `rnl/history/<module>/` (one file per version plus
+`index.json`); the last 100 are kept and the schematic baseline is never
+pruned.
+
+analog-canvas wraps long records (a `@TEXT` device-name note, for one) onto the
+next comment line, while the RNL parser reads one record per line. The backend
+joins those continuations in `normalizeRnlText` on both read and write, so an
+exported or agent-written file builds in the viewer without a manual cleanup.
+Everything outside the `@RNL` comment blocks is left byte for byte.
 
 The backend endpoints are `POST /api/dies/:id/rnl/export`,
-`GET /api/dies/:id/rnl?moduleName=…` and `PUT /api/dies/:id/rnl`. The RNL
-viewer fetches `analog-canvas-extensions` from the public RNL package catalog,
-so the tab needs network access for the drawing; the text and diagnostics work
-offline.
+`GET /api/dies/:id/rnl?moduleName=…`, `PUT /api/dies/:id/rnl`,
+`PUT /api/dies/:id/rnl/state` (pin/unpin),
+`GET /api/dies/:id/rnl/history?moduleName=…`,
+`GET /api/dies/:id/rnl/history/:revisionId?moduleName=…` and
+`POST /api/dies/:id/rnl/history/:revisionId/restore`. The RNL viewer fetches
+`analog-canvas-extensions` from the public RNL package catalog, so the tab
+needs network access for the drawing; the text and diagnostics work offline.
 
 ## Wires
 
